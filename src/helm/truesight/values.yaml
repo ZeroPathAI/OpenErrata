@@ -1,0 +1,42 @@
+replicaCount:
+  api: 2
+  worker: 2
+
+image:
+  repository: ghcr.io/zeropathAI/truesight-api
+  tag: latest
+  pullPolicy: IfNotPresent
+
+migration:
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+  ttlSecondsAfterFinished: 300
+
+service:
+  type: ClusterIP
+  port: 3000
+
+selector:
+  schedule: "*/5 * * * *"
+  budget: "100"
+
+config:
+  ipRangeCreditCap: "10"
+  databaseEncryptionKeyId: "primary"
+  blobStorageEndpoint: ""
+  # Required: name of the S3/R2 bucket used for investigation image blobs.
+  blobStorageBucket: ""
+  # Required: public URL prefix used to serve uploaded blobs.
+  blobStoragePublicUrlPrefix: ""
+
+# Secrets must be provided via --set or external secret manager
+secrets:
+  databaseUrl: ""
+  openaiApiKey: ""
+  validApiKeys: ""
+  hmacSecret: ""
+  # Required: symmetric key used to encrypt transient DB-stored secrets.
+  databaseEncryptionKey: ""
+  # Required: credentials for blob storage uploads.
+  blobStorageAccessKeyId: ""
+  blobStorageSecretAccessKey: ""

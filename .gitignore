@@ -1,0 +1,26 @@
+node_modules/
+vendor/
+dist/
+build/
+.svelte-kit/
+.env
+*.local
+src/typescript/api/src/lib/generated/prisma/
+
+# Build artifacts
+*.tsbuildinfo
+src/typescript/extension/test-results/
+src/typescript/extension/playwright-report/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+pgdata/

@@ -1,0 +1,43 @@
+{
+  "$schema": "./node_modules/knip/schema.json",
+  "sveltekit": false,
+  "svelte": false,
+  "ignoreDependencies": ["prettier"],
+  "ignoreUnresolved": ["^\\./\\$types$"],
+  "ignoreIssues": {
+    "api/src/lib/generated/prisma/**": [
+      "exports",
+      "types",
+      "nsExports",
+      "nsTypes",
+      "enumMembers",
+      "classMembers"
+    ]
+  },
+  "workspaces": {
+    "api": {
+      "entry": ["src/routes/**/*.ts", "test/**/*.ts"],
+      "project": ["src/**/*.ts", "test/**/*.ts", "*.ts", "*.js"],
+      "ignoreDependencies": ["@prisma/client"],
+      "sveltekit": true
+    },
+    "extension": {
+      "entry": [
+        "src/background/index.ts",
+        "src/content/main.ts",
+        "src/popup/main.ts",
+        "src/options/main.ts",
+        "src/manifest.json"
+      ],
+      "project": ["src/**/*.{ts,svelte,css}", "*.ts", "*.json"],
+      "svelte": true
+    },
+    "shared": {
+      "entry": ["test/**/*.ts"],
+      "project": ["src/**/*.ts", "test/**/*.ts"]
+    },
+    "pulumi": {
+      "project": ["**/*.ts"]
+    }
+  }
+}

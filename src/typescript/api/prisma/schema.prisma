@@ -1,0 +1,433 @@
+// See SPEC.md §3.2 for data model documentation
+
+generator client {
+  provider        = "prisma-client"
+  output          = "../src/lib/generated/prisma"
+  previewFeatures = ["views"]
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────
+
+enum Platform {
+  LESSWRONG
+  X
+  SUBSTACK
+}
+
+enum CheckStatus {
+  PENDING
+  PROCESSING
+  COMPLETE
+  FAILED
+}
+
+enum ContentProvenance {
+  SERVER_VERIFIED
+  CLIENT_FALLBACK
+}
+
+enum InvestigationProvider {
+  OPENAI
+  ANTHROPIC
+}
+
+enum InvestigationModel {
+  OPENAI_GPT_5
+  OPENAI_GPT_5_MINI
+  ANTHROPIC_CLAUDE_SONNET
+  ANTHROPIC_CLAUDE_OPUS
+}
+
+enum InvestigationAttemptOutcome {
+  SUCCEEDED
+  FAILED
+}
+
+// ─── Models ──────────────────────────────────────────────────────────
+
+model Post {
+  id                String           @id @default(cuid())
+  platform          Platform
+  externalId        String
+  url               String
+  authorId          String?
+  author            Author?          @relation(fields: [authorId], references: [id])
+  viewCount         Int              @default(0)
+  uniqueViewScore   Int              @default(0)
+  lastViewedAt      DateTime?
+  latestContentHash String?
+  latestContentText String?
+  wordCount         Int              @default(0)
+  investigations    Investigation[]
+  viewCredits       PostViewCredit[]
+  lesswrongMeta     LesswrongMeta?
+  xMeta             XMeta?
+  substackMeta      SubstackMeta?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  @@unique([platform, externalId])
+  @@index([viewCount])
+  @@index([uniqueViewScore])
+  @@index([authorId])
+}
+
+model PostViewCredit {
+  id         String   @id @default(cuid())
+  postId     String
+  post       Post     @relation(fields: [postId], references: [id])
+  viewerKey  String
+  ipRangeKey String
+  bucketDay  DateTime
+  createdAt  DateTime @default(now())
+
+  @@unique([postId, viewerKey, bucketDay])
+  @@index([postId, bucketDay])
+  @@index([postId, ipRangeKey, bucketDay])
+}
+
+model Author {
+  id             String   @id @default(cuid())
+  platform       Platform
+  platformUserId String
+  displayName    String
+  posts          Post[]
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([platform, platformUserId])
+}
+
+model LesswrongMeta {
+  postId      String    @id
+  post        Post      @relation(fields: [postId], references: [id])
+  slug        String    @unique
+  title       String
+  htmlContent String
+  imageUrls   String[]
+  wordCount   Int?
+  karma       Int?
+  authorName  String
+  authorSlug  String?
+  tags        String[]
+  publishedAt DateTime?
+}
+
+model XMeta {
+  postId            String    @id
+  post              Post      @relation(fields: [postId], references: [id])
+  tweetId           String    @unique
+  text              String
+  authorHandle      String
+  authorDisplayName String?
+  mediaUrls         String[]
+  likeCount         Int?
+  retweetCount      Int?
+  postedAt          DateTime?
+}
+
+model SubstackMeta {
+  postId                String    @id
+  post                  Post      @relation(fields: [postId], references: [id])
+  substackPostId        String    @unique
+  publicationSubdomain  String
+  slug                  String
+  title                 String
+  subtitle              String?
+  imageUrls             String[]
+  authorName            String
+  authorSubstackHandle  String?
+  publishedAt           DateTime?
+  likeCount             Int?
+  commentCount          Int?
+
+  @@unique([publicationSubdomain, slug])
+}
+
+model Prompt {
+  id              String          @id @default(cuid())
+  version         String          @unique
+  hash            String          @unique
+  text            String
+  investigations  Investigation[]
+  createdAt       DateTime        @default(now())
+}
+
+model Investigation {
+  id                   String                @id @default(cuid())
+  postId               String
+  post                 Post                  @relation(fields: [postId], references: [id])
+  contentHash          String
+  contentText          String
+  contentProvenance    ContentProvenance
+  fetchFailureReason   String?
+  serverVerifiedAt     DateTime?
+  status               CheckStatus
+  promptId             String
+  prompt               Prompt                @relation(fields: [promptId], references: [id])
+  provider             InvestigationProvider
+  model                InvestigationModel
+  modelVersion         String?
+  checkedAt            DateTime?
+  run                  InvestigationRun?
+  attempts             InvestigationAttempt[]
+  claims               Claim[]
+  images               InvestigationImage[]
+  corroborationCredits CorroborationCredit[]
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+
+  @@unique([postId, contentHash])
+  @@index([postId, status])
+}
+
+model InvestigationRun {
+  id              String                        @id @default(cuid())
+  investigationId String                        @unique
+  investigation   Investigation                 @relation(fields: [investigationId], references: [id], onDelete: Cascade)
+  leaseOwner      String?
+  leaseExpiresAt  DateTime?
+  queuedAt        DateTime?
+  startedAt       DateTime?
+  heartbeatAt     DateTime?
+  openAiKeySource InvestigationOpenAiKeySource?
+  createdAt       DateTime                      @default(now())
+  updatedAt       DateTime                      @updatedAt
+
+  @@index([leaseExpiresAt])
+}
+
+model InvestigationOpenAiKeySource {
+  runId      String           @id
+  run        InvestigationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  ciphertext String
+  iv         String
+  authTag    String
+  keyId      String
+  expiresAt  DateTime
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+
+  @@index([expiresAt])
+}
+
+model ImageBlob {
+  id             String               @id @default(cuid())
+  contentHash    String               @unique
+  storageKey     String               @unique
+  originalUrl    String
+  mimeType       String
+  sizeBytes      Int
+  investigations InvestigationImage[]
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+}
+
+model InvestigationImage {
+  investigationId String
+  investigation   Investigation @relation(fields: [investigationId], references: [id], onDelete: Cascade)
+  imageBlobId     String
+  imageBlob       ImageBlob     @relation(fields: [imageBlobId], references: [id], onDelete: Cascade)
+  imageOrder      Int
+  createdAt       DateTime      @default(now())
+
+  @@id([investigationId, imageBlobId])
+  @@unique([investigationId, imageOrder])
+  @@index([imageBlobId])
+}
+
+model InvestigationAttempt {
+  id                      String                             @id @default(cuid())
+  investigationId         String
+  investigation           Investigation                      @relation(fields: [investigationId], references: [id], onDelete: Cascade)
+  attemptNumber           Int
+  outcome                 InvestigationAttemptOutcome
+  requestModel            String
+  requestInstructions     String
+  requestInput            String
+  requestReasoningEffort  String?
+  requestReasoningSummary String?
+  responseId              String?
+  responseStatus          String?
+  responseModelVersion    String?
+  responseOutputText      String?
+  startedAt               DateTime
+  completedAt             DateTime?
+  requestedTools          InvestigationAttemptRequestedTool[]
+  outputItems             InvestigationAttemptOutputItem[]
+  toolCalls               InvestigationAttemptToolCall[]
+  usage                   InvestigationAttemptUsage?
+  error                   InvestigationAttemptError?
+  createdAt               DateTime                           @default(now())
+  updatedAt               DateTime                           @updatedAt
+
+  @@unique([investigationId, attemptNumber])
+  @@index([investigationId, startedAt])
+}
+
+model InvestigationAttemptRequestedTool {
+  id                String               @id @default(cuid())
+  attemptId         String
+  attempt           InvestigationAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  requestOrder      Int
+  toolType          String
+  rawDefinition     Json
+  createdAt         DateTime             @default(now())
+
+  @@unique([attemptId, requestOrder])
+  @@index([attemptId])
+}
+
+model InvestigationAttemptOutputItem {
+  id                String                             @id @default(cuid())
+  attemptId         String
+  attempt           InvestigationAttempt               @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  outputIndex       Int
+  providerItemId    String?
+  itemType          String
+  itemStatus        String?
+  textParts         InvestigationAttemptOutputTextPart[]
+  reasoningSummaries InvestigationAttemptReasoningSummary[]
+  toolCall          InvestigationAttemptToolCall?
+  createdAt         DateTime                           @default(now())
+
+  @@unique([attemptId, outputIndex])
+  @@index([attemptId])
+}
+
+model InvestigationAttemptOutputTextPart {
+  id            String                                   @id @default(cuid())
+  outputItemId  String
+  outputItem    InvestigationAttemptOutputItem           @relation(fields: [outputItemId], references: [id], onDelete: Cascade)
+  partIndex     Int
+  partType      String
+  text          String
+  annotations   InvestigationAttemptOutputTextAnnotation[]
+  createdAt     DateTime                                 @default(now())
+
+  @@unique([outputItemId, partIndex])
+  @@index([outputItemId])
+}
+
+model InvestigationAttemptOutputTextAnnotation {
+  id              String                              @id @default(cuid())
+  textPartId      String
+  textPart        InvestigationAttemptOutputTextPart  @relation(fields: [textPartId], references: [id], onDelete: Cascade)
+  annotationIndex Int
+  annotationType  String
+  startIndex      Int?
+  endIndex        Int?
+  url             String?
+  title           String?
+  fileId          String?
+  createdAt       DateTime                            @default(now())
+
+  @@unique([textPartId, annotationIndex], map: "IATextAnn_textPart_annotation_uq")
+  @@index([textPartId])
+}
+
+model InvestigationAttemptReasoningSummary {
+  id            String                         @id @default(cuid())
+  outputItemId  String
+  outputItem    InvestigationAttemptOutputItem @relation(fields: [outputItemId], references: [id], onDelete: Cascade)
+  summaryIndex  Int
+  text          String
+  createdAt     DateTime                       @default(now())
+
+  @@unique([outputItemId, summaryIndex], map: "IAReasoning_output_summary_uq")
+  @@index([outputItemId])
+}
+
+model InvestigationAttemptToolCall {
+  id                  String                          @id @default(cuid())
+  attemptId           String
+  attempt             InvestigationAttempt            @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  outputItemId        String
+  outputItem          InvestigationAttemptOutputItem  @relation(fields: [outputItemId], references: [id], onDelete: Cascade)
+  outputIndex         Int
+  providerToolCallId  String?
+  toolType            String
+  status              String?
+  rawPayload          Json
+  capturedAt          DateTime
+  providerStartedAt   DateTime?
+  providerCompletedAt DateTime?
+  createdAt           DateTime                        @default(now())
+
+  @@unique([attemptId, outputIndex])
+  @@unique([outputItemId])
+  @@index([attemptId])
+}
+
+model InvestigationAttemptUsage {
+  id                    String               @id @default(cuid())
+  attemptId             String               @unique
+  attempt               InvestigationAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  inputTokens           Int
+  outputTokens          Int
+  totalTokens           Int
+  cachedInputTokens     Int?
+  reasoningOutputTokens Int?
+  createdAt             DateTime             @default(now())
+}
+
+model InvestigationAttemptError {
+  id           String               @id @default(cuid())
+  attemptId    String               @unique
+  attempt      InvestigationAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  errorName    String
+  errorMessage String
+  statusCode   Int?
+  createdAt    DateTime             @default(now())
+}
+
+model CorroborationCredit {
+  id              String        @id @default(cuid())
+  investigationId String
+  investigation   Investigation @relation(fields: [investigationId], references: [id])
+  reporterKey     String
+  createdAt       DateTime      @default(now())
+
+  @@unique([investigationId, reporterKey])
+  @@index([investigationId])
+}
+
+model Claim {
+  id              String        @id @default(cuid())
+  investigationId String
+  investigation   Investigation @relation(fields: [investigationId], references: [id])
+  text            String
+  context         String
+  summary         String
+  reasoning       String
+  sources         Source[]
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@index([investigationId])
+}
+
+model Source {
+  id           String   @id @default(cuid())
+  claimId      String
+  claim        Claim    @relation(fields: [claimId], references: [id])
+  url          String
+  title        String
+  snippet      String
+  snapshotText String?
+  snapshotHash String?
+  retrievedAt  DateTime
+
+  @@index([claimId])
+}
+
+view InvestigationPublicEligibility {
+  investigationId   String  @unique
+  isPubliclyEligible Boolean
+
+  @@map("investigation_public_eligibility")
+}

@@ -1,0 +1,16 @@
+{
+  "name": "@truesight/pulumi",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@pulumi/kubernetes": "^4.26.0",
+    "@pulumi/pulumi": "^3.222.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

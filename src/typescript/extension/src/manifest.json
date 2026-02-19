@@ -1,0 +1,52 @@
+{
+  "manifest_version": 3,
+  "name": "TrueSight",
+  "version": "0.1.0",
+  "description": "Fact-check LessWrong, X, and Substack posts with AI-powered claim verification.",
+  "permissions": ["activeTab", "storage", "scripting", "webNavigation"],
+  "host_permissions": [
+    "https://api.truesight.dev/*",
+    "https://www.lesswrong.com/*",
+    "https://lesswrong.com/*",
+    "https://*.substack.com/*",
+    "https://x.com/*",
+    "https://twitter.com/*",
+    "http://localhost/*",
+    "https://*/*",
+    "http://*/*"
+  ],
+  "background": {
+    "service_worker": "background/index.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.lesswrong.com/*", "https://lesswrong.com/*"],
+      "js": ["content/main.js"],
+      "css": ["content/annotations.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://x.com/*",
+        "https://twitter.com/*"
+      ],
+      "js": ["content/main.js"],
+      "css": ["content/annotations.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://*.substack.com/p/*"],
+      "js": ["content/main.js"],
+      "css": ["content/annotations.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup/index.html"
+  },
+  "options_ui": {
+    "page": "options/index.html",
+    "open_in_tab": true
+  }
+}

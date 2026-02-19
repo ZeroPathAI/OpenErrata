@@ -1,0 +1,984 @@
+import {
+  extensionMessageSchema,
+  extensionRuntimeErrorResponseSchema,
+  investigationStatusOutputSchema,
+} from "@truesight/shared";
+import type {
+  ExtensionPageStatus,
+  ExtensionPostStatus,
+  GetInvestigationOutput,
+  InvestigateNowOutput,
+  InvestigationStatusOutput,
+  ViewPostInput,
+  ViewPostOutput,
+} from "@truesight/shared";
+import browser, { type Runtime } from "webextension-polyfill";
+import {
+  init,
+  viewPost,
+  getInvestigation,
+  investigateNow,
+  hasUserOpenAiKey,
+  isAutoInvestigateEnabled,
+} from "./api-client.js";
+import {
+  cachePostStatus,
+  cacheSkippedStatus,
+  clearActiveStatus,
+  clearCache,
+  getActivePostStatus,
+  getActiveStatus,
+} from "./cache.js";
+
+// Initialize API client on worker start.
+void init();
+
+type ParsedExtensionMessage = Extract<
+  ReturnType<typeof extensionMessageSchema.safeParse>,
+  { success: true }
+>["data"];
+type ParsedPageContentPayload = Extract<
+  ParsedExtensionMessage,
+  { type: "PAGE_CONTENT" }
+>["payload"];
+type ParsedPageSkippedPayload = Extract<
+  ParsedExtensionMessage,
+  { type: "PAGE_SKIPPED" }
+>["payload"];
+type ParsedGetStatusPayload = Extract<
+  ParsedExtensionMessage,
+  { type: "GET_STATUS" }
+>["payload"];
+type ParsedPageResetPayload = Extract<
+  ParsedExtensionMessage,
+  { type: "PAGE_RESET" }
+>["payload"];
+type ParsedInvestigateNowPayload = Extract<
+  ParsedExtensionMessage,
+  { type: "INVESTIGATE_NOW" }
+>["payload"];
+type ParsedBackgroundMessage = Extract<
+  ParsedExtensionMessage,
+  {
+    type:
+      | "PAGE_CONTENT"
+      | "PAGE_SKIPPED"
+      | "PAGE_RESET"
+      | "GET_STATUS"
+      | "INVESTIGATE_NOW"
+      | "GET_CACHED";
+  }
+>;
+type ExtensionRuntimeErrorResponse = ReturnType<
+  typeof extensionRuntimeErrorResponseSchema.parse
+>;
+
+const SUBSTACK_POST_PATH_REGEX = /^\/p\/[^/?#]+/i;
+const KNOWN_DECLARATIVE_DOMAINS = [
+  "substack.com",
+  "lesswrong.com",
+  "x.com",
+  "twitter.com",
+];
+
+const injectedCustomSubstackTabs = new Map<number, string>();
+
+function describeError(error: unknown): string {
+  if (error instanceof Error && error.message.length > 0) {
+    return error.message;
+  }
+  return String(error);
+}
+
+function toRuntimeErrorResponse(
+  error: unknown,
+): ExtensionRuntimeErrorResponse {
+  return extensionRuntimeErrorResponseSchema.parse({
+    ok: false,
+    error: describeError(error),
+  });
+}
+
+function isBackgroundMessage(message: ParsedExtensionMessage): message is ParsedBackgroundMessage {
+  return (
+    message.type === "PAGE_CONTENT" ||
+    message.type === "PAGE_SKIPPED" ||
+    message.type === "PAGE_RESET" ||
+    message.type === "GET_STATUS" ||
+    message.type === "INVESTIGATE_NOW" ||
+    message.type === "GET_CACHED"
+  );
+}
+
+function isKnownDeclarativeDomain(hostname: string): boolean {
+  const normalizedHostname = hostname.toLowerCase();
+  return KNOWN_DECLARATIVE_DOMAINS.some(
+    (domain) =>
+      normalizedHostname === domain ||
+      normalizedHostname.endsWith(`.${domain}`),
+  );
+}
+
+function hasCandidateSubstackPath(url: URL): boolean {
+  return SUBSTACK_POST_PATH_REGEX.test(url.pathname);
+}
+
+async function detectSubstackDomFingerprint(tabId: number): Promise<boolean> {
+  const [probeResult] = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => {
+      const hasPostPath = /^\/p\/[^/?#]+/i.test(window.location.pathname);
+      const hasSubstackFingerprint =
+        document.querySelector(
+          [
+            'link[href*="substackcdn.com"]',
+            'script[src*="substackcdn.com"]',
+            'img[src*="substackcdn.com"]',
+            'meta[property="og:url"][content*=".substack.com"]',
+            'meta[name="twitter:image"][content*="post_preview/"]',
+          ].join(","),
+        ) !== null;
+      return hasPostPath && hasSubstackFingerprint;
+    },
+  });
+
+  return probeResult?.result === true;
+}
+
+async function injectContentScriptIntoTab(tabId: number): Promise<void> {
+  await Promise.all([
+    chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["content/main.js"],
+    }),
+    chrome.scripting.insertCSS({
+      target: { tabId },
+      files: ["content/annotations.css"],
+    }),
+  ]);
+}
+
+async function maybeInjectCustomDomainSubstack(
+  tabId: number,
+  tabUrl: string,
+): Promise<void> {
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(tabUrl);
+  } catch {
+    return;
+  }
+
+  if (isKnownDeclarativeDomain(parsedUrl.hostname)) {
+    return;
+  }
+  if (!hasCandidateSubstackPath(parsedUrl)) {
+    return;
+  }
+  if (injectedCustomSubstackTabs.get(tabId) === tabUrl) {
+    return;
+  }
+
+  try {
+    const isSubstackPage = await detectSubstackDomFingerprint(tabId);
+    if (!isSubstackPage) {
+      return;
+    }
+
+    await injectContentScriptIntoTab(tabId);
+    injectedCustomSubstackTabs.set(tabId, tabUrl);
+  } catch (error) {
+    console.error("custom-domain substack injection failed:", error);
+  }
+}
+
+async function ensureSubstackInjectionForOpenTabs(): Promise<void> {
+  const tabs = await browser.tabs.query({});
+  await Promise.all(
+    tabs.map(async (tab) => {
+      if (!tab.id || !tab.url) return;
+      await maybeInjectCustomDomainSubstack(tab.id, tab.url);
+    }),
+  );
+}
+
+function investigationStateFor(input: {
+  investigated: boolean;
+  status?: GetInvestigationOutput["status"];
+}): ExtensionPostStatus["investigationState"] {
+  if (input.investigated) return "INVESTIGATED";
+  if (input.status === "FAILED") return "FAILED";
+  if (input.status === "PENDING" || input.status === "PROCESSING") {
+    return "INVESTIGATING";
+  }
+  return "NOT_INVESTIGATED";
+}
+
+type PostStatusInput = {
+  tabSessionId: number;
+  platform: ViewPostInput["platform"];
+  externalId: string;
+  pageUrl: string;
+  investigationId?: string;
+  investigationState: ExtensionPostStatus["investigationState"];
+  status?: GetInvestigationOutput["status"];
+  provenance?: ViewPostOutput["provenance"];
+  claims: InvestigationStatusOutput["claims"];
+};
+
+function toPostStatusBase(input: PostStatusInput): {
+  kind: "POST";
+  tabSessionId: number;
+  platform: ViewPostInput["platform"];
+  externalId: string;
+  pageUrl: string;
+  investigationId?: string;
+  provenance?: ViewPostOutput["provenance"];
+} {
+  return {
+    kind: "POST",
+    tabSessionId: input.tabSessionId,
+    platform: input.platform,
+    externalId: input.externalId,
+    pageUrl: input.pageUrl,
+    ...(input.investigationId === undefined
+      ? {}
+      : { investigationId: input.investigationId }),
+    ...(input.provenance === undefined ? {} : { provenance: input.provenance }),
+  };
+}
+
+function toPostStatus(input: PostStatusInput): ExtensionPostStatus {
+  const base = toPostStatusBase(input);
+
+  if (input.investigationState === "NOT_INVESTIGATED") {
+    if (input.status !== undefined) {
+      throw new Error("NOT_INVESTIGATED state must not include status");
+    }
+    return {
+      ...base,
+      investigationState: "NOT_INVESTIGATED",
+      claims: null,
+    };
+  }
+
+  if (input.investigationState === "INVESTIGATING") {
+    if (input.status !== "PENDING" && input.status !== "PROCESSING") {
+      throw new Error("INVESTIGATING state must include PENDING or PROCESSING status");
+    }
+    return {
+      ...base,
+      investigationState: "INVESTIGATING",
+      status: input.status,
+      claims: null,
+    };
+  }
+
+  if (input.investigationState === "FAILED") {
+    return {
+      ...base,
+      investigationState: "FAILED",
+      status: "FAILED",
+      claims: null,
+    };
+  }
+
+  if (input.status !== undefined && input.status !== "COMPLETE") {
+    throw new Error("INVESTIGATED state must only include COMPLETE status");
+  }
+
+  return {
+    ...base,
+    investigationState: "INVESTIGATED",
+    ...(input.status === undefined ? {} : { status: input.status }),
+    claims: input.claims ?? [],
+  };
+}
+
+type InvestigationPoller = {
+  tabSessionId: number;
+  investigationId: string;
+  inFlight: boolean;
+  timer: ReturnType<typeof setInterval> | null;
+};
+
+const investigationPollers = new Map<number, InvestigationPoller>();
+const latestTabSessionByTab = new Map<number, number>();
+
+function noteTabSession(tabId: number, tabSessionId: number): void {
+  const existing = latestTabSessionByTab.get(tabId);
+  if (existing === undefined || tabSessionId > existing) {
+    latestTabSessionByTab.set(tabId, tabSessionId);
+  }
+}
+
+function retireTabSession(tabId: number, tabSessionId: number): void {
+  noteTabSession(tabId, tabSessionId + 1);
+}
+
+function isStaleTabSession(tabId: number, tabSessionId: number): boolean {
+  const latest = latestTabSessionByTab.get(tabId);
+  if (latest === undefined) return false;
+  return tabSessionId < latest;
+}
+
+function stopInvestigationPolling(tabId: number): void {
+  const existing = investigationPollers.get(tabId);
+  if (!existing) return;
+
+  if (existing.timer) {
+    clearInterval(existing.timer);
+  }
+  investigationPollers.delete(tabId);
+}
+
+function isInvestigatingStatus(
+  status: GetInvestigationOutput["status"] | undefined,
+): boolean {
+  return status === "PENDING" || status === "PROCESSING";
+}
+
+async function startInvestigationPolling(input: {
+  tabId: number;
+  tabSessionId: number;
+  platform: ViewPostInput["platform"];
+  externalId: string;
+  investigationId: string;
+  fallbackProvenance: ViewPostOutput["provenance"] | undefined;
+}): Promise<void> {
+  stopInvestigationPolling(input.tabId);
+
+  const poller: InvestigationPoller = {
+    tabSessionId: input.tabSessionId,
+    investigationId: input.investigationId,
+    inFlight: false,
+    timer: null,
+  };
+  investigationPollers.set(input.tabId, poller);
+
+  const tick = async () => {
+    const activePoller = investigationPollers.get(input.tabId);
+    if (
+      !activePoller ||
+      activePoller.tabSessionId !== input.tabSessionId ||
+      activePoller.investigationId !== input.investigationId
+    ) {
+      return;
+    }
+    if (activePoller.inFlight) return;
+
+    activePoller.inFlight = true;
+    try {
+      const existing = await getActivePostStatus(input.tabId);
+      if (
+        !existing ||
+        existing.tabSessionId !== input.tabSessionId ||
+        existing.platform !== input.platform ||
+        existing.externalId !== input.externalId
+      ) {
+        stopInvestigationPolling(input.tabId);
+        return;
+      }
+
+      const latest = await getInvestigation({
+        investigationId: input.investigationId,
+      });
+      await cachePostStatus(
+        input.tabId,
+        toPostStatus({
+          tabSessionId: input.tabSessionId,
+          platform: input.platform,
+          externalId: input.externalId,
+          pageUrl: existing.pageUrl,
+          investigationId: input.investigationId,
+          investigationState: investigationStateFor({
+            investigated: latest.investigated,
+            status: latest.status,
+          }),
+          status: latest.status,
+          provenance: latest.provenance ?? input.fallbackProvenance,
+          claims: latest.claims,
+        }),
+        { setActive: false },
+      );
+
+      if (!isInvestigatingStatus(latest.status)) {
+        stopInvestigationPolling(input.tabId);
+      }
+    } catch (error) {
+      console.error("investigation polling failed:", error);
+    } finally {
+      const current = investigationPollers.get(input.tabId);
+      if (current) {
+        current.inFlight = false;
+      }
+    }
+  };
+
+  await tick();
+  const current = investigationPollers.get(input.tabId);
+  if (!current || current !== poller) {
+    return;
+  }
+  const timer = setInterval(() => {
+    void tick();
+  }, 5000);
+  poller.timer = timer;
+}
+
+async function maybeResumePollingFromCachedStatus(
+  tabId: number,
+  status: ExtensionPageStatus | null,
+): Promise<void> {
+  if (!status || status.kind !== "POST") {
+    return;
+  }
+  if (
+    status.investigationState !== "INVESTIGATING" ||
+    status.investigationId === undefined
+  ) {
+    return;
+  }
+
+  const activePoller = investigationPollers.get(tabId);
+  if (
+    activePoller &&
+    activePoller.tabSessionId === status.tabSessionId &&
+    activePoller.investigationId === status.investigationId
+  ) {
+    return;
+  }
+
+  await startInvestigationPolling({
+    tabId,
+    tabSessionId: status.tabSessionId,
+    platform: status.platform,
+    externalId: status.externalId,
+    investigationId: status.investigationId,
+    fallbackProvenance: status.provenance,
+  });
+}
+
+function toViewPostInput(payload: ParsedPageContentPayload): ViewPostInput {
+  const content = payload.content;
+
+  if (content.platform === "LESSWRONG") {
+    const metadata: Extract<ViewPostInput, { platform: "LESSWRONG" }>["metadata"] =
+      {
+        slug: content.metadata.slug,
+        htmlContent: content.metadata.htmlContent,
+        tags: content.metadata.tags,
+        ...(content.metadata.title === undefined
+          ? {}
+          : { title: content.metadata.title }),
+        ...(content.metadata.authorName === undefined
+          ? {}
+          : { authorName: content.metadata.authorName }),
+        ...(content.metadata.authorSlug === undefined
+          ? {}
+          : { authorSlug: content.metadata.authorSlug }),
+        ...(content.metadata.publishedAt === undefined
+          ? {}
+          : { publishedAt: content.metadata.publishedAt }),
+      };
+
+    return {
+      platform: "LESSWRONG",
+      externalId: content.externalId,
+      url: content.url,
+      observedContentText: content.contentText,
+      observedImageUrls: content.imageUrls,
+      metadata,
+    };
+  }
+
+  if (content.platform === "X") {
+    const metadata: Extract<ViewPostInput, { platform: "X" }>["metadata"] = {
+      authorHandle: content.metadata.authorHandle,
+      text: content.metadata.text,
+      mediaUrls: content.metadata.mediaUrls,
+      ...(content.metadata.authorDisplayName === undefined
+        ? {}
+        : { authorDisplayName: content.metadata.authorDisplayName }),
+      ...(content.metadata.likeCount === undefined
+        ? {}
+        : { likeCount: content.metadata.likeCount }),
+      ...(content.metadata.retweetCount === undefined
+        ? {}
+        : { retweetCount: content.metadata.retweetCount }),
+      ...(content.metadata.postedAt === undefined
+        ? {}
+        : { postedAt: content.metadata.postedAt }),
+    };
+
+    return {
+      platform: "X",
+      externalId: content.externalId,
+      url: content.url,
+      observedContentText: content.contentText,
+      observedImageUrls: content.imageUrls,
+      metadata,
+    };
+  }
+
+  const metadata: Extract<ViewPostInput, { platform: "SUBSTACK" }>["metadata"] = {
+    substackPostId: content.metadata.substackPostId,
+    publicationSubdomain: content.metadata.publicationSubdomain,
+    slug: content.metadata.slug,
+    title: content.metadata.title,
+    authorName: content.metadata.authorName,
+    ...(content.metadata.subtitle === undefined
+      ? {}
+      : { subtitle: content.metadata.subtitle }),
+    ...(content.metadata.authorSubstackHandle === undefined
+      ? {}
+      : { authorSubstackHandle: content.metadata.authorSubstackHandle }),
+    ...(content.metadata.publishedAt === undefined
+      ? {}
+      : { publishedAt: content.metadata.publishedAt }),
+    ...(content.metadata.likeCount === undefined
+      ? {}
+      : { likeCount: content.metadata.likeCount }),
+    ...(content.metadata.commentCount === undefined
+      ? {}
+      : { commentCount: content.metadata.commentCount }),
+  };
+
+  return {
+    platform: "SUBSTACK",
+    externalId: content.externalId,
+    url: content.url,
+    observedContentText: content.contentText,
+    observedImageUrls: content.imageUrls,
+    metadata,
+  };
+}
+
+async function cacheInvestigateNowResult(
+  input: {
+    tabId: number;
+    tabSessionId: number;
+    request: ViewPostInput;
+    result: InvestigateNowOutput;
+  },
+): Promise<void> {
+  const { tabId, tabSessionId, request, result } = input;
+
+  await cachePostStatus(
+    tabId,
+    toPostStatus({
+      tabSessionId,
+      platform: request.platform,
+      externalId: request.externalId,
+      pageUrl: request.url,
+      investigationId: result.investigationId,
+      investigationState: investigationStateFor({
+        investigated: result.status === "COMPLETE",
+        status: result.status,
+      }),
+      status: result.status,
+      provenance: result.provenance,
+      claims: result.status === "COMPLETE" ? (result.claims ?? null) : null,
+    }),
+  );
+
+  if (result.status !== "COMPLETE" || result.claims !== undefined) {
+    return;
+  }
+
+  const completed = await getInvestigation({
+    investigationId: result.investigationId,
+  });
+
+  await cachePostStatus(
+    tabId,
+    toPostStatus({
+      tabSessionId,
+      platform: request.platform,
+      externalId: request.externalId,
+      pageUrl: request.url,
+      investigationId: result.investigationId,
+      investigationState: investigationStateFor({
+        investigated: completed.investigated,
+        status: completed.status ?? result.status,
+      }),
+      status: completed.status ?? result.status,
+      provenance: completed.provenance ?? result.provenance,
+      claims: completed.claims,
+    }),
+  );
+}
+
+async function maybeAutoInvestigate(
+  input: {
+    tabId: number;
+    tabSessionId: number;
+    request: ViewPostInput;
+    provenance: ViewPostOutput["provenance"] | undefined;
+    existingStatus: ExtensionPostStatus | null;
+  },
+): Promise<void> {
+  if (!hasUserOpenAiKey() || !isAutoInvestigateEnabled()) {
+    return;
+  }
+  if (input.existingStatus?.investigationState === "INVESTIGATING") {
+    return;
+  }
+
+  try {
+    const result = await investigateNow(input.request);
+    await cacheInvestigateNowResult({
+      tabId: input.tabId,
+      tabSessionId: input.tabSessionId,
+      request: input.request,
+      result,
+    });
+
+    if (isInvestigatingStatus(result.status)) {
+      await startInvestigationPolling({
+        tabId: input.tabId,
+        tabSessionId: input.tabSessionId,
+        platform: input.request.platform,
+        externalId: input.request.externalId,
+        investigationId: result.investigationId,
+        fallbackProvenance: result.provenance,
+      });
+    }
+  } catch (error) {
+    await cachePostStatus(
+      input.tabId,
+      toPostStatus({
+        tabSessionId: input.tabSessionId,
+        platform: input.request.platform,
+        externalId: input.request.externalId,
+        pageUrl: input.request.url,
+        ...(input.existingStatus?.tabSessionId === input.tabSessionId &&
+        input.existingStatus.investigationId !== undefined
+          ? { investigationId: input.existingStatus.investigationId }
+          : {}),
+        investigationState: "NOT_INVESTIGATED",
+        status: undefined,
+        provenance: input.provenance,
+        claims: null,
+      }),
+    );
+    throw error;
+  }
+}
+
+browser.runtime.onMessage.addListener(
+  (message: unknown, sender: Runtime.MessageSender) => {
+    const parsedMessage = extensionMessageSchema.safeParse(message);
+    if (!parsedMessage.success) return false;
+    const typedMessage = parsedMessage.data;
+    if (!isBackgroundMessage(typedMessage)) return false;
+
+    const handle = async () => {
+      switch (typedMessage.type) {
+        case "PAGE_CONTENT":
+          return handlePageContent(typedMessage.payload, sender);
+        case "PAGE_SKIPPED":
+          return handlePageSkipped(typedMessage.payload, sender);
+        case "PAGE_RESET":
+          return handlePageReset(typedMessage.payload, sender);
+        case "GET_STATUS":
+          return handleGetStatus(typedMessage.payload, sender);
+        case "INVESTIGATE_NOW":
+          return handleInvestigateNow(typedMessage.payload, sender);
+        case "GET_CACHED":
+          return handleGetCached(sender);
+      }
+    };
+
+    return handle().catch((err) => {
+      console.error("Background handler error:", err);
+      return toRuntimeErrorResponse(err);
+    });
+  },
+);
+
+async function handlePageContent(
+  payload: ParsedPageContentPayload,
+  sender: Runtime.MessageSender,
+): Promise<ViewPostOutput> {
+  const request = toViewPostInput(payload);
+
+  let result: ViewPostOutput;
+  try {
+    result = await viewPost(request);
+  } catch (error) {
+    // Cache a FAILED status so the popup shows an error instead of hanging
+    // on "Checking This Page" indefinitely.
+    if (sender.tab?.id !== undefined) {
+      const tabId = sender.tab.id;
+      if (!isStaleTabSession(tabId, payload.tabSessionId)) {
+        noteTabSession(tabId, payload.tabSessionId);
+        stopInvestigationPolling(tabId);
+        await cachePostStatus(
+          tabId,
+          toPostStatus({
+            tabSessionId: payload.tabSessionId,
+            platform: request.platform,
+            externalId: request.externalId,
+            pageUrl: request.url,
+            investigationState: "FAILED",
+            status: "FAILED",
+            claims: null,
+          }),
+        );
+      }
+    }
+    throw error;
+  }
+
+  if (sender.tab?.id !== undefined) {
+    const tabId = sender.tab.id;
+    if (isStaleTabSession(tabId, payload.tabSessionId)) {
+      return result;
+    }
+    noteTabSession(tabId, payload.tabSessionId);
+
+    const existing = await getActivePostStatus(tabId);
+    const existingForSession =
+      existing !== null &&
+      existing.tabSessionId === payload.tabSessionId &&
+      existing.platform === request.platform &&
+      existing.externalId === request.externalId
+        ? existing
+        : null;
+    if (!existingForSession) {
+      stopInvestigationPolling(tabId);
+    }
+
+    const inferredStatus = result.investigated ? "COMPLETE" : existingForSession?.status;
+    const nextStatus = toPostStatus({
+      tabSessionId: payload.tabSessionId,
+      platform: request.platform,
+      externalId: request.externalId,
+      pageUrl: request.url,
+      ...(existingForSession?.investigationId === undefined
+        ? {}
+        : { investigationId: existingForSession.investigationId }),
+      investigationState: investigationStateFor({
+        investigated: result.investigated,
+        status: inferredStatus,
+      }),
+      status: inferredStatus,
+      provenance: result.provenance ?? existingForSession?.provenance,
+      claims: result.claims,
+    });
+    await cachePostStatus(tabId, nextStatus);
+
+    if (!result.investigated) {
+      void maybeAutoInvestigate({
+        tabId,
+        tabSessionId: payload.tabSessionId,
+        request,
+        provenance: nextStatus.provenance,
+        existingStatus: existingForSession,
+      }).catch((error) => {
+        console.error("auto investigate failed:", error);
+      });
+    } else {
+      stopInvestigationPolling(tabId);
+    }
+  }
+
+  return result;
+}
+
+async function handlePageSkipped(
+  payload: ParsedPageSkippedPayload,
+  sender: Runtime.MessageSender,
+): Promise<void> {
+  if (sender.tab?.id === undefined) {
+    return;
+  }
+
+  if (isStaleTabSession(sender.tab.id, payload.tabSessionId)) {
+    return;
+  }
+  noteTabSession(sender.tab.id, payload.tabSessionId);
+
+  stopInvestigationPolling(sender.tab.id);
+  await cacheSkippedStatus(sender.tab.id, {
+    kind: "SKIPPED",
+    tabSessionId: payload.tabSessionId,
+    platform: payload.platform,
+    externalId: payload.externalId,
+    pageUrl: payload.pageUrl,
+    reason: payload.reason,
+  });
+}
+
+async function handlePageReset(
+  payload: ParsedPageResetPayload,
+  sender: Runtime.MessageSender,
+): Promise<void> {
+  if (sender.tab?.id === undefined) {
+    return;
+  }
+  if (isStaleTabSession(sender.tab.id, payload.tabSessionId)) {
+    return;
+  }
+  retireTabSession(sender.tab.id, payload.tabSessionId);
+
+  const active = await getActiveStatus(sender.tab.id);
+  if (active && active.tabSessionId !== payload.tabSessionId) {
+    return;
+  }
+
+  stopInvestigationPolling(sender.tab.id);
+  await clearActiveStatus(sender.tab.id);
+}
+
+async function handleGetStatus(
+  payload: ParsedGetStatusPayload,
+  sender: Runtime.MessageSender,
+): Promise<InvestigationStatusOutput> {
+  const { tabSessionId, ...request } = payload;
+  const result = await getInvestigation(request);
+
+  const response: InvestigationStatusOutput = {
+    investigated: result.investigated,
+    ...(result.status === undefined ? {} : { status: result.status }),
+    ...(result.provenance === undefined
+      ? {}
+      : { provenance: result.provenance }),
+    claims: result.claims,
+  };
+  investigationStatusOutputSchema.parse(response);
+
+  if (sender.tab?.id !== undefined) {
+    const existing = await getActivePostStatus(sender.tab.id);
+    if (existing) {
+      if (
+        tabSessionId !== undefined &&
+        tabSessionId !== existing.tabSessionId
+      ) {
+        return response;
+      }
+
+      await cachePostStatus(
+        sender.tab.id,
+        toPostStatus({
+          tabSessionId: existing.tabSessionId,
+          platform: existing.platform,
+          externalId: existing.externalId,
+          pageUrl: existing.pageUrl,
+          investigationId: payload.investigationId,
+          investigationState: investigationStateFor({
+            investigated: result.investigated,
+            status: result.status,
+          }),
+          status: result.status,
+          provenance: result.provenance,
+          claims: result.claims,
+        }),
+        { setActive: false },
+      );
+    }
+  }
+
+  return response;
+}
+
+async function handleInvestigateNow(
+  payload: ParsedInvestigateNowPayload,
+  sender: Runtime.MessageSender,
+): Promise<InvestigateNowOutput> {
+  if (sender.tab?.id !== undefined) {
+    if (isStaleTabSession(sender.tab.id, payload.tabSessionId)) {
+      throw new Error(
+        `Rejected investigateNow for stale tab session ${payload.tabSessionId.toString()}`,
+      );
+    }
+    noteTabSession(sender.tab.id, payload.tabSessionId);
+  }
+
+  const request = payload.request;
+  const result = await investigateNow(request);
+
+  if (sender.tab?.id !== undefined) {
+    await cacheInvestigateNowResult({
+      tabId: sender.tab.id,
+      tabSessionId: payload.tabSessionId,
+      request,
+      result,
+    });
+
+    if (isInvestigatingStatus(result.status)) {
+      await startInvestigationPolling({
+        tabId: sender.tab.id,
+        tabSessionId: payload.tabSessionId,
+        platform: request.platform,
+        externalId: request.externalId,
+        investigationId: result.investigationId,
+        fallbackProvenance: result.provenance,
+      });
+    } else {
+      stopInvestigationPolling(sender.tab.id);
+    }
+  }
+
+  return result;
+}
+
+async function handleGetCached(
+  sender: Runtime.MessageSender,
+): Promise<ExtensionPageStatus | null> {
+  if (sender.tab?.id !== undefined) {
+    const status = await getActiveStatus(sender.tab.id);
+    await maybeResumePollingFromCachedStatus(sender.tab.id, status);
+    return status;
+  }
+
+  // Popup doesn't have a tab — resolve active tab from background context.
+  const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) return null;
+  const status = await getActiveStatus(tab.id);
+  await maybeResumePollingFromCachedStatus(tab.id, status);
+  return status;
+}
+
+browser.tabs.onRemoved.addListener((tabId) => {
+  injectedCustomSubstackTabs.delete(tabId);
+  latestTabSessionByTab.delete(tabId);
+  stopInvestigationPolling(tabId);
+  clearCache(tabId);
+});
+
+browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.status !== "loading") return;
+  injectedCustomSubstackTabs.delete(tabId);
+  latestTabSessionByTab.delete(tabId);
+  stopInvestigationPolling(tabId);
+  void clearActiveStatus(tabId).catch((error) => {
+    console.error("failed to clear active status on tab loading:", error);
+  });
+});
+
+// Inject content scripts into custom-domain Substack pages as soon as the
+// DOM is ready, rather than waiting for all subresources (`status: "complete"`).
+// Substack pages are heavy and `complete` can fire 5-8 seconds after the
+// article content is already visible and parseable.
+chrome.webNavigation.onDOMContentLoaded.addListener((details) => {
+  if (details.frameId !== 0) return;
+  void maybeInjectCustomDomainSubstack(details.tabId, details.url);
+});
+
+browser.tabs.onActivated.addListener(({ tabId }) => {
+  void browser.tabs
+    .get(tabId)
+    .then((tab) => {
+      if (!tab.url) return;
+      return maybeInjectCustomDomainSubstack(tabId, tab.url);
+    })
+    .catch(() => {
+      // Tab may have been closed between activation and the get() call.
+    });
+});
+
+void ensureSubstackInjectionForOpenTabs().catch((error) => {
+  console.error("substack startup probe failed:", error);
+});

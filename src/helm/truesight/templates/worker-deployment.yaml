@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "truesight.fullname" . }}-worker
+  labels:
+    {{- include "truesight.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  replicas: {{ .Values.replicaCount.worker }}
+  selector:
+    matchLabels:
+      {{- include "truesight.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        {{- include "truesight.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+    spec:
+      containers:
+        - name: worker
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["node", "node_modules/tsx/dist/cli.mjs", "src/lib/services/worker-entrypoint.ts"]
+          envFrom:
+            - secretRef:
+                name: {{ include "truesight.fullname" . }}
+            - configMapRef:
+                name: {{ include "truesight.fullname" . }}

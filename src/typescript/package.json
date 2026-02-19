@@ -1,0 +1,36 @@
+{
+  "name": "truesight",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev:api": "pnpm --filter @truesight/api dev",
+    "dev:ext": "pnpm --filter @truesight/extension dev",
+    "test:unit:shared": "pnpm --filter @truesight/shared test:unit",
+    "test:unit:extension": "pnpm --filter @truesight/extension test:unit",
+    "test:e2e:extension": "pnpm --filter @truesight/extension test:e2e",
+    "test:integration:api": "pnpm --filter @truesight/api test:integration",
+    "test": "pnpm run test:unit:shared && pnpm run test:unit:extension && pnpm run test:integration:api",
+    "build": "pnpm -r build",
+    "worker": "pnpm --filter @truesight/api worker",
+    "selector": "pnpm --filter @truesight/api selector",
+    "db:migrate": "pnpm --filter @truesight/api run prisma:migrate:dev",
+    "db:migrate:deploy": "pnpm --filter @truesight/api run prisma:migrate:deploy",
+    "db:generate": "pnpm --filter @truesight/api run prisma:generate",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "eslint . --max-warnings 0",
+    "lint:fix": "eslint . --fix",
+    "knip": "DATABASE_URL=postgresql://localhost:5432/truesight knip --config knip.json --no-progress",
+    "check": "pnpm typecheck && pnpm lint && pnpm knip"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.0.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-svelte": "^3.15.0",
+    "globals": "^17.3.0",
+    "knip": "^5.84.1",
+    "prettier": "^3.8.1",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.56.0"
+  }
+}

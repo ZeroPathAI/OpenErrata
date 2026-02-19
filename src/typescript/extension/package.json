@@ -1,0 +1,28 @@
+{
+  "name": "@truesight/extension",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite build --watch --mode development",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "test:unit": "tsx --test \"test/unit/**/*.test.ts\"",
+    "test:e2e": "pnpm build && playwright test -c playwright.config.ts"
+  },
+  "dependencies": {
+    "@trpc/client": "^11.10.0",
+    "@trpc/server": "^11.10.0",
+    "@truesight/shared": "workspace:*",
+    "webextension-polyfill": "^0.12.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.1",
+    "@sveltejs/vite-plugin-svelte": "^6.2.4",
+    "@types/chrome": "^0.1.36",
+    "@types/webextension-polyfill": "^0.12.5",
+    "svelte": "^5.53.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.1"
+  }
+}

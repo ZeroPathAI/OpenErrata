@@ -1,0 +1,6 @@
+name: truesight
+runtime:
+  name: nodejs
+  options:
+    typescript: true
+description: TrueSight hosted deployment — deploys the Helm chart with hosted-specific overrides

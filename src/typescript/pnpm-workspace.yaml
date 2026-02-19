@@ -1,0 +1,10 @@
+packages:
+  - shared
+  - api
+  - extension
+  - pulumi
+onlyBuiltDependencies:
+  - '@prisma/client'
+  - '@prisma/engines'
+  - esbuild
+  - prisma
