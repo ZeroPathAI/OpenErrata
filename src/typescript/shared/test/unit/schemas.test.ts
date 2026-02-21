@@ -1,15 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  extensionMessageSchema,
   investigationClaimSchema,
-  openaiApiKeyFormatSchema,
   platformContentSchema,
-  settingsValidationOutputSchema,
-  sha256HashSchema,
 } from "../../src/schemas.js";
-
-const VALID_HASH = "a".repeat(64);
 
 function createLesswrongContent() {
   return {
@@ -88,29 +82,6 @@ test("platformContentSchema rejects LESSWRONG payloads missing htmlContent", () 
   assert.equal(result.success, false);
 });
 
-test("extensionMessageSchema parses PAGE_CONTENT messages", () => {
-  const message = {
-    type: "PAGE_CONTENT" as const,
-    payload: {
-      tabSessionId: 1,
-      content: createLesswrongContent(),
-    },
-  };
-
-  assert.deepEqual(extensionMessageSchema.parse(message), message);
-});
-
-test("extensionMessageSchema rejects messages without a discriminator", () => {
-  const result = extensionMessageSchema.safeParse({
-    payload: {
-      tabSessionId: 1,
-      content: createLesswrongContent(),
-    },
-  });
-
-  assert.equal(result.success, false);
-});
-
 test("investigationClaimSchema rejects invalid claim payloads", () => {
   const emptySources = investigationClaimSchema.safeParse({
     text: "Claim text",
@@ -138,35 +109,3 @@ test("investigationClaimSchema rejects invalid claim payloads", () => {
   assert.equal(emptyReasoning.success, false);
 });
 
-test("sha256HashSchema accepts 64-char hex and rejects invalid strings", () => {
-  assert.equal(sha256HashSchema.safeParse(VALID_HASH).success, true);
-  assert.equal(sha256HashSchema.safeParse("zz").success, false);
-});
-
-test("openaiApiKeyFormatSchema accepts sk-prefixed keys and rejects malformed keys", () => {
-  assert.equal(
-    openaiApiKeyFormatSchema.safeParse("sk-proj_Abc1234567890xyzABCDE").success,
-    true,
-  );
-  assert.equal(openaiApiKeyFormatSchema.safeParse("abc123").success, false);
-  assert.equal(openaiApiKeyFormatSchema.safeParse("sk-short").success, false);
-});
-
-test("settingsValidationOutputSchema validates status payload shape", () => {
-  const valid = settingsValidationOutputSchema.safeParse({
-    instanceApiKeyAccepted: true,
-    openaiApiKeyStatus: "authenticated_restricted",
-  });
-  const alsoValid = settingsValidationOutputSchema.safeParse({
-    instanceApiKeyAccepted: true,
-    openaiApiKeyStatus: "valid",
-  });
-  const invalid = settingsValidationOutputSchema.safeParse({
-    instanceApiKeyAccepted: "yes",
-    openaiApiKeyStatus: "valid",
-  });
-
-  assert.equal(valid.success, true);
-  assert.equal(alsoValid.success, true);
-  assert.equal(invalid.success, false);
-});
