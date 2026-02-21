@@ -17,6 +17,8 @@ import { ContentSyncClient, type ParsedExtensionPageStatus } from "./sync";
 
 const REFRESH_DEBOUNCE_MS = 200;
 const REAPPLY_DEBOUNCE_MS = 300;
+const SYNC_RETRY_INITIAL_MS = 1_000;
+const SYNC_RETRY_MAX_MS = 30_000;
 
 type PageSessionState =
   | {
@@ -44,6 +46,7 @@ type PageSessionState =
     };
 
 type TrackedPostSessionState = Extract<PageSessionState, { kind: "TRACKED_POST" }>;
+type TrackedPostSnapshot = Extract<PageSnapshot, { kind: "TRACKED_POST" }>;
 
 type PageSnapshot =
   | {
@@ -127,6 +130,8 @@ export class PageSessionController {
   #refreshInFlight = false;
   #refreshQueued = false;
   #booted = false;
+  #pendingSyncRetrySessionKey: string | null = null;
+  #nextSyncRetryDelayMs = SYNC_RETRY_INITIAL_MS;
   readonly #annotations = new AnnotationController();
   readonly #sync = new ContentSyncClient();
   readonly #observer = new PageObserver({
@@ -225,6 +230,21 @@ export class PageSessionController {
     }, delayMs);
   }
 
+  #resetSyncRetryState(): void {
+    this.#pendingSyncRetrySessionKey = null;
+    this.#nextSyncRetryDelayMs = SYNC_RETRY_INITIAL_MS;
+  }
+
+  #scheduleSyncRetry(sessionKey: string): void {
+    this.#pendingSyncRetrySessionKey = sessionKey;
+    const retryDelayMs = this.#nextSyncRetryDelayMs;
+    this.#nextSyncRetryDelayMs = Math.min(
+      this.#nextSyncRetryDelayMs * 2,
+      SYNC_RETRY_MAX_MS,
+    );
+    this.scheduleRefresh(retryDelayMs);
+  }
+
   async #runRefreshCycle(): Promise<void> {
     if (this.#refreshInFlight) {
       this.#refreshQueued = true;
@@ -249,6 +269,14 @@ export class PageSessionController {
     const currentSessionKey = this.#state.sessionKey;
 
     if (snapshot.sessionKey === currentSessionKey) {
+      if (
+        snapshot.kind === "TRACKED_POST" &&
+        this.#state.kind === "TRACKED_POST" &&
+        this.#pendingSyncRetrySessionKey === snapshot.sessionKey
+      ) {
+        await this.#syncTrackedSnapshot(this.#state.tabSessionId, snapshot);
+        return;
+      }
       if (this.#state.kind === "TRACKED_POST") {
         this.#annotations.reapplyIfMissing(this.#state.adapter);
       }
@@ -325,6 +353,29 @@ export class PageSessionController {
     };
   }
 
+  async #syncTrackedSnapshot(
+    tabSessionId: number,
+    snapshot: TrackedPostSnapshot,
+  ): Promise<void> {
+    let viewPost: Awaited<ReturnType<ContentSyncClient["sendPageContent"]>>;
+    try {
+      viewPost = await this.#sync.sendPageContent(tabSessionId, snapshot.content);
+    } catch (error) {
+      console.error("Failed to sync page content with background:", error);
+      this.#scheduleSyncRetry(snapshot.sessionKey);
+      return;
+    }
+
+    this.#resetSyncRetryState();
+    this.#annotations.setClaims(viewPost.claims ?? []);
+    if (this.#annotations.getClaims().length > 0) {
+      const applied = this.#annotations.render(snapshot.adapter);
+      if (!applied) {
+        this.scheduleRefresh();
+      }
+    }
+  }
+
   async #transitionToSnapshot(snapshot: PageSnapshot): Promise<void> {
     if (this.#state.kind !== "IDLE") {
       this.#sync.sendPageReset(this.#state.tabSessionId);
@@ -333,6 +384,7 @@ export class PageSessionController {
     this.#annotations.clearAll();
 
     if (snapshot.kind === "NONE") {
+      this.#resetSyncRetryState();
       this.#state = {
         kind: "IDLE",
         tabSessionId: this.#tabSessionCounter,
@@ -344,6 +396,7 @@ export class PageSessionController {
     const tabSessionId = this.#nextTabSessionId();
 
     if (snapshot.kind === "SKIPPED") {
+      this.#resetSyncRetryState();
       this.#state = {
         kind: "SKIPPED",
         tabSessionId,
@@ -363,6 +416,10 @@ export class PageSessionController {
       return;
     }
 
+    if (this.#pendingSyncRetrySessionKey !== snapshot.sessionKey) {
+      this.#resetSyncRetryState();
+    }
+
     this.#state = {
       kind: "TRACKED_POST",
       tabSessionId,
@@ -372,22 +429,7 @@ export class PageSessionController {
       adapter: snapshot.adapter,
       request: snapshot.request,
     };
-
-    let viewPost: Awaited<ReturnType<ContentSyncClient["sendPageContent"]>>;
-    try {
-      viewPost = await this.#sync.sendPageContent(tabSessionId, snapshot.content);
-    } catch (error) {
-      console.error("Failed to sync page content with background:", error);
-      return;
-    }
-
-    this.#annotations.setClaims(viewPost.claims ?? []);
-    if (this.#annotations.getClaims().length > 0) {
-      const applied = this.#annotations.render(snapshot.adapter);
-      if (!applied) {
-        this.scheduleRefresh();
-      }
-    }
+    await this.#syncTrackedSnapshot(tabSessionId, snapshot);
   }
 
   #nextTabSessionId(): number {

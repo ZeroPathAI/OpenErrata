@@ -2,16 +2,9 @@
   "manifest_version": 3,
   "name": "TrueSight",
   "version": "0.1.0",
-  "description": "Fact-check LessWrong, X, and Substack posts with AI-powered claim verification.",
-  "permissions": ["activeTab", "storage", "scripting", "webNavigation"],
+  "description": "Inline, LLM-powered fact checks of the stuff you're reading on the internet.",
+  "permissions": ["activeTab", "storage", "scripting", "webNavigation", "alarms"],
   "host_permissions": [
-    "https://api.truesight.dev/*",
-    "https://www.lesswrong.com/*",
-    "https://lesswrong.com/*",
-    "https://*.substack.com/*",
-    "https://x.com/*",
-    "https://twitter.com/*",
-    "http://localhost/*",
     "https://*/*",
     "http://*/*"
   ],

@@ -7,6 +7,17 @@ const TOOLTIP_GAP_PX = 8;
 const TOOLTIP_MIN_WIDTH_PX = 260;
 const TOOLTIP_MAX_WIDTH_PX = 680;
 type ThemeMode = "light" | "dark";
+let activeDetailPanel: HTMLDivElement | null = null;
+let disposeActiveDetailPanel: (() => void) | null = null;
+
+function dismissDetailPanel(): void {
+  disposeActiveDetailPanel?.();
+  disposeActiveDetailPanel = null;
+  if (activeDetailPanel?.isConnected) {
+    activeDetailPanel.remove();
+  }
+  activeDetailPanel = null;
+}
 
 // ── Public API ────────────────────────────────────────────────────────────
 
@@ -48,6 +59,8 @@ export function clearAnnotations(): void {
     parent.normalize(); // merge adjacent text nodes
   });
 
+  dismissDetailPanel();
+
   // Remove lingering tooltip and detail-panel elements
   document
     .querySelectorAll(".truesight-tooltip, .truesight-detail-panel")
@@ -62,8 +75,7 @@ function showDetailPanel(
   claim: InvestigationClaim,
   anchor: HTMLElement | null = null,
 ): void {
-  // Remove any existing panel first
-  document.querySelector(".truesight-detail-panel")?.remove();
+  dismissDetailPanel();
 
   const panel = document.createElement("div");
   panel.className = "truesight-detail-panel";
@@ -72,7 +84,6 @@ function showDetailPanel(
   const closeBtn = document.createElement("button");
   closeBtn.className = "close-btn";
   closeBtn.textContent = "\u00d7"; // ×
-  closeBtn.addEventListener("click", () => panel.remove());
   panel.appendChild(closeBtn);
 
   const heading = document.createElement("h3");
@@ -129,15 +140,41 @@ function showDetailPanel(
     }
   }
 
-  // Close on Escape key
-  const onKey = (e: KeyboardEvent) => {
-    if (e.key === "Escape") {
-      panel.remove();
-      document.removeEventListener("keydown", onKey);
+  const onKey = (event: KeyboardEvent) => {
+    if (event.key === "Escape") {
+      closePanel();
     }
   };
-  document.addEventListener("keydown", onKey);
+  const onDetached = new MutationObserver(() => {
+    if (!panel.isConnected) {
+      if (activeDetailPanel === panel) {
+        dismissDetailPanel();
+        return;
+      }
+      document.removeEventListener("keydown", onKey);
+      onDetached.disconnect();
+    }
+  });
+  onDetached.observe(document.body, { childList: true, subtree: true });
 
+  const closePanel = () => {
+    if (activeDetailPanel === panel) {
+      dismissDetailPanel();
+      return;
+    }
+    if (panel.isConnected) {
+      panel.remove();
+    }
+  };
+
+  closeBtn.addEventListener("click", closePanel);
+  disposeActiveDetailPanel = () => {
+    document.removeEventListener("keydown", onKey);
+    onDetached.disconnect();
+  };
+  activeDetailPanel = panel;
+
+  document.addEventListener("keydown", onKey);
   document.body.appendChild(panel);
 }
 

@@ -5,7 +5,7 @@ replicaCount:
 image:
   repository: ghcr.io/zeropathAI/truesight-api
   tag: latest
-  pullPolicy: IfNotPresent
+  pullPolicy: Always
 
 migration:
   backoffLimit: 3
@@ -31,9 +31,13 @@ config:
 
 # Secrets must be provided via --set or external secret manager
 secrets:
+  # Required: Postgres connection string.
   databaseUrl: ""
+  # Optional when running in modes that rely on user-provided API keys only.
   openaiApiKey: ""
+  # Optional comma-separated static API keys for trusted callers.
   validApiKeys: ""
+  # Required: shared secret used to verify request signatures.
   hmacSecret: ""
   # Required: symmetric key used to encrypt transient DB-stored secrets.
   databaseEncryptionKey: ""

@@ -29,4 +29,4 @@ spec:
             # Pre-install hooks run before this chart's Secret/ConfigMap are created.
             # The migration only needs DATABASE_URL, so template it directly.
             - name: DATABASE_URL
-              value: {{ .Values.secrets.databaseUrl | quote }}
+              value: {{ required "secrets.databaseUrl is required" .Values.secrets.databaseUrl | quote }}
