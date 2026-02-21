@@ -14,7 +14,8 @@ tRPC handler → `postRouter` or `publicRouter` → Prisma → PostgreSQL.
 ### tRPC Routers
 
 - `src/lib/trpc/routes/post.ts` — Extension-facing API: `viewPost` (mutation),
-  `getInvestigation` (query), `investigateNow` (mutation), `batchStatus` (query).
+  `getInvestigation` (query), `investigateNow` (mutation),
+  `validateSettings` (query), `batchStatus` (query).
 - `src/lib/trpc/routes/public.ts` — Public API: investigation browser, search,
   metrics. Joins against the `investigation_public_eligibility` Postgres view.
 
@@ -58,8 +59,8 @@ the SQL view name `investigation_public_eligibility` via `@@map`. Raw SQL in
 the codebase uses quoted identifiers (`"Post"`, `"contentHash"`, etc.).
 
 The SQL definition for `investigation_public_eligibility` lives in
-`prisma/migrations/20260219120000_add_investigation_public_eligibility_view/migration.sql`
-and is managed as the canonical migration source.
+`prisma/migrations/0002_views_and_constraints/migration.sql` and is managed as
+the canonical migration source.
 
 ### Prompt Management
 

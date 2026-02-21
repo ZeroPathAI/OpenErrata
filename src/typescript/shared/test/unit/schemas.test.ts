@@ -155,6 +155,10 @@ test("openaiApiKeyFormatSchema accepts sk-prefixed keys and rejects malformed ke
 test("settingsValidationOutputSchema validates status payload shape", () => {
   const valid = settingsValidationOutputSchema.safeParse({
     instanceApiKeyAccepted: true,
+    openaiApiKeyStatus: "authenticated_restricted",
+  });
+  const alsoValid = settingsValidationOutputSchema.safeParse({
+    instanceApiKeyAccepted: true,
     openaiApiKeyStatus: "valid",
   });
   const invalid = settingsValidationOutputSchema.safeParse({
@@ -163,5 +167,6 @@ test("settingsValidationOutputSchema validates status payload shape", () => {
   });
 
   assert.equal(valid.success, true);
+  assert.equal(alsoValid.success, true);
   assert.equal(invalid.success, false);
 });

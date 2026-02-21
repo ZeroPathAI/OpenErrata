@@ -29,7 +29,7 @@ no runtime code) for tRPC client typing.
   for data model).
 - `src/typescript/api/src/lib/investigators/prompt.ts` — The LLM investigation
   prompt.
-- `src/typescript/api/prisma/migrations/20260219120000_add_investigation_public_eligibility_view/migration.sql`
+- `src/typescript/api/prisma/migrations/0002_views_and_constraints/migration.sql`
   — SQL definition for the `investigation_public_eligibility` Postgres view.
 
 ## Workspace Guidelines

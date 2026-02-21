@@ -619,6 +619,111 @@ void test("post.investigateNow returns existing investigation for authenticated 
   assert.equal(result.provenance, "CLIENT_FALLBACK");
 });
 
+void test("post.investigateNow deduplicates concurrent callers to one pending investigation run", async () => {
+  const input = await buildXViewInput({
+    externalId: "investigate-now-concurrent-dedupe-1",
+    observedContentText:
+      "Concurrent investigateNow requests should converge to one pending investigation.",
+  });
+  const callers = Array.from({ length: 12 }, (_, index) =>
+    createCaller({
+      isAuthenticated: true,
+      viewerKey: withIntegrationPrefix(`concurrent-viewer-${index.toString()}`),
+      ipRangeKey: withIntegrationPrefix(`concurrent-ip-${index.toString()}`),
+    }),
+  );
+
+  const results = await Promise.all(
+    callers.map((caller) => caller.post.investigateNow(input)),
+  );
+
+  const investigationIds = new Set(results.map((result) => result.investigationId));
+  assert.equal(investigationIds.size, 1);
+  assert.equal(results.every((result) => result.status === "PENDING"), true);
+
+  const post = await prisma.post.findUnique({
+    where: {
+      platform_externalId: {
+        platform: input.platform,
+        externalId: input.externalId,
+      },
+    },
+    select: { id: true },
+  });
+  assert.ok(post);
+
+  const storedInvestigations = await prisma.investigation.findMany({
+    where: { postId: post.id },
+    select: {
+      id: true,
+      status: true,
+      contentHash: true,
+    },
+  });
+  assert.equal(storedInvestigations.length, 1);
+  const storedInvestigation = storedInvestigations[0];
+  assert.ok(storedInvestigation);
+  const firstResult = results[0];
+  assert.ok(firstResult);
+  assert.equal(storedInvestigation.id, firstResult.investigationId);
+  assert.equal(storedInvestigation.status, "PENDING");
+
+  const storedRuns = await prisma.investigationRun.findMany({
+    where: { investigationId: storedInvestigation.id },
+    select: { id: true, queuedAt: true },
+  });
+  assert.equal(storedRuns.length, 1);
+  const storedRun = storedRuns[0];
+  assert.ok(storedRun);
+  assert.notEqual(storedRun.queuedAt, null);
+});
+
+void test("post.investigateNow deduplicates concurrent user-key callers to one attached key source", async () => {
+  const input = await buildXViewInput({
+    externalId: "investigate-now-concurrent-user-keys-1",
+    observedContentText:
+      "Concurrent user-key investigateNow requests should attach at most one key source.",
+  });
+  const callers = Array.from({ length: 10 }, (_, index) =>
+    createCaller({
+      userOpenAiApiKey: `sk-test-concurrent-user-key-${index.toString()}`,
+      viewerKey: withIntegrationPrefix(`concurrent-user-key-viewer-${index.toString()}`),
+      ipRangeKey: withIntegrationPrefix(`concurrent-user-key-ip-${index.toString()}`),
+    }),
+  );
+
+  const results = await Promise.all(
+    callers.map((caller) => caller.post.investigateNow(input)),
+  );
+
+  const investigationIds = new Set(results.map((result) => result.investigationId));
+  assert.equal(investigationIds.size, 1);
+  assert.equal(results.every((result) => result.status === "PENDING"), true);
+  const firstResult = results[0];
+  assert.ok(firstResult);
+
+  const run = await prisma.investigationRun.findUnique({
+    where: { investigationId: firstResult.investigationId },
+    select: { id: true },
+  });
+  assert.ok(run);
+
+  const keySources = await prisma.investigationOpenAiKeySource.findMany({
+    where: { runId: run.id },
+    select: {
+      runId: true,
+      keyId: true,
+      expiresAt: true,
+    },
+  });
+  assert.equal(keySources.length, 1);
+  const keySource = keySources[0];
+  assert.ok(keySource);
+  assert.equal(typeof keySource.keyId, "string");
+  assert.equal(keySource.keyId.length > 0, true);
+  assert.notEqual(keySource.expiresAt, null);
+});
+
 void test("post.investigateNow allows user OpenAI key callers and returns inline claims for complete investigations", async () => {
   const caller = createCaller({
     isAuthenticated: false,

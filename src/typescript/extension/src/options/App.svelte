@@ -53,6 +53,13 @@
           tone: "success",
           text: "OpenAI API key is valid.",
         };
+      case "authenticated_restricted":
+        return {
+          tone: "error",
+          text:
+            validation.openaiApiKeyMessage ??
+            "OpenAI authenticated this key, but access is restricted for validation checks.",
+        };
       case "format_invalid":
         return {
           tone: "error",
@@ -109,7 +116,12 @@
 
   async function validateSettingsLive(
     runId: number,
-    input: { apiBaseUrl: string; apiKey: string; openaiApiKey: string },
+    input: {
+      apiBaseUrl: string;
+      apiKey: string;
+      openaiApiKey: string;
+      shouldValidateOpenaiApiKey: boolean;
+    },
   ): Promise<void> {
     const probeResult = await probeSettingsConfiguration(input);
     if (runId !== validationRunId) return;
@@ -120,12 +132,7 @@
         text: probeResult.message,
       };
 
-      const openaiFormatError = getOpenaiApiKeyFormatError(input.openaiApiKey);
-      const normalizedOpenaiApiKey = normalizeOpenaiApiKey(input.openaiApiKey);
-      if (
-        openaiFormatError === null &&
-        normalizedOpenaiApiKey.length > 0
-      ) {
+      if (input.shouldValidateOpenaiApiKey) {
         openaiFeedback = {
           tone: "error",
           text:
@@ -137,7 +144,9 @@
     }
 
     instanceFeedback = toInstanceFeedback(input.apiKey, probeResult.validation);
-    openaiFeedback = toOpenaiFeedback(probeResult.validation);
+    if (input.shouldValidateOpenaiApiKey) {
+      openaiFeedback = toOpenaiFeedback(probeResult.validation);
+    }
   }
 
   async function save() {
@@ -196,6 +205,8 @@
 
     const openaiFormatError = getOpenaiApiKeyFormatError(currentOpenaiApiKey);
     const normalizedOpenaiApiKey = normalizeOpenaiApiKey(currentOpenaiApiKey);
+    const shouldValidateOpenaiApiKey =
+      openaiFormatError === null && normalizedOpenaiApiKey.length > 0;
 
     if (openaiFormatError !== null) {
       openaiFeedback = {
@@ -227,6 +238,12 @@
       return;
     }
 
+    if (openaiFormatError !== null) {
+      // Keep local format errors local. Do not run remote probes until the key shape is valid.
+      instanceFeedback = null;
+      return;
+    }
+
     instanceFeedback = {
       tone: "pending",
       text: "Checking API server and credentials...",
@@ -236,7 +253,8 @@
       void validateSettingsLive(runId, {
         apiBaseUrl: currentApiUrl,
         apiKey: currentApiKey,
-        openaiApiKey: currentOpenaiApiKey,
+        openaiApiKey: shouldValidateOpenaiApiKey ? currentOpenaiApiKey : "",
+        shouldValidateOpenaiApiKey,
       }).catch(() => {
         if (runId !== validationRunId) return;
         instanceFeedback = {

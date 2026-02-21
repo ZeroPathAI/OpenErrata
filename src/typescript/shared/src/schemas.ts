@@ -148,6 +148,7 @@ export const openaiApiKeyValidationStatusSchema = z.enum([
   "missing",
   "format_invalid",
   "valid",
+  "authenticated_restricted",
   "invalid",
   "error",
 ]);

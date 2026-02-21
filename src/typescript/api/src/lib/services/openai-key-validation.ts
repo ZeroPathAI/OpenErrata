@@ -70,10 +70,18 @@ export async function validateOpenAiApiKeyForSettings(
     }
 
     const statusCode = readStatusCode(error);
-    if (statusCode === 401 || statusCode === 403) {
+    if (statusCode === 401) {
       return {
         openaiApiKeyStatus: "invalid",
         openaiApiKeyMessage: "OpenAI rejected this API key.",
+      };
+    }
+
+    if (statusCode === 403) {
+      return {
+        openaiApiKeyStatus: "authenticated_restricted",
+        openaiApiKeyMessage:
+          "OpenAI authenticated this key, but access is restricted for validation checks.",
       };
     }
 
@@ -87,7 +95,7 @@ export async function validateOpenAiApiKeyForSettings(
 
     if (statusCode !== null && statusCode >= 400 && statusCode < 500) {
       return {
-        openaiApiKeyStatus: "invalid",
+        openaiApiKeyStatus: "error",
         openaiApiKeyMessage:
           `OpenAI returned HTTP ${statusCode.toString()} while validating this key.`,
       };
