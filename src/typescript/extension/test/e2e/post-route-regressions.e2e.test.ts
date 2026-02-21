@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   extensionPageStatusSchema,
-  extensionRuntimeErrorResponseSchema,
   type ExtensionSkippedReason,
 } from "@truesight/shared";
 import { chromium, expect, test, type BrowserContext, type Worker } from "@playwright/test";
@@ -21,6 +20,10 @@ interface ExpectedSkippedStatus {
   platform: Platform;
   externalId: string;
   reason: ExtensionSkippedReason;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function hasMatchingSkippedStatus(
@@ -70,14 +73,24 @@ async function expectSkippedStatus(
 ): Promise<void> {
   await expect
     .poll(async () => {
-      const response = await serviceWorker.evaluate(async () => {
-        return chrome.runtime.sendMessage({ type: "GET_CACHED" });
+      const records = await serviceWorker.evaluate(async () => {
+        const storageSnapshot = await chrome.storage.local.get(null);
+        return Object.values(storageSnapshot);
       });
-      const runtimeError = extensionRuntimeErrorResponseSchema.safeParse(response);
-      if (runtimeError.success) {
-        throw new Error(runtimeError.data.error);
+
+      if (!Array.isArray(records)) {
+        return false;
       }
-      return hasMatchingSkippedStatus(response, expected);
+
+      for (const record of records) {
+        if (!isRecord(record)) continue;
+        const skippedStatus = record["skippedStatus"];
+        if (hasMatchingSkippedStatus(skippedStatus, expected)) {
+          return true;
+        }
+      }
+
+      return false;
     })
     .toBe(true);
 }
