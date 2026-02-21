@@ -29,6 +29,12 @@ const investigateNowInputMatches: IsExactly<
   ExtensionApiProcedureContract["post.investigateNow"]["input"]
 > = true;
 
+const validateSettingsInputMatches: IsExactly<
+  RouterInputs["post"]["validateSettings"],
+  ExtensionApiProcedureContract["post.validateSettings"]["input"]
+> = true;
+
 void viewPostInputMatches;
 void getInvestigationInputMatches;
 void investigateNowInputMatches;
+void validateSettingsInputMatches;

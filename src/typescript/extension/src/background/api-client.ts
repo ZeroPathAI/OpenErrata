@@ -22,6 +22,7 @@ import {
 import browser from "webextension-polyfill";
 import {
   DEFAULT_EXTENSION_SETTINGS,
+  apiEndpointUrl,
   apiHostPermissionFor,
   loadExtensionSettings,
   type ExtensionSettings,
@@ -138,7 +139,7 @@ function getOrCreateTrpcClient(options: {
   const client = createTRPCUntypedClient({
     links: [
       httpLink({
-        url: new URL("/trpc", settings.apiBaseUrl).toString(),
+        url: apiEndpointUrl(settings.apiBaseUrl, "trpc"),
         fetch: async (url, init) => {
           const headers = new Headers(init?.headers);
           const apiKey = settings.apiKey.trim();

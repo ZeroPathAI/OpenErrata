@@ -140,6 +140,24 @@ export const investigateNowOutputSchema = z.object({
   claims: z.array(investigationClaimSchema).optional(),
 });
 
+export const openaiApiKeyFormatSchema = z
+  .string()
+  .regex(/^sk-[A-Za-z0-9_-]{20,}$/, "Expected an OpenAI API key beginning with sk-");
+
+export const openaiApiKeyValidationStatusSchema = z.enum([
+  "missing",
+  "format_invalid",
+  "valid",
+  "invalid",
+  "error",
+]);
+
+export const settingsValidationOutputSchema = z.object({
+  instanceApiKeyAccepted: z.boolean(),
+  openaiApiKeyStatus: openaiApiKeyValidationStatusSchema,
+  openaiApiKeyMessage: z.string().optional(),
+});
+
 export const batchStatusInputSchema = z.object({
   posts: z
     .array(

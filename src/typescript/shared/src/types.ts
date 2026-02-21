@@ -58,6 +58,10 @@ export type InvestigateNowOutput = z.infer<
   typeof import("./schemas.js").investigateNowOutputSchema
 >;
 
+export type SettingsValidationOutput = z.infer<
+  typeof import("./schemas.js").settingsValidationOutputSchema
+>;
+
 export type BatchStatusInput = z.infer<typeof import("./schemas.js").batchStatusInputSchema>;
 
 export type BatchStatusOutput = z.infer<
@@ -81,6 +85,11 @@ export interface ExtensionApiProcedureContract {
     kind: "mutation";
     input: ViewPostInput;
     output: InvestigateNowOutput;
+  };
+  "post.validateSettings": {
+    kind: "query";
+    input: void;
+    output: SettingsValidationOutput;
   };
 }
 

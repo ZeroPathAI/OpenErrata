@@ -97,6 +97,14 @@ export function apiHostPermissionFor(apiBaseUrl: string): string {
   return `${parsed.protocol}//${parsed.hostname}/*`;
 }
 
+export function apiEndpointUrl(apiBaseUrl: string, endpointPath: string): string {
+  const trimmedEndpointPath = endpointPath.replace(/^\/+/, "");
+  const baseWithTrailingSlash = apiBaseUrl.endsWith("/")
+    ? apiBaseUrl
+    : `${apiBaseUrl}/`;
+  return new URL(trimmedEndpointPath, baseWithTrailingSlash).toString();
+}
+
 export async function ensureApiHostPermission(
   apiBaseUrl: string,
 ): Promise<boolean> {

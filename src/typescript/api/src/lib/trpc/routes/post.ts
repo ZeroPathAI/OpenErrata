@@ -4,6 +4,7 @@ import {
   getInvestigationInputSchema,
   investigateNowInputSchema,
   batchStatusInputSchema,
+  settingsValidationOutputSchema,
   normalizeContent,
   hashContent,
   type Platform,
@@ -23,6 +24,7 @@ import {
 import { maybeIncrementUniqueViewScore } from "$lib/services/view-credit.js";
 import { isUniqueConstraintError } from "$lib/db/errors.js";
 import { attachOpenAiKeySourceIfPendingRun } from "$lib/services/user-key-source.js";
+import { validateOpenAiApiKeyForSettings } from "$lib/services/openai-key-validation.js";
 import type { PrismaClient } from "$lib/generated/prisma/client";
 import { TRPCError } from "@trpc/server";
 
@@ -766,6 +768,18 @@ export const postRouter = router({
         }
         throw error;
       }
+    }),
+
+  validateSettings: publicProcedure
+    .query(async ({ ctx }) => {
+      const openaiValidation = await validateOpenAiApiKeyForSettings(
+        ctx.userOpenAiApiKey,
+      );
+
+      return settingsValidationOutputSchema.parse({
+        instanceApiKeyAccepted: ctx.isAuthenticated,
+        ...openaiValidation,
+      });
     }),
 
   batchStatus: publicProcedure

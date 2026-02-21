@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { SettingsValidationOutput } from "@openerrata/shared";
   import {
     DEFAULT_EXTENSION_SETTINGS,
     ensureApiHostPermission,
@@ -7,14 +8,29 @@
     normalizeOpenaiApiKey,
     saveExtensionSettings,
   } from "../lib/settings.js";
+  import {
+    getOpenaiApiKeyFormatError,
+    probeSettingsConfiguration,
+  } from "./settings-validation.js";
+
+  const LIVE_VALIDATION_DEBOUNCE_MS = 500;
+
+  type FeedbackTone = "pending" | "success" | "error";
+  type Feedback = { tone: FeedbackTone; text: string };
 
   let apiUrl = $state(DEFAULT_EXTENSION_SETTINGS.apiBaseUrl);
   let instanceApiKey = $state(DEFAULT_EXTENSION_SETTINGS.apiKey);
   let openaiApiKey = $state(DEFAULT_EXTENSION_SETTINGS.openaiApiKey);
   let autoInvestigate = $state(DEFAULT_EXTENSION_SETTINGS.autoInvestigate);
   let hmacSecret = $state(DEFAULT_EXTENSION_SETTINGS.hmacSecret);
+  let loaded = $state(false);
   let saved = $state(false);
   let error = $state<string | null>(null);
+  let openaiFeedback = $state<Feedback | null>(null);
+  let instanceFeedback = $state<Feedback | null>(null);
+
+  let validationRunId = 0;
+  let validationTimer: ReturnType<typeof setTimeout> | null = null;
 
   async function load() {
     const settings = await loadExtensionSettings();
@@ -23,6 +39,105 @@
     openaiApiKey = settings.openaiApiKey;
     autoInvestigate = settings.autoInvestigate;
     hmacSecret = settings.hmacSecret;
+    loaded = true;
+  }
+
+  function toOpenaiFeedback(
+    validation: SettingsValidationOutput,
+  ): Feedback | null {
+    switch (validation.openaiApiKeyStatus) {
+      case "missing":
+        return null;
+      case "valid":
+        return {
+          tone: "success",
+          text: "OpenAI API key is valid.",
+        };
+      case "format_invalid":
+        return {
+          tone: "error",
+          text:
+            validation.openaiApiKeyMessage ??
+            "OpenAI API key format is invalid.",
+        };
+      case "invalid":
+        return {
+          tone: "error",
+          text:
+            validation.openaiApiKeyMessage ??
+            "OpenAI rejected this API key.",
+        };
+      case "error":
+        return {
+          tone: "error",
+          text:
+            validation.openaiApiKeyMessage ??
+            "Could not validate OpenAI API key.",
+        };
+      default: {
+        const neverStatus: never = validation.openaiApiKeyStatus;
+        throw new Error(
+          `Unhandled OpenAI validation status: ${neverStatus}`,
+        );
+      }
+    }
+  }
+
+  function toInstanceFeedback(
+    apiKey: string,
+    validation: SettingsValidationOutput,
+  ): Feedback {
+    if (apiKey.trim().length === 0) {
+      return {
+        tone: "success",
+        text: "Connected to a compatible OpenErrata API server.",
+      };
+    }
+
+    if (validation.instanceApiKeyAccepted) {
+      return {
+        tone: "success",
+        text: "Connected to API server. Instance API key is valid.",
+      };
+    }
+
+    return {
+      tone: "error",
+      text: "Connected to API server, but the instance API key was rejected.",
+    };
+  }
+
+  async function validateSettingsLive(
+    runId: number,
+    input: { apiBaseUrl: string; apiKey: string; openaiApiKey: string },
+  ): Promise<void> {
+    const probeResult = await probeSettingsConfiguration(input);
+    if (runId !== validationRunId) return;
+
+    if (probeResult.status === "error") {
+      instanceFeedback = {
+        tone: "error",
+        text: probeResult.message,
+      };
+
+      const openaiFormatError = getOpenaiApiKeyFormatError(input.openaiApiKey);
+      const normalizedOpenaiApiKey = normalizeOpenaiApiKey(input.openaiApiKey);
+      if (
+        openaiFormatError === null &&
+        normalizedOpenaiApiKey.length > 0
+      ) {
+        openaiFeedback = {
+          tone: "error",
+          text:
+            "Could not validate OpenAI API key because API instance validation failed.",
+        };
+      }
+
+      return;
+    }
+
+    instanceFeedback = toInstanceFeedback(input.apiKey, probeResult.validation);
+    openaiFeedback = toOpenaiFeedback(probeResult.validation);
   }
 
   async function save() {
@@ -41,6 +156,11 @@
     }
 
     const normalizedOpenaiApiKey = normalizeOpenaiApiKey(openaiApiKey);
+    const openaiFormatError = getOpenaiApiKeyFormatError(normalizedOpenaiApiKey);
+    if (openaiFormatError !== null) {
+      error = openaiFormatError;
+      return;
+    }
 
     await saveExtensionSettings({
       apiBaseUrl: normalizedApiUrl,
@@ -60,6 +180,79 @@
       error = "Could not load extension settings.";
     });
   });
+
+  $effect(() => {
+    if (!loaded) return;
+
+    const currentApiUrl = apiUrl;
+    const currentApiKey = instanceApiKey;
+    const currentOpenaiApiKey = openaiApiKey;
+    const runId = ++validationRunId;
+
+    if (validationTimer !== null) {
+      clearTimeout(validationTimer);
+      validationTimer = null;
+    }
+
+    const openaiFormatError = getOpenaiApiKeyFormatError(currentOpenaiApiKey);
+    const normalizedOpenaiApiKey = normalizeOpenaiApiKey(currentOpenaiApiKey);
+
+    if (openaiFormatError !== null) {
+      openaiFeedback = {
+        tone: "error",
+        text: openaiFormatError,
+      };
+    } else if (normalizedOpenaiApiKey.length > 0) {
+      openaiFeedback = {
+        tone: "pending",
+        text: "Validating OpenAI API key...",
+      };
+    } else {
+      openaiFeedback = null;
+    }
+
+    const normalizedApiUrl = normalizeApiBaseUrl(currentApiUrl);
+    if (!normalizedApiUrl) {
+      instanceFeedback = {
+        tone: "error",
+        text: "API Server URL must be a valid http(s) URL.",
+      };
+      if (openaiFormatError === null && normalizedOpenaiApiKey.length > 0) {
+        openaiFeedback = {
+          tone: "error",
+          text:
+            "Cannot validate OpenAI API key until API Server URL is valid.",
+        };
+      }
+      return;
+    }
+
+    instanceFeedback = {
+      tone: "pending",
+      text: "Checking API server and credentials...",
+    };
+
+    validationTimer = setTimeout(() => {
+      void validateSettingsLive(runId, {
+        apiBaseUrl: currentApiUrl,
+        apiKey: currentApiKey,
+        openaiApiKey: currentOpenaiApiKey,
+      }).catch(() => {
+        if (runId !== validationRunId) return;
+        instanceFeedback = {
+          tone: "error",
+          text: "Unexpected error while validating settings.",
+        };
+      });
+    }, LIVE_VALIDATION_DEBOUNCE_MS);
+
+    return () => {
+      if (validationTimer !== null) {
+        clearTimeout(validationTimer);
+        validationTimer = null;
+      }
+    };
+  });
 </script>
 
 <h1>OpenErrata Settings</h1>
@@ -77,6 +270,11 @@
       autocomplete="off"
     />
     <p class="hint">Used only per request. The API does not store this key beyond request lifecycles.</p>
+    {#if openaiFeedback}
+      <p class={`validation ${openaiFeedback.tone}`} aria-live="polite">
+        {openaiFeedback.text}
+      </p>
+    {/if}
   </div>
 
   <label class="checkbox">
@@ -119,6 +317,12 @@
       autocomplete="off"
     />
   </div>
+
+  {#if instanceFeedback}
+    <p class={`validation ${instanceFeedback.tone}`} aria-live="polite">
+      {instanceFeedback.text}
+    </p>
+  {/if}
 </details>
 
 <button onclick={save}>Save</button>
@@ -172,6 +376,23 @@
     margin: 6px 0 0;
     color: #4b5563;
     font-size: 12px;
+  }
+
+  .validation {
+    margin: 6px 0 0;
+    font-size: 12px;
+  }
+
+  .validation.pending {
+    color: #2563eb;
+  }
+
+  .validation.success {
+    color: #15803d;
+  }
+
+  .validation.error {
+    color: #dc2626;
   }
 
   .checkbox {

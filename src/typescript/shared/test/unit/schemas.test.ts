@@ -3,7 +3,9 @@ import { test } from "node:test";
 import {
   extensionMessageSchema,
   investigationClaimSchema,
+  openaiApiKeyFormatSchema,
   platformContentSchema,
+  settingsValidationOutputSchema,
   sha256HashSchema,
 } from "../../src/schemas.js";
 
@@ -139,4 +141,27 @@ test("investigationClaimSchema rejects invalid claim payloads", () => {
 test("sha256HashSchema accepts 64-char hex and rejects invalid strings", () => {
   assert.equal(sha256HashSchema.safeParse(VALID_HASH).success, true);
   assert.equal(sha256HashSchema.safeParse("zz").success, false);
+});
+
+test("openaiApiKeyFormatSchema accepts sk-prefixed keys and rejects malformed keys", () => {
+  assert.equal(
+    openaiApiKeyFormatSchema.safeParse("sk-proj_Abc1234567890xyzABCDE").success,
+    true,
+  );
+  assert.equal(openaiApiKeyFormatSchema.safeParse("abc123").success, false);
+  assert.equal(openaiApiKeyFormatSchema.safeParse("sk-short").success, false);
+});
+
+test("settingsValidationOutputSchema validates status payload shape", () => {
+  const valid = settingsValidationOutputSchema.safeParse({
+    instanceApiKeyAccepted: true,
+    openaiApiKeyStatus: "valid",
+  });
+  const invalid = settingsValidationOutputSchema.safeParse({
+    instanceApiKeyAccepted: "yes",
+    openaiApiKeyStatus: "valid",
+  });
+
+  assert.equal(valid.success, true);
+  assert.equal(invalid.success, false);
 });
