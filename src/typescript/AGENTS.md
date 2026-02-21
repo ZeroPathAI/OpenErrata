@@ -6,9 +6,8 @@ pnpm monorepo with four packages: `shared`, `api`, `extension`, `pulumi`.
 
 ```bash
 pnpm check            # typecheck all packages + lint
-pnpm lint             # ESLint only
 pnpm lint:fix         # ESLint with auto-fix
-pnpm typecheck        # tsc/svelte-check across all packages
+pnpm test             # run unit+integration tests
 pnpm dev:api          # Start API dev server
 pnpm dev:ext          # Build extension in watch mode
 pnpm worker           # Start graphile-worker

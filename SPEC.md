@@ -65,23 +65,27 @@ skipped.
 
 Users can trigger investigations in two ways (both async queued):
 
-- Instance-managed credentials (operator config).
-- User-provided OpenAI key passed per request, used to authorize a background
-  run without changing user-visible workflow.
+- Instance-managed credentials
+- A user provided OpenAI key
+
+In addition to user-requested investigations (which are shared with everyone
+who uses the same service), service operators can configure regular
+investigations of posts, based on a measure designed to investigate the posts
+most likely to be read by users in the future.
 
 The following are explicitly out of scope:
 
-**Not in v1 (future work):**
+**Not in v1 (but will be attempted in the future):**
 
 - Additional platforms beyond LessWrong, X, and Substack.
-- Author-side verification (checking content before publishing).
-- Fact-checking comments or threads, in addition to top-level isolated posts.
-- Mobile support.
-- Automated reporting of misinformation to platforms.
 - Analysis types other than fact-checking — the model supports extensibility, but v1
   doesn't ship it.
-- Video understanding. Posts with images are investigated; posts that are video-only are
-  skipped.
+- Fact-checking comments or threads, in addition to top-level isolated posts.
+- Mobile support.
+- Analysis of:
+  - Content with video
+  - Comments
+  - Quote Tweets
 - End-user appeals/corrections.
 - Rate limiting and tiered access controls.
 
@@ -134,7 +138,7 @@ The following are explicitly out of scope:
             │  Investigation Selector (cron)    │
             │  LLM Orchestrator                 │
             │    └─ async queue (all runs)      │
-            │  Transient credential handoff      │
+            │  Transient credential handoff     │
             │  Blob media ingest (S3/R2)        │
             └───────────────────────────────────┘
                            │

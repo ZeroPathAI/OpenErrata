@@ -171,22 +171,6 @@ test coverage of the code high.
 ```bash
 # Start local Postgres (port 5433) + MinIO S3-compatible storage (9000 API / 9001 console)
 docker compose up -d
-
-# Install dependencies
-cd src/typescript && pnpm install
-
-# Apply schema + SQL migrations
-cp ../../.env.example api/.env   # edit OPENAI_API_KEY
-# .env.example includes local MinIO defaults for BLOB_STORAGE_*.
-# If testing real OpenAI multimodal fetches, use a publicly reachable BLOB_STORAGE_PUBLIC_URL_PREFIX.
-pnpm db:migrate
-
-# Run
-pnpm dev:api        # API on localhost:5173
-pnpm worker         # graphile-worker (separate terminal)
-pnpm dev:ext        # build extension to extension/dist/ (separate terminal)
-
-# Quality
-pnpm check          # typecheck + lint
-pnpm lint:fix       # auto-fix lint issues
 ```
+
+For more information about how to run and manage the typescript extensions, see ./src/typescript/AGENTS.md
