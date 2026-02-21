@@ -18,7 +18,6 @@ function createPostStatus(
     platform,
     externalId,
     pageUrl,
-    investigationId: "inv_123",
     investigationState: "NOT_INVESTIGATED",
     claims: null,
   };

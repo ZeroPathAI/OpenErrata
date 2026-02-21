@@ -2,9 +2,13 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import {
+  extensionPageStatusSchema,
+  extensionRuntimeErrorResponseSchema,
+  type ExtensionSkippedReason,
+} from "@truesight/shared";
 import { chromium, expect, test, type BrowserContext, type Worker } from "@playwright/test";
 
-type SkippedReason = "video_only" | "word_count" | "unsupported_content";
 type Platform = "LESSWRONG" | "X";
 
 interface ExtensionHarness {
@@ -16,37 +20,20 @@ interface ExtensionHarness {
 interface ExpectedSkippedStatus {
   platform: Platform;
   externalId: string;
-  reason: SkippedReason;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return null;
-  }
-  return value;
+  reason: ExtensionSkippedReason;
 }
 
 function hasMatchingSkippedStatus(
-  storageSnapshot: Record<string, unknown>,
+  status: unknown,
   expected: ExpectedSkippedStatus,
 ): boolean {
-  for (const [key, value] of Object.entries(storageSnapshot)) {
-    if (!key.startsWith("tab:")) continue;
-    const tabRecord = asRecord(value);
-    if (!tabRecord) continue;
-    const skippedStatus = asRecord(tabRecord["skippedStatus"]);
-    if (!skippedStatus) continue;
-
-    if (
-      skippedStatus["kind"] === "SKIPPED" &&
-      skippedStatus["platform"] === expected.platform &&
-      skippedStatus["externalId"] === expected.externalId &&
-      skippedStatus["reason"] === expected.reason
-    ) {
-      return true;
-    }
-  }
-  return false;
+  const parsed = extensionPageStatusSchema.safeParse(status);
+  if (!parsed.success || parsed.data.kind !== "SKIPPED") return false;
+  return (
+    parsed.data.platform === expected.platform &&
+    parsed.data.externalId === expected.externalId &&
+    parsed.data.reason === expected.reason
+  );
 }
 
 async function launchExtensionHarness(): Promise<ExtensionHarness> {
@@ -83,10 +70,14 @@ async function expectSkippedStatus(
 ): Promise<void> {
   await expect
     .poll(async () => {
-      const snapshot = await serviceWorker.evaluate(async () => {
-        return chrome.storage.local.get(null);
+      const response = await serviceWorker.evaluate(async () => {
+        return chrome.runtime.sendMessage({ type: "GET_CACHED" });
       });
-      return hasMatchingSkippedStatus(snapshot, expected);
+      const runtimeError = extensionRuntimeErrorResponseSchema.safeParse(response);
+      if (runtimeError.success) {
+        throw new Error(runtimeError.data.error);
+      }
+      return hasMatchingSkippedStatus(response, expected);
     })
     .toBe(true);
 }

@@ -5,6 +5,7 @@ import {
   isSupportedPostUrl,
   parseSupportedPageIdentity,
 } from "../../src/lib/post-identity";
+import { isSubstackPostPathUrl } from "../../src/popup/status-identity";
 
 type SupportedCase = {
   url: string;
@@ -60,7 +61,6 @@ const unsupportedUrls = [
   "https://www.lesswrong.com/posts",
   "https://x.com/home",
   "https://x.com/compose/post",
-  "https://astralcodexten.com/p/example-post",
 ];
 
 test("supported post URL identity parser and adapter matching stay aligned", () => {
@@ -84,4 +84,12 @@ test("unsupported URLs are rejected consistently", () => {
     assert.equal(isSupportedPostUrl(url), false);
     assert.equal(getAdapter(url), null);
   }
+});
+
+test("custom-domain Substack post paths stay eligible for non-identity matching", () => {
+  const customDomainSubstackUrl = "https://astralcodexten.com/p/example-post";
+  assert.equal(parseSupportedPageIdentity(customDomainSubstackUrl), null);
+  assert.equal(isSupportedPostUrl(customDomainSubstackUrl), false);
+  assert.equal(getAdapter(customDomainSubstackUrl), null);
+  assert.equal(isSubstackPostPathUrl(customDomainSubstackUrl), true);
 });
