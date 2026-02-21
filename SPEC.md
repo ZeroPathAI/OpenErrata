@@ -109,9 +109,9 @@ The following are explicitly out of scope:
 5. **Demand-driven by default, on-demand when explicitly requested.** Posts are not investigated on
    every view unless the user enables auto-investigate with their own key. The selector-based queue
    remains the default path for background coverage.
-6. **User-provided model credentials are transient.** User OpenAI keys are treated as short-lived
-   request credentials: never persisted in plaintext, never exposed in durable logs, and never
-   reused across unrelated requests.
+6. **User-provided model credentials are user-managed local settings.** User OpenAI keys may be
+   persisted in extension local storage on the user's device, but must never be persisted server-side
+   in plaintext or exposed in durable server logs.
 
 ## 2.3 Architecture
 
@@ -521,9 +521,8 @@ measures are required:
 4. **Content-version pinning.** Investigations are bound to a specific post content version.
    Submitting fabricated content for the same post produces a different version key and therefore
    won't match a server-verified investigation shown to real users.
-5. **User-key handling.** User-supplied OpenAI keys are accepted as request-scoped credentials and
-   handled transiently for background execution. Plaintext keys must never be persisted in
-   application data or durable logs.
+5. **User-key handling.** User-supplied OpenAI keys may be persisted locally in the extension, but
+   plaintext keys must never be persisted server-side in application data or durable logs.
 6. **SSRF-safe image fetch.** Investigation-time image downloading must block private/internal
    network targets and enforce count/size limits before upload to blob storage.
 

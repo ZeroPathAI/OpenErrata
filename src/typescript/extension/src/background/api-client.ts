@@ -111,17 +111,26 @@ function attestationSecretFor(settingsValue: ExtensionSettings): string {
   return configured.length > 0 ? configured : BUNDLED_ATTESTATION_SECRET;
 }
 
-function clientKeyFor(settingsValue: ExtensionSettings): string {
+function clientKeyFor(
+  settingsValue: ExtensionSettings,
+  includeUserOpenAiHeader: boolean,
+): string {
   return [
     settingsValue.apiBaseUrl,
     settingsValue.apiKey.trim(),
-    settingsValue.openaiApiKey.trim(),
+    includeUserOpenAiHeader ? settingsValue.openaiApiKey.trim() : "",
     attestationSecretFor(settingsValue),
   ].join("|");
 }
 
-function getOrCreateTrpcClient(): TrpcClient {
-  const key = clientKeyFor(settings);
+function shouldIncludeUserOpenAiKeyHeader(path: string): boolean {
+  return path === "post.investigateNow";
+}
+
+function getOrCreateTrpcClient(options: {
+  includeUserOpenAiHeader: boolean;
+}): TrpcClient {
+  const key = clientKeyFor(settings, options.includeUserOpenAiHeader);
   if (cachedClient && cachedClient.key === key) {
     return cachedClient.client;
   }
@@ -137,7 +146,7 @@ function getOrCreateTrpcClient(): TrpcClient {
             headers.set("x-api-key", apiKey);
           }
           const userOpenAiApiKey = settings.openaiApiKey.trim();
-          if (userOpenAiApiKey.length > 0) {
+          if (options.includeUserOpenAiHeader && userOpenAiApiKey.length > 0) {
             headers.set("x-openai-api-key", userOpenAiApiKey);
           }
 
@@ -182,7 +191,9 @@ async function withTrpcClient<Output>(
   await init();
   await assertApiHostPermissionGranted(settings.apiBaseUrl);
 
-  const client = getOrCreateTrpcClient();
+  const client = getOrCreateTrpcClient({
+    includeUserOpenAiHeader: shouldIncludeUserOpenAiKeyHeader(path),
+  });
   try {
     return await operation(client);
   } catch (error) {
