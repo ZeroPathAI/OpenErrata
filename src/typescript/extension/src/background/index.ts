@@ -2,6 +2,7 @@ import {
   extensionMessageSchema,
   extensionRuntimeErrorResponseSchema,
   investigationStatusOutputSchema,
+  POLL_INTERVAL_MS,
 } from "@truesight/shared";
 import type {
   ExtensionPageStatus,
@@ -305,6 +306,10 @@ type InvestigationPoller = {
 
 const investigationPollers = new Map<number, InvestigationPoller>();
 const latestTabSessionByTab = new Map<number, number>();
+const INVESTIGATION_POLL_ALARM_PREFIX = "investigation-poll:";
+// Chrome enforces a minimum repeating alarm interval; keep this as a wake-up
+// recovery signal and retain in-memory 5s polling while the worker is alive.
+const INVESTIGATION_POLL_RECOVERY_ALARM_PERIOD_MINUTES = 0.5;
 
 function noteTabSession(tabId: number, tabSessionId: number): void {
   const existing = latestTabSessionByTab.get(tabId);
@@ -323,7 +328,42 @@ function isStaleTabSession(tabId: number, tabSessionId: number): boolean {
   return tabSessionId < latest;
 }
 
+function pollRecoveryAlarmName(tabId: number): string {
+  return `${INVESTIGATION_POLL_ALARM_PREFIX}${tabId.toString()}`;
+}
+
+function parsePollRecoveryAlarmTabId(alarmName: string): number | null {
+  if (!alarmName.startsWith(INVESTIGATION_POLL_ALARM_PREFIX)) {
+    return null;
+  }
+  const rawTabId = alarmName.slice(INVESTIGATION_POLL_ALARM_PREFIX.length);
+  if (!/^\d+$/.test(rawTabId)) {
+    return null;
+  }
+  const tabId = Number.parseInt(rawTabId, 10);
+  if (!Number.isSafeInteger(tabId) || tabId < 0) {
+    return null;
+  }
+  return tabId;
+}
+
+function schedulePollRecoveryAlarm(tabId: number): void {
+  void browser.alarms.create(pollRecoveryAlarmName(tabId), {
+    periodInMinutes: INVESTIGATION_POLL_RECOVERY_ALARM_PERIOD_MINUTES,
+  }).catch((error) => {
+    console.error("Failed to schedule investigation poll recovery alarm:", error);
+  });
+}
+
+function clearPollRecoveryAlarm(tabId: number): void {
+  void browser.alarms.clear(pollRecoveryAlarmName(tabId)).catch((error) => {
+    console.error("Failed to clear investigation poll recovery alarm:", error);
+  });
+}
+
 function stopInvestigationPolling(tabId: number): void {
+  clearPollRecoveryAlarm(tabId);
+
   const existing = investigationPollers.get(tabId);
   if (!existing) return;
 
@@ -356,6 +396,7 @@ async function startInvestigationPolling(input: {
     timer: null,
   };
   investigationPollers.set(input.tabId, poller);
+  schedulePollRecoveryAlarm(input.tabId);
 
   const tick = async () => {
     const activePoller = investigationPollers.get(input.tabId);
@@ -423,7 +464,7 @@ async function startInvestigationPolling(input: {
   }
   const timer = setInterval(() => {
     void tick();
-  }, 5000);
+  }, POLL_INTERVAL_MS);
   poller.timer = timer;
 }
 
@@ -432,12 +473,14 @@ async function maybeResumePollingFromCachedStatus(
   status: ExtensionPageStatus | null,
 ): Promise<void> {
   if (!status || status.kind !== "POST") {
+    stopInvestigationPolling(tabId);
     return;
   }
   if (
     status.investigationState !== "INVESTIGATING" ||
     status.investigationId === undefined
   ) {
+    stopInvestigationPolling(tabId);
     return;
   }
 
@@ -458,6 +501,21 @@ async function maybeResumePollingFromCachedStatus(
     investigationId: status.investigationId,
     fallbackProvenance: status.provenance,
   });
+}
+
+async function resumeInvestigationPollingForOpenTabs(): Promise<void> {
+  const tabs = await browser.tabs.query({});
+  await Promise.all(
+    tabs.map(async (tab) => {
+      if (tab.id === undefined) return;
+      try {
+        const status = await getActiveStatus(tab.id);
+        await maybeResumePollingFromCachedStatus(tab.id, status);
+      } catch (error) {
+        console.error("Failed to resume investigation polling for tab:", error);
+      }
+    }),
+  );
 }
 
 function toViewPostInput(payload: ParsedPageContentPayload): ViewPostInput {
@@ -942,6 +1000,28 @@ async function handleGetCached(
   return status;
 }
 
+browser.alarms.onAlarm.addListener((alarm) => {
+  const tabId = parsePollRecoveryAlarmTabId(alarm.name);
+  if (tabId === null) return;
+  void getActiveStatus(tabId)
+    .then((status) => maybeResumePollingFromCachedStatus(tabId, status))
+    .catch((error) => {
+      console.error("Failed to resume polling from alarm:", error);
+    });
+});
+
+browser.runtime.onStartup.addListener(() => {
+  void resumeInvestigationPollingForOpenTabs().catch((error) => {
+    console.error("Failed to resume investigation polling on startup:", error);
+  });
+});
+
+browser.runtime.onInstalled.addListener(() => {
+  void resumeInvestigationPollingForOpenTabs().catch((error) => {
+    console.error("Failed to resume investigation polling on install/update:", error);
+  });
+});
+
 browser.tabs.onRemoved.addListener((tabId) => {
   injectedCustomSubstackTabs.delete(tabId);
   latestTabSessionByTab.delete(tabId);
@@ -986,4 +1066,8 @@ void ensureSubstackInjectionForOpenTabs().catch((error) => {
 
 void syncToolbarBadgesForOpenTabs().catch((error) => {
   console.error("toolbar badge startup sync failed:", error);
+});
+
+void resumeInvestigationPollingForOpenTabs().catch((error) => {
+  console.error("investigation polling startup resume failed:", error);
 });
