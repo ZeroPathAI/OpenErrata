@@ -111,6 +111,13 @@ function formatError(error: unknown): string {
   return String(error);
 }
 
+function toError(error: unknown): Error {
+  if (error instanceof Error) {
+    return error;
+  }
+  return new Error(String(error));
+}
+
 async function main(): Promise<void> {
   const forwardedArgs = process.argv.slice(2);
   const baseDatabaseUrl = ensureDatabaseUrl();
@@ -127,7 +134,8 @@ async function main(): Promise<void> {
     DATABASE_URL: isolatedDatabaseUrl,
   };
 
-  let primaryError: unknown | null = null;
+  let primaryError: Error | null = null;
+  let cleanupError: Error | null = null;
   await createDatabase(adminDatabaseUrl, testDatabaseName);
   try {
     await runCommand("pnpm", ["run", "prisma:migrate:deploy"], childEnv);
@@ -138,23 +146,25 @@ async function main(): Promise<void> {
     }
     await runCommand("pnpm", testArgs, childEnv);
   } catch (error) {
-    primaryError = error;
+    primaryError = toError(error);
   } finally {
     try {
       await dropDatabase(adminDatabaseUrl, testDatabaseName);
-    } catch (cleanupError) {
+    } catch (caughtCleanupError) {
+      cleanupError = toError(caughtCleanupError);
       if (primaryError) {
         console.error(
           `Integration test cleanup failed while handling prior error: ${formatError(cleanupError)}`,
         );
-      } else {
-        throw cleanupError;
       }
     }
   }
 
   if (primaryError) {
     throw primaryError;
+  }
+  if (cleanupError) {
+    throw cleanupError;
   }
 }
 
