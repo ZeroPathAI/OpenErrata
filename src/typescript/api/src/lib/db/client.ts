@@ -6,7 +6,7 @@ import { Pool } from "pg";
 
 declare global {
   // Reused across HMR reloads in development.
-  var __truesightPrisma: PrismaClient | undefined;
+  var __openerrataPrisma: PrismaClient | undefined;
 }
 
 function createPrismaClient(): PrismaClient {
@@ -23,8 +23,8 @@ function createPrismaClient(): PrismaClient {
   return new PrismaClient({ adapter });
 }
 
-export const prisma = globalThis.__truesightPrisma ?? createPrismaClient();
+export const prisma = globalThis.__openerrataPrisma ?? createPrismaClient();
 
 if (getEnv().NODE_ENV !== "production") {
-  globalThis.__truesightPrisma = prisma;
+  globalThis.__openerrataPrisma = prisma;
 }

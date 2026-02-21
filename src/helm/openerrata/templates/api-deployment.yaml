@@ -1,20 +1,20 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "truesight.fullname" . }}-api
+  name: {{ include "openerrata.fullname" . }}-api
   labels:
-    {{- include "truesight.labels" . | nindent 4 }}
+    {{- include "openerrata.labels" . | nindent 4 }}
     app.kubernetes.io/component: api
 spec:
   replicas: {{ .Values.replicaCount.api }}
   selector:
     matchLabels:
-      {{- include "truesight.selectorLabels" . | nindent 6 }}
+      {{- include "openerrata.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: api
   template:
     metadata:
       labels:
-        {{- include "truesight.selectorLabels" . | nindent 8 }}
+        {{- include "openerrata.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: api
     spec:
       containers:
@@ -27,9 +27,9 @@ spec:
               protocol: TCP
           envFrom:
             - secretRef:
-                name: {{ include "truesight.fullname" . }}
+                name: {{ include "openerrata.fullname" . }}
             - configMapRef:
-                name: {{ include "truesight.fullname" . }}
+                name: {{ include "openerrata.fullname" . }}
           livenessProbe:
             httpGet:
               path: /health

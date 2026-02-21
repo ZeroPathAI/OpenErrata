@@ -3,7 +3,7 @@ import { postRouter } from "./routes/post.js";
 import { publicRouter } from "./routes/public.js";
 import type {
   ExtensionApiProcedureContract,
-} from "@truesight/shared";
+} from "@openerrata/shared";
 import type { inferRouterInputs } from "@trpc/server";
 
 export const appRouter = router({

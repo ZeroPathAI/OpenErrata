@@ -1,6 +1,6 @@
-# TrueSight
+# OpenErrata
 
-TrueSight is a browser extension that investigates the content people read on the
+OpenErrata is a browser extension that investigates the content people read on the
 internet with LLMs, and provides inline rebuttals to empirically incorrect or
 unambiguously misleading information. The design goals, architecture, data model,
 and API are documented in `SPEC.md` — that is the source of truth for product
@@ -10,12 +10,12 @@ behavior.
 
 ```
 src/
-├── helm/truesight/          # Helm chart (single deployment artifact for on-prem + hosted)
+├── helm/openerrata/         # Helm chart (single deployment artifact for on-prem + hosted)
 └── typescript/
-    ├── shared/              # @truesight/shared — types, Zod schemas, normalization
-    ├── api/                 # @truesight/api — SvelteKit + tRPC backend, Prisma, job queue
-    ├── extension/           # @truesight/extension — Chrome MV3 browser extension
-    └── pulumi/              # @truesight/pulumi — deploys the Helm chart for hosted env
+    ├── shared/              # @openerrata/shared — types, Zod schemas, normalization
+    ├── api/                 # @openerrata/api — SvelteKit + tRPC backend, Prisma, job queue
+    ├── extension/           # @openerrata/extension — Chrome MV3 browser extension
+    └── pulumi/              # @openerrata/pulumi — deploys the Helm chart for hosted env
 ```
 
 The monorepo uses pnpm workspaces. Dependencies flow: `shared` → `api` and

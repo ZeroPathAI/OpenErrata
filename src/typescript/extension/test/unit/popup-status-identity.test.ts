@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { ExtensionPageStatus } from "@truesight/shared";
+import type { ExtensionPageStatus } from "@openerrata/shared";
 import type { SupportedPageIdentity } from "../../src/lib/post-identity";
 import {
   isSubstackPostPathUrl,

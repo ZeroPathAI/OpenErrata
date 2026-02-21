@@ -9,7 +9,7 @@ import {
   type InvestigateNowOutput,
   type ViewPostInput,
   type ViewPostOutput,
-} from "@truesight/shared";
+} from "@openerrata/shared";
 import browser from "webextension-polyfill";
 
 export type ParsedExtensionPageStatus = ReturnType<

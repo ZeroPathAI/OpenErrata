@@ -1,4 +1,4 @@
-import { normalizeContent } from "@truesight/shared";
+import { normalizeContent } from "@openerrata/shared";
 import { z } from "zod";
 import { isBlockedHost } from "$lib/network/host-safety.js";
 
@@ -234,7 +234,7 @@ export async function executeFetchUrlTool(rawArguments: string): Promise<FetchUr
         redirect: "manual",
         signal: AbortSignal.timeout(FETCH_URL_TIMEOUT_MS),
         headers: {
-          "User-Agent": "TrueSightInvestigator/1.0 (+https://truesight.local)",
+          "User-Agent": "OpenErrataInvestigator/1.0 (+https://openerrata.com)",
           Accept: "text/html,application/json,text/plain;q=0.9,*/*;q=0.5",
         },
       });

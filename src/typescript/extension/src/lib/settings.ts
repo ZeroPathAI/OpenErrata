@@ -9,7 +9,7 @@ export interface ExtensionSettings {
 }
 
 export const DEFAULT_EXTENSION_SETTINGS: ExtensionSettings = {
-  apiBaseUrl: "https://api.truesight.dev",
+  apiBaseUrl: "https://api.openerrata.com",
   apiKey: "",
   openaiApiKey: "",
   autoInvestigate: false,

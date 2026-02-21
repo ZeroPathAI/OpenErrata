@@ -11,7 +11,7 @@ import type {
   InvestigationModel as SharedInvestigationModel,
   InvestigationProvider as SharedInvestigationProvider,
   Platform as SharedPlatform,
-} from "@truesight/shared";
+} from "@openerrata/shared";
 
 type IsExactly<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
 

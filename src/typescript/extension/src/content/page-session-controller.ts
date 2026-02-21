@@ -7,7 +7,7 @@ import {
   type Platform,
   type PlatformContent,
   type ViewPostInput,
-} from "@truesight/shared";
+} from "@openerrata/shared";
 import type { PlatformAdapter } from "./adapters/index";
 import { getAdapter } from "./adapters/index";
 import { parseSupportedPageIdentity } from "../lib/post-identity";

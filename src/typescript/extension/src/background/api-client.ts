@@ -8,12 +8,12 @@ import type {
   ExtensionApiMutationPath,
   ExtensionApiOutput,
   ExtensionApiQueryPath,
-} from "@truesight/shared";
+} from "@openerrata/shared";
 import {
   getInvestigationOutputSchema,
   investigateNowOutputSchema,
   viewPostOutputSchema,
-} from "@truesight/shared";
+} from "@openerrata/shared";
 import {
   createTRPCUntypedClient,
   httpLink,
@@ -27,7 +27,7 @@ import {
   type ExtensionSettings,
 } from "../lib/settings.js";
 
-const BUNDLED_ATTESTATION_SECRET = "truesight-attestation-v1";
+const BUNDLED_ATTESTATION_SECRET = "openerrata-attestation-v1";
 
 let settings: ExtensionSettings = { ...DEFAULT_EXTENSION_SETTINGS };
 let initPromise: Promise<void> | null = null;
@@ -155,7 +155,7 @@ function getOrCreateTrpcClient(options: {
               attestationSecretFor(settings),
               init.body,
             );
-            headers.set("x-truesight-signature", signature);
+            headers.set("x-openerrata-signature", signature);
           }
 
           const requestInit: RequestInit = { headers };

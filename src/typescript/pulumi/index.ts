@@ -2,7 +2,7 @@ import * as k8s from "@pulumi/kubernetes";
 import * as pulumi from "@pulumi/pulumi";
 
 const config = new pulumi.Config();
-const chartName = "truesight";
+const chartName = "openerrata";
 const releaseName = config.get("releaseName") ?? chartName;
 const nameOverride = config.get("nameOverride") ?? undefined;
 const fullnameOverride = config.get("fullnameOverride") ?? undefined;
@@ -29,7 +29,7 @@ function resolveHelmFullname(input: {
 }
 
 const chart = new k8s.helm.v3.Chart(releaseName, {
-  path: "../../helm/truesight",
+  path: "../../helm/openerrata",
   values: {
     ...(nameOverride ? { nameOverride } : {}),
     ...(fullnameOverride ? { fullnameOverride } : {}),
@@ -38,7 +38,7 @@ const chart = new k8s.helm.v3.Chart(releaseName, {
       worker: config.getNumber("workerReplicas") ?? 2,
     },
     image: {
-      repository: config.get("imageRepository") ?? "ghcr.io/zeropathAI/truesight-api",
+      repository: config.get("imageRepository") ?? "ghcr.io/zeropathAI/openerrata-api",
       tag: config.get("imageTag") ?? "latest",
     },
     selector: {

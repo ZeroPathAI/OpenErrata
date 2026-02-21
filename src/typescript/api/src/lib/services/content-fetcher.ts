@@ -1,4 +1,4 @@
-import { normalizeContent, hashContent, type Platform } from "@truesight/shared";
+import { normalizeContent, hashContent, type Platform } from "@openerrata/shared";
 
 type FetchResult =
   | {

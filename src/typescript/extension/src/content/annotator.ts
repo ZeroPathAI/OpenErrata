@@ -1,4 +1,4 @@
-import type { InvestigationClaim } from "@truesight/shared";
+import type { InvestigationClaim } from "@openerrata/shared";
 import type { DomAnnotation } from "./dom-mapper";
 
 const SAFE_SOURCE_PROTOCOLS = new Set(["http:", "https:"]);
@@ -45,11 +45,11 @@ export function renderAnnotations(annotations: DomAnnotation[]): void {
 }
 
 /**
- * Remove every annotation and tooltip previously injected by TrueSight.
+ * Remove every annotation and tooltip previously injected by OpenErrata.
  */
 export function clearAnnotations(): void {
   // Unwrap <mark> elements, restoring their text-node children
-  document.querySelectorAll(".truesight-annotation").forEach((mark) => {
+  document.querySelectorAll(".openerrata-annotation").forEach((mark) => {
     const parent = mark.parentNode;
     if (!parent) return;
     while (mark.firstChild) {
@@ -63,7 +63,7 @@ export function clearAnnotations(): void {
 
   // Remove lingering tooltip and detail-panel elements
   document
-    .querySelectorAll(".truesight-tooltip, .truesight-detail-panel")
+    .querySelectorAll(".openerrata-tooltip, .openerrata-detail-panel")
     .forEach((el) => el.remove());
 }
 
@@ -78,7 +78,7 @@ function showDetailPanel(
   dismissDetailPanel();
 
   const panel = document.createElement("div");
-  panel.className = "truesight-detail-panel";
+  panel.className = "openerrata-detail-panel";
   applyThemeClass(panel, detectThemeFromAnchor(anchor));
 
   const closeBtn = document.createElement("button");
@@ -87,7 +87,7 @@ function showDetailPanel(
   panel.appendChild(closeBtn);
 
   const heading = document.createElement("h3");
-  heading.textContent = "TrueSight — Claim Details";
+  heading.textContent = "OpenErrata — Claim Details";
   panel.appendChild(heading);
 
   const claimText = document.createElement("div");
@@ -246,8 +246,8 @@ function toSafeSourceUrl(url: string): string | null {
 
 function createMarkElement(claim: InvestigationClaim): HTMLElement {
   const mark = document.createElement("mark");
-  mark.className = "truesight-annotation";
-  mark.setAttribute("aria-label", `TrueSight claim highlight: ${claim.summary}`);
+  mark.className = "openerrata-annotation";
+  mark.setAttribute("aria-label", `OpenErrata claim highlight: ${claim.summary}`);
   return mark;
 }
 
@@ -278,20 +278,20 @@ function createTooltip(
   anchor: HTMLElement,
 ): HTMLDivElement {
   // Remove any stale tooltips
-  document.querySelectorAll(".truesight-tooltip").forEach((el) => el.remove());
+  document.querySelectorAll(".openerrata-tooltip").forEach((el) => el.remove());
 
   const tip = document.createElement("div");
-  tip.className = "truesight-tooltip";
+  tip.className = "openerrata-tooltip";
   applyThemeClass(tip, detectThemeFromAnchor(anchor));
   tip.style.visibility = "hidden";
 
   const summary = document.createElement("div");
-  summary.className = "truesight-tooltip-summary";
+  summary.className = "openerrata-tooltip-summary";
   summary.textContent = claim.summary;
   tip.appendChild(summary);
 
   const action = document.createElement("div");
-  action.className = "truesight-tooltip-action";
+  action.className = "openerrata-tooltip-action";
   action.textContent = "Click for details";
   tip.appendChild(action);
 
@@ -303,8 +303,8 @@ function createTooltip(
 }
 
 function applyThemeClass(element: HTMLElement, theme: ThemeMode): void {
-  element.classList.remove("truesight-theme-light", "truesight-theme-dark");
-  element.classList.add(`truesight-theme-${theme}`);
+  element.classList.remove("openerrata-theme-light", "openerrata-theme-dark");
+  element.classList.add(`openerrata-theme-${theme}`);
 }
 
 function parseCssColor(value: string): [number, number, number, number] | null {

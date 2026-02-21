@@ -21,7 +21,7 @@ const cors: Handle = async ({ event, resolve }) => {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
         "Access-Control-Allow-Headers":
-          "Content-Type, x-api-key, x-openai-api-key, x-truesight-signature",
+          "Content-Type, x-api-key, x-openai-api-key, x-openerrata-signature",
         "Access-Control-Max-Age": "86400",
       },
     });
@@ -32,7 +32,7 @@ const cors: Handle = async ({ event, resolve }) => {
   response.headers.set("Access-Control-Allow-Origin", "*");
   response.headers.set(
     "Access-Control-Allow-Headers",
-    "Content-Type, x-api-key, x-openai-api-key, x-truesight-signature",
+    "Content-Type, x-api-key, x-openai-api-key, x-openerrata-signature",
   );
 
   return response;

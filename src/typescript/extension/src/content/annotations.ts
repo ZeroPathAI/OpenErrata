@@ -1,4 +1,4 @@
-import type { InvestigationClaim } from "@truesight/shared";
+import type { InvestigationClaim } from "@openerrata/shared";
 import { renderAnnotations, clearAnnotations } from "./annotator";
 import type { PlatformAdapter } from "./adapters/index";
 import { mapClaimsToDom } from "./dom-mapper";
@@ -55,7 +55,7 @@ export class AnnotationController {
 
     const root = adapter.getContentRoot(document);
     if (!root) return;
-    if (root.querySelector(".truesight-annotation")) return;
+    if (root.querySelector(".openerrata-annotation")) return;
     this.render(adapter);
   }
 }

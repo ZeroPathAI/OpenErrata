@@ -11,7 +11,7 @@ import {
   type ContentProvenance,
   type PlatformMetadataByPlatform,
   type ViewPostInput,
-} from "@truesight/shared";
+} from "@openerrata/shared";
 import { fetchCanonicalContent } from "$lib/services/content-fetcher.js";
 import { getOrCreateCurrentPrompt } from "$lib/services/prompt.js";
 import {

@@ -1,4 +1,4 @@
-import type { Platform } from "@truesight/shared";
+import type { Platform } from "@openerrata/shared";
 
 const LESSWRONG_EXTERNAL_ID_RE =
   /(?:www\.)?lesswrong\.com\/posts\/([A-Za-z0-9]+)(?:\/[^/?#]*)?(?:[/?#]|$)/i;

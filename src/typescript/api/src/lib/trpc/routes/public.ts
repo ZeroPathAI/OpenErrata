@@ -5,7 +5,7 @@ import {
   getPostInvestigationsInputSchema,
   searchInvestigationsInputSchema,
   getMetricsInputSchema,
-} from "@truesight/shared";
+} from "@openerrata/shared";
 
 function escapeLikePattern(query: string): string {
   return query.replace(/[\\%_]/g, (char) => `\\${char}`);

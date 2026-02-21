@@ -62,7 +62,7 @@
   });
 </script>
 
-<h1>TrueSight Settings</h1>
+<h1>OpenErrata Settings</h1>
 
 <section class="section">
   <h2>Basic</h2>
@@ -94,7 +94,7 @@
       id="api-url"
       type="url"
       bind:value={apiUrl}
-      placeholder="https://api.truesight.dev"
+      placeholder="https://api.openerrata.com"
     />
   </div>
 

@@ -3,7 +3,7 @@ replicaCount:
   worker: 2
 
 image:
-  repository: ghcr.io/zeropathAI/truesight-api
+  repository: ghcr.io/zeropathAI/openerrata-api
   tag: latest
   pullPolicy: Always
 

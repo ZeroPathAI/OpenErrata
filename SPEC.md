@@ -1,4 +1,4 @@
-# TrueSight
+# OpenErrata
 
 A browser extension that investigates the content people are reading throughout the internet with
 LLMs, and provides inline rebuttals to empirically incorrect or unambiguously misleading
@@ -40,7 +40,7 @@ misleading.
    develop a public database of individual authors and their incorrect claims,
    and gather data for incidence metrics such as the percentage of investigated
    posts that receive at least one fact check.
-4. **Transparency** — the design goals, design, spec, and code of truesight
+4. **Transparency** — the design goals, design, spec, and code of openerrata
    should be transparent and available for public inspection, as well as the
    individual investigations that this system makes. Users should be able to
    access as much information about the logic behind individual decisions as
@@ -132,7 +132,7 @@ The following are explicitly out of scope:
                         │                    │
                         ▼                    ▼
             ┌───────────────────────────────────┐
-            │         TrueSight API             │
+            │         OpenErrata API            │
             ├───────────────────────────────────┤
             │  View Tracker (records reads)     │
             │  Investigation Selector (cron)    │
@@ -153,7 +153,7 @@ The following are explicitly out of scope:
 | **Content Scripts**        | One per platform. Each implements a platform adapter interface: detect page ownership, extract content + media URLs, parse metadata, map annotations back to DOM. |
 | **Background Worker**      | Service worker. Routes messages between content scripts, popup, and the API. Manages local cache. Can auto-trigger `investigateNow` when user key mode is enabled. |
 | **Popup**                  | UI for extension state: toggle, summary of current page, settings.                                                                                            |
-| **TrueSight API**          | Records post views, serves cached investigations, runs selection, and exposes public API endpoints. All investigations execute asynchronously through the queue (including user-supplied key requests). |
+| **OpenErrata API**         | Records post views, serves cached investigations, runs selection, and exposes public API endpoints. All investigations execute asynchronously through the queue (including user-supplied key requests). |
 | **Blob Storage**           | Stores downloaded investigation-time images (hash-deduplicated) and serves public URLs used in multimodal model input.                                         |
 | **Investigation Selector** | Cron job that periodically selects uninvestigated posts with the highest capped unique-view score and enqueues them. Pluggable selection algorithm — v1 uses capped unique-view score; future versions can factor in recency, engagement, author, etc. |
 
@@ -235,7 +235,7 @@ The prompt principles (exact wording TBD):
   of evidence is not evidence of incorrectness — if you can't find sources, don't flag.
 - **Do not flag jokes/satire.** No need to explain this one.
 - **Do not flag genuinely disputed claims.** If credible sources disagree with each other, stay
-  silent. TrueSight only flags things that are uncontestably incorrect.
+  silent. OpenErrata only flags things that are uncontestably incorrect.
 - **Consider context.** A claim that is obviously hyperbolic, ironic, or a thought experiment is not
   a factual error. The author's identity and the platform matter.
 - **When in doubt, don't flag.** A false positive (incorrectly flagging a true claim) is far worse
@@ -255,7 +255,7 @@ The prompt principles (exact wording TBD):
 ISSUES FOUND:          CLEAN:                 NOT YET INVESTIGATED:
 
 ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
-│ TrueSight    [⚙] │  │ TrueSight    [⚙] │  │ TrueSight    [⚙] │
+│ OpenErrata   [⚙] │  │ OpenErrata   [⚙] │  │ OpenErrata   [⚙] │
 ├──────────────────┤  ├──────────────────┤  ├──────────────────┤
 │                  │  │                  │  │                  │
 │ "Against Ortho…" │  │ "Against Ortho…" │  │ "Against Ortho…" │
@@ -1237,7 +1237,7 @@ Skip only `video_only` tweets (video present, no extracted images).
 ```jsonc
 {
   "manifest_version": 3,
-  "name": "TrueSight",
+  "name": "OpenErrata",
   "version": "0.1.0",
   "description": "Fact-check LessWrong, X, and Substack posts with AI-powered claim verification.",
   "permissions": ["activeTab", "storage", "scripting"],
@@ -1247,7 +1247,7 @@ Skip only `video_only` tweets (video present, no extracted images).
     "https://*.substack.com/*",
     "https://x.com/*",
     "https://twitter.com/*",
-    "https://api.truesight.dev/*",
+    "https://api.openerrata.com/*",
     "http://localhost/*",
   ],
   "background": {
@@ -1288,10 +1288,10 @@ Skip only `video_only` tweets (video present, no extracted images).
 ## 3.13 Project Layout
 
 ```
-truesight/
+openerrata/
 ├── src/
 │   ├── helm/
-│   │   └── truesight/                 # Helm chart — single source of truth for deployment
+│   │   └── openerrata/                # Helm chart — single source of truth for deployment
 │   │       ├── Chart.yaml
 │   │       ├── values.yaml            # Defaults for on-prem; Pulumi overrides for hosted
 │   │       └── templates/
@@ -1375,7 +1375,7 @@ truesight/
 │       │   ├── tsconfig.json
 │       │   └── package.json
 │       │
-│       ├── pulumi/                    # Official hosted infra — deploys helm/truesight
+│       ├── pulumi/                    # Official hosted infra — deploys helm/openerrata
 │       │   ├── index.ts               # Uses @pulumi/kubernetes.helm.v3.Chart
 │       │   ├── tsconfig.json
 │       │   ├── package.json
@@ -1390,7 +1390,7 @@ truesight/
 
 The chart does not bundle a database — it takes a `DATABASE_URL` as config (via `secrets.yaml`),
 pointing at Supabase for the official hosted deployment or any Postgres-compatible database for
-on-prem. On-prem operators deploy with `helm install truesight ./src/helm/truesight` and override
+on-prem. On-prem operators deploy with `helm install openerrata ./src/helm/openerrata` and override
 `values.yaml` for their environment. The official hosted deployment uses Pulumi's
 `@pulumi/kubernetes` Helm provider to deploy the same chart with hosted-specific overrides
 (Supabase connection string, domain, TLS, autoscaling). This guarantees that on-prem and hosted

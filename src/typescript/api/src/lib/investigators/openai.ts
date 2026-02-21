@@ -4,7 +4,7 @@ import {
   DEFAULT_INVESTIGATION_MODEL,
   DEFAULT_INVESTIGATION_PROVIDER,
   investigationResultSchema,
-} from "@truesight/shared";
+} from "@openerrata/shared";
 import { getEnv } from "$lib/config/env.js";
 import {
   FETCH_URL_TOOL_NAME,

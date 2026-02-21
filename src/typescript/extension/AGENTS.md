@@ -1,7 +1,7 @@
-# TrueSight Browser Extension
+# OpenErrata Browser Extension
 
 Chrome MV3 extension that extracts post content from LessWrong and X, sends it
-to the TrueSight API, and renders inline annotations on incorrect claims.
+to the OpenErrata API, and renders inline annotations on incorrect claims.
 
 ## Build
 
@@ -23,7 +23,7 @@ Content Script (runs on LessWrong/X pages)
   → chrome.runtime.sendMessage({ type: "PAGE_CONTENT", payload })
   → Background Service Worker
       → api-client.ts: HTTP POST to /trpc/post.viewPost
-      → TrueSight API
+      → OpenErrata API
   ← response with investigated + claims
   → Content Script renders annotations (or records "skipped")
 ```
@@ -87,7 +87,7 @@ If all tiers fail, the claim appears in the popup but is not annotated inline.
 
 ### Annotation Rendering
 
-- Red wavy underline via `<mark class="truesight-annotation">`
+- Red wavy underline via `<mark class="openerrata-annotation">`
 - Hover tooltip with claim summary
 - Click opens detail panel with full reasoning + source links
 - `clearAnnotations()` unwraps all marks before re-applying
@@ -98,7 +98,7 @@ If all tiers fail, the claim appears in the popup but is not annotated inline.
 The options page (`options/App.svelte`) stores settings in `chrome.storage.local`:
 - `openaiApiKey` — user-provided OpenAI key for request-scoped investigations
 - `autoInvestigate` — auto-trigger investigate-now after `viewPost` misses
-- `apiBaseUrl` — API server URL (default: `https://api.truesight.dev`)
+- `apiBaseUrl` — API server URL (default: `https://api.openerrata.com`)
 - `hmacSecret` — optional override for request attestation secret
 - `apiKey` — optional instance API key
 

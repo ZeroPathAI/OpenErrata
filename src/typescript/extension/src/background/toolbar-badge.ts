@@ -1,4 +1,4 @@
-import type { ExtensionPostStatus } from "@truesight/shared";
+import type { ExtensionPostStatus } from "@openerrata/shared";
 import browser from "webextension-polyfill";
 
 type ToolbarBadgeState = {

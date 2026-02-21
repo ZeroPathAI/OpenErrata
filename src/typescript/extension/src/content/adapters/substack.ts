@@ -1,5 +1,5 @@
-import type { PlatformContent } from "@truesight/shared";
-import { normalizeContent } from "@truesight/shared";
+import type { PlatformContent } from "@openerrata/shared";
+import { normalizeContent } from "@openerrata/shared";
 import type { PlatformAdapter } from "./lesswrong";
 
 const CONTENT_SELECTOR = ".body.markup";

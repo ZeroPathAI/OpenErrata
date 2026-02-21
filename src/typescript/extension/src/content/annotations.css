@@ -1,6 +1,6 @@
-.truesight-annotation {
+.openerrata-annotation {
   text-decoration: underline;
-  text-decoration-color: var(--truesight-red, #dc2626);
+  text-decoration-color: var(--openerrata-red, #dc2626);
   text-decoration-style: wavy;
   text-decoration-thickness: 2px;
   text-decoration-skip-ink: none;
@@ -9,7 +9,7 @@
   background: transparent;
 }
 
-.truesight-tooltip {
+.openerrata-tooltip {
   position: fixed;
   top: 0;
   left: 0;
@@ -28,17 +28,17 @@
   white-space: normal;
 }
 
-.truesight-tooltip-summary {
+.openerrata-tooltip-summary {
   font-weight: 600;
 }
 
-.truesight-tooltip-action {
+.openerrata-tooltip-action {
   margin-top: 6px;
   font-size: 12px;
   color: var(--ts-muted, #64748b);
 }
 
-.truesight-detail-panel {
+.openerrata-detail-panel {
   position: fixed;
   top: 0;
   right: 0;
@@ -57,14 +57,14 @@
   font-weight: 400;
 }
 
-.truesight-detail-panel h3 {
+.openerrata-detail-panel h3 {
   margin: 0 0 14px;
   font-size: 18px;
   line-height: 1.2;
   font-weight: 800;
 }
 
-.truesight-detail-panel h4 {
+.openerrata-detail-panel h4 {
   margin: 18px 0 8px;
   font-size: 14px;
   line-height: 1.2;
@@ -74,20 +74,20 @@
   letter-spacing: 0.04em;
 }
 
-.truesight-detail-panel p {
+.openerrata-detail-panel p {
   margin: 0;
   font-size: inherit;
   line-height: inherit;
 }
 
-.truesight-detail-panel div,
-.truesight-detail-panel span,
-.truesight-detail-panel a {
+.openerrata-detail-panel div,
+.openerrata-detail-panel span,
+.openerrata-detail-panel a {
   font-size: inherit;
   line-height: inherit;
 }
 
-.truesight-detail-panel .claim-text {
+.openerrata-detail-panel .claim-text {
   font-style: italic;
   margin-bottom: 12px;
   padding: 10px 12px;
@@ -96,28 +96,28 @@
   border-radius: 8px;
 }
 
-.truesight-detail-panel .reasoning {
+.openerrata-detail-panel .reasoning {
   margin-bottom: 16px;
   line-height: 1.62;
 }
 
-.truesight-detail-panel .reasoning p {
+.openerrata-detail-panel .reasoning p {
   margin: 0 0 10px;
 }
 
-.truesight-detail-panel .reasoning p:last-child {
+.openerrata-detail-panel .reasoning p:last-child {
   margin-bottom: 0;
 }
 
-.truesight-detail-panel .reasoning strong {
+.openerrata-detail-panel .reasoning strong {
   font-weight: 700;
 }
 
-.truesight-detail-panel .reasoning em {
+.openerrata-detail-panel .reasoning em {
   font-style: italic;
 }
 
-.truesight-detail-panel .reasoning code {
+.openerrata-detail-panel .reasoning code {
   font-family: "SFMono-Regular", "Consolas", "Liberation Mono", monospace;
   font-size: 0.9em;
   padding: 1px 5px;
@@ -126,26 +126,26 @@
   border: 1px solid var(--ts-border, #dbe3f5);
 }
 
-.truesight-detail-panel .reasoning ol,
-.truesight-detail-panel .reasoning ul {
+.openerrata-detail-panel .reasoning ol,
+.openerrata-detail-panel .reasoning ul {
   margin: 0 0 10px;
   padding-left: 22px;
 }
 
-.truesight-detail-panel .reasoning li {
+.openerrata-detail-panel .reasoning li {
   margin-bottom: 4px;
 }
 
-.truesight-detail-panel .source {
+.openerrata-detail-panel .source {
   margin-bottom: 10px;
 }
 
-.truesight-detail-panel .source a {
+.openerrata-detail-panel .source a {
   color: var(--ts-link, #1d4ed8);
   text-decoration: underline;
 }
 
-.truesight-detail-panel .close-btn {
+.openerrata-detail-panel .close-btn {
   position: absolute;
   top: 12px;
   right: 12px;
@@ -160,7 +160,7 @@
   line-height: 1;
 }
 
-.truesight-theme-light {
+.openerrata-theme-light {
   --ts-surface: #ffffff;
   --ts-border: #dbe3f5;
   --ts-text: #0f172a;
@@ -170,7 +170,7 @@
   --ts-shadow: 0 10px 28px rgba(15, 23, 42, 0.18);
 }
 
-.truesight-theme-dark {
+.openerrata-theme-dark {
   --ts-surface: #0f172a;
   --ts-border: #2f3e57;
   --ts-text: #e2e8f0;

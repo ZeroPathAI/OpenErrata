@@ -1,5 +1,5 @@
 {
-  "name": "@truesight/extension",
+  "name": "@openerrata/extension",
   "version": "0.1.0",
   "type": "module",
   "scripts": {
@@ -12,7 +12,7 @@
   "dependencies": {
     "@trpc/client": "^11.10.0",
     "@trpc/server": "^11.10.0",
-    "@truesight/shared": "workspace:*",
+    "@openerrata/shared": "workspace:*",
     "webextension-polyfill": "^0.12.0"
   },
   "devDependencies": {

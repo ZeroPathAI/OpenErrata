@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { MAX_IMAGE_BYTES } from "@truesight/shared";
+import { MAX_IMAGE_BYTES } from "@openerrata/shared";
 import { prisma } from "$lib/db/client.js";
 import { isUniqueConstraintError } from "$lib/db/errors.js";
 import type { ImageBlob } from "$lib/generated/prisma/client";
@@ -58,7 +58,7 @@ async function downloadImage(
         redirect: "manual",
         signal: AbortSignal.timeout(IMAGE_DOWNLOAD_TIMEOUT_MS),
         headers: {
-          "User-Agent": "TrueSightImageDownloader/1.0 (+https://truesight.local)",
+          "User-Agent": "OpenErrataImageDownloader/1.0 (+https://openerrata.com)",
           Accept: "image/*",
         },
       });

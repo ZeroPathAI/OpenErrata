@@ -23,7 +23,7 @@ import type {
 } from "$lib/generated/prisma/client";
 import { createHash } from "node:crypto";
 import { ZodError } from "zod";
-import { MAX_IMAGES_PER_INVESTIGATION } from "@truesight/shared";
+import { MAX_IMAGES_PER_INVESTIGATION } from "@openerrata/shared";
 
 interface Logger {
   info(msg: string): void;

@@ -1,5 +1,5 @@
 {
-  "name": "@truesight/api",
+  "name": "@openerrata/api",
   "version": "0.1.0",
   "type": "module",
   "scripts": {
@@ -22,7 +22,7 @@
     "@sveltejs/adapter-node": "^5.5.3",
     "@sveltejs/kit": "^2.52.2",
     "@trpc/server": "^11.10.0",
-    "@truesight/shared": "workspace:*",
+    "@openerrata/shared": "workspace:*",
     "dotenv": "^17.3.1",
     "graphile-worker": "^0.16.6",
     "openai": "^6.22.0",

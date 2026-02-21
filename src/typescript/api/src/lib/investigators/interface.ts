@@ -4,7 +4,7 @@ import type {
   InvestigationProvider,
   InvestigationResult,
   Platform,
-} from "@truesight/shared";
+} from "@openerrata/shared";
 
 const isoDateTimeSchema = z.string().datetime();
 

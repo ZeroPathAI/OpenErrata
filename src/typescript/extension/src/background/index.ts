@@ -3,7 +3,7 @@ import {
   extensionRuntimeErrorResponseSchema,
   investigationStatusOutputSchema,
   POLL_INTERVAL_MS,
-} from "@truesight/shared";
+} from "@openerrata/shared";
 import type {
   ExtensionPageStatus,
   ExtensionPostStatus,
@@ -12,7 +12,7 @@ import type {
   InvestigationStatusOutput,
   ViewPostInput,
   ViewPostOutput,
-} from "@truesight/shared";
+} from "@openerrata/shared";
 import browser, { type Runtime } from "webextension-polyfill";
 import {
   init,

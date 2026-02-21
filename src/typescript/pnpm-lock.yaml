@@ -41,6 +41,9 @@ importers:
       '@aws-sdk/client-s3':
         specifier: ^3.994.0
         version: 3.994.0
+      '@openerrata/shared':
+        specifier: workspace:*
+        version: link:../shared
       '@prisma/adapter-pg':
         specifier: ^7.4.1
         version: 7.4.1
@@ -56,9 +59,6 @@ importers:
       '@trpc/server':
         specifier: ^11.10.0
         version: 11.10.0(typescript@5.9.3)
-      '@truesight/shared':
-        specifier: workspace:*
-        version: link:../shared
       dotenv:
         specifier: ^17.3.1
         version: 17.3.1
@@ -102,15 +102,15 @@ importers:
 
   extension:
     dependencies:
+      '@openerrata/shared':
+        specifier: workspace:*
+        version: link:../shared
       '@trpc/client':
         specifier: ^11.10.0
         version: 11.10.0(@trpc/server@11.10.0(typescript@5.9.3))(typescript@5.9.3)
       '@trpc/server':
         specifier: ^11.10.0
         version: 11.10.0(typescript@5.9.3)
-      '@truesight/shared':
-        specifier: workspace:*
-        version: link:../shared
       webextension-polyfill:
         specifier: ^0.12.0
         version: 0.12.0

@@ -1,8 +1,8 @@
-{{- define "truesight.name" -}}
+{{- define "openerrata.name" -}}
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
-{{- define "truesight.fullname" -}}
+{{- define "openerrata.fullname" -}}
 {{- if .Values.fullnameOverride -}}
 {{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" -}}
 {{- else -}}
@@ -15,14 +15,14 @@
 {{- end -}}
 {{- end -}}
 
-{{- define "truesight.labels" -}}
-app.kubernetes.io/name: {{ include "truesight.name" . }}
+{{- define "openerrata.labels" -}}
+app.kubernetes.io/name: {{ include "openerrata.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
 
-{{- define "truesight.selectorLabels" -}}
-app.kubernetes.io/name: {{ include "truesight.name" . }}
+{{- define "openerrata.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "openerrata.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}

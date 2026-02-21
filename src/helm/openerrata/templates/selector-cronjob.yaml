@@ -1,9 +1,9 @@
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: {{ include "truesight.fullname" . }}-selector
+  name: {{ include "openerrata.fullname" . }}-selector
   labels:
-    {{- include "truesight.labels" . | nindent 4 }}
+    {{- include "openerrata.labels" . | nindent 4 }}
     app.kubernetes.io/component: selector
 spec:
   schedule: {{ .Values.selector.schedule | quote }}
@@ -13,7 +13,7 @@ spec:
       template:
         metadata:
           labels:
-            {{- include "truesight.selectorLabels" . | nindent 12 }}
+            {{- include "openerrata.selectorLabels" . | nindent 12 }}
             app.kubernetes.io/component: selector
         spec:
           restartPolicy: OnFailure
@@ -24,6 +24,6 @@ spec:
               command: ["node", "node_modules/tsx/dist/cli.mjs", "src/lib/services/selector-entrypoint.ts"]
               envFrom:
                 - secretRef:
-                    name: {{ include "truesight.fullname" . }}
+                    name: {{ include "openerrata.fullname" . }}
                 - configMapRef:
-                    name: {{ include "truesight.fullname" . }}
+                    name: {{ include "openerrata.fullname" . }}

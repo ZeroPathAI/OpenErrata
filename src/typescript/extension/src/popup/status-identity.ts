@@ -1,4 +1,4 @@
-import type { ExtensionPageStatus } from "@truesight/shared";
+import type { ExtensionPageStatus } from "@openerrata/shared";
 import type { SupportedPageIdentity } from "../lib/post-identity";
 
 const SUBSTACK_POST_PATH_REGEX = /^\/p\/[^/?#]+/i;

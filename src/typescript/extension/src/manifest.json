@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "TrueSight",
+  "name": "OpenErrata",
   "version": "0.1.0",
   "description": "Inline, LLM-powered fact checks of the stuff you're reading on the internet.",
   "permissions": ["activeTab", "storage", "scripting", "webNavigation", "alarms"],

@@ -10,7 +10,7 @@ import {
   WORD_COUNT_LIMIT,
   type ContentProvenance,
   type Platform,
-} from "@truesight/shared";
+} from "@openerrata/shared";
 import { getSelectorBudget } from "$lib/config/runtime.js";
 
 export async function runSelector(): Promise<number> {

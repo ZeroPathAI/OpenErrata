@@ -6,14 +6,14 @@ import {
   normalizeContent,
   WORD_COUNT_LIMIT,
   type Platform,
-} from "@truesight/shared";
+} from "@openerrata/shared";
 
 process.env.NODE_ENV ??= "test";
 process.env.DATABASE_URL ??=
-  "postgresql://truesight:truesight_dev@localhost:5433/truesight";
+  "postgresql://openerrata:openerrata_dev@localhost:5433/openerrata";
 process.env.HMAC_SECRET ??= "test-hmac-secret";
 process.env.VALID_API_KEYS ??= "test-api-key";
-process.env.BLOB_STORAGE_BUCKET ??= "test-truesight-images";
+process.env.BLOB_STORAGE_BUCKET ??= "test-openerrata-images";
 process.env.BLOB_STORAGE_ACCESS_KEY_ID ??= "test-blob-access-key";
 process.env.BLOB_STORAGE_SECRET_ACCESS_KEY ??= "test-blob-secret";
 process.env.BLOB_STORAGE_PUBLIC_URL_PREFIX ??= "https://example.test/images";
@@ -426,7 +426,7 @@ async function buildXViewInput(input: {
   return {
     platform: "X" as const,
     externalId,
-    url: `https://x.com/truesight/status/${externalId}`,
+    url: `https://x.com/openerrata/status/${externalId}`,
     observedContentText,
     metadata: {
       authorHandle: withIntegrationPrefix("author"),
@@ -568,7 +568,7 @@ void test("post.getInvestigation returns complete investigation with claims", as
   const post = await seedPost({
     platform: "X",
     externalId: "get-investigation-1",
-    url: "https://x.com/truesight/status/get-investigation-1",
+    url: "https://x.com/openerrata/status/get-investigation-1",
     contentText: "Existing canonical content for getInvestigation.",
   });
   const investigation = await seedCompleteInvestigation({
@@ -861,7 +861,7 @@ void test("selector recovers stale PROCESSING investigations using shared lifecy
   const post = await seedPost({
     platform: "X",
     externalId: "selector-recovers-stale-processing-1",
-    url: "https://x.com/truesight/status/selector-recovers-stale-processing-1",
+    url: "https://x.com/openerrata/status/selector-recovers-stale-processing-1",
     contentText: "Selector should recover stale processing runs.",
   });
   await prisma.post.update({
@@ -957,13 +957,13 @@ void test("post.batchStatus returns investigated flag and incorrect claim counts
   const investigatedPost = await seedPost({
     platform: "X",
     externalId: "batch-investigated-1",
-    url: "https://x.com/truesight/status/batch-investigated-1",
+    url: "https://x.com/openerrata/status/batch-investigated-1",
     contentText: "Investigated post content for batchStatus.",
   });
   const pendingPost = await seedPost({
     platform: "X",
     externalId: "batch-not-investigated-1",
-    url: "https://x.com/truesight/status/batch-not-investigated-1",
+    url: "https://x.com/openerrata/status/batch-not-investigated-1",
     contentText: "Not investigated post content for batchStatus.",
   });
 
@@ -1143,7 +1143,7 @@ void test("public.searchInvestigations filters by eligibility, query, and platfo
   const xPost = await seedPost({
     platform: "X",
     externalId: "public-search-x-1",
-    url: "https://x.com/truesight/status/public-search-x-1",
+    url: "https://x.com/openerrata/status/public-search-x-1",
     contentText: "Traffic data trends are stable this week.",
   });
   const xInvestigation = await seedCompleteInvestigation({
@@ -1196,7 +1196,7 @@ void test("public.getMetrics counts only eligible complete investigations and ho
   const xPost = await seedPost({
     platform: "X",
     externalId: "public-metrics-x-1",
-    url: "https://x.com/truesight/status/public-metrics-x-1",
+    url: "https://x.com/openerrata/status/public-metrics-x-1",
     contentText: "Metrics platform X post.",
   });
   const xInvestigation = await seedCompleteInvestigation({
@@ -1225,7 +1225,7 @@ void test("public.getMetrics counts only eligible complete investigations and ho
   const ineligiblePost = await seedPost({
     platform: "X",
     externalId: "public-metrics-ineligible-1",
-    url: "https://x.com/truesight/status/public-metrics-ineligible-1",
+    url: "https://x.com/openerrata/status/public-metrics-ineligible-1",
     contentText: "Should not count in public metrics.",
   });
   await seedCompleteInvestigation({
@@ -1260,4 +1260,18 @@ void test("public.getMetrics counts only eligible complete investigations and ho
   assert.equal(emptyWindowMetrics.totalInvestigatedPosts, 0);
   assert.equal(emptyWindowMetrics.investigatedPostsWithFlags, 0);
   assert.equal(emptyWindowMetrics.factCheckIncidence, 0);
+});
+
+void test("post.validateSettings reports instance api-key acceptance", async () => {
+  const authenticatedCaller = createCaller({ isAuthenticated: true });
+  const anonymousCaller = createCaller({ isAuthenticated: false });
+
+  const authenticatedResult = await authenticatedCaller.post.validateSettings();
+  const anonymousResult = await anonymousCaller.post.validateSettings();
+
+  assert.equal(authenticatedResult.instanceApiKeyAccepted, true);
+  assert.equal(authenticatedResult.openaiApiKeyStatus, "missing");
+
+  assert.equal(anonymousResult.instanceApiKeyAccepted, false);
+  assert.equal(anonymousResult.openaiApiKeyStatus, "missing");
 });

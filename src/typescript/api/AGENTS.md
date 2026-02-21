@@ -1,6 +1,6 @@
-# TrueSight API
+# OpenErrata API
 
-SvelteKit application that serves as the backend for TrueSight. Hosts the tRPC
+SvelteKit application that serves as the backend for OpenErrata. Hosts the tRPC
 API, runs the investigation job queue, and exposes the public investigation
 browser.
 
@@ -73,7 +73,7 @@ upserts by hash.
 - Anonymous viewers: identified by hashed IP+UA.
 - Authenticated viewers: provide a valid `x-api-key` header. Valid keys are
   configured via `VALID_API_KEYS` env var (comma-separated).
-- Attestation: extension sends HMAC signature in `x-truesight-signature` header.
+- Attestation: extension sends HMAC signature in `x-openerrata-signature` header.
   Verified in context but treated as a low-confidence signal, not a security boundary.
 
 ### SQL Injection Prevention

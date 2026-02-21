@@ -1,9 +1,9 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ include "truesight.fullname" . }}-migrate
+  name: {{ include "openerrata.fullname" . }}-migrate
   labels:
-    {{- include "truesight.labels" . | nindent 4 }}
+    {{- include "openerrata.labels" . | nindent 4 }}
     app.kubernetes.io/component: migrate
   annotations:
     "helm.sh/hook": pre-install,pre-upgrade
@@ -16,7 +16,7 @@ spec:
   template:
     metadata:
       labels:
-        {{- include "truesight.selectorLabels" . | nindent 8 }}
+        {{- include "openerrata.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: migrate
     spec:
       restartPolicy: Never

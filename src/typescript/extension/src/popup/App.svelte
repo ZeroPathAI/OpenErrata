@@ -4,8 +4,8 @@
     extensionPageStatusSchema,
     extensionRuntimeErrorResponseSchema,
     requestInvestigateResponseSchema,
-  } from "@truesight/shared";
-  import type { ExtensionPageStatus, ExtensionSkippedReason } from "@truesight/shared";
+  } from "@openerrata/shared";
+  import type { ExtensionPageStatus, ExtensionSkippedReason } from "@openerrata/shared";
   import browser from "webextension-polyfill";
   import { isSupportedPostUrl, parseSupportedPageIdentity } from "../lib/post-identity";
   import { isSubstackPostPathUrl, statusMatchesIdentity } from "./status-identity";
@@ -53,7 +53,7 @@
       return "This post is too long and is not eligible for investigation.";
     }
     if (reason === "unsupported_content") {
-      return "TrueSight could not extract this post. Try reloading the page or opening the canonical post URL.";
+      return "OpenErrata could not extract this post. Try reloading the page or opening the canonical post URL.";
     }
     return "This post is not eligible for investigation.";
   }
@@ -250,7 +250,7 @@
   <div class="surface">
     <header class="topbar">
       <div class="brand">
-        <h1 class="brand-title">TrueSight</h1>
+        <h1 class="brand-title">OpenErrata</h1>
       </div>
       <button class="settings-btn" onclick={openSettings} title="Settings">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">

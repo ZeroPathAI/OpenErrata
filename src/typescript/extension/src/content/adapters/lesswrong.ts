@@ -1,5 +1,5 @@
-import type { Platform, PlatformContent } from "@truesight/shared";
-import { normalizeContent } from "@truesight/shared";
+import type { Platform, PlatformContent } from "@openerrata/shared";
+import { normalizeContent } from "@openerrata/shared";
 
 export interface PlatformAdapter {
   platformKey: Platform;

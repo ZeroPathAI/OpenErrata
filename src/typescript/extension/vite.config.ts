@@ -20,7 +20,7 @@ function buildContentScript(): Plugin {
           lib: {
             entry: resolve(__dirname, "src/content/main.ts"),
             formats: ["iife"],
-            name: "TrueSightContent",
+            name: "OpenErrataContent",
             fileName: () => "main.js",
           },
           rollupOptions: {
@@ -35,7 +35,7 @@ function buildContentScript(): Plugin {
         },
         resolve: {
           alias: {
-            "@truesight/shared": resolve(__dirname, "../shared/src"),
+            "@openerrata/shared": resolve(__dirname, "../shared/src"),
           },
         },
       });

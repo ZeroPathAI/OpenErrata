@@ -7,8 +7,8 @@ COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
 COPY shared/ shared/
 COPY api/ api/
 RUN pnpm install --frozen-lockfile
-RUN pnpm --filter @truesight/api run prisma:generate
-RUN pnpm --filter @truesight/api build
+RUN pnpm --filter @openerrata/api run prisma:generate
+RUN pnpm --filter @openerrata/api build
 
 FROM base AS runtime
 WORKDIR /app

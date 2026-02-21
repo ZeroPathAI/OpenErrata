@@ -1,12 +1,12 @@
 import {
   extensionPostStatusSchema,
   extensionSkippedStatusSchema,
-} from "@truesight/shared";
+} from "@openerrata/shared";
 import type {
   ExtensionPageStatus,
   ExtensionPostStatus,
   ExtensionSkippedStatus,
-} from "@truesight/shared";
+} from "@openerrata/shared";
 import browser from "webextension-polyfill";
 
 import { updateToolbarBadge } from "./toolbar-badge.js";

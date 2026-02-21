@@ -22,5 +22,5 @@ async function runOnce(): Promise<void> {
   }
 }
 
-console.log("Running TrueSight selector once...");
+console.log("Running OpenErrata selector once...");
 void runOnce();

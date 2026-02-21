@@ -9,7 +9,7 @@ import {
   DEFAULT_INVESTIGATION_PROVIDER,
   WORD_COUNT_LIMIT,
   type ContentProvenance,
-} from "@truesight/shared";
+} from "@openerrata/shared";
 import { enqueueInvestigationRun } from "./queue.js";
 
 type CanonicalInvestigationContent = {

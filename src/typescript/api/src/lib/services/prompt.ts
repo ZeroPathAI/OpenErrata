@@ -3,7 +3,7 @@ import {
   INVESTIGATION_SYSTEM_PROMPT,
   INVESTIGATION_PROMPT_VERSION,
 } from "$lib/investigators/prompt.js";
-import { hashContent } from "@truesight/shared";
+import { hashContent } from "@openerrata/shared";
 
 /**
  * Get or create the current Prompt row.

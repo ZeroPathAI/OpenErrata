@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import {
   extensionPageStatusSchema,
   type ExtensionSkippedReason,
-} from "@truesight/shared";
+} from "@openerrata/shared";
 import { chromium, expect, test, type BrowserContext, type Worker } from "@playwright/test";
 
 type Platform = "LESSWRONG" | "X";
@@ -41,7 +41,7 @@ function hasMatchingSkippedStatus(
 
 async function launchExtensionHarness(): Promise<ExtensionHarness> {
   const extensionPath = resolve(process.cwd(), "dist");
-  const userDataDir = mkdtempSync(join(tmpdir(), "truesight-extension-e2e-"));
+  const userDataDir = mkdtempSync(join(tmpdir(), "openerrata-extension-e2e-"));
   const context = await chromium.launchPersistentContext(userDataDir, {
     headless: false,
     args: [
@@ -146,14 +146,14 @@ test("X i/status URL still reaches a terminal skipped status", async () => {
 <html>
   <head>
     <meta charset="utf-8" />
-    <meta property="og:url" content="https://x.com/truesight/status/${tweetId}" />
+    <meta property="og:url" content="https://x.com/openerrata/status/${tweetId}" />
     <title>X test status</title>
   </head>
   <body>
     <article>
       <div data-testid="User-Name">
-        <a href="/truesight/status/${tweetId}"><span>TrueSight</span></a>
-        <span>@truesight</span>
+        <a href="/openerrata/status/${tweetId}"><span>OpenErrata</span></a>
+        <span>@openerrata</span>
       </div>
       <div data-testid="tweetText">This tweet includes video-only media for eligibility checks.</div>
       <div data-testid="videoPlayer"><video src="https://video.twimg.com/test.mp4"></video></div>

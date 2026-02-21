@@ -1,4 +1,4 @@
-import { normalizeContent, type InvestigationClaim } from "@truesight/shared";
+import { normalizeContent, type InvestigationClaim } from "@openerrata/shared";
 
 // ── Public types ──────────────────────────────────────────────────────────
 

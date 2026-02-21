@@ -2,7 +2,7 @@
 CREATE SCHEMA IF NOT EXISTS "public";
 
 -- CreateEnum
-CREATE TYPE "Platform" AS ENUM ('LESSWRONG', 'X');
+CREATE TYPE "Platform" AS ENUM ('LESSWRONG', 'X', 'SUBSTACK');
 
 -- CreateEnum
 CREATE TYPE "CheckStatus" AS ENUM ('PENDING', 'PROCESSING', 'COMPLETE', 'FAILED');
@@ -68,6 +68,7 @@ CREATE TABLE "LesswrongMeta" (
     "slug" TEXT NOT NULL,
     "title" TEXT NOT NULL,
     "htmlContent" TEXT NOT NULL,
+    "imageUrls" TEXT[],
     "wordCount" INTEGER,
     "karma" INTEGER,
     "authorName" TEXT NOT NULL,
@@ -91,6 +92,24 @@ CREATE TABLE "XMeta" (
     "postedAt" TIMESTAMP(3),
 
     CONSTRAINT "XMeta_pkey" PRIMARY KEY ("postId")
+);
+
+-- CreateTable
+CREATE TABLE "SubstackMeta" (
+    "postId" TEXT NOT NULL,
+    "substackPostId" TEXT NOT NULL,
+    "publicationSubdomain" TEXT NOT NULL,
+    "slug" TEXT NOT NULL,
+    "title" TEXT NOT NULL,
+    "subtitle" TEXT,
+    "imageUrls" TEXT[],
+    "authorName" TEXT NOT NULL,
+    "authorSubstackHandle" TEXT,
+    "publishedAt" TIMESTAMP(3),
+    "likeCount" INTEGER,
+    "commentCount" INTEGER,
+
+    CONSTRAINT "SubstackMeta_pkey" PRIMARY KEY ("postId")
 );
 
 -- CreateTable
@@ -126,11 +145,64 @@ CREATE TABLE "Investigation" (
 );
 
 -- CreateTable
+CREATE TABLE "InvestigationRun" (
+    "id" TEXT NOT NULL,
+    "investigationId" TEXT NOT NULL,
+    "leaseOwner" TEXT,
+    "leaseExpiresAt" TIMESTAMP(3),
+    "queuedAt" TIMESTAMP(3),
+    "startedAt" TIMESTAMP(3),
+    "heartbeatAt" TIMESTAMP(3),
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "InvestigationRun_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "InvestigationOpenAiKeySource" (
+    "runId" TEXT NOT NULL,
+    "ciphertext" TEXT NOT NULL,
+    "iv" TEXT NOT NULL,
+    "authTag" TEXT NOT NULL,
+    "keyId" TEXT NOT NULL,
+    "expiresAt" TIMESTAMP(3) NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "InvestigationOpenAiKeySource_pkey" PRIMARY KEY ("runId")
+);
+
+-- CreateTable
+CREATE TABLE "ImageBlob" (
+    "id" TEXT NOT NULL,
+    "contentHash" TEXT NOT NULL,
+    "storageKey" TEXT NOT NULL,
+    "originalUrl" TEXT NOT NULL,
+    "mimeType" TEXT NOT NULL,
+    "sizeBytes" INTEGER NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "ImageBlob_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "InvestigationImage" (
+    "investigationId" TEXT NOT NULL,
+    "imageBlobId" TEXT NOT NULL,
+    "imageOrder" INTEGER NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "InvestigationImage_pkey" PRIMARY KEY ("investigationId","imageBlobId")
+);
+
+-- CreateTable
 CREATE TABLE "InvestigationAttempt" (
     "id" TEXT NOT NULL,
     "investigationId" TEXT NOT NULL,
     "attemptNumber" INTEGER NOT NULL,
-    "outcome" "InvestigationAttemptOutcome",
+    "outcome" "InvestigationAttemptOutcome" NOT NULL,
     "requestModel" TEXT NOT NULL,
     "requestInstructions" TEXT NOT NULL,
     "requestInput" TEXT NOT NULL,
@@ -325,6 +397,12 @@ CREATE UNIQUE INDEX "LesswrongMeta_slug_key" ON "LesswrongMeta"("slug");
 CREATE UNIQUE INDEX "XMeta_tweetId_key" ON "XMeta"("tweetId");
 
 -- CreateIndex
+CREATE UNIQUE INDEX "SubstackMeta_substackPostId_key" ON "SubstackMeta"("substackPostId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "SubstackMeta_publicationSubdomain_slug_key" ON "SubstackMeta"("publicationSubdomain", "slug");
+
+-- CreateIndex
 CREATE UNIQUE INDEX "Prompt_version_key" ON "Prompt"("version");
 
 -- CreateIndex
@@ -335,6 +413,27 @@ CREATE INDEX "Investigation_postId_status_idx" ON "Investigation"("postId", "sta
 
 -- CreateIndex
 CREATE UNIQUE INDEX "Investigation_postId_contentHash_key" ON "Investigation"("postId", "contentHash");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "InvestigationRun_investigationId_key" ON "InvestigationRun"("investigationId");
+
+-- CreateIndex
+CREATE INDEX "InvestigationRun_leaseExpiresAt_idx" ON "InvestigationRun"("leaseExpiresAt");
+
+-- CreateIndex
+CREATE INDEX "InvestigationOpenAiKeySource_expiresAt_idx" ON "InvestigationOpenAiKeySource"("expiresAt");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "ImageBlob_contentHash_key" ON "ImageBlob"("contentHash");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "ImageBlob_storageKey_key" ON "ImageBlob"("storageKey");
+
+-- CreateIndex
+CREATE INDEX "InvestigationImage_imageBlobId_idx" ON "InvestigationImage"("imageBlobId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "InvestigationImage_investigationId_imageOrder_key" ON "InvestigationImage"("investigationId", "imageOrder");
 
 -- CreateIndex
 CREATE INDEX "InvestigationAttempt_investigationId_startedAt_idx" ON "InvestigationAttempt"("investigationId", "startedAt");
@@ -412,10 +511,25 @@ ALTER TABLE "LesswrongMeta" ADD CONSTRAINT "LesswrongMeta_postId_fkey" FOREIGN K
 ALTER TABLE "XMeta" ADD CONSTRAINT "XMeta_postId_fkey" FOREIGN KEY ("postId") REFERENCES "Post"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
+ALTER TABLE "SubstackMeta" ADD CONSTRAINT "SubstackMeta_postId_fkey" FOREIGN KEY ("postId") REFERENCES "Post"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
 ALTER TABLE "Investigation" ADD CONSTRAINT "Investigation_postId_fkey" FOREIGN KEY ("postId") REFERENCES "Post"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "Investigation" ADD CONSTRAINT "Investigation_promptId_fkey" FOREIGN KEY ("promptId") REFERENCES "Prompt"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "InvestigationRun" ADD CONSTRAINT "InvestigationRun_investigationId_fkey" FOREIGN KEY ("investigationId") REFERENCES "Investigation"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "InvestigationOpenAiKeySource" ADD CONSTRAINT "InvestigationOpenAiKeySource_runId_fkey" FOREIGN KEY ("runId") REFERENCES "InvestigationRun"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "InvestigationImage" ADD CONSTRAINT "InvestigationImage_investigationId_fkey" FOREIGN KEY ("investigationId") REFERENCES "Investigation"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "InvestigationImage" ADD CONSTRAINT "InvestigationImage_imageBlobId_fkey" FOREIGN KEY ("imageBlobId") REFERENCES "ImageBlob"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "InvestigationAttempt" ADD CONSTRAINT "InvestigationAttempt_investigationId_fkey" FOREIGN KEY ("investigationId") REFERENCES "Investigation"("id") ON DELETE CASCADE ON UPDATE CASCADE;
@@ -455,4 +569,3 @@ ALTER TABLE "Claim" ADD CONSTRAINT "Claim_investigationId_fkey" FOREIGN KEY ("in
 
 -- AddForeignKey
 ALTER TABLE "Source" ADD CONSTRAINT "Source_claimId_fkey" FOREIGN KEY ("claimId") REFERENCES "Claim"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
-

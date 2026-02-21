@@ -1,12 +1,12 @@
 import {
   contentControlMessageSchema,
-} from "@truesight/shared";
+} from "@openerrata/shared";
 import browser from "webextension-polyfill";
 import { PageSessionController } from "./page-session-controller";
 
 declare global {
   interface Window {
-    __truesight_loaded?: boolean;
+    __openerrata_loaded?: boolean;
   }
 }
 
@@ -39,10 +39,10 @@ browser.runtime.onMessage.addListener((message: unknown) => {
 });
 
 function boot(): void {
-  if (window.__truesight_loaded) {
+  if (window.__openerrata_loaded) {
     return;
   }
-  window.__truesight_loaded = true;
+  window.__openerrata_loaded = true;
   controller.boot();
 }
 

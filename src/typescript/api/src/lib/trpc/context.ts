@@ -1,7 +1,7 @@
 import type { RequestEvent } from "@sveltejs/kit";
 import { prisma } from "$lib/db/client";
 import { getConfiguredApiKeys } from "$lib/config/env.js";
-import { hashContent } from "@truesight/shared";
+import { hashContent } from "@openerrata/shared";
 import { verifyHmac } from "$lib/services/hmac.js";
 import { deriveIpRangePrefix } from "$lib/network/ip.js";
 
@@ -72,7 +72,7 @@ async function deriveIpRangeKey(event: RequestEvent): Promise<string> {
 }
 
 async function verifyRequestAttestation(event: RequestEvent): Promise<boolean> {
-  const signature = event.request.headers.get("x-truesight-signature");
+  const signature = event.request.headers.get("x-openerrata-signature");
   if (!signature) return false;
 
   try {
