@@ -28,6 +28,7 @@ import {
   clearCache,
   getActivePostStatus,
   getActiveStatus,
+  syncToolbarBadgesForOpenTabs,
 } from "./cache.js";
 
 // Initialize API client on worker start.
@@ -981,4 +982,8 @@ browser.tabs.onActivated.addListener(({ tabId }) => {
 
 void ensureSubstackInjectionForOpenTabs().catch((error) => {
   console.error("substack startup probe failed:", error);
+});
+
+void syncToolbarBadgesForOpenTabs().catch((error) => {
+  console.error("toolbar badge startup sync failed:", error);
 });

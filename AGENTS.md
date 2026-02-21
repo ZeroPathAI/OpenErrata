@@ -32,6 +32,11 @@ no runtime code) for tRPC client typing.
 - `src/typescript/api/prisma/migrations/20260219120000_add_investigation_public_eligibility_view/migration.sql`
   — SQL definition for the `investigation_public_eligibility` Postgres view.
 
+## Workspace Guidelines
+
+Assume that other AI agents are working inside the same directory as you. When
+instructed to make commits, take care not to accidentally or unintentionally commit the work of others. 
+
 ## Programming Guidelines
 
 Code can be "correct" in the sense of doing what we want, and yet still be bad

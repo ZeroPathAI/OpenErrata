@@ -9,6 +9,8 @@ import type {
 } from "@truesight/shared";
 import browser from "webextension-polyfill";
 
+import { updateToolbarBadge } from "./toolbar-badge.js";
+
 interface TabCacheRecord {
   activePostStatus: ExtensionPostStatus | null;
   skippedStatus: ExtensionSkippedStatus | null;
@@ -232,6 +234,7 @@ export async function cachePostStatus(
     record.skippedStatus = null;
     record.activePostStatus = status;
     await saveRecord(tabId, record);
+    updateToolbarBadge(tabId, status);
     return;
   }
 
@@ -241,6 +244,7 @@ export async function cachePostStatus(
   // setActive=false updates are full replacements gated by identity matching.
   record.activePostStatus = status;
   await saveRecord(tabId, record);
+  updateToolbarBadge(tabId, status);
 }
 
 export async function cacheSkippedStatus(
@@ -252,6 +256,7 @@ export async function cacheSkippedStatus(
   record.activePostStatus = null;
   record.skippedStatus = status;
   await saveRecord(tabId, record);
+  updateToolbarBadge(tabId, null);
 }
 
 export async function clearActiveStatus(tabId: number | undefined): Promise<void> {
@@ -260,6 +265,7 @@ export async function clearActiveStatus(tabId: number | undefined): Promise<void
   record.activePostStatus = null;
   record.skippedStatus = null;
   await saveRecord(tabId, record);
+  updateToolbarBadge(tabId, null);
 }
 
 export async function getActiveStatus(tabId: number): Promise<ExtensionPageStatus | null> {
@@ -280,7 +286,23 @@ export async function getActivePostStatus(
 
 export function clearCache(tabId: number): void {
   memoryCache.delete(tabId);
+  updateToolbarBadge(tabId, null);
   browser.storage.local.remove(storageKey(tabId)).catch((error) => {
     console.warn("Failed to clear extension cache for tab:", error);
   });
+}
+
+export async function syncToolbarBadgesForOpenTabs(): Promise<void> {
+  const tabs = await browser.tabs.query({});
+  await Promise.all(
+    tabs.map(async (tab) => {
+      if (tab.id === undefined) return;
+      const status = await getActiveStatus(tab.id);
+      if (status?.kind === "POST") {
+        updateToolbarBadge(tab.id, status);
+        return;
+      }
+      updateToolbarBadge(tab.id, null);
+    }),
+  );
 }
