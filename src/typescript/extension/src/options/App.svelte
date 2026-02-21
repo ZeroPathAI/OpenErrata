@@ -76,7 +76,7 @@
       placeholder="sk-..."
       autocomplete="off"
     />
-    <p class="hint">Used only per request. The API does not store this key.</p>
+    <p class="hint">Used only per request. The API does not store this key beyond request lifecycles.</p>
   </div>
 
   <label class="checkbox">
