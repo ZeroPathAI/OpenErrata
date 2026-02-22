@@ -438,6 +438,13 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           PULUMI_BLOB_STORAGE_ACCESS_KEY_ID: ${{ secrets.PULUMI_BLOB_STORAGE_ACCESS_KEY_ID }}
           PULUMI_BLOB_STORAGE_SECRET_ACCESS_KEY: ${{ secrets.PULUMI_BLOB_STORAGE_SECRET_ACCESS_KEY }}
+          PULUMI_API_HOSTNAME: ${{ vars.PULUMI_API_HOSTNAME }}
+          PULUMI_INGRESS_CLASS_NAME: ${{ vars.PULUMI_INGRESS_CLASS_NAME }}
+          PULUMI_DNS_PROVIDER: ${{ vars.PULUMI_DNS_PROVIDER }}
+          PULUMI_CLOUDFLARE_ZONE_ID: ${{ secrets.PULUMI_CLOUDFLARE_ZONE_ID }}
+          PULUMI_CLOUDFLARE_PROXIED: ${{ vars.PULUMI_CLOUDFLARE_PROXIED }}
+          PULUMI_CLOUDFLARE_RECORD_TARGET: ${{ vars.PULUMI_CLOUDFLARE_RECORD_TARGET }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
@@ -450,6 +457,53 @@ jobs:
 
           pulumi config set releaseName "openerrata-${STACK}" --stack "$STACK"
           pulumi config set namespace "openerrata-${STACK}" --stack "$STACK"
+
+          if [ -n "${PULUMI_API_HOSTNAME:-}" ]; then
+            pulumi config set apiHostname "$PULUMI_API_HOSTNAME" --stack "$STACK"
+            pulumi config set ingressEnabled "true" --stack "$STACK"
+          else
+            pulumi config rm apiHostname --stack "$STACK" >/dev/null 2>&1 || true
+            pulumi config set ingressEnabled "false" --stack "$STACK"
+          fi
+
+          if [ -n "${PULUMI_INGRESS_CLASS_NAME:-}" ]; then
+            pulumi config set ingressClassName "$PULUMI_INGRESS_CLASS_NAME" --stack "$STACK"
+          else
+            pulumi config rm ingressClassName --stack "$STACK" >/dev/null 2>&1 || true
+          fi
+
+          dns_provider="${PULUMI_DNS_PROVIDER:-none}"
+          case "$dns_provider" in
+            none|"")
+              pulumi config set dnsProvider "none" --stack "$STACK"
+              pulumi config rm cloudflareZoneId --stack "$STACK" >/dev/null 2>&1 || true
+              pulumi config rm cloudflareProxied --stack "$STACK" >/dev/null 2>&1 || true
+              pulumi config rm cloudflareRecordTarget --stack "$STACK" >/dev/null 2>&1 || true
+              ;;
+            cloudflare)
+              if [ -z "${PULUMI_CLOUDFLARE_ZONE_ID:-}" ] || [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+                echo "PULUMI_CLOUDFLARE_ZONE_ID and CLOUDFLARE_API_TOKEN are required when PULUMI_DNS_PROVIDER=cloudflare."
+                exit 1
+              fi
+              if [ -z "${PULUMI_API_HOSTNAME:-}" ]; then
+                echo "PULUMI_API_HOSTNAME is required when PULUMI_DNS_PROVIDER=cloudflare."
+                exit 1
+              fi
+              pulumi config set dnsProvider "cloudflare" --stack "$STACK"
+              pulumi config set cloudflareZoneId "$PULUMI_CLOUDFLARE_ZONE_ID" --stack "$STACK"
+              pulumi config set cloudflareProxied "${PULUMI_CLOUDFLARE_PROXIED:-true}" --stack "$STACK"
+              if [ -n "${PULUMI_CLOUDFLARE_RECORD_TARGET:-}" ]; then
+                pulumi config set cloudflareRecordTarget "$PULUMI_CLOUDFLARE_RECORD_TARGET" --stack "$STACK"
+              else
+                pulumi config rm cloudflareRecordTarget --stack "$STACK" >/dev/null 2>&1 || true
+              fi
+              ;;
+            *)
+              echo "Unsupported PULUMI_DNS_PROVIDER value: $dns_provider"
+              echo "Supported values: none, cloudflare"
+              exit 1
+              ;;
+          esac
 
           needs_aws_resources=false
 
@@ -572,6 +626,7 @@ jobs:
           AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
           AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           set -euo pipefail
           pulumi stack select "$STACK" --create

@@ -162,7 +162,7 @@ function extractAuthorHandleFromHref(
   tweetId: string,
 ): string | null {
   const parsed = parseStatusFromHref(href);
-  if (!parsed || parsed.tweetId !== tweetId) return null;
+  if (parsed?.tweetId !== tweetId) return null;
   return parsed.authorHandle;
 }
 

@@ -1,4 +1,5 @@
 import * as aws from "@pulumi/aws";
+import * as cloudflare from "@pulumi/cloudflare";
 import * as k8s from "@pulumi/kubernetes";
 import * as pulumi from "@pulumi/pulumi";
 import * as random from "@pulumi/random";
@@ -34,6 +35,28 @@ type DatabaseConfig = {
   databaseUrl: pulumi.Input<string>;
   endpoint: pulumi.Input<string>;
 };
+
+type ApiIngressConfig =
+  | {
+      mode: "disabled";
+    }
+  | {
+      mode: "enabled";
+      host: string;
+      className: string;
+      path: string;
+    };
+
+type DnsConfig =
+  | {
+      provider: "none";
+    }
+  | {
+      provider: "cloudflare";
+      zoneId: string;
+      proxied: boolean;
+      targetOverride: string | undefined;
+    };
 
 function getNonEmptyEnv(name: string): string | undefined {
   const value = process.env[name];
@@ -94,6 +117,21 @@ function parseCsvList(value: string | undefined): string[] | undefined {
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
   return parsed.length > 0 ? parsed : undefined;
+}
+
+function isIpv4Address(value: string): boolean {
+  const octets = value.split(".");
+  if (octets.length !== 4) {
+    return false;
+  }
+
+  return octets.every((octet) => {
+    if (!/^\d+$/.test(octet)) {
+      return false;
+    }
+    const parsed = Number(octet);
+    return Number.isInteger(parsed) && parsed >= 0 && parsed <= 255;
+  });
 }
 
 function createManagedAwsBlobStorage(input: pulumi.Config): BlobStorageConfig {
@@ -408,6 +446,102 @@ function resolveDatabase(input: pulumi.Config): DatabaseConfig {
   return createManagedAwsDatabase(input);
 }
 
+function resolveApiIngress(input: pulumi.Config): ApiIngressConfig {
+  const configuredHost = getNonEmptyConfig(input, "apiHostname");
+  const configuredIngressEnabled = input.getBoolean("ingressEnabled");
+
+  if (configuredHost === undefined) {
+    if (configuredIngressEnabled === true) {
+      throw new Error("ingressEnabled=true requires apiHostname to be configured.");
+    }
+    return { mode: "disabled" };
+  }
+
+  const ingressEnabled = configuredIngressEnabled ?? true;
+  if (!ingressEnabled) {
+    return { mode: "disabled" };
+  }
+
+  return {
+    mode: "enabled",
+    host: configuredHost,
+    className: getNonEmptyConfig(input, "ingressClassName") ?? "nginx",
+    path: getNonEmptyConfig(input, "ingressPath") ?? "/",
+  };
+}
+
+function resolveDns(input: pulumi.Config): DnsConfig {
+  const configuredProvider = (getNonEmptyConfig(input, "dnsProvider") ?? "none")
+    .toLowerCase()
+    .trim();
+
+  if (configuredProvider === "none") {
+    return { provider: "none" };
+  }
+
+  if (configuredProvider === "cloudflare") {
+    const zoneId = getNonEmptyConfig(input, "cloudflareZoneId");
+    if (zoneId === undefined) {
+      throw new Error("dnsProvider=cloudflare requires cloudflareZoneId.");
+    }
+
+    return {
+      provider: "cloudflare",
+      zoneId,
+      proxied: input.getBoolean("cloudflareProxied") ?? true,
+      targetOverride: getNonEmptyConfig(input, "cloudflareRecordTarget"),
+    };
+  }
+
+  throw new Error(
+    `Unsupported dnsProvider '${configuredProvider}'. Supported values: none, cloudflare.`,
+  );
+}
+
+function resolveIngressLoadBalancerTarget(status: unknown): string {
+  if (typeof status !== "object" || status === null) {
+    throw new Error(
+      "Ingress status is unavailable. Set cloudflareRecordTarget explicitly or wait for ingress to receive a load balancer address.",
+    );
+  }
+
+  const ingressEntries =
+    (status as { loadBalancer?: { ingress?: Array<{ hostname?: string; ip?: string }> } })
+      .loadBalancer?.ingress ?? [];
+
+  if (!Array.isArray(ingressEntries) || ingressEntries.length === 0) {
+    throw new Error(
+      "Ingress has no load balancer address yet. Set cloudflareRecordTarget explicitly or rerun deploy after ingress reconciliation.",
+    );
+  }
+
+  for (const ingressEntry of ingressEntries) {
+    if (typeof ingressEntry.hostname === "string" && ingressEntry.hostname.length > 0) {
+      return ingressEntry.hostname;
+    }
+  }
+
+  for (const ingressEntry of ingressEntries) {
+    if (typeof ingressEntry.ip === "string" && ingressEntry.ip.length > 0) {
+      return ingressEntry.ip;
+    }
+  }
+
+  throw new Error(
+    "Ingress load balancer entries did not include hostname or ip. Set cloudflareRecordTarget explicitly.",
+  );
+}
+
+function resolveCloudflareRecordSpec(
+  targetOverride: string | undefined,
+  ingressStatus: unknown,
+): { type: "A" | "CNAME"; content: string } {
+  const target = targetOverride ?? resolveIngressLoadBalancerTarget(ingressStatus);
+  return isIpv4Address(target)
+    ? { type: "A", content: target }
+    : { type: "CNAME", content: target };
+}
+
 function resolveSecretWithRandom(
   input: pulumi.Config,
   configKey: string,
@@ -427,6 +561,8 @@ function resolveSecretWithRandom(
 const image = resolveImageConfig(config);
 const blobStorage = resolveBlobStorage(config);
 const database = resolveDatabase(config);
+const apiIngress = resolveApiIngress(config);
+const dns = resolveDns(config);
 const configuredOpenaiApiKey = config.getSecret("openaiApiKey") ?? pulumi.secret("");
 const resolvedHmacSecret = resolveSecretWithRandom(
   config,
@@ -438,6 +574,10 @@ const resolvedDatabaseEncryptionKey = resolveSecretWithRandom(
   "databaseEncryptionKey",
   "generated-database-encryption-key",
 );
+
+if (dns.provider === "cloudflare" && apiIngress.mode !== "enabled") {
+  throw new Error("dnsProvider=cloudflare requires ingress with apiHostname.");
+}
 
 // The namespace is expected to be pre-created by the cluster admin (see
 // src/kubernetes/ci-rbac/setup.sh) so the CI ServiceAccount's RBAC can be
@@ -468,7 +608,14 @@ function resolveHelmFullname(input: {
   return truncateK8sName(`${input.releaseName}-${effectiveChartName}`);
 }
 
-new k8s.helm.v3.Chart(releaseName, {
+const fullname = resolveHelmFullname({
+  releaseName,
+  chartName,
+  nameOverride,
+  fullnameOverride,
+});
+
+const chart = new k8s.helm.v3.Chart(releaseName, {
   path: "../../helm/openerrata",
   namespace: namespaceName,
   values: {
@@ -486,6 +633,20 @@ new k8s.helm.v3.Chart(releaseName, {
     selector: {
       budget: config.get("selectorBudget") ?? "100",
     },
+    ...(apiIngress.mode === "enabled"
+      ? {
+          ingress: {
+            enabled: true,
+            className: apiIngress.className,
+            host: apiIngress.host,
+            path: apiIngress.path,
+          },
+        }
+      : {
+          ingress: {
+            enabled: false,
+          },
+        }),
     config: {
       ipRangeCreditCap: config.get("ipRangeCreditCap") ?? "10",
       databaseEncryptionKeyId: config.get("databaseEncryptionKeyId") ?? "primary",
@@ -504,15 +665,34 @@ new k8s.helm.v3.Chart(releaseName, {
   },
 }, { dependsOn: [namespace] });
 
-const fullname = resolveHelmFullname({
-  releaseName,
-  chartName,
-  nameOverride,
-  fullnameOverride,
-});
+if (dns.provider === "cloudflare" && apiIngress.mode === "enabled") {
+  const cloudflareRecordSpec: pulumi.Output<{ type: "A" | "CNAME"; content: string }> =
+    dns.targetOverride !== undefined
+      ? pulumi.output(resolveCloudflareRecordSpec(dns.targetOverride, undefined))
+      : chart
+          .getResourceProperty(
+            "networking.k8s.io/v1/Ingress",
+            namespaceName,
+            `${fullname}-api`,
+            "status",
+          )
+          .apply((status) => resolveCloudflareRecordSpec(undefined, status));
+
+  new cloudflare.DnsRecord("api-cloudflare-dns", {
+    zoneId: dns.zoneId,
+    name: apiIngress.host,
+    type: cloudflareRecordSpec.apply((spec) => spec.type),
+    content: cloudflareRecordSpec.apply((spec) => spec.content),
+    proxied: dns.proxied,
+    ttl: dns.proxied ? 1 : 300,
+    comment: `Managed by Pulumi (${pulumi.getProject()}/${pulumi.getStack()})`,
+  });
+}
 
 export const apiServiceName = pulumi.output(`${fullname}-api`);
 export const kubernetesNamespace = namespaceName;
+export const apiHostname = apiIngress.mode === "enabled" ? apiIngress.host : "";
+export const dnsProvider = dns.provider;
 
 export const blobStorageMode = blobStorage.mode;
 export const blobStorageBucketName = blobStorage.bucket;

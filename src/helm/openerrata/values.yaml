@@ -19,6 +19,17 @@ service:
   type: ClusterIP
   port: 3000
 
+ingress:
+  enabled: false
+  className: nginx
+  host: ""
+  path: /
+  pathType: Prefix
+  annotations: {}
+  tls:
+    enabled: false
+    secretName: ""
+
 selector:
   schedule: "*/5 * * * *"
   budget: "100"

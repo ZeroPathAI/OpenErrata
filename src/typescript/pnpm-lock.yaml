@@ -157,6 +157,9 @@ importers:
       '@pulumi/aws':
         specifier: ^7.20.0
         version: 7.20.0(typescript@5.9.3)
+      '@pulumi/cloudflare':
+        specifier: ^6.13.0
+        version: 6.13.0(typescript@5.9.3)
       '@pulumi/kubernetes':
         specifier: ^4.26.0
         version: 4.26.0(typescript@5.9.3)
@@ -1082,6 +1085,9 @@ packages:
 
   '@pulumi/aws@7.20.0':
     resolution: {integrity: sha512-f8efmjHXKRUQY4fojfw7vuWN7Q07Cz0bjqbIwD/qtOuz+qs+zrKWU50uAB0HcWXAxjI0ll4KslGu2oLRiMTxng==}
+
+  '@pulumi/cloudflare@6.13.0':
+    resolution: {integrity: sha512-M3tMo5/1S2NgOiCBhrN6gUYZg50/59HlAYQ1NsLkfb7prgH4aSdh7R01wgXlBQPu2BtiZswCtAigMdyAXVA+Ig==}
 
   '@pulumi/kubernetes@4.26.0':
     resolution: {integrity: sha512-W6vzWby5Kq98xDkSHME056+5BzfG57cxTfDeU96DZqGlAT7T1+eLotiXiZ/GpDWtTf9kGSNZ4bzDpS32NvuJAw==}
@@ -4768,6 +4774,14 @@ snapshots:
     dependencies:
       '@pulumi/pulumi': 3.222.0(typescript@5.9.3)
       mime: 2.6.0
+    transitivePeerDependencies:
+      - supports-color
+      - ts-node
+      - typescript
+
+  '@pulumi/cloudflare@6.13.0(typescript@5.9.3)':
+    dependencies:
+      '@pulumi/pulumi': 3.222.0(typescript@5.9.3)
     transitivePeerDependencies:
       - supports-color
       - ts-node
