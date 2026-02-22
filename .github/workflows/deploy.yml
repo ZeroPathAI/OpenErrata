@@ -562,6 +562,7 @@ jobs:
         env:
           PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
           STACK: ${{ needs.resolve-target.outputs.deploy_environment }}
+          TARGET_NAMESPACE: openerrata-${{ needs.resolve-target.outputs.deploy_environment }}
           PULUMI_K8S_DELETE_UNREACHABLE: "true"
           CI_IMAGE_REPOSITORY: ${{ needs.build-image.outputs.image_repository }}
           CI_IMAGE_TAG: ${{ needs.build-image.outputs.image_tag }}
@@ -574,12 +575,46 @@ jobs:
         run: |
           set -euo pipefail
           pulumi stack select "$STACK" --create
-          pulumi up \
+          expected_image="${CI_IMAGE_REPOSITORY}@${CI_IMAGE_DIGEST}"
+
+          set +e
+          timeout 900 pulumi up \
             --stack "$STACK" \
             --yes \
             --non-interactive \
             --skip-preview \
             --refresh=false
+          rc=$?
+          set -e
+
+          if [ "$rc" -eq 0 ]; then
+            exit 0
+          fi
+
+          if [ "$rc" -ne 124 ]; then
+            echo "pulumi up failed with exit code $rc"
+            exit "$rc"
+          fi
+
+          echo "pulumi up timed out; verifying rollout state before continuing."
+          release_name="openerrata-${STACK}"
+          kubectl -n "$TARGET_NAMESPACE" rollout status "deployment/${release_name}-api" --timeout=180s
+          kubectl -n "$TARGET_NAMESPACE" rollout status "deployment/${release_name}-worker" --timeout=180s
+
+          api_image="$(kubectl -n "$TARGET_NAMESPACE" get deploy "${release_name}-api" -o jsonpath='{.spec.template.spec.containers[0].image}')"
+          worker_image="$(kubectl -n "$TARGET_NAMESPACE" get deploy "${release_name}-worker" -o jsonpath='{.spec.template.spec.containers[0].image}')"
+
+          if [ "$api_image" != "$expected_image" ]; then
+            echo "API deployment image mismatch after timeout: expected $expected_image got $api_image"
+            exit 1
+          fi
+
+          if [ "$worker_image" != "$expected_image" ]; then
+            echo "Worker deployment image mismatch after timeout: expected $expected_image got $worker_image"
+            exit 1
+          fi
+
+          echo "Pulumi timed out, but Kubernetes rollout reached the desired image digest."
 
   promote-image-latest:
     needs: [resolve-target, decide-deploy, build-image, deploy]
