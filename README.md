@@ -1,6 +1,6 @@
 # OpenErrata
 
-A browser extension that prevents you from being misled about factual information on Substack/Twitter/LessWrong. It preinvestigates posts in the background with LLMs, and when you browse to them, it underlines empirically incorrect claims and shows you the details of the mistake & sources on hover and click, respectively. The tool prioritizes an extremely low false-positive rate over coverage - it's built so that the prompts, details, and reasoning behind every investigation are both auditable and free from bias.
+OpenErrata is a browser extension that tells you when the content you're reading includes misleading & false information. It preinvestigates popular posts in the background with LLMs (presently GPT-5.2), and when you browse to them, pre-underlines empirically incorrect claims, showing the details of any mistakes on hover, with receipts. The tool prioritizes an extremely low false-positive rate over coverage, and it's built so that the prompts, details, and reasoning behind every investigation are both auditable and free from bias. It also understands context and is instructed not to surface corrections for satire, jokes, etc.
 
 <p align="center">
   <img src="assets/demo-hover.jpg" alt="OpenErrata highlighting an incorrect claim on Astral Codex Ten with a hover tooltip showing the correction and source" width="800" />
