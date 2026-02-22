@@ -401,10 +401,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Install Pulumi CLI
-        uses: pulumi/actions@v6
-        with:
-          command: version
-          work-dir: src/typescript/pulumi
+        uses: pulumi/actions-install@v1
 
       - name: Configure kubeconfig
         shell: bash
