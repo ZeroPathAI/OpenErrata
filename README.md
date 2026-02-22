@@ -2,9 +2,11 @@
 
 <p align="center">
   <img src="assets/demo-hover.jpg" alt="OpenErrata highlighting an incorrect claim on Astral Codex Ten with a hover tooltip showing the correction and source" width="800" />
+  <br />
+  <em>OpenErrata highlighting an incorrect claim on Astral Codex Ten, with a hover tooltip.</em>
 </p>
 
-OpenErrata is a browser extension that tells you when the content you're reading includes misleading & false information. It preinvestigates popular posts with LLMs (presently GPT-5.2), and when you browse to them, pre-underlines the unambiguously incorrect claims. The tool prioritizes an extremely low false-positive rate over coverage, and its prompts, details, and reasoning behind every investigation are designed to be auditable and free from bias. It also understands context and is instructed not to surface corrections for satire, jokes, etc.
+OpenErrata is a browser extension that underlines the unambiguously incorrect claims in the posts you're reading. The tool prioritizes an extremely low false-positive rate over coverage, and its prompts, details, and reasoning behind every investigation are designed to be auditable and free from bias. It also understands context and is instructed not to surface corrections for satire, jokes, etc.
 
 ## Install
 
