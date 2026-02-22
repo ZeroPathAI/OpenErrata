@@ -6,6 +6,7 @@
     "dev": "vite dev",
     "build": "vite build",
     "preview": "vite preview",
+    "test:unit": "tsx --test \"test/unit/**/*.test.ts\"",
     "test:integration": "tsx test/integration/run-integration-tests.ts",
     "test:integration:raw": "tsx --test test/integration/api-endpoints.integration.test.ts",
     "worker": "tsx src/lib/services/worker-entrypoint.ts",

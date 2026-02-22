@@ -6,42 +6,62 @@ import {
 } from "$lib/investigators/prompt.js";
 import { hashContent } from "@openerrata/shared";
 
+let cachedPromptId: Promise<{ id: string }> | null = null;
+
 /**
  * Get or create the current Prompt row.
- * Uses the hash as a dedup key — if the prompt text hasn't changed,
- * reuses the existing row.
+ *
+ * The prompt text and version are compile-time constants, so the result is
+ * cached for the lifetime of the process. Concurrent callers share the same
+ * in-flight promise. Failures clear the cache so subsequent calls retry.
  */
-export async function getOrCreateCurrentPrompt(): Promise<{ id: string }> {
+export function getOrCreateCurrentPrompt(): Promise<{ id: string }> {
+  if (!cachedPromptId) {
+    cachedPromptId = resolveCurrentPrompt().catch((error) => {
+      cachedPromptId = null;
+      throw error;
+    });
+  }
+  return cachedPromptId;
+}
+
+/**
+ * Resolves the Prompt row for the current prompt text, creating it if needed.
+ *
+ * Uses hash-based dedup: if the prompt text hasn't changed, the existing row
+ * is reused. The find-then-create-with-retry pattern handles races between
+ * concurrent processes (e.g. multiple server instances starting up).
+ */
+async function resolveCurrentPrompt(): Promise<{ id: string }> {
   const text = INVESTIGATION_SYSTEM_PROMPT;
   const hash = await hashContent(text);
   const version = INVESTIGATION_PROMPT_VERSION;
 
-  // Fast path: if identical prompt text already exists, always reuse by hash.
+  // Fast path: identical prompt text already exists.
   const byHash = await prisma.prompt.findUnique({
     where: { hash },
     select: { id: true },
   });
   if (byHash) return byHash;
 
-  let createError: unknown = null;
-
   try {
-    const prompt = await prisma.prompt.create({
+    return await prisma.prompt.create({
       data: { version, hash, text },
       select: { id: true },
     });
-    return prompt;
   } catch (error) {
     if (!isUniqueConstraintError(error)) throw error;
-    createError = error;
   }
 
-  const byHashAfterCreate = await prisma.prompt.findUnique({
+  // Another process created the row concurrently — look it up.
+  const byHashAfterRace = await prisma.prompt.findUnique({
     where: { hash },
     select: { id: true },
   });
-  if (byHashAfterCreate) return byHashAfterCreate;
+  if (byHashAfterRace) return byHashAfterRace;
 
+  // Unique constraint was on the version column, not the hash. This means
+  // the prompt text changed without bumping INVESTIGATION_PROMPT_VERSION.
   const byVersion = await prisma.prompt.findUnique({
     where: { version },
     select: {
@@ -56,15 +76,9 @@ export async function getOrCreateCurrentPrompt(): Promise<{ id: string }> {
         `Prompt version ${version} exists with different content. Bump INVESTIGATION_PROMPT_VERSION when prompt text changes.`,
       );
     }
-
-    return {
-      id: byVersion.id,
-    };
+    return { id: byVersion.id };
   }
 
-  if (createError) {
-    throw createError;
-  }
   throw new Error(
     `Failed to create prompt for version=${version} hash=${hash} and could not load an existing row`,
   );

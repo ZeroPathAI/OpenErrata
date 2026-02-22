@@ -10,7 +10,10 @@ import prettier from "eslint-config-prettier";
  * svelte-check covers type errors in .svelte instead.
  */
 const typeAwareRules = {
-  "@typescript-eslint/no-unnecessary-condition": "error",
+  "@typescript-eslint/no-unnecessary-condition": [
+    "error",
+    { allowConstantLoopConditions: true },
+  ],
   "@typescript-eslint/switch-exhaustiveness-check": "error",
   "@typescript-eslint/no-floating-promises": "error",
   "@typescript-eslint/no-misused-promises": "error",
