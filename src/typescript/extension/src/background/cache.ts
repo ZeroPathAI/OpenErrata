@@ -287,7 +287,7 @@ export async function getActivePostStatus(
 export function clearCache(tabId: number): void {
   memoryCache.delete(tabId);
   updateToolbarBadge(tabId, null);
-  browser.storage.local.remove(storageKey(tabId)).catch((error) => {
+  browser.storage.local.remove(storageKey(tabId)).catch((error: unknown) => {
     console.warn("Failed to clear extension cache for tab:", error);
   });
 }

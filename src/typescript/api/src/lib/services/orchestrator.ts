@@ -1,6 +1,10 @@
 import { prisma } from "$lib/db/client";
 import { requireOpenAiApiKey } from "$lib/config/env.js";
 import { isRecordNotFoundError } from "$lib/db/errors.js";
+import {
+  isNonRetryableOpenAiStatusCode,
+  readOpenAiStatusCode,
+} from "$lib/openai/errors.js";
 import { downloadAndStoreImages } from "./image-downloader.js";
 import {
   consumeOpenAiKeySource,
@@ -142,38 +146,43 @@ function partitionXMediaUrls(mediaUrls: string[]): {
 }
 
 function toPromptPostContext(post: InvestigationPostContext): PromptPostContext {
-  const authorName = post.author?.displayName ?? undefined;
+  const authorName = post.author?.displayName;
 
   switch (post.platform) {
-    case "LESSWRONG":
+    case "LESSWRONG": {
+      const publishedAt = post.lesswrongMeta?.publishedAt;
       return {
         platform: "LESSWRONG",
         url: post.url,
-        authorName,
-        postPublishedAt: post.lesswrongMeta?.publishedAt?.toISOString(),
+        ...(authorName != null && { authorName }),
+        ...(publishedAt != null && { postPublishedAt: publishedAt.toISOString() }),
         imageUrls: post.lesswrongMeta?.imageUrls ?? [],
         hasVideo: false,
       };
+    }
     case "X": {
+      const postedAt = post.xMeta?.postedAt;
       const xMedia = partitionXMediaUrls(post.xMeta?.mediaUrls ?? []);
       return {
         platform: "X",
         url: post.url,
-        authorName,
-        postPublishedAt: post.xMeta?.postedAt?.toISOString(),
+        ...(authorName != null && { authorName }),
+        ...(postedAt != null && { postPublishedAt: postedAt.toISOString() }),
         imageUrls: xMedia.imageUrls,
         hasVideo: xMedia.hasVideo,
       };
     }
-    case "SUBSTACK":
+    case "SUBSTACK": {
+      const publishedAt = post.substackMeta?.publishedAt;
       return {
         platform: "SUBSTACK",
         url: post.url,
-        authorName,
-        postPublishedAt: post.substackMeta?.publishedAt?.toISOString(),
+        ...(authorName != null && { authorName }),
+        ...(publishedAt != null && { postPublishedAt: publishedAt.toISOString() }),
         imageUrls: post.substackMeta?.imageUrls ?? [],
         hasVideo: false,
       };
+    }
     default:
       return unreachablePlatform(post.platform);
   }
@@ -206,11 +215,7 @@ function unwrapError(error: unknown): UnwrappedError {
 function getErrorStatus(error: unknown): number | null {
   const root = unwrapError(error);
   if (typeof root === "string") return null;
-  const status =
-    root instanceof Error
-      ? (root as Error & { status?: unknown }).status
-      : root["status"];
-  return typeof status === "number" ? status : null;
+  return readOpenAiStatusCode(root);
 }
 
 function formatErrorForLog(error: unknown): string {
@@ -234,9 +239,7 @@ function isNonRetryableProviderError(error: unknown): boolean {
   if (root instanceof InvestigatorStructuredOutputError) return true;
 
   const status = getErrorStatus(root);
-  if (status === null) return false;
-
-  return status === 400 || status === 401 || status === 403 || status === 404 || status === 422;
+  return isNonRetryableOpenAiStatusCode(status);
 }
 
 class ActiveRunLeaseError extends Error {
@@ -773,7 +776,7 @@ export async function orchestrateInvestigation(
         data: {
           status: "COMPLETE",
           checkedAt: new Date(),
-          modelVersion: output.modelVersion,
+          modelVersion: output.modelVersion ?? null,
         },
       });
 

@@ -14,7 +14,11 @@ function parseIpv4Octets(value: string): Ipv4Octets | null {
 
   if (parsedOctets.some((octet) => Number.isNaN(octet))) return null;
 
-  const [a, b, c, d] = parsedOctets;
+  const a = parsedOctets[0];
+  const b = parsedOctets[1];
+  const c = parsedOctets[2];
+  const d = parsedOctets[3];
+  if (a === undefined || b === undefined || c === undefined || d === undefined) return null;
   return [a, b, c, d];
 }
 

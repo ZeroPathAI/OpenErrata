@@ -8,15 +8,20 @@ type ResolvedAddress = {
   family: IpFamily;
 };
 
-function parseIpv4Segments(ipAddress: string): number[] | null {
-  const segments = ipAddress.split(".").map((segment) => Number.parseInt(segment, 10));
-  if (segments.length !== 4 || segments.some((segment) => Number.isNaN(segment))) {
+function parseIpv4Segments(ipAddress: string): [number, number, number, number] | null {
+  const parts = ipAddress.split(".").map((segment) => Number.parseInt(segment, 10));
+  if (parts.length !== 4 || parts.some((segment) => Number.isNaN(segment))) {
     return null;
   }
-  if (segments.some((segment) => segment < 0 || segment > 255)) {
+  if (parts.some((segment) => segment < 0 || segment > 255)) {
     return null;
   }
-  return segments;
+  const a = parts[0];
+  const b = parts[1];
+  const c = parts[2];
+  const d = parts[3];
+  if (a === undefined || b === undefined || c === undefined || d === undefined) return null;
+  return [a, b, c, d];
 }
 
 function isPrivateIPv4(ipAddress: string): boolean {
@@ -101,7 +106,7 @@ function normalizeAddress(address: string): string {
   return address.trim().toLowerCase();
 }
 
-export async function resolveHostAddresses(hostname: string): Promise<ResolvedAddress[]> {
+async function resolveHostAddresses(hostname: string): Promise<ResolvedAddress[]> {
   const normalizedHost = hostname.trim().toLowerCase();
   const ipVersion = net.isIP(normalizedHost);
   if (ipVersion === 4 || ipVersion === 6) {

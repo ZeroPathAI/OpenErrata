@@ -58,7 +58,6 @@ async function readResponseBytesWithinLimit(
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      if (!value) continue;
 
       totalBytes += value.byteLength;
       if (totalBytes > maxBytes) {

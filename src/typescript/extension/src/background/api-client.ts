@@ -65,19 +65,17 @@ function registerStorageListener(): void {
     }
 
     cachedClientsByKey.clear();
-    void loadSettingsFromStorage().catch((err) => {
+    void loadSettingsFromStorage().catch((err: unknown) => {
       console.error("Failed to refresh extension settings:", err);
     });
   });
 }
 
 export async function init(): Promise<void> {
-  if (!initPromise) {
-    initPromise = (async () => {
-      await loadSettingsFromStorage();
-      registerStorageListener();
-    })();
-  }
+  initPromise ??= (async () => {
+    await loadSettingsFromStorage();
+    registerStorageListener();
+  })();
 
   try {
     await initPromise;

@@ -29,7 +29,7 @@ export async function findActiveInstanceApiKeyHash(
     select: { revokedAt: true },
   });
 
-  if (!key || key.revokedAt !== null) {
+  if (key?.revokedAt !== null) {
     return null;
   }
   return keyHash;

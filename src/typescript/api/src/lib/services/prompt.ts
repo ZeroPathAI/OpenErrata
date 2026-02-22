@@ -16,12 +16,10 @@ let cachedPromptId: Promise<{ id: string }> | null = null;
  * in-flight promise. Failures clear the cache so subsequent calls retry.
  */
 export function getOrCreateCurrentPrompt(): Promise<{ id: string }> {
-  if (!cachedPromptId) {
-    cachedPromptId = resolveCurrentPrompt().catch((error) => {
-      cachedPromptId = null;
-      throw error;
-    });
-  }
+  cachedPromptId ??= resolveCurrentPrompt().catch((error: unknown) => {
+    cachedPromptId = null;
+    throw error;
+  });
   return cachedPromptId;
 }
 

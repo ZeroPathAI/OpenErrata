@@ -107,9 +107,9 @@ export async function fetchCanonicalContent(
       case "LESSWRONG":
         return await fetchLesswrongContent(externalId);
       case "X":
-        return await fetchXContent();
+        return fetchXContent();
       case "SUBSTACK":
-        return await fetchSubstackContent();
+        return fetchSubstackContent();
     }
   } catch (error) {
     return {
@@ -161,7 +161,7 @@ async function fetchLesswrongContent(postId: string): Promise<FetchResult> {
   return { success: true, contentText, contentHash };
 }
 
-async function fetchXContent(): Promise<FetchResult> {
+function fetchXContent(): FetchResult {
   // X/Twitter server-side fetch is not implemented in v1.
   // X API requires authenticated access with rate limits.
   // All X investigations use CLIENT_FALLBACK provenance.
@@ -171,7 +171,7 @@ async function fetchXContent(): Promise<FetchResult> {
   };
 }
 
-async function fetchSubstackContent(): Promise<FetchResult> {
+function fetchSubstackContent(): FetchResult {
   // Substack server-side fetch is not implemented in v1.
   // Investigations run from client-extracted content.
   return {

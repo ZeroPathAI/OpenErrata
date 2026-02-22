@@ -145,7 +145,7 @@ function createSettingsProbeClient(input: {
   return client;
 }
 
-function isMissingValidateSettingsProcedure(error: TRPCClientError<never>): boolean {
+function isMissingValidateSettingsProcedure(error: Error): boolean {
   const message = error.message.toLowerCase();
   return message.includes("post.validatesettings") && message.includes("procedure");
 }

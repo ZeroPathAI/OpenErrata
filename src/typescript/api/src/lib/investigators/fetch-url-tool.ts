@@ -8,11 +8,12 @@ const FETCH_URL_TIMEOUT_MS = 15_000;
 const MAX_REDIRECT_HOPS = 5;
 
 const fetchUrlToolArgumentsSchema = z.object({
-  url: z
-    .string()
-    .trim()
-    .url("url must be a valid URL")
-    .refine((value) => /^https?:\/\//i.test(value), "url must use http:// or https://"),
+  url: z.preprocess(
+    (value) => (typeof value === "string" ? value.trim() : value),
+    z
+      .url("url must be a valid URL")
+      .refine((value) => /^https?:\/\//i.test(value), "url must use http:// or https://"),
+  ),
 });
 
 type FetchUrlToolSuccess = {
@@ -99,7 +100,9 @@ function decodeHtmlEntities(text: string): string {
 function extractTitleFromHtml(html: string): string | null {
   const titleMatch = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html);
   if (!titleMatch) return null;
-  const title = normalizeContent(decodeHtmlEntities(titleMatch[1]));
+  const rawTitle = titleMatch[1];
+  if (rawTitle === undefined) return null;
+  const title = normalizeContent(decodeHtmlEntities(rawTitle));
   return title.length > 0 ? title : null;
 }
 

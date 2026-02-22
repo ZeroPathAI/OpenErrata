@@ -149,7 +149,7 @@ export class PageSessionController {
     this.#booted = true;
 
     this.#sync.installCachedStatusListener(() => {
-      void this.#syncStatusFromBackgroundCache().catch((error) => {
+      void this.#syncStatusFromBackgroundCache().catch((error: unknown) => {
         console.error("Failed to sync background status:", error);
       });
     });
@@ -180,14 +180,14 @@ export class PageSessionController {
           this.scheduleRefresh();
         }
       } else {
-        void this.#syncStatusFromBackgroundCache().catch((error) => {
+        void this.#syncStatusFromBackgroundCache().catch((error: unknown) => {
           console.error("Failed to sync completed investigation status:", error);
         });
       }
       return requestInvestigateResponseSchema.parse({ ok: true });
     }
 
-    void this.#syncStatusFromBackgroundCache().catch((error) => {
+    void this.#syncStatusFromBackgroundCache().catch((error: unknown) => {
       console.error("Failed to sync queued investigation status:", error);
     });
     return requestInvestigateResponseSchema.parse({ ok: true });
@@ -487,8 +487,7 @@ export class PageSessionController {
     status: ParsedExtensionPageStatus | null,
   ): status is Extract<ParsedExtensionPageStatus, { kind: "POST" }> {
     if (
-      status === null ||
-      status.kind !== "POST" ||
+      status?.kind !== "POST" ||
       this.#state.kind !== "TRACKED_POST"
     ) {
       return false;

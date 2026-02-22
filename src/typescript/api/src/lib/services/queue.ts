@@ -21,4 +21,6 @@ export async function enqueueInvestigationRun(
   );
 }
 
-export const closeQueueUtils = manager.close;
+export async function closeQueueUtils(): Promise<void> {
+  await manager.close();
+}

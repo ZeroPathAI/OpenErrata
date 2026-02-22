@@ -8,15 +8,15 @@ import {
   type Platform,
 } from "@openerrata/shared";
 
-process.env.NODE_ENV ??= "test";
-process.env.DATABASE_URL ??=
+process.env['NODE_ENV'] ??= "test";
+process.env['DATABASE_URL'] ??=
   "postgresql://openerrata:openerrata_dev@localhost:5433/openerrata";
-process.env.HMAC_SECRET ??= "test-hmac-secret";
-process.env.BLOB_STORAGE_BUCKET ??= "test-openerrata-images";
-process.env.BLOB_STORAGE_ACCESS_KEY_ID ??= "test-blob-access-key";
-process.env.BLOB_STORAGE_SECRET_ACCESS_KEY ??= "test-blob-secret";
-process.env.BLOB_STORAGE_PUBLIC_URL_PREFIX ??= "https://example.test/images";
-process.env.DATABASE_ENCRYPTION_KEY ??= "integration-test-database-encryption-key";
+process.env['HMAC_SECRET'] ??= "test-hmac-secret";
+process.env['BLOB_STORAGE_BUCKET'] ??= "test-openerrata-images";
+process.env['BLOB_STORAGE_ACCESS_KEY_ID'] ??= "test-blob-access-key";
+process.env['BLOB_STORAGE_SECRET_ACCESS_KEY'] ??= "test-blob-secret";
+process.env['BLOB_STORAGE_PUBLIC_URL_PREFIX'] ??= "https://example.test/images";
+process.env['DATABASE_ENCRYPTION_KEY'] ??= "integration-test-database-encryption-key";
 
 const INTEGRATION_TEST_RUN_ID = [
   Date.now().toString(36),
@@ -67,6 +67,12 @@ type SeededPost = {
   contentText: string;
   contentHash: string;
 };
+
+type AppCaller = ReturnType<typeof createCaller>;
+type InvestigateNowResult = Awaited<
+  ReturnType<AppCaller["post"]["investigateNow"]>
+>;
+type XViewInput = Awaited<ReturnType<typeof buildXViewInput>>;
 
 let promptCounter = 0;
 
@@ -129,7 +135,7 @@ function createMockRequestEvent(headers?: HeadersInit): RequestEvent {
   return {
     request: new Request("http://localhost/trpc/post.validateSettings", {
       method: "POST",
-      headers,
+      ...(headers !== undefined && { headers }),
     }),
     getClientAddress: () => "203.0.113.1",
   } as unknown as RequestEvent;
@@ -307,32 +313,17 @@ async function seedCompleteInvestigation(input: {
   provenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK";
   checkedAt?: Date;
 }): Promise<{ id: string; checkedAt: Date }> {
-  const prompt = await seedPrompt(`investigation-${input.postId}`);
   const checkedAt = input.checkedAt ?? new Date("2026-02-19T00:00:00.000Z");
-
-  const investigation = await prisma.investigation.create({
-    data: {
-      postId: input.postId,
-      contentHash: input.contentHash,
-      contentText: input.contentText,
-      contentProvenance: input.provenance,
-      fetchFailureReason:
-        input.provenance === "CLIENT_FALLBACK" ? "fetch unavailable" : null,
-      serverVerifiedAt:
-        input.provenance === "SERVER_VERIFIED" ? checkedAt : null,
-      status: "COMPLETE",
-      promptId: prompt.id,
-      provider: "OPENAI",
-      model: "OPENAI_GPT_5",
-      checkedAt,
-    },
-    select: { id: true, checkedAt: true },
+  const investigation = await seedInvestigation({
+    postId: input.postId,
+    contentHash: input.contentHash,
+    contentText: input.contentText,
+    provenance: input.provenance,
+    status: "COMPLETE",
+    promptLabel: `investigation-${input.postId}`,
+    checkedAt,
   });
-
-  return {
-    id: investigation.id,
-    checkedAt: investigation.checkedAt ?? checkedAt,
-  };
+  return { id: investigation.id, checkedAt };
 }
 
 async function seedFailedInvestigation(input: {
@@ -341,28 +332,14 @@ async function seedFailedInvestigation(input: {
   contentText: string;
   provenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK";
 }): Promise<{ id: string }> {
-  const prompt = await seedPrompt(`failed-investigation-${input.postId}`);
-
-  const investigation = await prisma.investigation.create({
-    data: {
-      postId: input.postId,
-      contentHash: input.contentHash,
-      contentText: input.contentText,
-      contentProvenance: input.provenance,
-      fetchFailureReason:
-        input.provenance === "CLIENT_FALLBACK" ? "fetch unavailable" : null,
-      serverVerifiedAt:
-        input.provenance === "SERVER_VERIFIED" ? new Date() : null,
-      status: "FAILED",
-      promptId: prompt.id,
-      provider: "OPENAI",
-      model: "OPENAI_GPT_5",
-      checkedAt: null,
-    },
-    select: { id: true },
+  return seedInvestigation({
+    postId: input.postId,
+    contentHash: input.contentHash,
+    contentText: input.contentText,
+    provenance: input.provenance,
+    status: "FAILED",
+    promptLabel: `failed-investigation-${input.postId}`,
   });
-
-  return { id: investigation.id };
 }
 
 async function seedPendingInvestigation(input: {
@@ -371,28 +348,14 @@ async function seedPendingInvestigation(input: {
   contentText: string;
   provenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK";
 }): Promise<{ id: string }> {
-  const prompt = await seedPrompt(`pending-investigation-${input.postId}`);
-
-  const investigation = await prisma.investigation.create({
-    data: {
-      postId: input.postId,
-      contentHash: input.contentHash,
-      contentText: input.contentText,
-      contentProvenance: input.provenance,
-      fetchFailureReason:
-        input.provenance === "CLIENT_FALLBACK" ? "fetch unavailable" : null,
-      serverVerifiedAt:
-        input.provenance === "SERVER_VERIFIED" ? new Date() : null,
-      status: "PENDING",
-      promptId: prompt.id,
-      provider: "OPENAI",
-      model: "OPENAI_GPT_5",
-      checkedAt: null,
-    },
-    select: { id: true },
+  return seedInvestigation({
+    postId: input.postId,
+    contentHash: input.contentHash,
+    contentText: input.contentText,
+    provenance: input.provenance,
+    status: "PENDING",
+    promptLabel: `pending-investigation-${input.postId}`,
   });
-
-  return { id: investigation.id };
 }
 
 async function seedProcessingInvestigation(input: {
@@ -401,7 +364,31 @@ async function seedProcessingInvestigation(input: {
   contentText: string;
   provenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK";
 }): Promise<{ id: string }> {
-  const prompt = await seedPrompt(`processing-investigation-${input.postId}`);
+  return seedInvestigation({
+    postId: input.postId,
+    contentHash: input.contentHash,
+    contentText: input.contentText,
+    provenance: input.provenance,
+    status: "PROCESSING",
+    promptLabel: `processing-investigation-${input.postId}`,
+  });
+}
+
+async function seedInvestigation(input: {
+  postId: string;
+  contentHash: string;
+  contentText: string;
+  provenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK";
+  status: "COMPLETE" | "FAILED" | "PENDING" | "PROCESSING";
+  promptLabel: string;
+  checkedAt?: Date;
+}): Promise<{ id: string }> {
+  const prompt = await seedPrompt(input.promptLabel);
+  const checkedAt = input.status === "COMPLETE" ? (input.checkedAt ?? new Date()) : null;
+  const serverVerifiedAt =
+    input.provenance === "SERVER_VERIFIED"
+      ? (checkedAt ?? new Date())
+      : null;
 
   const investigation = await prisma.investigation.create({
     data: {
@@ -411,13 +398,12 @@ async function seedProcessingInvestigation(input: {
       contentProvenance: input.provenance,
       fetchFailureReason:
         input.provenance === "CLIENT_FALLBACK" ? "fetch unavailable" : null,
-      serverVerifiedAt:
-        input.provenance === "SERVER_VERIFIED" ? new Date() : null,
-      status: "PROCESSING",
+      serverVerifiedAt,
+      status: input.status,
       promptId: prompt.id,
       provider: "OPENAI",
       model: "OPENAI_GPT_5",
-      checkedAt: null,
+      checkedAt,
     },
     select: { id: true },
   });
@@ -490,7 +476,7 @@ async function seedCorroborationCredits(
   }
 }
 
-async function buildXViewInput(input: {
+function buildXViewInput(input: {
   externalId: string;
   observedContentText: string;
 }) {
@@ -511,6 +497,86 @@ async function buildXViewInput(input: {
   };
 }
 
+async function seedPostForXViewInput(input: XViewInput): Promise<SeededPost> {
+  return seedPost({
+    platform: input.platform,
+    externalId: input.externalId,
+    url: input.url,
+    contentText: input.observedContentText,
+  });
+}
+
+async function seedInvestigationForXViewInput(input: {
+  viewInput: XViewInput;
+  status: "COMPLETE" | "FAILED" | "PENDING" | "PROCESSING";
+  provenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK";
+  checkedAt?: Date;
+  claimCount?: number;
+}): Promise<{ post: SeededPost; investigationId: string; checkedAt?: Date }> {
+  const post = await seedPostForXViewInput(input.viewInput);
+
+  if (input.status === "COMPLETE") {
+    const investigation = await seedCompleteInvestigation({
+      postId: post.id,
+      contentHash: post.contentHash,
+      contentText: post.contentText,
+      provenance: input.provenance,
+      ...(input.checkedAt !== undefined && { checkedAt: input.checkedAt }),
+    });
+    const claimCount = input.claimCount ?? 0;
+    for (let index = 1; index <= claimCount; index += 1) {
+      await seedClaimWithSource(investigation.id, index);
+    }
+    return { post, investigationId: investigation.id, checkedAt: investigation.checkedAt };
+  }
+
+  const investigation =
+    input.status === "FAILED"
+      ? await seedFailedInvestigation({
+          postId: post.id,
+          contentHash: post.contentHash,
+          contentText: post.contentText,
+          provenance: input.provenance,
+        })
+      : input.status === "PENDING"
+        ? await seedPendingInvestigation({
+            postId: post.id,
+            contentHash: post.contentHash,
+            contentText: post.contentText,
+            provenance: input.provenance,
+          })
+        : await seedProcessingInvestigation({
+            postId: post.id,
+            contentHash: post.contentHash,
+            contentText: post.contentText,
+            provenance: input.provenance,
+          });
+
+  return { post, investigationId: investigation.id };
+}
+
+async function runConcurrentInvestigateNowScenario(input: {
+  viewInput: XViewInput;
+  callers: AppCaller[];
+}): Promise<{
+  results: InvestigateNowResult[];
+  investigationId: string;
+}> {
+  const results = await Promise.all(
+    input.callers.map((caller) => caller.post.investigateNow(input.viewInput)),
+  );
+  const investigationIds = new Set(results.map((result) => result.investigationId));
+  assert.equal(investigationIds.size, 1);
+  assert.equal(results.every((result) => result.status === "PENDING"), true);
+  const firstResult = results[0];
+  assert.ok(firstResult);
+
+  return {
+    results,
+    investigationId: firstResult.investigationId,
+  };
+}
+
 after(async () => {
   await resetDatabase();
   await closeQueueUtils();
@@ -526,7 +592,7 @@ void test("GET /health returns ok", async () => {
 
 void test("post.viewPost stores content and reports not investigated without matching investigation", async () => {
   const caller = createCaller();
-  const input = await buildXViewInput({
+  const input = buildXViewInput({
     externalId: "view-post-1",
     observedContentText: "  This   is a post body for viewPost.  ",
   });
@@ -563,7 +629,7 @@ void test("post.viewPost stores content and reports not investigated without mat
 
 void test("post.viewPost applies strict hash lookup and does not reuse stale investigations", async () => {
   const caller = createCaller();
-  const initialInput = await buildXViewInput({
+  const initialInput = buildXViewInput({
     externalId: "view-post-strict-hash-1",
     observedContentText: "Original canonical content.",
   });
@@ -589,7 +655,7 @@ void test("post.viewPost applies strict hash lookup and does not reuse stale inv
     provenance: "CLIENT_FALLBACK",
   });
 
-  const updatedInput = await buildXViewInput({
+  const updatedInput = buildXViewInput({
     externalId: "view-post-strict-hash-1",
     observedContentText: "Edited post content with a different hash.",
   });
@@ -605,7 +671,7 @@ void test("post.viewPost deduplicates unique-view credit for repeated views by s
     viewerKey: "integration-viewer-repeat",
     ipRangeKey: "integration-ip-range-repeat",
   });
-  const input = await buildXViewInput({
+  const input = buildXViewInput({
     externalId: "view-post-credit-dedupe-1",
     observedContentText: "Repeated view content.",
   });
@@ -668,33 +734,25 @@ void test("post.getInvestigation returns complete investigation with claims", as
 
 void test("post.investigateNow returns existing investigation for authenticated callers", async () => {
   const caller = createCaller({ isAuthenticated: true });
-  const input = await buildXViewInput({
+  const input = buildXViewInput({
     externalId: "investigate-now-1",
     observedContentText: "Canonical content reused by investigateNow.",
   });
-
-  const post = await seedPost({
-    platform: input.platform,
-    externalId: input.externalId,
-    url: input.url,
-    contentText: input.observedContentText,
-  });
-  const investigation = await seedCompleteInvestigation({
-    postId: post.id,
-    contentHash: post.contentHash,
-    contentText: post.contentText,
+  const seeded = await seedInvestigationForXViewInput({
+    viewInput: input,
+    status: "COMPLETE",
     provenance: "CLIENT_FALLBACK",
   });
 
   const result = await caller.post.investigateNow(input);
 
-  assert.equal(result.investigationId, investigation.id);
+  assert.equal(result.investigationId, seeded.investigationId);
   assert.equal(result.status, "COMPLETE");
   assert.equal(result.provenance, "CLIENT_FALLBACK");
 });
 
 void test("post.investigateNow deduplicates concurrent callers to one pending investigation run", async () => {
-  const input = await buildXViewInput({
+  const input = buildXViewInput({
     externalId: "investigate-now-concurrent-dedupe-1",
     observedContentText:
       "Concurrent investigateNow requests should converge to one pending investigation.",
@@ -707,13 +765,10 @@ void test("post.investigateNow deduplicates concurrent callers to one pending in
     }),
   );
 
-  const results = await Promise.all(
-    callers.map((caller) => caller.post.investigateNow(input)),
-  );
-
-  const investigationIds = new Set(results.map((result) => result.investigationId));
-  assert.equal(investigationIds.size, 1);
-  assert.equal(results.every((result) => result.status === "PENDING"), true);
+  const concurrentResult = await runConcurrentInvestigateNowScenario({
+    viewInput: input,
+    callers,
+  });
 
   const post = await prisma.post.findUnique({
     where: {
@@ -737,9 +792,7 @@ void test("post.investigateNow deduplicates concurrent callers to one pending in
   assert.equal(storedInvestigations.length, 1);
   const storedInvestigation = storedInvestigations[0];
   assert.ok(storedInvestigation);
-  const firstResult = results[0];
-  assert.ok(firstResult);
-  assert.equal(storedInvestigation.id, firstResult.investigationId);
+  assert.equal(storedInvestigation.id, concurrentResult.investigationId);
   assert.equal(storedInvestigation.status, "PENDING");
 
   const storedRuns = await prisma.investigationRun.findMany({
@@ -753,7 +806,7 @@ void test("post.investigateNow deduplicates concurrent callers to one pending in
 });
 
 void test("post.investigateNow deduplicates concurrent user-key callers to one attached key source", async () => {
-  const input = await buildXViewInput({
+  const input = buildXViewInput({
     externalId: "investigate-now-concurrent-user-keys-1",
     observedContentText:
       "Concurrent user-key investigateNow requests should attach at most one key source.",
@@ -766,18 +819,13 @@ void test("post.investigateNow deduplicates concurrent user-key callers to one a
     }),
   );
 
-  const results = await Promise.all(
-    callers.map((caller) => caller.post.investigateNow(input)),
-  );
-
-  const investigationIds = new Set(results.map((result) => result.investigationId));
-  assert.equal(investigationIds.size, 1);
-  assert.equal(results.every((result) => result.status === "PENDING"), true);
-  const firstResult = results[0];
-  assert.ok(firstResult);
+  const concurrentResult = await runConcurrentInvestigateNowScenario({
+    viewInput: input,
+    callers,
+  });
 
   const run = await prisma.investigationRun.findUnique({
-    where: { investigationId: firstResult.investigationId },
+    where: { investigationId: concurrentResult.investigationId },
     select: { id: true },
   });
   assert.ok(run);
@@ -803,28 +851,20 @@ void test("post.investigateNow allows user OpenAI key callers and returns inline
     isAuthenticated: false,
     userOpenAiApiKey: "sk-test-user-key",
   });
-  const input = await buildXViewInput({
+  const input = buildXViewInput({
     externalId: "investigate-now-openai-header-1",
     observedContentText: "Canonical content for user-key investigateNow.",
   });
-
-  const post = await seedPost({
-    platform: input.platform,
-    externalId: input.externalId,
-    url: input.url,
-    contentText: input.observedContentText,
-  });
-  const investigation = await seedCompleteInvestigation({
-    postId: post.id,
-    contentHash: post.contentHash,
-    contentText: post.contentText,
+  const seeded = await seedInvestigationForXViewInput({
+    viewInput: input,
+    status: "COMPLETE",
     provenance: "CLIENT_FALLBACK",
+    claimCount: 1,
   });
-  await seedClaimWithSource(investigation.id, 1);
 
   const result = await caller.post.investigateNow(input);
 
-  assert.equal(result.investigationId, investigation.id);
+  assert.equal(result.investigationId, seeded.investigationId);
   assert.equal(result.status, "COMPLETE");
   assert.equal(result.provenance, "CLIENT_FALLBACK");
   assert.ok(result.claims);
@@ -833,32 +873,24 @@ void test("post.investigateNow allows user OpenAI key callers and returns inline
 
 void test("post.investigateNow requeues existing failed investigations as PENDING", async () => {
   const caller = createCaller({ isAuthenticated: true });
-  const input = await buildXViewInput({
+  const input = buildXViewInput({
     externalId: "investigate-now-requeue-failed-1",
     observedContentText: "Canonical content should be retried after FAILED state.",
   });
-
-  const post = await seedPost({
-    platform: input.platform,
-    externalId: input.externalId,
-    url: input.url,
-    contentText: input.observedContentText,
-  });
-  const failedInvestigation = await seedFailedInvestigation({
-    postId: post.id,
-    contentHash: post.contentHash,
-    contentText: post.contentText,
+  const seeded = await seedInvestigationForXViewInput({
+    viewInput: input,
+    status: "FAILED",
     provenance: "CLIENT_FALLBACK",
   });
 
   const result = await caller.post.investigateNow(input);
 
-  assert.equal(result.investigationId, failedInvestigation.id);
+  assert.equal(result.investigationId, seeded.investigationId);
   assert.equal(result.status, "PENDING");
   assert.equal(result.provenance, "CLIENT_FALLBACK");
 
   const stored = await prisma.investigation.findUnique({
-    where: { id: failedInvestigation.id },
+    where: { id: seeded.investigationId },
     select: { status: true, checkedAt: true },
   });
   assert.ok(stored);
@@ -873,30 +905,22 @@ void test("post.investigateNow attaches first user key source while investigatio
   const secondCaller = createCaller({
     userOpenAiApiKey: "sk-test-user-key-second",
   });
-  const input = await buildXViewInput({
+  const input = buildXViewInput({
     externalId: "investigate-now-user-key-first-wins-1",
     observedContentText: "Pending investigation should keep the first user key source.",
   });
-
-  const post = await seedPost({
-    platform: input.platform,
-    externalId: input.externalId,
-    url: input.url,
-    contentText: input.observedContentText,
-  });
-  const pendingInvestigation = await seedPendingInvestigation({
-    postId: post.id,
-    contentHash: post.contentHash,
-    contentText: post.contentText,
+  const seeded = await seedInvestigationForXViewInput({
+    viewInput: input,
+    status: "PENDING",
     provenance: "CLIENT_FALLBACK",
   });
 
   const firstResult = await firstCaller.post.investigateNow(input);
-  assert.equal(firstResult.investigationId, pendingInvestigation.id);
+  assert.equal(firstResult.investigationId, seeded.investigationId);
   assert.equal(firstResult.status, "PENDING");
 
   const run = await prisma.investigationRun.findUnique({
-    where: { investigationId: pendingInvestigation.id },
+    where: { investigationId: seeded.investigationId },
     select: { id: true },
   });
   assert.ok(run);
@@ -914,7 +938,7 @@ void test("post.investigateNow attaches first user key source while investigatio
   assert.ok(storedAfterFirst);
 
   const secondResult = await secondCaller.post.investigateNow(input);
-  assert.equal(secondResult.investigationId, pendingInvestigation.id);
+  assert.equal(secondResult.investigationId, seeded.investigationId);
   assert.equal(secondResult.status, "PENDING");
 
   const storedAfterSecond = await prisma.investigationOpenAiKeySource.findUnique({
@@ -933,25 +957,17 @@ void test("post.investigateNow attaches first user key source while investigatio
 
 void test("post.investigateNow recovers stale PROCESSING investigations to PENDING", async () => {
   const caller = createCaller({ isAuthenticated: true });
-  const input = await buildXViewInput({
+  const input = buildXViewInput({
     externalId: "investigate-now-recovers-stale-processing-1",
     observedContentText: "Stale processing investigations should be recoverable.",
   });
-
-  const post = await seedPost({
-    platform: input.platform,
-    externalId: input.externalId,
-    url: input.url,
-    contentText: input.observedContentText,
-  });
-  const processingInvestigation = await seedProcessingInvestigation({
-    postId: post.id,
-    contentHash: post.contentHash,
-    contentText: post.contentText,
+  const seeded = await seedInvestigationForXViewInput({
+    viewInput: input,
+    status: "PROCESSING",
     provenance: "CLIENT_FALLBACK",
   });
   await seedInvestigationRun({
-    investigationId: processingInvestigation.id,
+    investigationId: seeded.investigationId,
     leaseOwner: "worker-stale",
     leaseExpiresAt: new Date(Date.now() - 5 * 60_000),
     startedAt: new Date(Date.now() - 10 * 60_000),
@@ -960,18 +976,18 @@ void test("post.investigateNow recovers stale PROCESSING investigations to PENDI
 
   const result = await caller.post.investigateNow(input);
 
-  assert.equal(result.investigationId, processingInvestigation.id);
+  assert.equal(result.investigationId, seeded.investigationId);
   assert.equal(result.status, "PENDING");
 
   const storedInvestigation = await prisma.investigation.findUnique({
-    where: { id: processingInvestigation.id },
+    where: { id: seeded.investigationId },
     select: { status: true },
   });
   assert.ok(storedInvestigation);
   assert.equal(storedInvestigation.status, "PENDING");
 
   const storedRun = await prisma.investigationRun.findUnique({
-    where: { investigationId: processingInvestigation.id },
+    where: { investigationId: seeded.investigationId },
     select: {
       leaseOwner: true,
       leaseExpiresAt: true,
@@ -986,26 +1002,18 @@ void test("post.investigateNow recovers stale PROCESSING investigations to PENDI
 
 void test("post.investigateNow leaves active PROCESSING investigations unchanged", async () => {
   const caller = createCaller({ isAuthenticated: true });
-  const input = await buildXViewInput({
+  const input = buildXViewInput({
     externalId: "investigate-now-keeps-active-processing-1",
     observedContentText: "Active processing investigations should remain processing.",
   });
-
-  const post = await seedPost({
-    platform: input.platform,
-    externalId: input.externalId,
-    url: input.url,
-    contentText: input.observedContentText,
-  });
-  const processingInvestigation = await seedProcessingInvestigation({
-    postId: post.id,
-    contentHash: post.contentHash,
-    contentText: post.contentText,
+  const seeded = await seedInvestigationForXViewInput({
+    viewInput: input,
+    status: "PROCESSING",
     provenance: "CLIENT_FALLBACK",
   });
   const leaseExpiresAt = new Date(Date.now() + 10 * 60_000);
   await seedInvestigationRun({
-    investigationId: processingInvestigation.id,
+    investigationId: seeded.investigationId,
     leaseOwner: "worker-active",
     leaseExpiresAt,
     startedAt: new Date(Date.now() - 60_000),
@@ -1014,18 +1022,18 @@ void test("post.investigateNow leaves active PROCESSING investigations unchanged
 
   const result = await caller.post.investigateNow(input);
 
-  assert.equal(result.investigationId, processingInvestigation.id);
+  assert.equal(result.investigationId, seeded.investigationId);
   assert.equal(result.status, "PROCESSING");
 
   const storedInvestigation = await prisma.investigation.findUnique({
-    where: { id: processingInvestigation.id },
+    where: { id: seeded.investigationId },
     select: { status: true },
   });
   assert.ok(storedInvestigation);
   assert.equal(storedInvestigation.status, "PROCESSING");
 
   const storedRun = await prisma.investigationRun.findUnique({
-    where: { investigationId: processingInvestigation.id },
+    where: { investigationId: seeded.investigationId },
     select: {
       leaseOwner: true,
       leaseExpiresAt: true,
@@ -1088,7 +1096,7 @@ void test("selector recovers stale PROCESSING investigations using shared lifecy
 
 void test("post.investigateNow rejects unauthenticated callers", async () => {
   const caller = createCaller({ isAuthenticated: false });
-  const input = await buildXViewInput({
+  const input = buildXViewInput({
     externalId: "investigate-now-auth-required-1",
     observedContentText: "Content that should require API key auth.",
   });
@@ -1102,7 +1110,7 @@ void test("post.investigateNow rejects unauthenticated callers", async () => {
 void test("post.investigateNow rejects content over word-count limit", async () => {
   const caller = createCaller({ isAuthenticated: true });
   const overLimitText = new Array(WORD_COUNT_LIMIT + 1).fill("word").join(" ");
-  const input = await buildXViewInput({
+  const input = buildXViewInput({
     externalId: "investigate-now-word-limit-1",
     observedContentText: overLimitText,
   });
@@ -1667,19 +1675,32 @@ void test("createContext rejects unknown and revoked instance API keys", async (
     revokedAt: new Date("2026-02-23T00:00:00.000Z"),
   });
 
-  const unknownContext = await createContext(
-    createMockRequestEvent({
-      "x-api-key": withIntegrationPrefix("instance-api-key-missing"),
-    }),
-  );
-  assert.equal(unknownContext.isAuthenticated, false);
-  assert.equal(unknownContext.canInvestigate, false);
+  const rejectedKeyCases = [
+    {
+      label: "missing key",
+      rawKey: withIntegrationPrefix("instance-api-key-missing"),
+    },
+    {
+      label: "revoked key",
+      rawKey: revokedRawKey,
+    },
+  ];
 
-  const revokedContext = await createContext(
-    createMockRequestEvent({
-      "x-api-key": revokedRawKey,
-    }),
-  );
-  assert.equal(revokedContext.isAuthenticated, false);
-  assert.equal(revokedContext.canInvestigate, false);
+  for (const rejectedKeyCase of rejectedKeyCases) {
+    const context = await createContext(
+      createMockRequestEvent({
+        "x-api-key": rejectedKeyCase.rawKey,
+      }),
+    );
+    assert.equal(
+      context.isAuthenticated,
+      false,
+      `Expected unauthenticated context for ${rejectedKeyCase.label}`,
+    );
+    assert.equal(
+      context.canInvestigate,
+      false,
+      `Expected non-investigating context for ${rejectedKeyCase.label}`,
+    );
+  }
 });

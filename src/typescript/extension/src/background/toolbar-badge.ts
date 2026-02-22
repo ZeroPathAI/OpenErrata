@@ -37,7 +37,7 @@ function startIconAnimation(tabId: number): void {
     frameIndex = (frameIndex + 1) % ANIMATION_FRAME_COUNT;
     browser.action
       .setIcon({ tabId, path: animationFramePaths(frameIndex) })
-      .catch((error) => {
+      .catch((error: unknown) => {
         console.warn(
           `Icon animation frame failed for tab ${tabId.toString()}:`,
           error,
@@ -112,7 +112,7 @@ export function updateToolbarBadge(
       });
       await browser.action.setBadgeText({ tabId, text: badge.text });
     })
-    .catch((error) => {
+    .catch((error: unknown) => {
       console.warn(`toolbar badge update failed for tab ${tabId.toString()}:`, error);
     })
     .finally(() => {

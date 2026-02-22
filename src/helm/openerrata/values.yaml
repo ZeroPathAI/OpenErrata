@@ -36,7 +36,7 @@ config:
 secrets:
   # Required: Postgres connection string.
   databaseUrl: ""
-  # Optional when running in modes that rely on user-provided API keys only.
+  # Required: server-side OpenAI key used by worker and selector investigations.
   openaiApiKey: ""
   # Required: shared secret used to verify request signatures.
   hmacSecret: ""

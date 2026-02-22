@@ -1,5 +1,11 @@
 import type { Platform, PlatformContent } from "@openerrata/shared";
 import { normalizeContent } from "@openerrata/shared";
+import {
+  extractImageUrlsFromRoot,
+  readFirstMetaDateAsIso,
+  readFirstTimeDateAsIso,
+  readPublishedDateFromJsonLd,
+} from "./utils";
 
 export interface PlatformAdapter {
   platformKey: Platform;
@@ -15,7 +21,14 @@ const POST_URL_REGEX =
 const CONTENT_SELECTOR = ".PostsPage-postContent";
 const AUTHOR_LINK_SELECTOR = 'a[href*="/users/"]';
 const TAG_SELECTOR = 'a[href*="/tag/"]';
-const JSON_LD_SELECTOR = 'script[type="application/ld+json"]';
+const META_DATE_SELECTORS = [
+  'meta[property="article:published_time"]',
+  'meta[name="article:published_time"]',
+  'meta[property="og:article:published_time"]',
+  'meta[name="date"]',
+  'meta[name="pubdate"]',
+] as const;
+const JSON_LD_DATE_KEYS = new Set(["datePublished", "dateCreated"]);
 
 function parseAuthorSlug(href: string | null): string | null {
   if (!href) return null;
@@ -23,102 +36,12 @@ function parseAuthorSlug(href: string | null): string | null {
   return match?.[1] ?? null;
 }
 
-function parseIsoDate(value: string | null | undefined): string | null {
-  if (!value) return null;
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.valueOf())) return null;
-  return parsed.toISOString();
-}
-
-function findPublishedDateInJsonLd(value: unknown, depth = 0): string | null {
-  if (depth > 8 || value === null || value === undefined) return null;
-
-  if (Array.isArray(value)) {
-    for (const nested of value) {
-      const found = findPublishedDateInJsonLd(nested, depth + 1);
-      if (found) return found;
-    }
-    return null;
-  }
-
-  if (typeof value !== "object") return null;
-
-  const record = value as Record<string, unknown>;
-  const publishedRaw = record["datePublished"];
-  if (typeof publishedRaw === "string") {
-    const iso = parseIsoDate(publishedRaw);
-    if (iso) return iso;
-  }
-
-  const createdRaw = record["dateCreated"];
-  if (typeof createdRaw === "string") {
-    const iso = parseIsoDate(createdRaw);
-    if (iso) return iso;
-  }
-
-  for (const nested of Object.values(record)) {
-    const found = findPublishedDateInJsonLd(nested, depth + 1);
-    if (found) return found;
-  }
-
-  return null;
-}
-
 function extractPublishedAt(document: Document): string | null {
-  const metaDateSelectors = [
-    'meta[property="article:published_time"]',
-    'meta[name="article:published_time"]',
-    'meta[property="og:article:published_time"]',
-    'meta[name="date"]',
-    'meta[name="pubdate"]',
-  ];
-
-  for (const selector of metaDateSelectors) {
-    const value = document.querySelector(selector)?.getAttribute("content");
-    const iso = parseIsoDate(value);
-    if (iso) return iso;
-  }
-
-  const timeDateTime = document.querySelector("time[datetime]")?.getAttribute("datetime");
-  const timeIso = parseIsoDate(timeDateTime);
-  if (timeIso) return timeIso;
-
-  const jsonLdScripts = Array.from(
-    document.querySelectorAll<HTMLScriptElement>(JSON_LD_SELECTOR),
+  return (
+    readFirstMetaDateAsIso(document, META_DATE_SELECTORS) ??
+    readFirstTimeDateAsIso([document]) ??
+    readPublishedDateFromJsonLd(document, JSON_LD_DATE_KEYS)
   );
-  for (const script of jsonLdScripts) {
-    const text = script.textContent.trim();
-    if (!text) continue;
-    try {
-      const parsed = JSON.parse(text) as unknown;
-      const publishedAt = findPublishedDateInJsonLd(parsed);
-      if (publishedAt) return publishedAt;
-    } catch {
-      // Ignore malformed JSON-LD blobs.
-    }
-  }
-
-  return null;
-}
-
-function extractImageUrls(root: Element): string[] {
-  const uniqueUrls = new Set<string>();
-  const images = Array.from(root.querySelectorAll<HTMLImageElement>("img[src]"));
-
-  for (const image of images) {
-    const src = image.getAttribute("src")?.trim() ?? "";
-    if (src.length === 0) continue;
-    if (src.startsWith("data:")) continue;
-
-    try {
-      const normalizedUrl = new URL(src, window.location.href).toString();
-      uniqueUrls.add(normalizedUrl);
-    } catch {
-      // Ignore malformed image URLs in extracted content.
-    }
-  }
-
-  return Array.from(uniqueUrls);
 }
 
 export const lesswrongAdapter: PlatformAdapter = {
@@ -156,7 +79,7 @@ export const lesswrongAdapter: PlatformAdapter = {
     const slug = (slugToken === undefined ? "" : normalizeContent(slugToken)) || externalId;
     const publishedAt = extractPublishedAt(document);
 
-    const imageUrls = extractImageUrls(body);
+    const imageUrls = extractImageUrlsFromRoot(body, window.location.href);
     const hasVideoOnlyMedia = body.querySelector("video, iframe") !== null;
     const mediaState =
       imageUrls.length > 0

@@ -6,7 +6,7 @@ import type {
   Platform,
 } from "@openerrata/shared";
 
-const isoDateTimeSchema = z.string().datetime();
+const isoDateTimeSchema = z.iso.datetime();
 
 export type InvestigatorJsonValue =
   | string

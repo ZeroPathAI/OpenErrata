@@ -4,6 +4,10 @@ import {
   OPENAI_KEY_VALIDATION_TIMEOUT_MS,
 } from "@openerrata/shared";
 import OpenAI from "openai";
+import {
+  classifyOpenAiKeyValidationStatus,
+  readOpenAiStatusCode,
+} from "$lib/openai/errors.js";
 
 type OpenAiKeyValidationResult = Pick<
   SettingsValidationOutput,
@@ -26,13 +30,6 @@ async function validateOpenAiApiKeyReachability(openAiApiKey: string): Promise<v
   } finally {
     clearTimeout(timeoutId);
   }
-}
-
-function readStatusCode(error: unknown): number | null {
-  if (typeof error !== "object" || error === null) return null;
-  if (!("status" in error)) return null;
-  const status = error.status;
-  return typeof status === "number" ? status : null;
 }
 
 function readErrorMessage(error: unknown): string | null {
@@ -70,36 +67,11 @@ export async function validateOpenAiApiKeyForSettings(
       };
     }
 
-    const statusCode = readStatusCode(error);
-    if (statusCode === 401) {
-      return {
-        openaiApiKeyStatus: "invalid",
-        openaiApiKeyMessage: "OpenAI rejected this API key.",
-      };
-    }
-
-    if (statusCode === 403) {
-      return {
-        openaiApiKeyStatus: "authenticated_restricted",
-        openaiApiKeyMessage:
-          "OpenAI authenticated this key, but access is restricted for validation checks.",
-      };
-    }
-
-    if (statusCode === 429) {
-      return {
-        openaiApiKeyStatus: "error",
-        openaiApiKeyMessage:
-          "OpenAI rate-limited key validation. Retry in a moment.",
-      };
-    }
-
-    if (statusCode !== null && statusCode >= 400 && statusCode < 500) {
-      return {
-        openaiApiKeyStatus: "error",
-        openaiApiKeyMessage:
-          `OpenAI returned HTTP ${statusCode.toString()} while validating this key.`,
-      };
+    const statusOutcome = classifyOpenAiKeyValidationStatus(
+      readOpenAiStatusCode(error),
+    );
+    if (statusOutcome) {
+      return statusOutcome;
     }
 
     return {

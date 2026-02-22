@@ -63,6 +63,7 @@ function parseOptionPairs(tokens: readonly string[]): Map<string, string> {
 
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
+    if (token === undefined) break;
     if (!token.startsWith("--")) {
       throw new Error(
         `Unexpected argument "${token}".\n\n${usage()}`,
@@ -82,6 +83,9 @@ function parseOptionPairs(tokens: readonly string[]): Map<string, string> {
     }
 
     const nextToken = tokens[i + 1];
+    if (nextToken === undefined) {
+      throw new Error(`Option "--${optionName}" requires a value.`);
+    }
     if (nextToken.startsWith("--")) {
       throw new Error(`Option "--${optionName}" requires a value.`);
     }
@@ -94,10 +98,10 @@ function parseOptionPairs(tokens: readonly string[]): Map<string, string> {
 }
 
 function parseArguments(tokens: readonly string[]): ParsedArguments {
-  if (tokens.length === 0) {
+  const commandToken = tokens[0];
+  if (commandToken === undefined) {
     throw new Error(usage());
   }
-  const commandToken = tokens[0];
 
   if (
     commandToken !== "list" &&
@@ -114,7 +118,7 @@ function parseArguments(tokens: readonly string[]): ParsedArguments {
 }
 
 function stripLeadingArgSeparator(tokens: readonly string[]): readonly string[] {
-  if (tokens[0] === "--") {
+  if (tokens.length > 0 && tokens[0] === "--") {
     return tokens.slice(1);
   }
   return tokens;
@@ -165,7 +169,7 @@ function readStatusFilter(options: Map<string, string>): StatusFilter {
 }
 
 function requireDatabaseUrl(): string {
-  const value = process.env.DATABASE_URL;
+  const value = process.env['DATABASE_URL'];
   if (typeof value !== "string" || value.trim().length === 0) {
     throw new Error("DATABASE_URL is required.");
   }
@@ -335,12 +339,12 @@ async function revokeInstanceApiKey(
 
 async function main(): Promise<void> {
   const tokens = stripLeadingArgSeparator(process.argv.slice(2));
-  if (tokens.length === 0) {
+  const commandToken = tokens[0];
+  if (commandToken === undefined) {
     console.log(usage());
     return;
   }
 
-  const commandToken = tokens[0];
   if (
     commandToken === "help" ||
     commandToken === "--help" ||

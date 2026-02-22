@@ -31,7 +31,7 @@ const observedContentTextSchema = z
 // ── LLM output validation ─────────────────────────────────────────────────
 
 export const claimSourceSchema = z.object({
-  url: z.string().url(),
+  url: z.url(),
   title: z.string().min(1),
   snippet: z.string().min(1),
 });
@@ -57,17 +57,17 @@ export const lesswrongMetadataSchema = z.object({
   authorName: z.string().min(1).optional(),
   authorSlug: z.string().min(1).nullable().optional(),
   tags: z.array(z.string().min(1)),
-  publishedAt: z.string().datetime().optional(),
+  publishedAt: z.iso.datetime().optional(),
 });
 
 export const xMetadataSchema = z.object({
   authorHandle: z.string().min(1),
   authorDisplayName: z.string().min(1).nullable().optional(),
   text: observedContentTextSchema,
-  mediaUrls: z.array(z.string().url()),
+  mediaUrls: z.array(z.url()),
   likeCount: z.number().int().nonnegative().optional(),
   retweetCount: z.number().int().nonnegative().optional(),
-  postedAt: z.string().datetime().optional(),
+  postedAt: z.iso.datetime().optional(),
 });
 
 export const substackMetadataSchema = z.object({
@@ -78,7 +78,7 @@ export const substackMetadataSchema = z.object({
   subtitle: z.string().min(1).optional(),
   authorName: z.string().min(1),
   authorSubstackHandle: z.string().min(1).optional(),
-  publishedAt: z.string().datetime().optional(),
+  publishedAt: z.iso.datetime().optional(),
   likeCount: z.number().int().nonnegative().optional(),
   commentCount: z.number().int().nonnegative().optional(),
 });
@@ -87,9 +87,9 @@ export const substackMetadataSchema = z.object({
 
 const viewPostInputBaseSchema = z.object({
   externalId: z.string().min(1),
-  url: z.string().url(),
+  url: z.url(),
   observedContentText: observedContentTextSchema,
-  observedImageUrls: z.array(z.string().url()).optional(),
+  observedImageUrls: z.array(z.url()).optional(),
 });
 
 const lesswrongViewPostInputSchema = viewPostInputBaseSchema.extend({
@@ -132,7 +132,7 @@ export const getInvestigationOutputSchema = z.object({
   status: checkStatusSchema.optional(),
   provenance: contentProvenanceSchema.optional(),
   claims: z.array(investigationClaimSchema).nullable(),
-  checkedAt: z.string().datetime().optional(),
+  checkedAt: z.iso.datetime().optional(),
 });
 
 export const investigateNowInputSchema = z.discriminatedUnion("platform", [
@@ -194,12 +194,12 @@ export const batchStatusOutputSchema = z.object({
 
 const platformContentBaseSchema = z.object({
   externalId: z.string().min(1),
-  url: z.string().url(),
+  url: z.url(),
   // Normalized plain text as observed by the client.
   // Textless content is currently treated as unsupported.
   contentText: observedContentTextSchema,
   mediaState: postMediaStateSchema,
-  imageUrls: z.array(z.string().url()),
+  imageUrls: z.array(z.url()),
 });
 
 const lesswrongPlatformContentSchema = platformContentBaseSchema.extend({
@@ -228,7 +228,7 @@ const extensionPostStatusBaseSchema = z.object({
   tabSessionId: z.number().int().nonnegative(),
   platform: platformSchema,
   externalId: z.string().min(1),
-  pageUrl: z.string().url(),
+  pageUrl: z.url(),
   investigationId: z.string().min(1).optional(),
   provenance: contentProvenanceSchema.optional(),
 });
@@ -276,7 +276,7 @@ export const extensionSkippedStatusSchema = z.object({
   tabSessionId: z.number().int().nonnegative(),
   platform: platformSchema,
   externalId: z.string().min(1),
-  pageUrl: z.string().url(),
+  pageUrl: z.url(),
   reason: extensionSkippedReasonSchema,
 });
 
@@ -319,7 +319,7 @@ export const extensionMessageSchema = z.discriminatedUnion("type", [
       tabSessionId: z.number().int().nonnegative(),
       platform: platformSchema,
       externalId: z.string().min(1),
-      pageUrl: z.string().url(),
+      pageUrl: z.url(),
       reason: extensionSkippedReasonSchema,
     }),
   }),
@@ -361,22 +361,22 @@ export const extensionMessageSchema = z.discriminatedUnion("type", [
 
 export const trpcErrorSchema = z
   .object({ message: z.string().optional() })
-  .passthrough();
+  .loose();
 
 export const trpcJsonDataSchema = z
   .object({ json: z.unknown() })
-  .passthrough();
+  .loose();
 
 export const trpcResultSchema = z
   .object({ data: z.unknown() })
-  .passthrough();
+  .loose();
 
 export const trpcEnvelopeSchema = z
   .object({
     error: z.unknown().optional(),
     result: trpcResultSchema.optional(),
   })
-  .passthrough();
+  .loose();
 
 // ── Public API schemas ────────────────────────────────────────────────────
 
@@ -399,6 +399,6 @@ export const searchInvestigationsInputSchema = z.object({
 export const getMetricsInputSchema = z.object({
   platform: platformSchema.optional(),
   authorId: z.string().optional(),
-  windowStart: z.string().datetime().optional(),
-  windowEnd: z.string().datetime().optional(),
+  windowStart: z.iso.datetime().optional(),
+  windowEnd: z.iso.datetime().optional(),
 });

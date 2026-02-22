@@ -111,7 +111,7 @@ function createManagedAwsBlobStorage(input: pulumi.Config): BlobStorageConfig {
   const accountIdentity = aws.getCallerIdentityOutput();
   const derivedBucketName = pulumi.interpolate`${bucketPrefix}-${accountIdentity.accountId}-blobs`;
 
-  const bucket = new aws.s3.BucketV2("blob-storage", {
+  const bucket = new aws.s3.Bucket("blob-storage", {
     bucket: configuredManagedBucketName ?? derivedBucketName,
     forceDestroy: managedBlobStorageForceDestroy,
     tags: {

@@ -1,12 +1,24 @@
 import type { PlatformContent } from "@openerrata/shared";
 import { normalizeContent } from "@openerrata/shared";
 import type { PlatformAdapter } from "./lesswrong";
+import {
+  extractImageUrlsFromRoot,
+  readFirstMetaDateAsIso,
+  readFirstTimeDateAsIso,
+  readPublishedDateFromJsonLd,
+} from "./utils";
 
 const CONTENT_SELECTOR = ".body.markup";
 const TITLE_SELECTOR = "h1.post-title";
 const SUBTITLE_SELECTOR = "h3.subtitle, h2.subtitle";
 const AUTHOR_META_SELECTOR = 'meta[name="author"]';
 const JSON_LD_SELECTOR = 'script[type="application/ld+json"]';
+const META_DATE_SELECTORS = [
+  'meta[property="article:published_time"]',
+  'meta[name="article:published_time"]',
+  'meta[property="og:article:published_time"]',
+] as const;
+const JSON_LD_DATE_KEYS = new Set(["datePublished"]);
 const SUBSTACK_FINGERPRINT_SELECTOR = [
   'link[href*="substackcdn.com"]',
   'script[src*="substackcdn.com"]',
@@ -18,31 +30,6 @@ const SUBSTACK_POST_PATH_REGEX = /^\/p\/([^/?#]+)/i;
 const SUBSTACK_HOST_REGEX = /(^|\.)substack\.com$/i;
 const SUBSTACK_POST_PREVIEW_ID_REGEX = /post_preview\/(\d+)\/(?:twitter|facebook)\.(?:jpg|png)/i;
 const SUBSTACK_PUBLICATION_REGEX = /([a-z0-9-]+)\.substack\.com/i;
-
-function parseIsoDate(value: string | null | undefined): string | null {
-  if (!value) return null;
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.valueOf())) return null;
-  return parsed.toISOString();
-}
-
-function extractImageUrls(root: Element): string[] {
-  const uniqueUrls = new Set<string>();
-  const images = Array.from(root.querySelectorAll<HTMLImageElement>("img[src]"));
-
-  for (const image of images) {
-    const src = image.getAttribute("src")?.trim() ?? "";
-    if (src.length === 0 || src.startsWith("data:")) continue;
-
-    try {
-      uniqueUrls.add(new URL(src, window.location.href).toString());
-    } catch {
-      // Ignore malformed URLs; keep extraction best-effort.
-    }
-  }
-
-  return Array.from(uniqueUrls);
-}
 
 function decodeCandidates(raw: string): string[] {
   const candidates = new Set<string>();
@@ -102,65 +89,12 @@ function extractMetaImageCandidates(document: Document): string[] {
   return candidates;
 }
 
-function findPublishedDateInJsonLd(value: unknown, depth = 0): string | null {
-  if (depth > 8 || value === null || value === undefined) return null;
-
-  if (Array.isArray(value)) {
-    for (const nested of value) {
-      const found = findPublishedDateInJsonLd(nested, depth + 1);
-      if (found) return found;
-    }
-    return null;
-  }
-
-  if (typeof value !== "object") return null;
-
-  const record = value as Record<string, unknown>;
-  const datePublished = record["datePublished"];
-  if (typeof datePublished === "string") {
-    const iso = parseIsoDate(datePublished);
-    if (iso) return iso;
-  }
-
-  for (const nested of Object.values(record)) {
-    const found = findPublishedDateInJsonLd(nested, depth + 1);
-    if (found) return found;
-  }
-
-  return null;
-}
-
 function extractPublishedAt(document: Document): string | null {
-  const timeValue = document.querySelector("time[datetime]")?.getAttribute("datetime");
-  const fromTime = parseIsoDate(timeValue);
-  if (fromTime) return fromTime;
-
-  const metaSelectors = [
-    'meta[property="article:published_time"]',
-    'meta[name="article:published_time"]',
-    'meta[property="og:article:published_time"]',
-  ];
-
-  for (const selector of metaSelectors) {
-    const value = document.querySelector(selector)?.getAttribute("content");
-    const iso = parseIsoDate(value);
-    if (iso) return iso;
-  }
-
-  for (const script of document.querySelectorAll<HTMLScriptElement>(JSON_LD_SELECTOR)) {
-    const text = script.textContent.trim();
-    if (!text) continue;
-
-    try {
-      const parsed = JSON.parse(text) as unknown;
-      const publishedAt = findPublishedDateInJsonLd(parsed);
-      if (publishedAt) return publishedAt;
-    } catch {
-      // Ignore malformed JSON-LD payloads.
-    }
-  }
-
-  return null;
+  return (
+    readFirstTimeDateAsIso([document]) ??
+    readFirstMetaDateAsIso(document, META_DATE_SELECTORS) ??
+    readPublishedDateFromJsonLd(document, JSON_LD_DATE_KEYS)
+  );
 }
 
 function extractInteractionCounts(document: Document): {
@@ -347,7 +281,7 @@ export const substackAdapter: PlatformAdapter = {
     const interactionCounts = extractInteractionCounts(document);
     const authorSubstackHandle = extractAuthorHandle(document);
 
-    const imageUrls = extractImageUrls(root);
+    const imageUrls = extractImageUrlsFromRoot(root, window.location.href);
     const hasVideo = root.querySelector("video, iframe") !== null;
     const mediaState =
       imageUrls.length > 0

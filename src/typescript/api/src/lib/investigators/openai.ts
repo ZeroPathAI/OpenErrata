@@ -32,6 +32,7 @@ import {
   INVESTIGATION_SYSTEM_PROMPT,
   buildUserPrompt,
 } from "./prompt.js";
+import { readOpenAiStatusCode } from "$lib/openai/errors.js";
 
 const OPENAI_MODEL_ID = getEnv().OPENAI_MODEL_ID;
 const DEFAULT_REASONING_EFFORT = "medium";
@@ -126,9 +127,7 @@ function readIncompleteReason(responseRecord: Record<string, unknown>): string |
 }
 
 function getErrorStatus(error: unknown): number | null {
-  if (!isRecord(error)) return null;
-  const status = error["status"];
-  return typeof status === "number" ? status : null;
+  return readOpenAiStatusCode(error);
 }
 
 function buildErrorAudit(error: unknown): InvestigatorErrorAudit {
@@ -498,6 +497,7 @@ function mergeResponseAudits(
   }
 
   const finalAudit = responseAudits[responseAudits.length - 1];
+  if (!finalAudit) throw new Error("Cannot merge empty response audits");
   return {
     responseId: finalAudit.responseId,
     responseStatus: finalAudit.responseStatus,
@@ -607,7 +607,7 @@ class InvestigatorIncompleteResponseError extends Error {
 
 export class InvestigatorExecutionError extends Error {
   readonly attemptAudit: InvestigatorAttemptAudit;
-  readonly cause: unknown;
+  override readonly cause: unknown;
 
   constructor(message: string, attemptAudit: InvestigatorAttemptAudit, cause?: unknown) {
     super(message);
@@ -632,9 +632,9 @@ export class OpenAIInvestigator implements Investigator {
       contentText: input.contentText,
       platform: input.platform,
       url: input.url,
-      authorName: input.authorName,
-      postPublishedAt: input.postPublishedAt,
-      hasVideo: input.hasVideo,
+      ...(input.authorName !== undefined && { authorName: input.authorName }),
+      ...(input.postPublishedAt !== undefined && { postPublishedAt: input.postPublishedAt }),
+      ...(input.hasVideo !== undefined && { hasVideo: input.hasVideo }),
     });
     const initialInput = buildInitialInput(userPrompt, input.imageUrls);
     const client = this.client;
@@ -889,7 +889,7 @@ export class OpenAIInvestigator implements Investigator {
       return {
         result,
         attemptAudit,
-        modelVersion: responseAudit.responseModelVersion ?? undefined,
+        ...(responseAudit.responseModelVersion != null && { modelVersion: responseAudit.responseModelVersion }),
       };
     } catch (error) {
       throw new InvestigatorExecutionError(

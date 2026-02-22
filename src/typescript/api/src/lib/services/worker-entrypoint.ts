@@ -7,7 +7,7 @@ async function main(): Promise<void> {
   await startWorker();
 }
 
-main().catch((err) => {
+main().catch((err: unknown) => {
   console.error("Worker failed:", err);
   process.exit(1);
 });

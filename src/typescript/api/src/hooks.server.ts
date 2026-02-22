@@ -2,7 +2,7 @@ import { runStartupChecks } from "$lib/config/startup.js";
 import type { Handle } from "@sveltejs/kit";
 import { sequence } from "@sveltejs/kit/hooks";
 
-const startupChecks = runStartupChecks("api").catch((error) => {
+const startupChecks = runStartupChecks("api").catch((error: unknown) => {
   console.error("[startup:api] Startup checks failed", error);
   throw error;
 });

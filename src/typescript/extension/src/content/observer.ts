@@ -48,18 +48,18 @@ export class PageObserver {
   }
 
   #installNavigationListeners(): void {
-    const originalPushState = history.pushState;
+    const originalPushState = history.pushState.bind(history);
     history.pushState = (...args: Parameters<History["pushState"]>) => {
-      originalPushState.apply(history, args);
+      originalPushState(...args);
       this.#config.onNavigation();
     };
     this.#restorePushState = () => {
       history.pushState = originalPushState;
     };
 
-    const originalReplaceState = history.replaceState;
+    const originalReplaceState = history.replaceState.bind(history);
     history.replaceState = (...args: Parameters<History["replaceState"]>) => {
-      originalReplaceState.apply(history, args);
+      originalReplaceState(...args);
       this.#config.onNavigation();
     };
     this.#restoreReplaceState = () => {

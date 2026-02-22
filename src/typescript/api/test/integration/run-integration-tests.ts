@@ -5,7 +5,7 @@ import "dotenv/config";
 import { Client } from "pg";
 
 function ensureDatabaseUrl(): string {
-  const value = process.env.DATABASE_URL;
+  const value = process.env['DATABASE_URL'];
   if (!value || value.trim().length === 0) {
     throw new Error("DATABASE_URL is required to run integration tests");
   }
@@ -168,7 +168,7 @@ async function main(): Promise<void> {
   }
 }
 
-void main().catch((error) => {
+void main().catch((error: unknown) => {
   const message = formatError(error);
   console.error(`Integration test runner failed: ${message}`);
   process.exit(1);

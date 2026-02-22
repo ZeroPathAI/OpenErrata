@@ -234,7 +234,7 @@ function sanitizeRenderedMarkdownHtml(rawHtml: string): string {
   const elements = Array.from(template.content.querySelectorAll("*"));
   for (const element of elements) {
     if (!ALLOWED_RENDERED_MARKDOWN_TAGS.has(element.tagName)) {
-      element.replaceWith(document.createTextNode(element.textContent ?? ""));
+      element.replaceWith(document.createTextNode(element.textContent));
       continue;
     }
 

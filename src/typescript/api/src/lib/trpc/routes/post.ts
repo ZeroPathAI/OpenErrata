@@ -74,6 +74,48 @@ function contentMismatchError(): TRPCError {
   });
 }
 
+function toOptionalDate(value: string | null | undefined): Date | null {
+  return value ? new Date(value) : null;
+}
+
+function trimToOptionalNonEmpty(value: string | null | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : undefined;
+}
+
+async function upsertAuthorAndAttachToPost(
+  prisma: PrismaClient,
+  input: {
+    postId: string;
+    platform: Platform;
+    platformUserId: string;
+    displayName: string;
+  },
+): Promise<void> {
+  const author = await prisma.author.upsert({
+    where: {
+      platform_platformUserId: {
+        platform: input.platform,
+        platformUserId: input.platformUserId,
+      },
+    },
+    create: {
+      platform: input.platform,
+      platformUserId: input.platformUserId,
+      displayName: input.displayName,
+    },
+    update: {
+      displayName: input.displayName,
+    },
+    select: { id: true },
+  });
+
+  await prisma.post.update({
+    where: { id: input.postId },
+    data: { authorId: author.id },
+  });
+}
+
 async function toObservedContentVersion(observedContentText: string): Promise<ContentVersion> {
   const contentText = normalizeContent(observedContentText);
   const contentHash = await hashContent(contentText);
@@ -119,34 +161,18 @@ async function linkAuthorAndMetadata(
   input: PostMetadataInput,
 ): Promise<void> {
   if (input.platform === "LESSWRONG") {
-    const authorName = input.metadata.authorName?.trim();
-    const authorSlug = input.metadata.authorSlug?.trim() || undefined;
+    const authorName = trimToOptionalNonEmpty(input.metadata.authorName);
+    const authorSlug = trimToOptionalNonEmpty(input.metadata.authorSlug);
     const authorDisplayName = authorName ?? authorSlug;
 
     if (authorDisplayName) {
       const platformUserId =
         authorSlug ?? `name:${authorDisplayName.toLowerCase()}`;
-      const author = await prisma.author.upsert({
-        where: {
-          platform_platformUserId: {
-            platform: "LESSWRONG",
-            platformUserId,
-          },
-        },
-        create: {
-          platform: "LESSWRONG",
-          platformUserId,
-          displayName: authorDisplayName,
-        },
-        update: {
-          displayName: authorDisplayName,
-        },
-        select: { id: true },
-      });
-
-      await prisma.post.update({
-        where: { id: input.postId },
-        data: { authorId: author.id },
+      await upsertAuthorAndAttachToPost(prisma, {
+        postId: input.postId,
+        platform: "LESSWRONG",
+        platformUserId,
+        displayName: authorDisplayName,
       });
     }
 
@@ -155,33 +181,23 @@ async function linkAuthorAndMetadata(
     const metadataAuthorName = authorName ?? authorSlug;
 
     if (title && metadataAuthorName) {
+      const lesswrongMetaData = {
+        slug: input.metadata.slug,
+        title,
+        htmlContent,
+        imageUrls: input.observedImageUrls ?? [],
+        authorName: metadataAuthorName,
+        authorSlug: authorSlug ?? null,
+        tags: input.metadata.tags,
+        publishedAt: toOptionalDate(input.metadata.publishedAt),
+      };
       await prisma.lesswrongMeta.upsert({
         where: { postId: input.postId },
         create: {
           postId: input.postId,
-          slug: input.metadata.slug,
-          title,
-          htmlContent,
-          imageUrls: input.observedImageUrls ?? [],
-          authorName: metadataAuthorName,
-          authorSlug: authorSlug ?? null,
-          tags: input.metadata.tags,
-          publishedAt: input.metadata.publishedAt
-            ? new Date(input.metadata.publishedAt)
-            : null,
+          ...lesswrongMetaData,
         },
-        update: {
-          slug: input.metadata.slug,
-          title,
-          htmlContent,
-          imageUrls: input.observedImageUrls ?? [],
-          authorName: metadataAuthorName,
-          authorSlug: authorSlug ?? null,
-          tags: input.metadata.tags,
-          publishedAt: input.metadata.publishedAt
-            ? new Date(input.metadata.publishedAt)
-            : null,
-        },
+        update: lesswrongMetaData,
       });
     }
 
@@ -190,120 +206,69 @@ async function linkAuthorAndMetadata(
 
   if (input.platform === "X") {
     const authorHandle = input.metadata.authorHandle;
-    const authorDisplayName = input.metadata.authorDisplayName?.trim() || undefined;
+    const authorDisplayName = trimToOptionalNonEmpty(input.metadata.authorDisplayName);
 
-    const author = await prisma.author.upsert({
-      where: {
-        platform_platformUserId: {
-          platform: "X",
-          platformUserId: authorHandle,
-        },
-      },
-      create: {
-        platform: "X",
-        platformUserId: authorHandle,
-        displayName: authorDisplayName ?? authorHandle,
-      },
-      update: {
-        displayName: authorDisplayName ?? authorHandle,
-      },
-      select: { id: true },
+    await upsertAuthorAndAttachToPost(prisma, {
+      postId: input.postId,
+      platform: "X",
+      platformUserId: authorHandle,
+      displayName: authorDisplayName ?? authorHandle,
     });
 
-    await prisma.post.update({
-      where: { id: input.postId },
-      data: { authorId: author.id },
-    });
-
+    const xMetaData = {
+      text: input.metadata.text,
+      authorHandle,
+      authorDisplayName: authorDisplayName ?? null,
+      mediaUrls: input.metadata.mediaUrls,
+      likeCount: input.metadata.likeCount ?? null,
+      retweetCount: input.metadata.retweetCount ?? null,
+      postedAt: toOptionalDate(input.metadata.postedAt),
+    };
     await prisma.xMeta.upsert({
       where: { postId: input.postId },
       create: {
         postId: input.postId,
         tweetId: input.externalId,
-        text: input.metadata.text,
-        authorHandle,
-        authorDisplayName: authorDisplayName ?? null,
-        mediaUrls: input.metadata.mediaUrls,
-        likeCount: input.metadata.likeCount,
-        retweetCount: input.metadata.retweetCount,
-        postedAt: input.metadata.postedAt ? new Date(input.metadata.postedAt) : null,
+        ...xMetaData,
       },
-      update: {
-        text: input.metadata.text,
-        authorHandle,
-        authorDisplayName: authorDisplayName ?? null,
-        mediaUrls: input.metadata.mediaUrls,
-        likeCount: input.metadata.likeCount,
-        retweetCount: input.metadata.retweetCount,
-        postedAt: input.metadata.postedAt ? new Date(input.metadata.postedAt) : null,
-      },
+      update: xMetaData,
     });
     return;
   }
 
   const authorName = input.metadata.authorName.trim();
-  const authorSubstackHandle =
-    input.metadata.authorSubstackHandle?.trim() || undefined;
+  const authorSubstackHandle = trimToOptionalNonEmpty(input.metadata.authorSubstackHandle);
   const platformUserId =
     authorSubstackHandle ??
     `publication:${input.metadata.publicationSubdomain}:name:${authorName.toLowerCase()}`;
 
-  const author = await prisma.author.upsert({
-    where: {
-      platform_platformUserId: {
-        platform: "SUBSTACK",
-        platformUserId,
-      },
-    },
-    create: {
-      platform: "SUBSTACK",
-      platformUserId,
-      displayName: authorName,
-    },
-    update: {
-      displayName: authorName,
-    },
-    select: { id: true },
+  await upsertAuthorAndAttachToPost(prisma, {
+    postId: input.postId,
+    platform: "SUBSTACK",
+    platformUserId,
+    displayName: authorName,
   });
 
-  await prisma.post.update({
-    where: { id: input.postId },
-    data: { authorId: author.id },
-  });
-
+  const substackMetaData = {
+    substackPostId: input.metadata.substackPostId,
+    publicationSubdomain: input.metadata.publicationSubdomain,
+    slug: input.metadata.slug,
+    title: input.metadata.title,
+    subtitle: input.metadata.subtitle ?? null,
+    imageUrls: input.observedImageUrls ?? [],
+    authorName,
+    authorSubstackHandle: authorSubstackHandle ?? null,
+    publishedAt: toOptionalDate(input.metadata.publishedAt),
+    likeCount: input.metadata.likeCount ?? null,
+    commentCount: input.metadata.commentCount ?? null,
+  };
   await prisma.substackMeta.upsert({
     where: { postId: input.postId },
     create: {
       postId: input.postId,
-      substackPostId: input.metadata.substackPostId,
-      publicationSubdomain: input.metadata.publicationSubdomain,
-      slug: input.metadata.slug,
-      title: input.metadata.title,
-      subtitle: input.metadata.subtitle ?? null,
-      imageUrls: input.observedImageUrls ?? [],
-      authorName,
-      authorSubstackHandle: authorSubstackHandle ?? null,
-      publishedAt: input.metadata.publishedAt
-        ? new Date(input.metadata.publishedAt)
-        : null,
-      likeCount: input.metadata.likeCount,
-      commentCount: input.metadata.commentCount,
+      ...substackMetaData,
     },
-    update: {
-      substackPostId: input.metadata.substackPostId,
-      publicationSubdomain: input.metadata.publicationSubdomain,
-      slug: input.metadata.slug,
-      title: input.metadata.title,
-      subtitle: input.metadata.subtitle ?? null,
-      imageUrls: input.observedImageUrls ?? [],
-      authorName,
-      authorSubstackHandle: authorSubstackHandle ?? null,
-      publishedAt: input.metadata.publishedAt
-        ? new Date(input.metadata.publishedAt)
-        : null,
-      likeCount: input.metadata.likeCount,
-      commentCount: input.metadata.commentCount,
-    },
+    update: substackMetaData,
   });
 }
 
@@ -350,7 +315,7 @@ async function upsertPost(
       platform: "LESSWRONG",
       externalId: input.externalId,
       metadata: input.metadata,
-      observedImageUrls: input.observedImageUrls,
+      ...(input.observedImageUrls !== undefined && { observedImageUrls: input.observedImageUrls }),
     });
   } else if (input.platform === "X") {
     await linkAuthorAndMetadata(prisma, {
@@ -358,7 +323,7 @@ async function upsertPost(
       platform: "X",
       externalId: input.externalId,
       metadata: input.metadata,
-      observedImageUrls: input.observedImageUrls,
+      ...(input.observedImageUrls !== undefined && { observedImageUrls: input.observedImageUrls }),
     });
   } else {
     await linkAuthorAndMetadata(prisma, {
@@ -366,7 +331,7 @@ async function upsertPost(
       platform: "SUBSTACK",
       externalId: input.externalId,
       metadata: input.metadata,
-      observedImageUrls: input.observedImageUrls,
+      ...(input.observedImageUrls !== undefined && { observedImageUrls: input.observedImageUrls }),
     });
   }
 
@@ -379,16 +344,20 @@ async function upsertPostFromViewInput(
   canonical: CanonicalContentVersion,
   options: { countAsView: boolean },
 ) {
+  const commonInput = {
+    externalId: input.externalId,
+    url: input.url,
+    contentText: canonical.contentText,
+    contentHash: canonical.contentHash,
+    ...(input.observedImageUrls !== undefined && { observedImageUrls: input.observedImageUrls }),
+  };
+
   if (input.platform === "LESSWRONG") {
     return upsertPost(
       prisma,
       {
+        ...commonInput,
         platform: "LESSWRONG",
-        externalId: input.externalId,
-        url: input.url,
-        contentText: canonical.contentText,
-        contentHash: canonical.contentHash,
-        observedImageUrls: input.observedImageUrls,
         metadata: input.metadata,
       },
       options,
@@ -399,12 +368,8 @@ async function upsertPostFromViewInput(
     return upsertPost(
       prisma,
       {
+        ...commonInput,
         platform: "X",
-        externalId: input.externalId,
-        url: input.url,
-        contentText: canonical.contentText,
-        contentHash: canonical.contentHash,
-        observedImageUrls: input.observedImageUrls,
         metadata: input.metadata,
       },
       options,
@@ -414,12 +379,8 @@ async function upsertPostFromViewInput(
   return upsertPost(
     prisma,
     {
+      ...commonInput,
       platform: "SUBSTACK",
-      externalId: input.externalId,
-      url: input.url,
-      contentText: canonical.contentText,
-      contentHash: canonical.contentHash,
-      observedImageUrls: input.observedImageUrls,
       metadata: input.metadata,
     },
     options,
@@ -857,7 +818,7 @@ export const postRouter = router({
         const matchedPost = postByLookupKey.get(
           postLookupKey(post.platform, post.externalId),
         );
-        if (!matchedPost || matchedPost.latestContentHash === null) {
+        if (!matchedPost?.latestContentHash) {
           return {
             platform: post.platform,
             externalId: post.externalId,

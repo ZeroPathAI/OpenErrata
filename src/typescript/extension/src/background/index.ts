@@ -350,13 +350,13 @@ function parsePollRecoveryAlarmTabId(alarmName: string): number | null {
 function schedulePollRecoveryAlarm(tabId: number): void {
   void browser.alarms.create(pollRecoveryAlarmName(tabId), {
     periodInMinutes: INVESTIGATION_POLL_RECOVERY_ALARM_PERIOD_MINUTES,
-  }).catch((error) => {
+  }).catch((error: unknown) => {
     console.error("Failed to schedule investigation poll recovery alarm:", error);
   });
 }
 
 function clearPollRecoveryAlarm(tabId: number): void {
-  void browser.alarms.clear(pollRecoveryAlarmName(tabId)).catch((error) => {
+  void browser.alarms.clear(pollRecoveryAlarmName(tabId)).catch((error: unknown) => {
     console.error("Failed to clear investigation poll recovery alarm:", error);
   });
 }
@@ -401,8 +401,7 @@ async function startInvestigationPolling(input: {
   const tick = async () => {
     const activePoller = investigationPollers.get(input.tabId);
     if (
-      !activePoller ||
-      activePoller.tabSessionId !== input.tabSessionId ||
+      activePoller?.tabSessionId !== input.tabSessionId ||
       activePoller.investigationId !== input.investigationId
     ) {
       return;
@@ -413,8 +412,7 @@ async function startInvestigationPolling(input: {
     try {
       const existing = await getActivePostStatus(input.tabId);
       if (
-        !existing ||
-        existing.tabSessionId !== input.tabSessionId ||
+        existing?.tabSessionId !== input.tabSessionId ||
         existing.platform !== input.platform ||
         existing.externalId !== input.externalId
       ) {
@@ -472,7 +470,7 @@ async function maybeResumePollingFromCachedStatus(
   tabId: number,
   status: ExtensionPageStatus | null,
 ): Promise<void> {
-  if (!status || status.kind !== "POST") {
+  if (status?.kind !== "POST") {
     stopInvestigationPolling(tabId);
     return;
   }
@@ -486,8 +484,7 @@ async function maybeResumePollingFromCachedStatus(
 
   const activePoller = investigationPollers.get(tabId);
   if (
-    activePoller &&
-    activePoller.tabSessionId === status.tabSessionId &&
+    activePoller?.tabSessionId === status.tabSessionId &&
     activePoller.investigationId === status.investigationId
   ) {
     return;
@@ -532,17 +529,15 @@ async function clearAllPollRecoveryAlarms(): Promise<void> {
 let restoreInvestigationPollingPromise: Promise<void> | null = null;
 
 async function restoreInvestigationPollingState(): Promise<void> {
-  if (!restoreInvestigationPollingPromise) {
-    restoreInvestigationPollingPromise = (async () => {
-      for (const tabId of investigationPollers.keys()) {
-        stopInvestigationPolling(tabId);
-      }
-      await clearAllPollRecoveryAlarms();
-      await resumeInvestigationPollingForOpenTabs();
-    })().finally(() => {
-      restoreInvestigationPollingPromise = null;
-    });
-  }
+  restoreInvestigationPollingPromise ??= (async () => {
+    for (const tabId of investigationPollers.keys()) {
+      stopInvestigationPolling(tabId);
+    }
+    await clearAllPollRecoveryAlarms();
+    await resumeInvestigationPollingForOpenTabs();
+  })().finally(() => {
+    restoreInvestigationPollingPromise = null;
+  });
 
   await restoreInvestigationPollingPromise;
 }
@@ -778,7 +773,7 @@ browser.runtime.onMessage.addListener(
       }
     };
 
-    return handle().catch((err) => {
+    return handle().catch((err: unknown) => {
       console.error("Background handler error:", err);
       return toRuntimeErrorResponse(err);
     });
@@ -864,7 +859,7 @@ async function handlePageContent(
         request,
         provenance: nextStatus.provenance,
         existingStatus: existingForSession,
-      }).catch((error) => {
+      }).catch((error: unknown) => {
         console.error("auto investigate failed:", error);
       });
     } else {
@@ -1034,19 +1029,19 @@ browser.alarms.onAlarm.addListener((alarm) => {
   if (tabId === null) return;
   void getActiveStatus(tabId)
     .then((status) => maybeResumePollingFromCachedStatus(tabId, status))
-    .catch((error) => {
+    .catch((error: unknown) => {
       console.error("Failed to resume polling from alarm:", error);
     });
 });
 
 browser.runtime.onStartup.addListener(() => {
-  void restoreInvestigationPollingState().catch((error) => {
+  void restoreInvestigationPollingState().catch((error: unknown) => {
     console.error("Failed to restore investigation polling on startup:", error);
   });
 });
 
 browser.runtime.onInstalled.addListener(() => {
-  void restoreInvestigationPollingState().catch((error) => {
+  void restoreInvestigationPollingState().catch((error: unknown) => {
     console.error("Failed to restore investigation polling on install/update:", error);
   });
 });
@@ -1063,7 +1058,7 @@ browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
   injectedCustomSubstackTabs.delete(tabId);
   latestTabSessionByTab.delete(tabId);
   stopInvestigationPolling(tabId);
-  void clearActiveStatus(tabId).catch((error) => {
+  void clearActiveStatus(tabId).catch((error: unknown) => {
     console.error("failed to clear active status on tab loading:", error);
   });
 });
@@ -1089,14 +1084,14 @@ browser.tabs.onActivated.addListener(({ tabId }) => {
     });
 });
 
-void ensureSubstackInjectionForOpenTabs().catch((error) => {
+void ensureSubstackInjectionForOpenTabs().catch((error: unknown) => {
   console.error("substack startup probe failed:", error);
 });
 
-void syncToolbarBadgesForOpenTabs().catch((error) => {
+void syncToolbarBadgesForOpenTabs().catch((error: unknown) => {
   console.error("toolbar badge startup sync failed:", error);
 });
 
-void restoreInvestigationPollingState().catch((error) => {
+void restoreInvestigationPollingState().catch((error: unknown) => {
   console.error("investigation polling startup restore failed:", error);
 });

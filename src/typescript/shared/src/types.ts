@@ -88,6 +88,8 @@ export interface ExtensionApiProcedureContract {
   };
   "post.validateSettings": {
     kind: "query";
+    // tRPC infers `void` for procedures with no .input() schema.
+    // eslint-disable-next-line @typescript-eslint/no-invalid-void-type
     input: void;
     output: SettingsValidationOutput;
   };

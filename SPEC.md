@@ -579,7 +579,7 @@ measures (proof-of-work, behavioral analysis) are planned for future versions.
 | Database        | **Supabase (hosted Postgres) + Prisma**                           | Stores investigations, view counts, user accounts                             |
 | Job queue       | **Postgres-backed** (graphile-worker or `FOR UPDATE SKIP LOCKED`) | No Redis dependency; runs against the same Supabase database                  |
 | LLM             | **OpenAI Responses API with tools**                               | v1 provider. Anthropic support planned via `Investigator` interface           |
-| Auth            | **Anonymous + request-scoped user OpenAI key + optional instance key** | Free tier by default; user can self-fund investigations without account provisioning |
+| Auth            | **Anonymous + required instance OpenAI key + optional request-scoped user OpenAI key** | Instance-managed investigations are always available; users may still override with their own key for on-demand runs |
 | Deployment      | **Helm chart** (on-prem), **Pulumi** (official hosted, deploys the same chart) | Single artifact for both on-prem and hosted; no deployment drift              |
 
 ## 3.2 Data Model

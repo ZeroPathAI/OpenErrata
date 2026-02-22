@@ -80,15 +80,15 @@ type PublicMetricsResult = {
 };
 
 type PublicMetricsInput = {
-  platform?: Platform;
-  authorId?: string;
-  windowStart?: string;
-  windowEnd?: string;
+  platform?: Platform | undefined;
+  authorId?: string | undefined;
+  windowStart?: string | undefined;
+  windowEnd?: string | undefined;
 };
 
 type PublicSearchInvestigationsInput = {
-  query?: string;
-  platform?: Platform;
+  query?: string | undefined;
+  platform?: Platform | undefined;
   limit: number;
   offset: number;
 };

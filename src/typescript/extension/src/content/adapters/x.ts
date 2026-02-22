@@ -1,6 +1,11 @@
 import type { PlatformContent } from "@openerrata/shared";
 import { normalizeContent } from "@openerrata/shared";
 import type { PlatformAdapter } from "./lesswrong";
+import {
+  extractImageUrlsFromRoot,
+  readFirstMetaDateAsIso,
+  readFirstTimeDateAsIso,
+} from "./utils";
 
 const HANDLE_STATUS_URL_REGEX =
   /(?:x\.com|twitter\.com)\/([^/]+)\/status\/(\d+)/i;
@@ -9,6 +14,11 @@ const WEB_STATUS_URL_REGEX =
 const I_STATUS_URL_REGEX = /(?:x\.com|twitter\.com)\/i\/status\/(\d+)/i;
 const STATUS_PATH_REGEX = /^\/([^/]+)\/status\/(\d+)(?:\/|$)/i;
 const HANDLE_TEXT_REGEX = /^@([A-Za-z0-9_]{1,15})$/;
+const META_DATE_SELECTORS = [
+  'meta[property="article:published_time"]',
+  'meta[name="article:published_time"]',
+  'meta[property="og:article:published_time"]',
+] as const;
 const RESERVED_HANDLE_SEGMENTS = new Set([
   "compose",
   "explore",
@@ -25,13 +35,6 @@ const RESERVED_HANDLE_SEGMENTS = new Set([
 
 const TWEET_TEXT_SELECTOR = '[data-testid="tweetText"]';
 
-function parseIsoDate(value: string | null | undefined): string | null {
-  if (!value) return null;
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.valueOf())) return null;
-  return parsed.toISOString();
-}
-
 function normalizeAuthorHandle(raw: string | null | undefined): string | null {
   if (!raw) return null;
   const normalized = raw.trim().replace(/^@/, "");
@@ -41,27 +44,10 @@ function normalizeAuthorHandle(raw: string | null | undefined): string | null {
 }
 
 function extractPostedAt(document: Document, tweetContainer: Element): string | null {
-  const timeDateTime =
-    tweetContainer
-      .querySelector("time[datetime]")
-      ?.getAttribute("datetime") ??
-    document.querySelector("time[datetime]")?.getAttribute("datetime");
-  const timeIso = parseIsoDate(timeDateTime);
-  if (timeIso) return timeIso;
-
-  const metaDateSelectors = [
-    'meta[property="article:published_time"]',
-    'meta[name="article:published_time"]',
-    'meta[property="og:article:published_time"]',
-  ];
-
-  for (const selector of metaDateSelectors) {
-    const value = document.querySelector(selector)?.getAttribute("content");
-    const iso = parseIsoDate(value);
-    if (iso) return iso;
-  }
-
-  return null;
+  return (
+    readFirstTimeDateAsIso([tweetContainer, document]) ??
+    readFirstMetaDateAsIso(document, META_DATE_SELECTORS)
+  );
 }
 
 function parseStatusFromUrl(
@@ -111,7 +97,7 @@ function extractAuthorHandleFromHref(
   try {
     const parsed = new URL(href, window.location.origin);
     const pathMatch = parsed.pathname.match(STATUS_PATH_REGEX);
-    if (!pathMatch || pathMatch[2] !== tweetId) return null;
+    if (pathMatch?.[2] !== tweetId) return null;
     return normalizeAuthorHandle(pathMatch[1]);
   } catch {
     return null;
@@ -154,7 +140,7 @@ function inferAuthorHandle(
   if (profileHref) {
     try {
       const parsed = new URL(profileHref, window.location.origin);
-      const segment = parsed.pathname.split("/").filter(Boolean)[0];
+      const segment = parsed.pathname.split("/").find(Boolean);
       const handleFromProfile = normalizeAuthorHandle(segment);
       if (handleFromProfile) return handleFromProfile;
     } catch {
@@ -185,22 +171,6 @@ function hasSupportedStatusPath(url: string): boolean {
   );
 }
 
-function uniqueValidUrls(values: Array<string | null | undefined>): string[] {
-  const out = new Set<string>();
-  for (const value of values) {
-    if (!value) continue;
-    const trimmed = value.trim();
-    if (trimmed.length === 0) continue;
-
-    try {
-      out.add(new URL(trimmed, window.location.origin).toString());
-    } catch {
-      // Ignore malformed media URLs to keep metadata schema-valid.
-    }
-  }
-  return Array.from(out);
-}
-
 export const xAdapter: PlatformAdapter = {
   platformKey: "X",
 
@@ -225,13 +195,11 @@ export const xAdapter: PlatformAdapter = {
 
     // Extract images separately from video detection so image posts are investigated.
     const tweetContainer = tweetTextEl.closest("article") ?? document.body;
-    const imageUrls = uniqueValidUrls([
-      ...Array.from(
-        tweetContainer.querySelectorAll<HTMLImageElement>(
-          '[data-testid="tweetPhoto"] img, [data-testid="card.wrapper"] img, img[src*="twimg.com/media"]',
-        ),
-      ).map((img) => img.src),
-    ]);
+    const imageUrls = extractImageUrlsFromRoot(
+      tweetContainer,
+      window.location.origin,
+      '[data-testid="tweetPhoto"] img, [data-testid="card.wrapper"] img, img[src*="twimg.com/media"]',
+    );
 
     const hasVideo =
       tweetContainer.querySelector(
