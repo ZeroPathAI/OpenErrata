@@ -7,9 +7,9 @@
 #
 #   1. Verifies the AWS CLI is available and reads the account ID
 #   2. Creates the openerrata-ci IAM user (skip if exists)
-#   3. Attaches a least-privilege inline policy scoped to the resources
+#   3. Creates or updates a customer managed policy scoped to the resources
 #      Pulumi manages (S3 buckets, RDS instances, EC2 security groups,
-#      IAM users for blob-storage writers)
+#      IAM users for blob-storage writers) and attaches it
 #   4. Creates an access key (skip if one already exists)
 #   5. Prints credentials as JSON to stdout
 #
@@ -32,7 +32,6 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IAM_USER="openerrata-ci"
 POLICY_NAME="openerrata-ci-pulumi-deploy"
 
@@ -53,6 +52,8 @@ CALLER_IDENTITY="$(aws sts get-caller-identity --output json)"
 ACCOUNT_ID="$(echo "$CALLER_IDENTITY" | python3 -c "import sys,json; print(json.load(sys.stdin)['Account'])")"
 echo "Account ID: ${ACCOUNT_ID}" >&2
 
+POLICY_ARN="arn:aws:iam::${ACCOUNT_ID}:policy/${POLICY_NAME}"
+
 # ── 2. Create IAM user ────────────────────────────────────────────────
 
 if aws iam get-user --user-name "$IAM_USER" &>/dev/null; then
@@ -66,12 +67,15 @@ else
       Key=purpose,Value=ci-deploy
 fi
 
-# ── 3. Attach inline policy ───────────────────────────────────────────
+# ── 3. Create or update managed policy and attach ────────────────────
 
-echo "Attaching inline policy ${POLICY_NAME} ..." >&2
+# Uses a managed policy (6144-byte limit) instead of an inline policy
+# (2048-byte limit) to accommodate the full set of resource ARNs that
+# AWS validates during RDS and EC2 operations.
 
-# The policy document uses $ACCOUNT_ID from the shell; all other $ signs
-# in ARN patterns are literal and must be escaped in the heredoc.
+echo "Preparing managed policy ${POLICY_NAME} ..." >&2
+
+# The policy document uses $ACCOUNT_ID from the shell.
 POLICY_DOCUMENT="$(cat <<EOF
 {
   "Version": "2012-10-17",
@@ -172,7 +176,12 @@ POLICY_DOCUMENT="$(cat <<EOF
         "rds:AddTagsToResource",
         "rds:RemoveTagsFromResource"
       ],
-      "Resource": "arn:aws:rds:*:${ACCOUNT_ID}:db:openerrata-*"
+      "Resource": [
+        "arn:aws:rds:*:${ACCOUNT_ID}:db:openerrata-*",
+        "arn:aws:rds:*:${ACCOUNT_ID}:subgrp:*",
+        "arn:aws:rds:*:${ACCOUNT_ID}:pg:*",
+        "arn:aws:rds:*:${ACCOUNT_ID}:og:*"
+      ]
     },
     {
       "Sid": "RdsMutateSubnetGroups",
@@ -191,12 +200,63 @@ POLICY_DOCUMENT="$(cat <<EOF
 EOF
 )"
 
-aws iam put-user-policy \
-  --user-name "$IAM_USER" \
-  --policy-name "$POLICY_NAME" \
-  --policy-document "$POLICY_DOCUMENT"
+# Remove the old inline policy if it exists (migration from inline to managed).
+if aws iam get-user-policy --user-name "$IAM_USER" --policy-name "$POLICY_NAME" &>/dev/null; then
+  echo "Removing legacy inline policy ..." >&2
+  aws iam delete-user-policy --user-name "$IAM_USER" --policy-name "$POLICY_NAME"
+fi
 
-echo "Policy ${POLICY_NAME} attached." >&2
+# Create or update the managed policy.
+if aws iam get-policy --policy-arn "$POLICY_ARN" &>/dev/null; then
+  echo "Updating existing managed policy ..." >&2
+
+  # Managed policies have a 5-version limit.  Delete the oldest non-default
+  # version before creating a new one to stay under the cap.
+  OLD_VERSIONS="$(aws iam list-policy-versions --policy-arn "$POLICY_ARN" --output json \
+    | python3 -c "
+import sys, json
+versions = json.load(sys.stdin)['Versions']
+non_default = [v['VersionId'] for v in versions if not v['IsDefaultVersion']]
+non_default.sort()
+print('\n'.join(non_default))
+")"
+
+  VERSION_COUNT="$(aws iam list-policy-versions --policy-arn "$POLICY_ARN" --output json \
+    | python3 -c "import sys, json; print(len(json.load(sys.stdin)['Versions']))")"
+
+  if [ "$VERSION_COUNT" -ge 5 ] && [ -n "$OLD_VERSIONS" ]; then
+    OLDEST="$(echo "$OLD_VERSIONS" | head -1)"
+    echo "Deleting oldest policy version ${OLDEST} to make room ..." >&2
+    aws iam delete-policy-version --policy-arn "$POLICY_ARN" --version-id "$OLDEST"
+  fi
+
+  aws iam create-policy-version \
+    --policy-arn "$POLICY_ARN" \
+    --policy-document "$POLICY_DOCUMENT" \
+    --set-as-default > /dev/null
+else
+  echo "Creating managed policy ..." >&2
+  aws iam create-policy \
+    --policy-name "$POLICY_NAME" \
+    --policy-document "$POLICY_DOCUMENT" \
+    --description "Least-privilege policy for openerrata CI/CD Pulumi deployments" \
+    --tags Key=managedBy,Value=bootstrap Key=purpose,Value=ci-deploy > /dev/null
+fi
+
+# Ensure the policy is attached to the user.
+if ! aws iam list-attached-user-policies --user-name "$IAM_USER" --output json \
+    | python3 -c "
+import sys, json
+policies = json.load(sys.stdin)['AttachedPolicies']
+sys.exit(0 if any(p['PolicyArn'] == '$POLICY_ARN' for p in policies) else 1)
+"; then
+  echo "Attaching managed policy to ${IAM_USER} ..." >&2
+  aws iam attach-user-policy --user-name "$IAM_USER" --policy-arn "$POLICY_ARN"
+else
+  echo "Managed policy already attached to ${IAM_USER}." >&2
+fi
+
+echo "Policy ${POLICY_NAME} ready." >&2
 
 # ── 4. Create access key ──────────────────────────────────────────────
 
