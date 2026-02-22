@@ -334,6 +334,17 @@ export class PageSessionController {
       };
     }
 
+    if (content.contentText.length === 0) {
+      return {
+        kind: "SKIPPED",
+        sessionKey: pageKeyFor(content),
+        platform: content.platform,
+        externalId: content.externalId,
+        pageUrl: content.url,
+        reason: "no_text",
+      };
+    }
+
     if (content.mediaState === "video_only") {
       return {
         kind: "SKIPPED",
@@ -505,7 +516,11 @@ export class PageSessionController {
     }
 
     if (this.#state.kind === "SKIPPED") {
-      if (this.#state.reason === "unsupported_content" && getAdapter(currentUrl, document)) {
+      if (
+        (this.#state.reason === "unsupported_content" ||
+          this.#state.reason === "no_text") &&
+        getAdapter(currentUrl, document)
+      ) {
         this.#scheduleRefreshFromMutation();
       }
       return;
@@ -518,10 +533,7 @@ export class PageSessionController {
     }
 
     const normalizedText = normalizeContent(root.textContent);
-    if (
-      normalizedText.length > 0 &&
-      normalizedText !== this.#state.request.observedContentText
-    ) {
+    if (normalizedText !== this.#state.request.observedContentText) {
       this.#scheduleRefreshFromMutation();
       return;
     }

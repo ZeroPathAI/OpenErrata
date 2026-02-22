@@ -4,7 +4,10 @@ import {
   CONTENT_PROVENANCE_VALUES,
   PLATFORM_VALUES,
 } from "./enums.js";
-import { MAX_BATCH_STATUS_POSTS } from "./constants.js";
+import {
+  MAX_BATCH_STATUS_POSTS,
+  MAX_OBSERVED_CONTENT_TEXT_CHARS,
+} from "./constants.js";
 
 // ── Shared enum schemas ───────────────────────────────────────────────────
 
@@ -19,6 +22,11 @@ export const postMediaStateSchema = z.enum([
   "has_images",
   "video_only",
 ]);
+
+const observedContentTextSchema = z
+  .string()
+  .min(1)
+  .max(MAX_OBSERVED_CONTENT_TEXT_CHARS);
 
 // ── LLM output validation ─────────────────────────────────────────────────
 
@@ -55,7 +63,7 @@ export const lesswrongMetadataSchema = z.object({
 export const xMetadataSchema = z.object({
   authorHandle: z.string().min(1),
   authorDisplayName: z.string().min(1).nullable().optional(),
-  text: z.string().min(1),
+  text: observedContentTextSchema,
   mediaUrls: z.array(z.string().url()),
   likeCount: z.number().int().nonnegative().optional(),
   retweetCount: z.number().int().nonnegative().optional(),
@@ -80,7 +88,7 @@ export const substackMetadataSchema = z.object({
 const viewPostInputBaseSchema = z.object({
   externalId: z.string().min(1),
   url: z.string().url(),
-  observedContentText: z.string().min(1),
+  observedContentText: observedContentTextSchema,
   observedImageUrls: z.array(z.string().url()).optional(),
 });
 
@@ -187,9 +195,9 @@ export const batchStatusOutputSchema = z.object({
 const platformContentBaseSchema = z.object({
   externalId: z.string().min(1),
   url: z.string().url(),
-  // Normalized plain text as observed by the client. This may be an empty
-  // string for valid image-only posts.
-  contentText: z.string(),
+  // Normalized plain text as observed by the client.
+  // Textless content is currently treated as unsupported.
+  contentText: observedContentTextSchema,
   mediaState: postMediaStateSchema,
   imageUrls: z.array(z.string().url()),
 });
@@ -259,6 +267,7 @@ export const extensionPostStatusSchema = z.discriminatedUnion("investigationStat
 const extensionSkippedReasonSchema = z.enum([
   "video_only",
   "word_count",
+  "no_text",
   "unsupported_content",
 ]);
 

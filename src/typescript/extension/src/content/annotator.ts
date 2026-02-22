@@ -6,6 +6,16 @@ const TOOLTIP_MARGIN_PX = 12;
 const TOOLTIP_GAP_PX = 8;
 const TOOLTIP_MIN_WIDTH_PX = 260;
 const TOOLTIP_MAX_WIDTH_PX = 680;
+const ALLOWED_RENDERED_MARKDOWN_TAGS = new Set([
+  "P",
+  "BR",
+  "OL",
+  "UL",
+  "LI",
+  "STRONG",
+  "EM",
+  "CODE",
+]);
 type ThemeMode = "light" | "dark";
 let activeDetailPanel: HTMLDivElement | null = null;
 let disposeActiveDetailPanel: (() => void) | null = null;
@@ -101,7 +111,9 @@ function showDetailPanel(
   reasoningHeading.textContent = "Explanation";
   reasoning.appendChild(reasoningHeading);
   const reasoningBody = document.createElement("div");
-  reasoningBody.innerHTML = renderMarkdownToHtml(claim.reasoning);
+  reasoningBody.innerHTML = sanitizeRenderedMarkdownHtml(
+    renderMarkdownToHtml(claim.reasoning),
+  );
   reasoning.appendChild(reasoningBody);
   panel.appendChild(reasoning);
 
@@ -182,13 +194,11 @@ function showDetailPanel(
 
 /**
  * Convert a subset of Markdown (bold, italic, inline code, lists, paragraphs)
- * to HTML.  Input is first stripped of any raw HTML tags as a defense-in-depth
- * measure — the content comes from our own API, but the LLM could in theory
- * emit `<script>` or similar.
+ * to HTML. Input is HTML-escaped before Markdown formatting and then sanitized
+ * with an explicit allow-list before insertion into the DOM.
  */
 function renderMarkdownToHtml(md: string): string {
-  // Strip raw HTML tags
-  const stripped = md.replace(/<[^>]*>/g, "");
+  const stripped = md.replace(/\r\n/g, "\n");
 
   const blocks = stripped.split(/\n{2,}/);
   const rendered: string[] = [];
@@ -217,10 +227,39 @@ function renderMarkdownToHtml(md: string): string {
   return rendered.join("");
 }
 
+function sanitizeRenderedMarkdownHtml(rawHtml: string): string {
+  const template = document.createElement("template");
+  template.innerHTML = rawHtml;
+
+  const elements = Array.from(template.content.querySelectorAll("*"));
+  for (const element of elements) {
+    if (!ALLOWED_RENDERED_MARKDOWN_TAGS.has(element.tagName)) {
+      element.replaceWith(document.createTextNode(element.textContent ?? ""));
+      continue;
+    }
+
+    for (const attribute of Array.from(element.attributes)) {
+      element.removeAttribute(attribute.name);
+    }
+  }
+
+  return template.innerHTML;
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 /** Apply inline Markdown formatting: bold, italic, inline code. */
 function inlineMarkdown(text: string): string {
+  const escaped = escapeHtml(text);
   return (
-    text
+    escaped
       // inline code (must come before bold/italic to avoid conflicts inside backticks)
       .replace(/`([^`]+)`/g, "<code>$1</code>")
       // bold

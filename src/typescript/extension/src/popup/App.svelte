@@ -52,6 +52,9 @@
     if (reason === "word_count") {
       return "This post is too long and is not eligible for investigation.";
     }
+    if (reason === "no_text") {
+      return "This post has no extractable text. Textless/image-only fact-check UX is not supported yet.";
+    }
     if (reason === "unsupported_content") {
       return "OpenErrata could not extract this post. Try reloading the page or opening the canonical post URL.";
     }

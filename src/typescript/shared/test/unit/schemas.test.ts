@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { MAX_OBSERVED_CONTENT_TEXT_CHARS } from "../../src/constants.js";
 import {
+  extensionSkippedStatusSchema,
   investigationClaimSchema,
   platformContentSchema,
+  viewPostInputSchema,
 } from "../../src/schemas.js";
 
 function createLesswrongContent() {
@@ -69,15 +72,45 @@ test("platformContentSchema parses valid LESSWRONG, X, and SUBSTACK payloads", (
   assert.deepEqual(platformContentSchema.parse(substackPayload), substackPayload);
 });
 
-test("platformContentSchema allows empty normalized contentText", () => {
+test("platformContentSchema rejects empty normalized contentText", () => {
   const xPayload = createXContent();
   const payload = {
     ...xPayload,
     contentText: "",
   };
 
-  const parsed = platformContentSchema.parse(payload);
-  assert.equal(parsed.contentText, "");
+  const result = platformContentSchema.safeParse(payload);
+  assert.equal(result.success, false);
+});
+
+test("viewPostInputSchema enforces observedContentText max length", () => {
+  const tooLongInput = {
+    platform: "X" as const,
+    externalId: "x-too-long",
+    url: "https://x.com/example/status/too-long",
+    observedContentText: "a".repeat(MAX_OBSERVED_CONTENT_TEXT_CHARS + 1),
+    metadata: {
+      authorHandle: "example",
+      text: "a".repeat(MAX_OBSERVED_CONTENT_TEXT_CHARS + 1),
+      mediaUrls: [],
+    },
+  };
+
+  const result = viewPostInputSchema.safeParse(tooLongInput);
+  assert.equal(result.success, false);
+});
+
+test("extensionSkippedStatusSchema accepts no_text skip reason", () => {
+  const parsed = extensionSkippedStatusSchema.parse({
+    kind: "SKIPPED",
+    tabSessionId: 1,
+    platform: "X",
+    externalId: "x-no-text",
+    pageUrl: "https://x.com/example/status/x-no-text",
+    reason: "no_text",
+  });
+
+  assert.equal(parsed.reason, "no_text");
 });
 
 test("platformContentSchema rejects LESSWRONG payloads missing htmlContent", () => {

@@ -339,7 +339,6 @@ export const substackAdapter: PlatformAdapter = {
     if (!publicationSubdomain) return null;
 
     const contentText = normalizeContent(root.textContent);
-    if (contentText.length === 0) return null;
 
     const subtitle = normalizeContent(
       document.querySelector(SUBTITLE_SELECTOR)?.textContent ?? "",

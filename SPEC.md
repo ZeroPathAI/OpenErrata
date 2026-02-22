@@ -1300,7 +1300,7 @@ interface PlatformContent {
   platform: Platform;
   externalId: string;
   url: string;
-  contentText: string; // Client-observed normalized plain text; may be ""
+  contentText: string; // Client-observed normalized plain text; must be non-empty
   mediaState: "text_only" | "has_images" | "video_only";
   imageUrls: string[];
   metadata: Record<string, unknown>;
@@ -1322,8 +1322,12 @@ function normalizeContent(raw: string): string {
 }
 ```
 
-`contentText` remains required even when normalization yields no text. For image-only
-or otherwise textless posts, adapters send `contentText: ""`.
+`contentText` must be non-empty. Posts that normalize to empty text are currently
+treated as unsupported and are skipped by the extension (`reason: "no_text"`).
+This includes textless/image-only posts for now.
+
+Future work: design a dedicated UI/UX flow for fact-checking image-only posts
+without relying on text-span highlighting.
 
 ## 3.9 LessWrong Content Script
 

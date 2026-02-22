@@ -3,7 +3,10 @@ import { MAX_IMAGE_BYTES } from "@openerrata/shared";
 import { prisma } from "$lib/db/client.js";
 import { isUniqueConstraintError } from "$lib/db/errors.js";
 import type { ImageBlob } from "$lib/generated/prisma/client";
-import { isBlockedHost } from "$lib/network/host-safety.js";
+import {
+  hasAddressIntersection,
+  resolvePublicHostAddresses,
+} from "$lib/network/host-safety.js";
 import { uploadImage } from "./blob-storage.js";
 
 const IMAGE_DOWNLOAD_TIMEOUT_MS = 15_000;
@@ -39,6 +42,48 @@ function uniqueImageUrls(urls: string[]): string[] {
   return Array.from(unique);
 }
 
+async function readResponseBytesWithinLimit(
+  response: Response,
+  maxBytes: number,
+): Promise<Uint8Array | null> {
+  if (!response.body) {
+    return null;
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        await reader.cancel("Image exceeds maximum byte limit");
+        return null;
+      }
+      chunks.push(value);
+    }
+  } catch {
+    await reader.cancel();
+    return null;
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  return bytes;
+}
+
 async function downloadImage(
   url: string,
 ): Promise<{ bytes: Uint8Array; mimeType: string } | null> {
@@ -49,7 +94,10 @@ async function downloadImage(
       if (currentUrl.protocol !== "http:" && currentUrl.protocol !== "https:") {
         return null;
       }
-      if (await isBlockedHost(currentUrl.hostname)) {
+      const resolvedBeforeRequest = await resolvePublicHostAddresses(
+        currentUrl.hostname,
+      );
+      if (!resolvedBeforeRequest) {
         return null;
       }
 
@@ -77,8 +125,16 @@ async function downloadImage(
         return null;
       }
 
-      // Re-validate after the request to reduce DNS-rebinding exposure windows.
-      if (await isBlockedHost(currentUrl.hostname)) {
+      // Re-resolve and require overlap with pre-request answers. This narrows
+      // DNS rebinding windows by rejecting responses when hostname resolution
+      // shifts to a disjoint address set during request handling.
+      const resolvedAfterRequest = await resolvePublicHostAddresses(
+        currentUrl.hostname,
+      );
+      if (
+        !resolvedAfterRequest ||
+        !hasAddressIntersection(resolvedBeforeRequest, resolvedAfterRequest)
+      ) {
         return null;
       }
 
@@ -95,8 +151,8 @@ async function downloadImage(
         }
       }
 
-      const bytes = new Uint8Array(await response.arrayBuffer());
-      if (bytes.byteLength > MAX_IMAGE_BYTES) {
+      const bytes = await readResponseBytesWithinLimit(response, MAX_IMAGE_BYTES);
+      if (!bytes) {
         return null;
       }
 
