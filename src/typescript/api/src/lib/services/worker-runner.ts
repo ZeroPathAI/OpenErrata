@@ -3,8 +3,6 @@ import { getEnv } from "$lib/config/env.js";
 import { normalizePgConnectionStringForNode } from "$lib/db/connection-string.js";
 import { orchestrateInvestigation } from "./orchestrator.js";
 
-const databaseUrl = normalizePgConnectionStringForNode(getEnv().DATABASE_URL);
-
 function isInvestigatePayload(
   payload: unknown,
 ): payload is { runId: string } {
@@ -15,7 +13,7 @@ function isInvestigatePayload(
 
 export async function startWorker(): Promise<void> {
   const runner = await run({
-    connectionString: databaseUrl,
+    connectionString: normalizePgConnectionStringForNode(getEnv().DATABASE_URL),
     concurrency: 5,
     pollInterval: 1000,
     taskList: {
