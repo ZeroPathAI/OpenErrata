@@ -5,7 +5,7 @@ import * as pulumi from "@pulumi/pulumi";
 import * as random from "@pulumi/random";
 
 const config = new pulumi.Config();
-const defaultImageRepository = "ghcr.io/zeropathAI/openerrata-api";
+const defaultImageRepository = "ghcr.io/zeropathai/openerrata-api";
 const defaultBlobStorageAccessKeyId = "openerrata";
 const chartName = "openerrata";
 const releaseName = config.get("releaseName") ?? chartName;
@@ -79,16 +79,23 @@ function getNonEmptyConfig(input: pulumi.Config, key: string): string | undefine
 }
 
 function resolveImageConfig(input: pulumi.Config): ImageConfig {
-  const configuredRepository = input.get("imageRepository") ?? defaultImageRepository;
-  const configuredTag = input.get("imageTag") ?? "latest";
-  const configuredDigest = input.get("imageDigest") ?? undefined;
+  const configuredRepository = getNonEmptyConfig(input, "imageRepository") ?? defaultImageRepository;
+  const configuredTag = getNonEmptyConfig(input, "imageTag") ?? "latest";
+  const configuredDigest = getNonEmptyConfig(input, "imageDigest");
 
   const ciRepository = getNonEmptyEnv("CI_IMAGE_REPOSITORY");
   const ciTag = getNonEmptyEnv("CI_IMAGE_TAG");
   const ciDigest = getNonEmptyEnv("CI_IMAGE_DIGEST");
 
+  const resolvedRepository = ciRepository ?? configuredRepository;
+  if (/[A-Z]/.test(resolvedRepository)) {
+    throw new Error(
+      `imageRepository must be lowercase for OCI compatibility, got: ${resolvedRepository}`,
+    );
+  }
+
   return {
-    repository: ciRepository ?? configuredRepository,
+    repository: resolvedRepository,
     tag: ciTag ?? configuredTag,
     digest: ciDigest ?? configuredDigest,
   };

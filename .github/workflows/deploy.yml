@@ -451,10 +451,22 @@ jobs:
           AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
           AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
+          CI_IMAGE_REPOSITORY: ${{ needs.build-image.outputs.image_repository }}
+          CI_IMAGE_TAG: ${{ needs.build-image.outputs.image_tag }}
+          CI_IMAGE_DIGEST: ${{ needs.build-image.outputs.image_digest }}
         run: |
           set -euo pipefail
 
           pulumi stack select "$STACK" --create
+
+          if [ -z "${CI_IMAGE_REPOSITORY:-}" ] || [ -z "${CI_IMAGE_TAG:-}" ] || [ -z "${CI_IMAGE_DIGEST:-}" ]; then
+            echo "Build image metadata is required (CI_IMAGE_REPOSITORY, CI_IMAGE_TAG, CI_IMAGE_DIGEST)."
+            exit 1
+          fi
+
+          pulumi config set imageRepository "$CI_IMAGE_REPOSITORY" --stack "$STACK"
+          pulumi config set imageTag "$CI_IMAGE_TAG" --stack "$STACK"
+          pulumi config set imageDigest "$CI_IMAGE_DIGEST" --stack "$STACK"
 
           pulumi config set releaseName "openerrata-${STACK}" --stack "$STACK"
           pulumi config set namespace "openerrata-${STACK}" --stack "$STACK"
