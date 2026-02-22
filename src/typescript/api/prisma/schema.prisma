@@ -424,10 +424,3 @@ model Source {
 
   @@index([claimId])
 }
-
-view InvestigationPublicEligibility {
-  investigationId   String  @unique
-  isPubliclyEligible Boolean
-
-  @@map("investigation_public_eligibility")
-}

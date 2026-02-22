@@ -86,7 +86,9 @@ The following are explicitly out of scope:
   - Content with video
   - Comments
   - Quote Tweets
-- End-user appeals/corrections.
+- End-user appeals — users can flag errors or omissions in an investigation, and
+  the system re-investigates with their feedback as additional context, updating
+  the claim list accordingly (see §2.11).
 - Rate limiting and tiered access controls.
 
 **Non-goals:**
@@ -153,7 +155,7 @@ The following are explicitly out of scope:
 | **Content Scripts**        | One per platform. Each implements a platform adapter interface: detect page ownership, extract content + media URLs, parse metadata, map annotations back to DOM. |
 | **Background Worker**      | Service worker. Routes messages between content scripts, popup, and the API. Manages local cache. Can auto-trigger `investigateNow` when user key mode is enabled. |
 | **Popup**                  | UI for extension state: toggle, summary of current page, settings.                                                                                            |
-| **OpenErrata API**         | Records post views, serves cached investigations, runs selection, and exposes public API endpoints. All investigations execute asynchronously through the queue (including user-supplied key requests). |
+| **OpenErrata API**         | Records post views, serves cached investigations, runs selection, and exposes both internal RPC endpoints and a public GraphQL API. All investigations execute asynchronously through the queue (including user-supplied key requests). |
 | **Blob Storage**           | Stores downloaded investigation-time images (hash-deduplicated) and serves public URLs used in multimodal model input.                                         |
 | **Investigation Selector** | Cron job that periodically selects uninvestigated posts with the highest capped unique-view score and enqueues them. Pluggable selection algorithm — v1 uses capped unique-view score; future versions can factor in recency, engagement, author, etc. |
 
@@ -360,7 +362,7 @@ Cron job runs every N minutes
 
 ## 2.7 API Surface, Author Tracking, & Public Data
 
-Public API endpoints expose full flagged claims, reasoning, and sources for
+Public GraphQL endpoints expose full flagged claims, reasoning, and sources for
 eligible investigations and support search across the corpus. This supports the
 Transparency goal (anyone can inspect any decision). Each Author is a
 first-class entity representing one platform identity. Posts link to their
@@ -431,17 +433,10 @@ The system stores raw verification signals, so users can decide what to trust:
   matching content for that investigation.
 - `serverVerifiedAt`: timestamp of successful server-side verification (null if not yet verified).
 
-For indecisive users (and internal decisions), an investigation is "publicly
-eligible" when either:
-
-- `contentProvenance = SERVER_VERIFIED`, or
-- `COUNT(corroborationCredits) >= 3`
-
-Non-eligible investigations are not access-restricted — the extension's
-`getInvestigation` endpoint returns them to any caller. The eligibility distinction controls
-what appears in **public-facing outputs**: the public API, author metrics, and incidence
-calculations exclude non-eligible investigations so that unverified results don't influence
-published leaderboards or statistics.
+Public-facing endpoints do not enforce an eligibility threshold in v1. Any
+completed investigation can be returned, and public responses include raw trust
+signals (provenance + corroboration count + verification timestamps/reasons) so
+consumers can apply their own trust policy.
 
 **Signal updates:** The raw signals change in two places:
 
@@ -479,9 +474,44 @@ Future selection signals (only the query changes):
 - Content characteristics (length, topic, claim density)
 - Time since last investigation (for re-checks)
 
-## 2.11 Governance & Safety (v1)
+## 2.11 Appeals
 
-v1 has no public appeal workflow. This is an explicit product choice for V1.
+v1 has no public appeal workflow. This is an explicit product choice — the
+initial version establishes the baseline investigation pipeline and trust
+signals before exposing user-driven feedback loops.
+
+### Planned: End-User Appeals (post-v1)
+
+After v1, users should be able to appeal an investigation by pointing out
+specific things the AI got wrong — either false positives (claims flagged
+incorrectly) or false negatives (incorrect claims the investigation missed).
+The system would re-investigate the post with the appeal text as additional
+context, producing an updated claim list that adds, removes, or modifies
+errata.
+
+Key design considerations for appeals:
+
+- **Resistant to abuse.** We make it clear to the AI that it should not take
+  any information in an appeal for granted, and should reverify everything that
+  the user says.
+- **Appeals are auditable, and produce a new investigation, not a mutation of
+  the original.** The original investigation and its claims remain as an
+  immutable audit record. Appeal investigations reference their parent and
+  store appeal context. This preserves the transparency goal — anyone can see
+  what the original pass found, what was appealed, and what the
+  re-investigation concluded.
+- **The `@@unique([postId, contentHash])` constraint needs a discriminator.**
+  The v1 schema enforces one investigation per content version. Appeals require
+  allowing multiple investigations for the same content, distinguished by type
+  (e.g., `ORIGINAL` vs `APPEAL`) or by a parent investigation reference.
+- **Appeal context is provided to the LLM alongside the original post.** The
+  re-investigation prompt includes the original claims and the user's appeal
+  text, so the model can specifically address the user's objections and look for
+  things the first pass may have missed.
+- **The extension and public API need to resolve which claims to display.** When
+  an appeal investigation exists, the system must decide how to present results
+  — likely showing the most recent investigation's claims, with a link to the
+  appeal history for transparency.
 
 ## 2.12 Reproducibility & Auditability
 
@@ -545,7 +575,7 @@ measures (API keys, proof-of-work, behavioral analysis) are planned for future v
 | Extension build | **Vite (custom multi-entry build + IIFE content-script build)**   | Produces MV3-compatible bundles for background, popup/options, and content scripts |
 | Cross-browser   | **webextension-polyfill**                                         | Normalizes Chrome/Firefox API differences behind a single Promise-based API   |
 | Type safety     | **TypeScript + Zod**                                              | Runtime validation at API boundary                                            |
-| API framework   | **SvelteKit + tRPC**                                              | Type-safe RPC                                                                 |
+| API framework   | **SvelteKit + tRPC + GraphQL**                                    | tRPC for extension/internal consumers; GraphQL for public third-party API     |
 | Database        | **Supabase (hosted Postgres) + Prisma**                           | Stores investigations, view counts, user accounts                             |
 | Job queue       | **Postgres-backed** (graphile-worker or `FOR UPDATE SKIP LOCKED`) | No Redis dependency; runs against the same Supabase database                  |
 | LLM             | **OpenAI Responses API with tools**                               | v1 provider. Anthropic support planned via `Investigator` interface           |
@@ -951,28 +981,17 @@ enum InvestigationAttemptOutcome {
 // Correct, ambiguous, and unverifiable claims are not stored.
 ```
 
-### Public eligibility (derived view)
+### Public trust signals
 
-Public eligibility is not stored — it's derived from `contentProvenance` and the corroboration
-credit count. A Postgres view materializes the predicate:
+Public API responses and metrics expose trust signals derived from canonical
+tables at read time:
 
-```sql
-CREATE VIEW "investigation_public_eligibility" AS
-SELECT
-  i."id" AS "investigationId",
-  (
-    i."status" = 'COMPLETE'
-    AND (
-      i."contentProvenance" = 'SERVER_VERIFIED'
-      OR (SELECT COUNT(*) FROM "CorroborationCredit" cc
-          WHERE cc."investigationId" = i."id") >= 3
-    )
-  ) AS "isPubliclyEligible"
-FROM "Investigation" i;
-```
+- `provenance` (`SERVER_VERIFIED` or `CLIENT_FALLBACK`)
+- `corroborationCount` (count of corroboration credits)
+- `serverVerifiedAt`
+- `fetchFailureReason`
 
-The public API, author metrics, and incidence calculations join against this view.
-Investigations that are not yet publicly eligible are not access-restricted (see §2.10).
+Public visibility applies only one hard constraint: `status = COMPLETE`.
 
 ### LLM output type
 
@@ -1027,35 +1046,148 @@ postRouter.batchStatus
   Output: { statuses: { platform, externalId, investigated, incorrectClaimCount }[] }
 ```
 
-## 3.4 Public API (tRPC)
+## 3.4 Public API (GraphQL)
 
-Publicly eligible investigations (see §2.10) are readable without authentication.
+Completed investigations are readable without authentication.
+The public API endpoint is GraphQL (`POST /graphql`), while extension/internal
+traffic remains on `postRouter.*` tRPC endpoints.
 
-```typescript
-// Get a single investigation with full claims, reasoning, and sources
-publicRouter.getInvestigation
-  Input:  { investigationId }
-  Output: { investigation, post, claims: ClaimWithSources[] }
+### GraphQL schema (contract)
 
-// List investigations for a post
-publicRouter.getPostInvestigations
-  Input:  { platform, externalId }
-  Output: { post, investigations: InvestigationSummary[] }
+```graphql
+scalar DateTime
 
-// Search investigations
-publicRouter.searchInvestigations
-  Input:  { query?, platform?, limit?, offset? }
-  Output: { investigations: InvestigationSummary[] }
+enum Platform {
+  LESSWRONG
+  X
+  SUBSTACK
+}
 
-// Aggregate metrics
-publicRouter.getMetrics
-  Input:  { platform?, authorId?, windowStart?, windowEnd? }
-  Output: { totalInvestigatedPosts, investigatedPostsWithFlags, factCheckIncidence }
+enum ContentProvenance {
+  SERVER_VERIFIED
+  CLIENT_FALLBACK
+}
+
+type PublicInvestigation {
+  id: ID!
+  provenance: ContentProvenance!
+  corroborationCount: Int!
+  serverVerifiedAt: DateTime
+  fetchFailureReason: String
+  checkedAt: DateTime
+  promptVersion: String!
+  provider: String!
+  model: String!
+}
+
+type PublicPost {
+  platform: Platform!
+  externalId: String!
+  url: String!
+}
+
+type PublicSource {
+  url: String!
+  title: String!
+  snippet: String!
+}
+
+type PublicClaim {
+  id: ID!
+  text: String!
+  context: String!
+  summary: String!
+  reasoning: String!
+  sources: [PublicSource!]!
+}
+
+type PublicInvestigationResult {
+  investigation: PublicInvestigation!
+  post: PublicPost!
+  claims: [PublicClaim!]!
+}
+
+type PostInvestigationSummary {
+  id: ID!
+  contentHash: String!
+  provenance: ContentProvenance!
+  corroborationCount: Int!
+  serverVerifiedAt: DateTime
+  fetchFailureReason: String
+  checkedAt: DateTime
+  claimCount: Int!
+}
+
+type PostInvestigationsResult {
+  post: PublicPost
+  investigations: [PostInvestigationSummary!]!
+}
+
+type SearchInvestigationSummary {
+  id: ID!
+  contentHash: String!
+  checkedAt: DateTime
+  platform: Platform!
+  externalId: String!
+  url: String!
+  provenance: ContentProvenance!
+  corroborationCount: Int!
+  serverVerifiedAt: DateTime
+  fetchFailureReason: String
+  claimCount: Int!
+}
+
+type SearchInvestigationsResult {
+  investigations: [SearchInvestigationSummary!]!
+}
+
+type PublicMetrics {
+  totalInvestigatedPosts: Int!
+  investigatedPostsWithFlags: Int!
+  factCheckIncidence: Float!
+}
+
+type Query {
+  publicInvestigation(investigationId: ID!): PublicInvestigationResult
+  postInvestigations(platform: Platform!, externalId: String!): PostInvestigationsResult!
+  searchInvestigations(
+    query: String
+    platform: Platform
+    limit: Int = 20
+    offset: Int = 0
+  ): SearchInvestigationsResult!
+  publicMetrics(
+    platform: Platform
+    authorId: ID
+    windowStart: DateTime
+    windowEnd: DateTime
+  ): PublicMetrics!
+}
 ```
+
+### Resolver semantics
+
+- `publicInvestigation(investigationId)` returns `null` when investigation does
+  not exist or is not `COMPLETE`.
+- `postInvestigations(platform, externalId)` returns `{ post: null, investigations: [] }`
+  when no post exists; otherwise includes all complete investigations for that post.
+- `searchInvestigations(...)` returns all complete investigations matching the filters.
+- `publicMetrics(...)` counts all complete investigations matching the filters.
+- `searchInvestigations.limit` must be in `[1, 100]`; `offset >= 0`.
+- Public responses include trust signals (`provenance`, `corroborationCount`,
+  `serverVerifiedAt`, `fetchFailureReason`) so clients can apply their own thresholds.
 
 In v1, public metrics focus on incidence rather than truth-rate leaderboards:
 
 `factCheckIncidence = investigated_posts_with_>=1_flagged_claim / total_investigated_posts`
+
+### Migration & deprecation
+
+- During migration, both surfaces may coexist: GraphQL (`/graphql`) and
+  legacy `publicRouter.*` tRPC procedures.
+- New external integrations must use GraphQL.
+- Legacy `publicRouter.*` endpoints are considered deprecated and may be removed
+  after clients migrate.
 
 ## 3.5 Cache & Idempotency Implementation
 
@@ -1418,11 +1550,12 @@ Each sub-project's `tsconfig.json` extends the shared base:
    naturally.
 2. ~~**Confidence threshold**~~ — No numeric threshold. Prompt-based criteria. See 2.4.
 3. ~~**User feedback**~~ — Not in v1.
-4. ~~**Privacy**~~ — No anonymization. Investigations are public by default. Public eligibility is
-   derived from raw verification signals (provenance + corroboration count), not stored as state.
+4. ~~**Privacy**~~ — No anonymization. Investigations are public by default, and public responses
+   include raw verification signals (provenance + corroboration count + verification timestamps/reasons).
 5. ~~**Monetization**~~ — Free tier + paid subscription.
 6. ~~**Provider selection**~~ — OpenAI v1, Anthropic planned.
-7. ~~**Public appeals workflow**~~ — Not in v1.
+7. ~~**Public appeals workflow**~~ — Not in v1. Planned for post-v1; see §2.11
+   for design direction.
 8. ~~**Primary public metric**~~ — Track fact-check incidence (% investigated posts with >=1 flag).
 9. ~~**Reproducibility target**~~ — Best-effort reproducibility via persisted run artifacts (prompt,
    model metadata, tool trace, source snapshots).

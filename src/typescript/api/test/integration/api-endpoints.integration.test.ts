@@ -36,6 +36,7 @@ const [
   { appRouter },
   { prisma },
   { GET: healthGet },
+  { POST: graphqlPost },
   { closeQueueUtils },
   { runSelector },
 ] =
@@ -43,6 +44,7 @@ const [
     import("../../src/lib/trpc/router.js"),
     import("../../src/lib/db/client.js"),
     import("../../src/routes/health/+server.js"),
+    import("../../src/routes/graphql/+server.js"),
     import("../../src/lib/services/queue.js"),
     import("../../src/lib/services/selector.js"),
   ]);
@@ -79,6 +81,45 @@ function createCaller(options: CallerOptions = {}) {
     userOpenAiApiKey,
     hasValidAttestation: false,
   });
+}
+
+type GraphqlError = {
+  message: string;
+};
+
+type GraphqlEnvelope<TData> = {
+  data?: TData;
+  errors?: GraphqlError[];
+};
+
+type GraphqlRequestEvent = Parameters<typeof graphqlPost>[0];
+
+async function queryPublicGraphql<TData>(
+  query: string,
+  variables?: Record<string, unknown>,
+): Promise<TData> {
+  const requestBody = JSON.stringify(
+    variables === undefined ? { query } : { query, variables },
+  );
+  const response = await graphqlPost({
+    request: new Request("http://localhost/graphql", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: requestBody,
+    }),
+  } as unknown as GraphqlRequestEvent);
+
+  assert.equal(response.status, 200);
+  const payload = (await response.json()) as GraphqlEnvelope<TData>;
+  if (payload.errors && payload.errors.length > 0) {
+    assert.fail(
+      `GraphQL errors: ${payload.errors.map((error) => error.message).join("; ")}`,
+    );
+  }
+  assert.ok(payload.data);
+  return payload.data;
 }
 
 async function resetDatabase(): Promise<void> {
@@ -1110,7 +1151,7 @@ void test("post.batchStatus returns investigated flag and incorrect claim counts
   assert.equal(notInvestigated.incorrectClaimCount, 0);
 });
 
-void test("public.getInvestigation returns eligible complete investigation", async () => {
+void test("public.getInvestigation returns complete investigation and trust signals", async () => {
   const caller = createCaller();
   const post = await seedPost({
     platform: "LESSWRONG",
@@ -1134,18 +1175,68 @@ void test("public.getInvestigation returns eligible complete investigation", asy
   assert.ok(result);
   assert.equal(result.investigation.id, investigation.id);
   assert.equal(result.investigation.status, "COMPLETE");
+  assert.equal(result.investigation.provenance, "SERVER_VERIFIED");
+  assert.equal(result.investigation.corroborationCount, 0);
+  assert.equal(typeof result.investigation.serverVerifiedAt, "string");
   assert.equal(result.post.platform, post.platform);
   assert.equal(result.post.externalId, post.externalId);
   assert.equal(result.claims.length, 1);
+
+  const graphqlResult = await queryPublicGraphql<{
+    publicInvestigation: {
+      investigation: {
+        id: string;
+        provenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK";
+        corroborationCount: number;
+        serverVerifiedAt: string | null;
+        fetchFailureReason: string | null;
+      };
+      post: {
+        platform: Platform;
+        externalId: string;
+      };
+      claims: Array<{ id: string }>;
+    } | null;
+  }>(
+    `
+      query PublicInvestigation($investigationId: ID!) {
+        publicInvestigation(investigationId: $investigationId) {
+          investigation {
+            id
+            provenance
+            corroborationCount
+            serverVerifiedAt
+            fetchFailureReason
+          }
+          post {
+            platform
+            externalId
+          }
+          claims {
+            id
+          }
+        }
+      }
+    `,
+    { investigationId: investigation.id },
+  );
+
+  assert.ok(graphqlResult.publicInvestigation);
+  const graphqlInvestigation = graphqlResult.publicInvestigation.investigation;
+  assert.equal(graphqlInvestigation.id, investigation.id);
+  assert.equal(graphqlInvestigation.provenance, "SERVER_VERIFIED");
+  assert.equal(graphqlInvestigation.corroborationCount, 0);
+  assert.notEqual(graphqlInvestigation.serverVerifiedAt, null);
+  assert.equal(graphqlInvestigation.fetchFailureReason, null);
 });
 
-void test("public.getInvestigation hides ineligible CLIENT_FALLBACK investigations", async () => {
+void test("public.getInvestigation returns CLIENT_FALLBACK without corroboration", async () => {
   const caller = createCaller();
   const post = await seedPost({
     platform: "LESSWRONG",
-    externalId: "public-investigation-ineligible-1",
-    url: "https://www.lesswrong.com/posts/public-investigation-ineligible-1",
-    contentText: "Ineligible client-fallback content.",
+    externalId: "public-investigation-fallback-1",
+    url: "https://www.lesswrong.com/posts/public-investigation-fallback-1",
+    contentText: "Client fallback content should still be returned publicly.",
   });
   const investigation = await seedCompleteInvestigation({
     postId: post.id,
@@ -1158,10 +1249,52 @@ void test("public.getInvestigation hides ineligible CLIENT_FALLBACK investigatio
     investigationId: investigation.id,
   });
 
-  assert.equal(result, null);
+  assert.ok(result);
+  assert.equal(result.investigation.id, investigation.id);
+  assert.equal(result.investigation.provenance, "CLIENT_FALLBACK");
+  assert.equal(result.investigation.corroborationCount, 0);
+  assert.equal(result.investigation.serverVerifiedAt, undefined);
+  assert.equal(result.investigation.fetchFailureReason, "fetch unavailable");
+
+  const graphqlResult = await queryPublicGraphql<{
+    publicInvestigation: {
+      investigation: {
+        provenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK";
+        corroborationCount: number;
+        serverVerifiedAt: string | null;
+        fetchFailureReason: string | null;
+      };
+    } | null;
+  }>(
+    `
+      query PublicInvestigation($investigationId: ID!) {
+        publicInvestigation(investigationId: $investigationId) {
+          investigation {
+            provenance
+            corroborationCount
+            serverVerifiedAt
+            fetchFailureReason
+          }
+        }
+      }
+    `,
+    { investigationId: investigation.id },
+  );
+
+  assert.ok(graphqlResult.publicInvestigation);
+  assert.equal(
+    graphqlResult.publicInvestigation.investigation.provenance,
+    "CLIENT_FALLBACK",
+  );
+  assert.equal(graphqlResult.publicInvestigation.investigation.corroborationCount, 0);
+  assert.equal(graphqlResult.publicInvestigation.investigation.serverVerifiedAt, null);
+  assert.equal(
+    graphqlResult.publicInvestigation.investigation.fetchFailureReason,
+    "fetch unavailable",
+  );
 });
 
-void test("public.getInvestigation exposes CLIENT_FALLBACK investigation after 3 corroborations", async () => {
+void test("public.getInvestigation reports corroborationCount for CLIENT_FALLBACK investigations", async () => {
   const caller = createCaller();
   const post = await seedPost({
     platform: "LESSWRONG",
@@ -1185,34 +1318,38 @@ void test("public.getInvestigation exposes CLIENT_FALLBACK investigation after 3
   assert.ok(result);
   assert.equal(result.investigation.id, investigation.id);
   assert.equal(result.investigation.provenance, "CLIENT_FALLBACK");
+  assert.equal(result.investigation.corroborationCount, 3);
   assert.equal(result.claims.length, 1);
 });
 
-void test("public.getPostInvestigations lists only eligible complete investigations for a post", async () => {
+void test("public.getPostInvestigations lists all complete investigations for a post", async () => {
   const caller = createCaller();
   const post = await seedPost({
     platform: "LESSWRONG",
-    externalId: "public-post-investigations-eligible-only-1",
-    url: "https://www.lesswrong.com/posts/public-post-investigations-eligible-only-1",
+    externalId: "public-post-investigations-all-complete-1",
+    url: "https://www.lesswrong.com/posts/public-post-investigations-all-complete-1",
     contentText: "Post-level investigations content text.",
   });
 
-  const ineligible = await seedCompleteInvestigation({
+  const fallbackInvestigation = await seedCompleteInvestigation({
     postId: post.id,
     contentHash: post.contentHash,
     contentText: post.contentText,
     provenance: "CLIENT_FALLBACK",
   });
+  await seedCorroborationCredits(fallbackInvestigation.id, 2);
 
-  const eligibleText = normalizeContent("Eligible content revision for same post.");
-  const eligibleHash = await hashContent(eligibleText);
-  const eligible = await seedCompleteInvestigation({
+  const serverVerifiedText = normalizeContent(
+    "Server-verified content revision for same post.",
+  );
+  const serverVerifiedHash = await hashContent(serverVerifiedText);
+  const serverVerifiedInvestigation = await seedCompleteInvestigation({
     postId: post.id,
-    contentHash: eligibleHash,
-    contentText: eligibleText,
+    contentHash: serverVerifiedHash,
+    contentText: serverVerifiedText,
     provenance: "SERVER_VERIFIED",
   });
-  await seedClaimWithSource(eligible.id, 1);
+  await seedClaimWithSource(serverVerifiedInvestigation.id, 1);
 
   const result = await caller.public.getPostInvestigations({
     platform: post.platform,
@@ -1222,20 +1359,57 @@ void test("public.getPostInvestigations lists only eligible complete investigati
   assert.ok(result.post);
   assert.equal(result.post.platform, post.platform);
   assert.equal(result.post.externalId, post.externalId);
-  assert.equal(result.investigations.length, 1);
-  assert.equal(result.investigations[0]?.id, eligible.id);
-  assert.equal(result.investigations[0]?.claimCount, 1);
-  assert.notEqual(result.investigations[0]?.id, ineligible.id);
+  assert.equal(result.investigations.length, 2);
+
+  const byId = new Map(result.investigations.map((item) => [item.id, item]));
+  const fallback = byId.get(fallbackInvestigation.id);
+  assert.ok(fallback);
+  assert.equal(fallback.provenance, "CLIENT_FALLBACK");
+  assert.equal(fallback.corroborationCount, 2);
+
+  const serverVerified = byId.get(serverVerifiedInvestigation.id);
+  assert.ok(serverVerified);
+  assert.equal(serverVerified.provenance, "SERVER_VERIFIED");
+  assert.equal(serverVerified.claimCount, 1);
+
+  const graphqlResult = await queryPublicGraphql<{
+    postInvestigations: {
+      investigations: Array<{
+        id: string;
+        provenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK";
+        corroborationCount: number;
+      }>;
+    };
+  }>(
+    `
+      query PostInvestigations($platform: Platform!, $externalId: String!) {
+        postInvestigations(platform: $platform, externalId: $externalId) {
+          investigations {
+            id
+            provenance
+            corroborationCount
+          }
+        }
+      }
+    `,
+    {
+      platform: post.platform,
+      externalId: post.externalId,
+    },
+  );
+
+  assert.equal(graphqlResult.postInvestigations.investigations.length, 2);
 });
 
-void test("public.searchInvestigations filters by eligibility, query, and platform", async () => {
+void test("public.searchInvestigations filters by query/platform and includes fallback matches", async () => {
   const caller = createCaller();
 
+  const moonMarker = "graphql-search-marker-astronomy-moon";
   const moonPost = await seedPost({
     platform: "LESSWRONG",
     externalId: "public-search-moon-1",
     url: "https://www.lesswrong.com/posts/public-search-moon-1",
-    contentText: "The moon landing evidence is publicly documented.",
+    contentText: `${moonMarker} alpha`,
   });
   const moonInvestigation = await seedCompleteInvestigation({
     postId: moonPost.id,
@@ -1258,29 +1432,29 @@ void test("public.searchInvestigations filters by eligibility, query, and platfo
     provenance: "SERVER_VERIFIED",
   });
 
-  const ineligiblePost = await seedPost({
+  const fallbackMoonPost = await seedPost({
     platform: "LESSWRONG",
-    externalId: "public-search-ineligible-1",
-    url: "https://www.lesswrong.com/posts/public-search-ineligible-1",
-    contentText: "Moon myths should not leak into search results.",
+    externalId: "public-search-fallback-moon-1",
+    url: "https://www.lesswrong.com/posts/public-search-fallback-moon-1",
+    contentText: `${moonMarker} beta`,
   });
-  await seedCompleteInvestigation({
-    postId: ineligiblePost.id,
-    contentHash: ineligiblePost.contentHash,
-    contentText: ineligiblePost.contentText,
+  const fallbackMoonInvestigation = await seedCompleteInvestigation({
+    postId: fallbackMoonPost.id,
+    contentHash: fallbackMoonPost.contentHash,
+    contentText: fallbackMoonPost.contentText,
     provenance: "CLIENT_FALLBACK",
   });
 
   const queryResult = await caller.public.searchInvestigations({
-    query: "moon",
+    query: moonMarker,
     limit: 20,
     offset: 0,
   });
 
-  assert.equal(queryResult.investigations.length, 1);
-  assert.equal(queryResult.investigations[0]?.id, moonInvestigation.id);
-  assert.equal(queryResult.investigations[0]?.platform, "LESSWRONG");
-  assert.equal(queryResult.investigations[0]?.claimCount, 1);
+  const queryIds = new Set(queryResult.investigations.map((item) => item.id));
+  assert.equal(queryIds.has(moonInvestigation.id), true);
+  assert.equal(queryIds.has(fallbackMoonInvestigation.id), true);
+  assert.equal(queryResult.investigations.every((item) => item.platform === "LESSWRONG"), true);
 
   const platformResult = await caller.public.searchInvestigations({
     platform: "X",
@@ -1291,9 +1465,36 @@ void test("public.searchInvestigations filters by eligibility, query, and platfo
   const platformIds = new Set(platformResult.investigations.map((item) => item.id));
   assert.equal(platformIds.has(xInvestigation.id), true);
   assert.equal(platformIds.has(moonInvestigation.id), false);
+
+  const graphqlResult = await queryPublicGraphql<{
+    searchInvestigations: {
+      investigations: Array<{ id: string; provenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK" }>;
+    };
+  }>(
+    `
+      query SearchInvestigations($query: String!, $limit: Int!, $offset: Int!) {
+        searchInvestigations(query: $query, limit: $limit, offset: $offset) {
+          investigations {
+            id
+            provenance
+          }
+        }
+      }
+    `,
+    {
+      query: moonMarker,
+      limit: 20,
+      offset: 0,
+    },
+  );
+  const graphqlIds = new Set(
+    graphqlResult.searchInvestigations.investigations.map((item) => item.id),
+  );
+  assert.equal(graphqlIds.has(moonInvestigation.id), true);
+  assert.equal(graphqlIds.has(fallbackMoonInvestigation.id), true);
 });
 
-void test("public.getMetrics counts only eligible complete investigations and honors filters", async () => {
+void test("public.getMetrics counts all complete investigations and honors filters", async () => {
   const caller = createCaller();
   const metricsWindowStart = "2026-02-23T00:00:00.000Z";
   const metricsWindowEnd = "2026-02-23T23:59:59.999Z";
@@ -1327,36 +1528,37 @@ void test("public.getMetrics counts only eligible complete investigations and ho
     checkedAt: new Date("2026-02-23T13:00:00.000Z"),
   });
 
-  const ineligiblePost = await seedPost({
+  const fallbackPost = await seedPost({
     platform: "X",
-    externalId: "public-metrics-ineligible-1",
-    url: "https://x.com/openerrata/status/public-metrics-ineligible-1",
-    contentText: "Should not count in public metrics.",
+    externalId: "public-metrics-fallback-1",
+    url: "https://x.com/openerrata/status/public-metrics-fallback-1",
+    contentText: "Client fallback should count in public metrics.",
   });
-  await seedCompleteInvestigation({
-    postId: ineligiblePost.id,
-    contentHash: ineligiblePost.contentHash,
-    contentText: ineligiblePost.contentText,
+  const fallbackInvestigation = await seedCompleteInvestigation({
+    postId: fallbackPost.id,
+    contentHash: fallbackPost.contentHash,
+    contentText: fallbackPost.contentText,
     provenance: "CLIENT_FALLBACK",
     checkedAt: new Date("2026-02-23T14:00:00.000Z"),
   });
+  await seedCorroborationCredits(fallbackInvestigation.id, 1);
 
   const allMetrics = await caller.public.getMetrics({
     windowStart: metricsWindowStart,
     windowEnd: metricsWindowEnd,
   });
-  assert.equal(allMetrics.totalInvestigatedPosts, 2);
+  assert.equal(allMetrics.totalInvestigatedPosts, 3);
   assert.equal(allMetrics.investigatedPostsWithFlags, 1);
-  assert.equal(allMetrics.factCheckIncidence, 0.5);
+  assert.equal(allMetrics.factCheckIncidence, 1 / 3);
 
   const xMetrics = await caller.public.getMetrics({
     platform: "X",
     windowStart: metricsWindowStart,
     windowEnd: metricsWindowEnd,
   });
-  assert.equal(xMetrics.totalInvestigatedPosts, 1);
+  assert.equal(xMetrics.totalInvestigatedPosts, 2);
   assert.equal(xMetrics.investigatedPostsWithFlags, 1);
-  assert.equal(xMetrics.factCheckIncidence, 1);
+  assert.equal(xMetrics.factCheckIncidence, 0.5);
 
   const emptyWindowMetrics = await caller.public.getMetrics({
     windowStart: "2026-02-24T00:00:00.000Z",
@@ -1365,6 +1567,32 @@ void test("public.getMetrics counts only eligible complete investigations and ho
   assert.equal(emptyWindowMetrics.totalInvestigatedPosts, 0);
   assert.equal(emptyWindowMetrics.investigatedPostsWithFlags, 0);
   assert.equal(emptyWindowMetrics.factCheckIncidence, 0);
+
+  const graphqlResult = await queryPublicGraphql<{
+    publicMetrics: {
+      totalInvestigatedPosts: number;
+      investigatedPostsWithFlags: number;
+      factCheckIncidence: number;
+    };
+  }>(
+    `
+      query PublicMetrics($windowStart: DateTime, $windowEnd: DateTime, $platform: Platform) {
+        publicMetrics(windowStart: $windowStart, windowEnd: $windowEnd, platform: $platform) {
+          totalInvestigatedPosts
+          investigatedPostsWithFlags
+          factCheckIncidence
+        }
+      }
+    `,
+    {
+      windowStart: metricsWindowStart,
+      windowEnd: metricsWindowEnd,
+      platform: "X",
+    },
+  );
+  assert.equal(graphqlResult.publicMetrics.totalInvestigatedPosts, 2);
+  assert.equal(graphqlResult.publicMetrics.investigatedPostsWithFlags, 1);
+  assert.equal(graphqlResult.publicMetrics.factCheckIncidence, 0.5);
 });
 
 void test("post.validateSettings reports instance api-key acceptance", async () => {
