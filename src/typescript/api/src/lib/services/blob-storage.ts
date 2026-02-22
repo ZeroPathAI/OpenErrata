@@ -1,13 +1,25 @@
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getEnv } from "$lib/config/env.js";
 
-type BlobStorageConfig = {
-  endpoint: string | undefined;
+type BlobStorageConfigBase = {
+  provider: "aws" | "s3_compatible";
+  region: string;
   bucket: string;
   accessKeyId: string;
   secretAccessKey: string;
   publicUrlPrefix: string;
 };
+
+type AwsBlobStorageConfig = BlobStorageConfigBase & {
+  provider: "aws";
+};
+
+type S3CompatibleBlobStorageConfig = BlobStorageConfigBase & {
+  provider: "s3_compatible";
+  endpoint: string;
+};
+
+type BlobStorageConfig = AwsBlobStorageConfig | S3CompatibleBlobStorageConfig;
 
 class BlobStorageService {
   private readonly client: S3Client;
@@ -15,15 +27,24 @@ class BlobStorageService {
   private readonly publicUrlPrefix: string;
 
   constructor(config: BlobStorageConfig) {
-    this.client = new S3Client({
-      region: "auto",
-      ...(config.endpoint === undefined ? {} : { endpoint: config.endpoint }),
-      ...(config.endpoint === undefined ? {} : { forcePathStyle: true }),
-      credentials: {
-        accessKeyId: config.accessKeyId,
-        secretAccessKey: config.secretAccessKey,
-      },
-    });
+    this.client =
+      config.provider === "aws"
+        ? new S3Client({
+            region: config.region,
+            credentials: {
+              accessKeyId: config.accessKeyId,
+              secretAccessKey: config.secretAccessKey,
+            },
+          })
+        : new S3Client({
+            region: config.region,
+            endpoint: config.endpoint,
+            forcePathStyle: true,
+            credentials: {
+              accessKeyId: config.accessKeyId,
+              secretAccessKey: config.secretAccessKey,
+            },
+          });
     this.bucket = config.bucket;
     this.publicUrlPrefix = config.publicUrlPrefix.replace(/\/+$/, "");
   }
@@ -55,7 +76,20 @@ let blobStorageService: BlobStorageService | undefined;
 function readBlobStorageConfig(): BlobStorageConfig {
   const env = getEnv();
 
+  if (env.BLOB_STORAGE_PROVIDER === "aws") {
+    return {
+      provider: "aws",
+      region: env.BLOB_STORAGE_REGION,
+      bucket: env.BLOB_STORAGE_BUCKET,
+      accessKeyId: env.BLOB_STORAGE_ACCESS_KEY_ID,
+      secretAccessKey: env.BLOB_STORAGE_SECRET_ACCESS_KEY,
+      publicUrlPrefix: env.BLOB_STORAGE_PUBLIC_URL_PREFIX,
+    };
+  }
+
   return {
+    provider: "s3_compatible",
+    region: env.BLOB_STORAGE_REGION,
     endpoint: env.BLOB_STORAGE_ENDPOINT,
     bucket: env.BLOB_STORAGE_BUCKET,
     accessKeyId: env.BLOB_STORAGE_ACCESS_KEY_ID,
@@ -76,4 +110,3 @@ export async function uploadImage(
 ): Promise<string> {
   return getBlobStorageService().uploadImage(bytes, contentHash, mimeType);
 }
-

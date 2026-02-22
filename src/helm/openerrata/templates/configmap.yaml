@@ -8,6 +8,8 @@ data:
   IP_RANGE_CREDIT_CAP: {{ .Values.config.ipRangeCreditCap | quote }}
   SELECTOR_BUDGET: {{ .Values.selector.budget | quote }}
   DATABASE_ENCRYPTION_KEY_ID: {{ .Values.config.databaseEncryptionKeyId | quote }}
+  BLOB_STORAGE_PROVIDER: {{ required "config.blobStorageProvider is required" .Values.config.blobStorageProvider | quote }}
+  BLOB_STORAGE_REGION: {{ required "config.blobStorageRegion is required" .Values.config.blobStorageRegion | quote }}
   BLOB_STORAGE_ENDPOINT: {{ .Values.config.blobStorageEndpoint | quote }}
   BLOB_STORAGE_BUCKET: {{ required "config.blobStorageBucket is required" .Values.config.blobStorageBucket | quote }}
   BLOB_STORAGE_PUBLIC_URL_PREFIX: {{ required "config.blobStoragePublicUrlPrefix is required" .Values.config.blobStoragePublicUrlPrefix | quote }}

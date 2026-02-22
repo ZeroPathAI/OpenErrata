@@ -24,7 +24,7 @@ const requiredNonEmptyStringFromEnv = z.preprocess((value) => {
   return value.trim();
 }, z.string().min(1));
 
-const environmentSchema = z.object({
+const baseEnvironmentSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   DATABASE_URL: z
     .string()
@@ -40,7 +40,6 @@ const environmentSchema = z.object({
   HMAC_SECRET: z.string().trim().min(1, "HMAC_SECRET is required"),
   SELECTOR_BUDGET: positiveIntegerFromEnv.default(100),
   IP_RANGE_CREDIT_CAP: positiveIntegerFromEnv.default(10),
-  BLOB_STORAGE_ENDPOINT: optionalNonEmptyStringFromEnv,
   BLOB_STORAGE_BUCKET: requiredNonEmptyStringFromEnv,
   BLOB_STORAGE_ACCESS_KEY_ID: requiredNonEmptyStringFromEnv,
   BLOB_STORAGE_SECRET_ACCESS_KEY: requiredNonEmptyStringFromEnv,
@@ -49,6 +48,31 @@ const environmentSchema = z.object({
   DATABASE_ENCRYPTION_KEY_ID:
     optionalNonEmptyStringFromEnv.default("primary"),
 });
+
+const awsBlobStorageEnvironmentSchema = baseEnvironmentSchema.extend({
+  BLOB_STORAGE_PROVIDER: z.literal("aws"),
+  BLOB_STORAGE_REGION: requiredNonEmptyStringFromEnv.refine(
+    (value) => value.toLowerCase() !== "auto",
+    "BLOB_STORAGE_REGION cannot be 'auto' when BLOB_STORAGE_PROVIDER is 'aws'",
+  ),
+  BLOB_STORAGE_ENDPOINT: optionalNonEmptyStringFromEnv
+    .refine(
+      (value) => value === undefined,
+      "BLOB_STORAGE_ENDPOINT must be unset when BLOB_STORAGE_PROVIDER is 'aws'",
+    )
+    .transform((): undefined => undefined),
+});
+
+const s3CompatibleBlobStorageEnvironmentSchema = baseEnvironmentSchema.extend({
+  BLOB_STORAGE_PROVIDER: z.literal("s3_compatible"),
+  BLOB_STORAGE_REGION: requiredNonEmptyStringFromEnv,
+  BLOB_STORAGE_ENDPOINT: requiredNonEmptyStringFromEnv,
+});
+
+const environmentSchema = z.discriminatedUnion("BLOB_STORAGE_PROVIDER", [
+  awsBlobStorageEnvironmentSchema,
+  s3CompatibleBlobStorageEnvironmentSchema,
+]);
 
 type Environment = z.infer<typeof environmentSchema>;
 
@@ -61,17 +85,29 @@ function formatZodIssues(error: z.ZodError): string {
     .join("\n");
 }
 
-function parseEnvironment(): Environment {
-  const result = environmentSchema.safeParse(process.env);
+export function parseEnvironmentValues(
+  environmentValues: NodeJS.ProcessEnv,
+): Environment {
+  const result = environmentSchema.safeParse(environmentValues);
   if (result.success) return result.data;
 
   const details = formatZodIssues(result.error);
-  console.error(
-    `\nInvalid API environment configuration:\n${details}\n\n` +
-      "Ensure the api/.env file exists with the required variables. " +
-      "See .env.example for reference.\n",
-  );
-  process.exit(1);
+  throw new Error(details);
+}
+
+function parseEnvironment(): Environment {
+  try {
+    return parseEnvironmentValues(process.env);
+  } catch (error) {
+    const details =
+      error instanceof Error ? error.message : "Unknown environment parse error";
+    console.error(
+      `\nInvalid API environment configuration:\n${details}\n\n` +
+        "Ensure the api/.env file exists with the required variables. " +
+        "See .env.example for reference.\n",
+    );
+    process.exit(1);
+  }
 }
 
 // Validated lazily on first getEnv() call. Deferred from module-load time so

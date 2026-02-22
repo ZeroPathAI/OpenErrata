@@ -17,6 +17,8 @@ spec:
         {{- include "openerrata.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: worker
     spec:
+      serviceAccountName: {{ include "openerrata.serviceAccountName" (dict "root" . "component" "worker") }}
+      automountServiceAccountToken: false
       containers:
         - name: worker
           image: {{ include "openerrata.image" . | quote }}
@@ -24,6 +26,6 @@ spec:
           command: ["node", "node_modules/tsx/dist/cli.mjs", "--tsconfig", "tsconfig.runtime.json", "src/lib/services/worker-entrypoint.ts"]
           envFrom:
             - secretRef:
-                name: {{ include "openerrata.fullname" . }}
+                name: {{ include "openerrata.secretName" . }}
             - configMapRef:
                 name: {{ include "openerrata.fullname" . }}

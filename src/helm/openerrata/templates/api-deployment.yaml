@@ -17,6 +17,8 @@ spec:
         {{- include "openerrata.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: api
     spec:
+      serviceAccountName: {{ include "openerrata.serviceAccountName" (dict "root" . "component" "api") }}
+      automountServiceAccountToken: false
       containers:
         - name: api
           image: {{ include "openerrata.image" . | quote }}
@@ -27,7 +29,7 @@ spec:
               protocol: TCP
           envFrom:
             - secretRef:
-                name: {{ include "openerrata.fullname" . }}
+                name: {{ include "openerrata.secretName" . }}
             - configMapRef:
                 name: {{ include "openerrata.fullname" . }}
           livenessProbe:

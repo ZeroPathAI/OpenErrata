@@ -17,6 +17,8 @@ spec:
             app.kubernetes.io/component: selector
         spec:
           restartPolicy: OnFailure
+          serviceAccountName: {{ include "openerrata.serviceAccountName" (dict "root" . "component" "selector") }}
+          automountServiceAccountToken: false
           containers:
             - name: selector
               image: {{ include "openerrata.image" . | quote }}
@@ -24,6 +26,6 @@ spec:
               command: ["node", "node_modules/tsx/dist/cli.mjs", "--tsconfig", "tsconfig.runtime.json", "src/lib/services/selector-entrypoint.ts"]
               envFrom:
                 - secretRef:
-                    name: {{ include "openerrata.fullname" . }}
+                    name: {{ include "openerrata.secretName" . }}
                 - configMapRef:
                     name: {{ include "openerrata.fullname" . }}

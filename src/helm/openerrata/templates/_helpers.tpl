@@ -34,3 +34,25 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{ printf "%s:%s" .Values.image.repository .Values.image.tag }}
 {{- end -}}
 {{- end -}}
+
+{{- define "openerrata.secretName" -}}
+{{- if .Values.secrets.existingSecretName -}}
+{{- .Values.secrets.existingSecretName -}}
+{{- else -}}
+{{- include "openerrata.fullname" . -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "openerrata.serviceAccountName" -}}
+{{- $root := index . "root" -}}
+{{- $component := index . "component" -}}
+{{- $configuredName := index $root.Values.serviceAccount.names $component -}}
+{{- if $configuredName -}}
+{{- $configuredName -}}
+{{- else -}}
+{{- if not $root.Values.serviceAccount.create -}}
+{{- fail (printf "serviceAccount.names.%s must be set when serviceAccount.create is false" $component) -}}
+{{- end -}}
+{{- printf "%s-%s" (include "openerrata.fullname" $root) $component -}}
+{{- end -}}
+{{- end -}}

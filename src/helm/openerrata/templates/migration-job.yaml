@@ -6,7 +6,7 @@ metadata:
     {{- include "openerrata.labels" . | nindent 4 }}
     app.kubernetes.io/component: migrate
   annotations:
-    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook": post-install,pre-upgrade
     "helm.sh/hook-weight": "-10"
     "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
 spec:
@@ -20,13 +20,16 @@ spec:
         app.kubernetes.io/component: migrate
     spec:
       restartPolicy: Never
+      serviceAccountName: {{ include "openerrata.serviceAccountName" (dict "root" . "component" "migrate") }}
+      automountServiceAccountToken: false
       containers:
         - name: migrate
           image: {{ include "openerrata.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["node", "node_modules/prisma/build/index.js", "migrate", "deploy"]
           env:
-            # Pre-install hooks run before this chart's Secret/ConfigMap are created.
-            # The migration only needs DATABASE_URL, so template it directly.
             - name: DATABASE_URL
-              value: {{ required "secrets.databaseUrl is required" .Values.secrets.databaseUrl | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "openerrata.secretName" . }}
+                  key: DATABASE_URL

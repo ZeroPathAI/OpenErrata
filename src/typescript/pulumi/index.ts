@@ -22,14 +22,29 @@ type ImageConfig = {
   digest: string | undefined;
 };
 
-type BlobStorageConfig = {
+type BlobStorageProvider = "aws" | "s3_compatible";
+
+type BlobStorageConfigBase = {
   mode: "manual" | "managed_aws";
-  endpoint: string;
+  provider: BlobStorageProvider;
+  region: string;
   bucket: pulumi.Input<string>;
   publicUrlPrefix: pulumi.Input<string>;
   accessKeyId: pulumi.Input<string>;
   secretAccessKey: pulumi.Input<string>;
 };
+
+type AwsBlobStorageConfig = BlobStorageConfigBase & {
+  provider: "aws";
+  endpoint: undefined;
+};
+
+type S3CompatibleBlobStorageConfig = BlobStorageConfigBase & {
+  provider: "s3_compatible";
+  endpoint: string;
+};
+
+type BlobStorageConfig = AwsBlobStorageConfig | S3CompatibleBlobStorageConfig;
 
 type DatabaseConfig = {
   mode: "manual" | "managed_aws_rds";
@@ -142,6 +157,15 @@ function isIpv4Address(value: string): boolean {
   });
 }
 
+function isCloudflareR2Endpoint(endpoint: string): boolean {
+  try {
+    const parsedUrl = new URL(endpoint);
+    return parsedUrl.hostname.endsWith(".r2.cloudflarestorage.com");
+  } catch {
+    return endpoint.endsWith(".r2.cloudflarestorage.com");
+  }
+}
+
 function createManagedAwsBlobStorage(input: pulumi.Config): BlobStorageConfig {
   const configuredManagedBucketName = getNonEmptyConfig(
     input,
@@ -240,9 +264,18 @@ function createManagedAwsBlobStorage(input: pulumi.Config): BlobStorageConfig {
     user: blobWriterUser.name,
   });
 
+  const awsRegion = aws.config.region;
+  if (!awsRegion) {
+    throw new Error(
+      "AWS region must be configured for managed blob storage (e.g. `pulumi config set aws:region us-west-2`).",
+    );
+  }
+
   return {
     mode: "managed_aws",
-    endpoint: "",
+    provider: "aws",
+    region: awsRegion,
+    endpoint: undefined,
     bucket: bucket.bucket,
     publicUrlPrefix: pulumi.interpolate`https://${bucket.bucketRegionalDomainName}`,
     accessKeyId: blobWriterAccessKey.id,
@@ -266,6 +299,9 @@ function resolveBlobStorage(input: pulumi.Config): BlobStorageConfig {
     hasConfiguredPublicUrlPrefix,
     hasConfiguredSecretAccessKey,
   ].filter(Boolean).length;
+  const configuredProvider = getNonEmptyConfig(input, "blobStorageProvider");
+  const configuredEndpoint = getNonEmptyConfig(input, "blobStorageEndpoint");
+  const configuredRegion = getNonEmptyConfig(input, "blobStorageRegion");
 
   if (manualFieldsProvidedCount === 0) {
     return createManagedAwsBlobStorage(input);
@@ -288,9 +324,73 @@ function resolveBlobStorage(input: pulumi.Config): BlobStorageConfig {
     );
   }
 
+  let resolvedProvider: BlobStorageProvider;
+  if (configuredProvider === undefined) {
+    resolvedProvider = configuredEndpoint === undefined ? "aws" : "s3_compatible";
+  } else if (
+    configuredProvider === "aws" ||
+    configuredProvider === "s3_compatible"
+  ) {
+    resolvedProvider = configuredProvider;
+  } else {
+    throw new Error(
+      "blobStorageProvider must be either 'aws' or 's3_compatible' when provided.",
+    );
+  }
+
+  if (resolvedProvider === "aws") {
+    if (configuredEndpoint !== undefined) {
+      throw new Error(
+        "blobStorageEndpoint must be unset when blobStorageProvider is 'aws'.",
+      );
+    }
+
+    const resolvedRegion = configuredRegion ?? aws.config.region;
+    if (!resolvedRegion) {
+      throw new Error(
+        "blobStorageRegion is required when blobStorageProvider is 'aws' and no aws:region is configured.",
+      );
+    }
+    if (resolvedRegion.toLowerCase() === "auto") {
+      throw new Error(
+        "blobStorageRegion cannot be 'auto' when blobStorageProvider is 'aws'.",
+      );
+    }
+
+    return {
+      mode: "manual",
+      provider: "aws",
+      region: resolvedRegion,
+      endpoint: undefined,
+      bucket: configuredBucket,
+      publicUrlPrefix: configuredPublicUrlPrefix,
+      accessKeyId:
+        getNonEmptyConfig(input, "blobStorageAccessKeyId") ??
+        defaultBlobStorageAccessKeyId,
+      secretAccessKey: configuredSecretAccessKey,
+    };
+  }
+
+  if (configuredEndpoint === undefined) {
+    throw new Error(
+      "blobStorageEndpoint is required when blobStorageProvider is 's3_compatible'.",
+    );
+  }
+
+  const resolvedS3CompatibleRegion =
+    configuredRegion ??
+    (isCloudflareR2Endpoint(configuredEndpoint) ? "auto" : undefined);
+  if (!resolvedS3CompatibleRegion) {
+    throw new Error(
+      "blobStorageRegion is required when blobStorageProvider is 's3_compatible' unless blobStorageEndpoint targets Cloudflare R2.",
+    );
+  }
+
   return {
     mode: "manual",
-    endpoint: getNonEmptyConfig(input, "blobStorageEndpoint") ?? "",
+    provider: "s3_compatible",
+    region: resolvedS3CompatibleRegion,
+    endpoint: configuredEndpoint,
     bucket: configuredBucket,
     publicUrlPrefix: configuredPublicUrlPrefix,
     accessKeyId:
@@ -658,7 +758,9 @@ const chart = new k8s.helm.v3.Chart(releaseName, {
     config: {
       ipRangeCreditCap: config.get("ipRangeCreditCap") ?? "10",
       databaseEncryptionKeyId: config.get("databaseEncryptionKeyId") ?? "primary",
-      blobStorageEndpoint: blobStorage.endpoint,
+      blobStorageProvider: blobStorage.provider,
+      blobStorageRegion: blobStorage.region,
+      blobStorageEndpoint: blobStorage.endpoint ?? "",
       blobStorageBucket: blobStorage.bucket,
       blobStoragePublicUrlPrefix: blobStorage.publicUrlPrefix,
     },

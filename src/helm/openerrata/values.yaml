@@ -15,6 +15,17 @@ migration:
   activeDeadlineSeconds: 600
   ttlSecondsAfterFinished: 300
 
+serviceAccount:
+  create: true
+  names:
+    api: ""
+    worker: ""
+    selector: ""
+    migrate: ""
+
+networkPolicy:
+  enabled: true
+
 service:
   type: ClusterIP
   port: 3000
@@ -37,6 +48,14 @@ selector:
 config:
   ipRangeCreditCap: "10"
   databaseEncryptionKeyId: "primary"
+  # Required: blob storage backend provider ("aws" or "s3_compatible").
+  blobStorageProvider: ""
+  # Required: blob storage region. Use an AWS region (for "aws") or provider
+  # specific value for "s3_compatible". Pulumi infers "auto" only for
+  # Cloudflare R2 endpoints; other s3-compatible providers should set this
+  # explicitly.
+  blobStorageRegion: ""
+  # Optional endpoint for "s3_compatible" providers. Must be empty for "aws".
   blobStorageEndpoint: ""
   # Required: name of the S3/R2 bucket used for investigation image blobs.
   blobStorageBucket: ""
@@ -45,6 +64,8 @@ config:
 
 # Secrets must be provided via --set or external secret manager
 secrets:
+  # Optional: use a pre-created Kubernetes Secret instead of rendering one in this chart.
+  existingSecretName: ""
   # Required: Postgres connection string.
   databaseUrl: ""
   # Required: server-side OpenAI key used by worker and selector investigations.

@@ -12,6 +12,8 @@ process.env['NODE_ENV'] ??= "test";
 process.env['DATABASE_URL'] ??=
   "postgresql://openerrata:openerrata_dev@localhost:5433/openerrata";
 process.env['HMAC_SECRET'] ??= "test-hmac-secret";
+process.env['BLOB_STORAGE_PROVIDER'] ??= "aws";
+process.env['BLOB_STORAGE_REGION'] ??= "us-east-1";
 process.env['BLOB_STORAGE_BUCKET'] ??= "test-openerrata-images";
 process.env['BLOB_STORAGE_ACCESS_KEY_ID'] ??= "test-blob-access-key";
 process.env['BLOB_STORAGE_SECRET_ACCESS_KEY'] ??= "test-blob-secret";
