@@ -9,7 +9,7 @@
 OpenErrata is a browser extension that uses LLMs to pre-investigate posts from
 the sites you read, and underlines unambiguously incorrect claims, with sources
 available. It prioritizes an extremely low false-positive rate over coverage,
-and its prompts, details, and reasoning behind every investigation made
+and the prompts, details, and reasoning behind every investigation are
 inspectable by users.
 
 ## Install
