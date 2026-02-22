@@ -1,13 +1,15 @@
 # OpenErrata
 
-A browser extension that prevents you from being misled about factual information on Substack/Twitter/LessWrong. It highlights empirically incorrect claims inline with sourced rebuttals, prioritizing an extremely low false-positive rate over coverage.
+A browser extension that prevents you from being misled about factual information on Substack/Twitter/LessWrong. It preinvestigates posts in the background with LLMs, and when you browse to them, it underlines empirically incorrect claims and shows you the details of the mistake & sources on hover and click, respectively. The tool prioritizes an extremely low false-positive rate over coverage - it's built so that the prompts, details, and reasoning behind every investigation are both auditable and free from bias.
 
 ## How It Works
 
 1. **You browse normally.** The extension detects supported posts and sends observed content to the API, which records views and returns any existing investigation results.
-2. **Posts get investigated.** Either you click "Investigate Now" (using your own OpenAI key or instance-managed credentials), or a background selector picks highly-viewed uninvestigated posts automatically.
+2. **Posts get investigated.** Either you click "Investigate Now" (having configured your own OpenAI key or instance-managed credentials), or the service selects it from the highest viewed posts that day.
 3. **The LLM investigates.** A single agentic call sends the full post text (plus images) to the model, which uses native web search and browsing tools to verify claims. Only demonstrably incorrect claims are flagged — disputed, ambiguous, or unverifiable claims are left alone.
-4. **Incorrect claims are highlighted.** Flagged claims get a red underline in the page. Hover for a summary; click for full reasoning and sources. All investigations are publicly auditable.
+4. **Incorrect claims are highlighted.** For all extension users, every incorrect sentences get a red underline in the post. Hover for a summary; click for full reasoning and sources.
+
+Currently supports only Substack, Twitter, and LessWrong.
 
 ## Repository Layout
 
