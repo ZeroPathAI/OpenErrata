@@ -634,7 +634,7 @@ jobs:
           expected_image="${CI_IMAGE_REPOSITORY}@${CI_IMAGE_DIGEST}"
 
           set +e
-          timeout 900 pulumi up \
+          timeout 300 pulumi up \
             --stack "$STACK" \
             --yes \
             --non-interactive \
