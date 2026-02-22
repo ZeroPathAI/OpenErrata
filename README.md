@@ -12,6 +12,22 @@ available. It prioritizes an extremely low false-positive rate over coverage,
 and the prompts, details, and reasoning behind every investigation are
 inspectable by users.
 
+## How It Works
+
+1. **You browse normally.** The extension detects supported posts and sends
+   observed content to the API, which records views and returns any existing
+   investigation results triggered by other users.
+2. **Posts get investigated.** You or someone else clicks "Investigate Now", or
+   has the "auto-investigate posts" setting checked, or the service pre-selects
+   it using a very-likely-to-be-read heuristic.
+3. **The LLM investigates.** The full post text (plus images) are sent to
+   GPT-5.2, which uses native web search and browsing tools to verify claims.
+   Only demonstrably incorrect claims are flagged — disputed, ambiguous, or
+   unverifiable claims are left alone.
+4. **Incorrect claims are highlighted.** For all extension users, every
+   incorrect sentence gets a red underline in the post. Hover for a summary;
+   click for full reasoning and sources.
+
 ## Install
 
 **Chrome Web Store** — Coming soon.
@@ -34,29 +50,6 @@ this may change as we hit spend thresholds).
 To point the extension at a self-hosted instance, open the extension options
 page and change the API URL.
 
-## How It Works
-
-1. **You browse normally.** The extension detects supported posts and sends
-   observed content to the API, which records views and returns any existing
-   investigation results triggered by other users.
-2. **Posts get investigated.** You or someone else clicks "Investigate Now", or
-   has the "auto-investigate posts" setting checked, or the service pre-selects
-   it using a very-likely-to-be-read heuristic.
-3. **The LLM investigates.** The full post text (plus images) are sent to
-   GPT-5.2, which uses native web search and browsing tools to verify claims.
-   Only demonstrably incorrect claims are flagged — disputed, ambiguous, or
-   unverifiable claims are left alone.
-4. **Incorrect claims are highlighted.** For all extension users, every
-   incorrect sentence gets a red underline in the post. Hover for a summary;
-   click for full reasoning and sources.
-
-## Public API
-
-All complete investigations are publicly accessible via GraphQL at `POST
-/graphql`. No authentication required. Responses include trust signals (content
-provenance, corroboration count, server verification timestamps) so consumers
-can apply their own trust policy.
-
 ## Supported Platforms
 
 | Platform | Detection |
@@ -64,6 +57,13 @@ can apply their own trust policy.
 | LessWrong | URL match (`lesswrong.com`) |
 | X (Twitter) | URL match (`x.com`, `twitter.com`) |
 | Substack | URL match (`*.substack.com/p/*`) + DOM fingerprint for custom domains |
+
+## Public API
+
+All complete investigations are publicly accessible via GraphQL at `POST
+/graphql`. No authentication required. Responses include trust signals (content
+provenance, corroboration count, server verification timestamps) so consumers
+can apply their own trust policy.
 
 ## Design Principles
 
