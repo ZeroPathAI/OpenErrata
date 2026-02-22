@@ -7,12 +7,9 @@ import {
   readFirstTimeDateAsIso,
 } from "./utils";
 
-const HANDLE_STATUS_URL_REGEX =
-  /(?:x\.com|twitter\.com)\/([^/]+)\/status\/(\d+)/i;
-const WEB_STATUS_URL_REGEX =
-  /(?:x\.com|twitter\.com)\/i\/web\/status\/(\d+)/i;
-const I_STATUS_URL_REGEX = /(?:x\.com|twitter\.com)\/i\/status\/(\d+)/i;
-const STATUS_PATH_REGEX = /^\/([^/]+)\/status\/(\d+)(?:\/|$)/i;
+const HANDLE_STATUS_PATH_REGEX = /^\/([^/]+)\/status\/(\d+)(?:\/|$)/i;
+const WEB_STATUS_PATH_REGEX = /^\/i\/web\/status\/(\d+)(?:\/|$)/i;
+const I_STATUS_PATH_REGEX = /^\/i\/status\/(\d+)(?:\/|$)/i;
 const HANDLE_TEXT_REGEX = /^@([A-Za-z0-9_]{1,15})$/;
 const META_DATE_SELECTORS = [
   'meta[property="article:published_time"]',
@@ -41,19 +38,72 @@ const PRIVATE_OR_GATED_PATTERNS = [
   /account owner limits who can view their posts/i,
   /this account['\u2019]s posts are protected/i,
 ] as const;
+const X_STATUS_HOSTS = ["x.com", "twitter.com"] as const;
+
+function isSupportedXHost(hostname: string): boolean {
+  const normalized = hostname.toLowerCase();
+  return X_STATUS_HOSTS.some(
+    (host) => normalized === host || normalized.endsWith(`.${host}`),
+  );
+}
+
+function parseStatusFromPath(pathname: string): {
+  tweetId: string;
+  authorHandle: string | null;
+} | null {
+  const webMatch = pathname.match(WEB_STATUS_PATH_REGEX);
+  if (webMatch?.[1]) {
+    return {
+      tweetId: webMatch[1],
+      authorHandle: null,
+    };
+  }
+
+  const iStatusMatch = pathname.match(I_STATUS_PATH_REGEX);
+  if (iStatusMatch?.[1]) {
+    return {
+      tweetId: iStatusMatch[1],
+      authorHandle: null,
+    };
+  }
+
+  const handleMatch = pathname.match(HANDLE_STATUS_PATH_REGEX);
+  if (handleMatch?.[2]) {
+    return {
+      tweetId: handleMatch[2],
+      authorHandle: normalizeAuthorHandle(handleMatch[1]),
+    };
+  }
+
+  return null;
+}
+
+function parseStatusFromHref(href: string | null | undefined): {
+  tweetId: string;
+  authorHandle: string | null;
+} | null {
+  if (!href) return null;
+  try {
+    const parsed = new URL(href, window.location.origin);
+    return parseStatusFromPath(parsed.pathname);
+  } catch {
+    return null;
+  }
+}
 
 function isStatusHrefForTweetId(
   href: string | null | undefined,
   tweetId: string,
 ): boolean {
-  if (!href) return false;
-  try {
-    const parsed = new URL(href, window.location.origin);
-    const pathMatch = parsed.pathname.match(STATUS_PATH_REGEX);
-    return pathMatch?.[2] === tweetId;
-  } catch {
-    return false;
-  }
+  return parseStatusFromHref(href)?.tweetId === tweetId;
+}
+
+function hasDocumentLevelTweetIdentity(document: Document, tweetId: string): boolean {
+  const hrefCandidates = [
+    document.querySelector('meta[property="og:url"]')?.getAttribute("content"),
+    document.querySelector('link[rel="canonical"]')?.getAttribute("href"),
+  ];
+  return hrefCandidates.some((href) => parseStatusFromHref(href)?.tweetId === tweetId);
 }
 
 function findTargetTweetContainer(document: Document, tweetId: string): Element | null {
@@ -71,11 +121,13 @@ function findTargetTweetContainer(document: Document, tweetId: string): Element 
   }
 
   // In some route variants, the primary column contains only the target tweet.
-  // Use that as a conservative fallback when permalink anchors are absent.
+  // Require canonical/og identity proof before using this fallback.
   const primaryColumn = document.querySelector('[data-testid="primaryColumn"]');
   if (!primaryColumn) return null;
   const articles = primaryColumn.querySelectorAll("article");
-  return articles.length === 1 ? (articles[0] ?? null) : null;
+  if (articles.length !== 1) return null;
+  if (!hasDocumentLevelTweetIdentity(document, tweetId)) return null;
+  return articles[0] ?? null;
 }
 
 function normalizeAuthorHandle(raw: string | null | undefined): string | null {
@@ -96,55 +148,22 @@ function extractPostedAt(document: Document, tweetContainer: Element): string | 
 function parseStatusFromUrl(
   url: string,
 ): { tweetId: string; authorHandle: string | null } | null {
-  const handleMatch = url.match(HANDLE_STATUS_URL_REGEX);
-  if (handleMatch) {
-    const tweetId = handleMatch[2];
-    if (!tweetId) return null;
-
-    return {
-      tweetId,
-      authorHandle: normalizeAuthorHandle(handleMatch[1]),
-    };
+  try {
+    const parsed = new URL(url);
+    if (!isSupportedXHost(parsed.hostname)) return null;
+    return parseStatusFromPath(parsed.pathname);
+  } catch {
+    return null;
   }
-
-  const webMatch = url.match(WEB_STATUS_URL_REGEX);
-  if (webMatch) {
-    const tweetId = webMatch[1];
-    if (!tweetId) return null;
-
-    return {
-      tweetId,
-      authorHandle: null,
-    };
-  }
-
-  const iStatusMatch = url.match(I_STATUS_URL_REGEX);
-  if (iStatusMatch) {
-    const tweetId = iStatusMatch[1];
-    if (!tweetId) return null;
-
-    return {
-      tweetId,
-      authorHandle: null,
-    };
-  }
-
-  return null;
 }
 
 function extractAuthorHandleFromHref(
   href: string | null | undefined,
   tweetId: string,
 ): string | null {
-  if (!href) return null;
-  try {
-    const parsed = new URL(href, window.location.origin);
-    const pathMatch = parsed.pathname.match(STATUS_PATH_REGEX);
-    if (pathMatch?.[2] !== tweetId) return null;
-    return normalizeAuthorHandle(pathMatch[1]);
-  } catch {
-    return null;
-  }
+  const parsed = parseStatusFromHref(href);
+  if (!parsed || parsed.tweetId !== tweetId) return null;
+  return parsed.authorHandle;
 }
 
 function inferAuthorHandle(
@@ -207,11 +226,7 @@ function inferAuthorHandle(
 }
 
 function hasSupportedStatusPath(url: string): boolean {
-  return (
-    HANDLE_STATUS_URL_REGEX.test(url) ||
-    WEB_STATUS_URL_REGEX.test(url) ||
-    I_STATUS_URL_REGEX.test(url)
-  );
+  return parseStatusFromUrl(url) !== null;
 }
 
 function hasPrivateOrGatedMessage(document: Document, tweetId: string): boolean {

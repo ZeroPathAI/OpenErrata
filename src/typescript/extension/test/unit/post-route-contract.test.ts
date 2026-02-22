@@ -61,6 +61,8 @@ const unsupportedUrls = [
   "https://www.lesswrong.com/posts",
   "https://x.com/home",
   "https://x.com/compose/post",
+  "https://example.com/i/status/1234567890123456789",
+  "https://example.com/openerrata/status/1234567890123456789",
 ];
 
 test("supported post URL identity parser and adapter matching stay aligned", () => {

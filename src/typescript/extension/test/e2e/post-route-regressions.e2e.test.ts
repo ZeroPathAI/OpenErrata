@@ -277,6 +277,139 @@ test("X protected status stays private_or_gated even with unrelated tweet text o
   }
 });
 
+test("X i/web/status permalink anchors are accepted for target tweet extraction", async () => {
+  const harness = await launchExtensionHarness();
+  try {
+    const tweetId = "112233445566778899";
+    const url = `https://x.com/i/web/status/${tweetId}`;
+    const page = await harness.context.newPage();
+
+    await page.route(`${url}*`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "text/html",
+        body: `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>X i/web status</title>
+  </head>
+  <body>
+    <article>
+      <div data-testid="User-Name">
+        <a href="/openerrata"><span>OpenErrata</span></a>
+        <span>@openerrata</span>
+      </div>
+      <div data-testid="tweetText">This tweet includes video-only media for eligibility checks.</div>
+      <div data-testid="videoPlayer"><video src="https://video.twimg.com/test.mp4"></video></div>
+      <a href="/i/web/status/${tweetId}">
+        <time datetime="2026-02-20T00:00:00.000Z">4:00 PM · Feb 20, 2026</time>
+      </a>
+    </article>
+  </body>
+</html>`,
+      });
+    });
+
+    await page.goto(url, { waitUntil: "domcontentloaded" });
+    await expectSkippedStatus(harness.serviceWorker, {
+      platform: "X",
+      externalId: tweetId,
+      reason: "video_only",
+    });
+  } finally {
+    await closeExtensionHarness(harness);
+  }
+});
+
+test("X single-article fallback is allowed when canonical identity proves target tweet", async () => {
+  const harness = await launchExtensionHarness();
+  try {
+    const tweetId = "223344556677889900";
+    const url = `https://x.com/i/status/${tweetId}`;
+    const page = await harness.context.newPage();
+
+    await page.route(`${url}*`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "text/html",
+        body: `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta property="og:url" content="https://x.com/openerrata/status/${tweetId}" />
+    <title>X i/status single-article fallback</title>
+  </head>
+  <body>
+    <div data-testid="primaryColumn">
+      <article>
+        <div data-testid="User-Name">
+          <a href="/openerrata"><span>OpenErrata</span></a>
+          <span>@openerrata</span>
+        </div>
+        <div data-testid="tweetText">Single article content tied to target by canonical metadata.</div>
+        <div data-testid="videoPlayer"><video src="https://video.twimg.com/test.mp4"></video></div>
+      </article>
+    </div>
+  </body>
+</html>`,
+      });
+    });
+
+    await page.goto(url, { waitUntil: "domcontentloaded" });
+    await expectSkippedStatus(harness.serviceWorker, {
+      platform: "X",
+      externalId: tweetId,
+      reason: "video_only",
+    });
+  } finally {
+    await closeExtensionHarness(harness);
+  }
+});
+
+test("X status routes require identity proof and skip when only unrelated article text is present", async () => {
+  const harness = await launchExtensionHarness();
+  try {
+    const tweetId = "998877665544332211";
+    const url = `https://x.com/i/status/${tweetId}`;
+    const page = await harness.context.newPage();
+
+    await page.route(`${url}*`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "text/html",
+        body: `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>X i/status without identity proof</title>
+  </head>
+  <body>
+    <div data-testid="primaryColumn">
+      <article>
+        <div data-testid="User-Name">
+          <a href="/other"><span>Other User</span></a>
+          <span>@other</span>
+        </div>
+        <div data-testid="tweetText">Timeline text that is not proven to belong to the requested status.</div>
+      </article>
+    </div>
+  </body>
+</html>`,
+      });
+    });
+
+    await page.goto(url, { waitUntil: "domcontentloaded" });
+    await expectSkippedStatus(harness.serviceWorker, {
+      platform: "X",
+      externalId: tweetId,
+      reason: "unsupported_content",
+    });
+  } finally {
+    await closeExtensionHarness(harness);
+  }
+});
+
 test("Substack paywalled post reaches a private_or_gated skipped status", async () => {
   const harness = await launchExtensionHarness();
   try {
