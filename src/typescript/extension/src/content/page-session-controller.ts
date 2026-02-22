@@ -230,6 +230,20 @@ export class PageSessionController {
     }, delayMs);
   }
 
+  #hasPendingRetryForActiveSession(): boolean {
+    return (
+      this.#state.kind === "TRACKED_POST" &&
+      this.#pendingSyncRetrySessionKey === this.#state.sessionKey
+    );
+  }
+
+  #scheduleRefreshFromMutation(): void {
+    if (this.#hasPendingRetryForActiveSession()) {
+      return;
+    }
+    this.scheduleRefresh();
+  }
+
   #resetSyncRetryState(): void {
     this.#pendingSyncRetrySessionKey = null;
     this.#nextSyncRetryDelayMs = SYNC_RETRY_INITIAL_MS;
@@ -485,21 +499,21 @@ export class PageSessionController {
 
     if (this.#state.kind === "IDLE") {
       if (getAdapter(currentUrl, document)) {
-        this.scheduleRefresh();
+        this.#scheduleRefreshFromMutation();
       }
       return;
     }
 
     if (this.#state.kind === "SKIPPED") {
       if (this.#state.reason === "unsupported_content" && getAdapter(currentUrl, document)) {
-        this.scheduleRefresh();
+        this.#scheduleRefreshFromMutation();
       }
       return;
     }
 
     const root = this.#state.adapter.getContentRoot(document);
     if (!root) {
-      this.scheduleRefresh();
+      this.#scheduleRefreshFromMutation();
       return;
     }
 
@@ -508,7 +522,7 @@ export class PageSessionController {
       normalizedText.length > 0 &&
       normalizedText !== this.#state.request.observedContentText
     ) {
-      this.scheduleRefresh();
+      this.#scheduleRefreshFromMutation();
       return;
     }
 

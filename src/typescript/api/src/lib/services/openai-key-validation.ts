@@ -1,8 +1,9 @@
 import type { SettingsValidationOutput } from "@openerrata/shared";
-import { openaiApiKeyFormatSchema } from "@openerrata/shared";
+import {
+  openaiApiKeyFormatSchema,
+  OPENAI_KEY_VALIDATION_TIMEOUT_MS,
+} from "@openerrata/shared";
 import OpenAI from "openai";
-
-const OPENAI_VALIDATION_TIMEOUT_MS = 8_000;
 
 type OpenAiKeyValidationResult = Pick<
   SettingsValidationOutput,
@@ -18,7 +19,7 @@ async function validateOpenAiApiKeyReachability(openAiApiKey: string): Promise<v
   const abortController = new AbortController();
   const timeoutId = setTimeout(() => {
     abortController.abort();
-  }, OPENAI_VALIDATION_TIMEOUT_MS);
+  }, OPENAI_KEY_VALIDATION_TIMEOUT_MS);
 
   try {
     await client.models.list({ signal: abortController.signal });

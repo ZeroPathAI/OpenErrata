@@ -518,6 +518,35 @@ async function resumeInvestigationPollingForOpenTabs(): Promise<void> {
   );
 }
 
+async function clearAllPollRecoveryAlarms(): Promise<void> {
+  const alarms = await browser.alarms.getAll();
+  const clearTasks = alarms.flatMap((alarm) => {
+    if (parsePollRecoveryAlarmTabId(alarm.name) === null) {
+      return [];
+    }
+    return [browser.alarms.clear(alarm.name)];
+  });
+  await Promise.all(clearTasks);
+}
+
+let restoreInvestigationPollingPromise: Promise<void> | null = null;
+
+async function restoreInvestigationPollingState(): Promise<void> {
+  if (!restoreInvestigationPollingPromise) {
+    restoreInvestigationPollingPromise = (async () => {
+      for (const tabId of investigationPollers.keys()) {
+        stopInvestigationPolling(tabId);
+      }
+      await clearAllPollRecoveryAlarms();
+      await resumeInvestigationPollingForOpenTabs();
+    })().finally(() => {
+      restoreInvestigationPollingPromise = null;
+    });
+  }
+
+  await restoreInvestigationPollingPromise;
+}
+
 function toViewPostInput(payload: ParsedPageContentPayload): ViewPostInput {
   const content = payload.content;
 
@@ -1011,14 +1040,14 @@ browser.alarms.onAlarm.addListener((alarm) => {
 });
 
 browser.runtime.onStartup.addListener(() => {
-  void resumeInvestigationPollingForOpenTabs().catch((error) => {
-    console.error("Failed to resume investigation polling on startup:", error);
+  void restoreInvestigationPollingState().catch((error) => {
+    console.error("Failed to restore investigation polling on startup:", error);
   });
 });
 
 browser.runtime.onInstalled.addListener(() => {
-  void resumeInvestigationPollingForOpenTabs().catch((error) => {
-    console.error("Failed to resume investigation polling on install/update:", error);
+  void restoreInvestigationPollingState().catch((error) => {
+    console.error("Failed to restore investigation polling on install/update:", error);
   });
 });
 
@@ -1068,6 +1097,6 @@ void syncToolbarBadgesForOpenTabs().catch((error) => {
   console.error("toolbar badge startup sync failed:", error);
 });
 
-void resumeInvestigationPollingForOpenTabs().catch((error) => {
-  console.error("investigation polling startup resume failed:", error);
+void restoreInvestigationPollingState().catch((error) => {
+  console.error("investigation polling startup restore failed:", error);
 });

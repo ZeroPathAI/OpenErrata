@@ -1,6 +1,7 @@
 import type { SettingsValidationOutput } from "@openerrata/shared";
 import {
   openaiApiKeyFormatSchema,
+  OPENAI_KEY_VALIDATION_TIMEOUT_MS,
   settingsValidationOutputSchema,
 } from "@openerrata/shared";
 import {
@@ -15,7 +16,7 @@ import {
   normalizeOpenaiApiKey,
 } from "../lib/settings.js";
 
-const SETTINGS_PROBE_TIMEOUT_MS = 6_000;
+const SETTINGS_PROBE_TIMEOUT_MS = OPENAI_KEY_VALIDATION_TIMEOUT_MS + 1_000;
 
 type TrpcClient = TRPCUntypedClient<never>;
 
@@ -47,7 +48,16 @@ async function fetchWithTimeout(
   init: RequestInit,
 ): Promise<Response> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), SETTINGS_PROBE_TIMEOUT_MS);
+  const forwardAbort = (): void => {
+    controller.abort();
+  };
+  const timeoutId = setTimeout(forwardAbort, SETTINGS_PROBE_TIMEOUT_MS);
+
+  if (init.signal?.aborted) {
+    controller.abort();
+  } else {
+    init.signal?.addEventListener("abort", forwardAbort, { once: true });
+  }
 
   try {
     return await fetch(input, {
@@ -56,6 +66,7 @@ async function fetchWithTimeout(
     });
   } finally {
     clearTimeout(timeoutId);
+    init.signal?.removeEventListener("abort", forwardAbort);
   }
 }
 
@@ -120,6 +131,9 @@ function createSettingsProbeClient(input: {
           }
           if (init?.body !== undefined) {
             requestInit.body = init.body;
+          }
+          if (init?.signal !== undefined) {
+            requestInit.signal = init.signal;
           }
 
           return fetchWithTimeout(url, requestInit);

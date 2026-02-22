@@ -33,7 +33,7 @@ const BUNDLED_ATTESTATION_SECRET = "openerrata-attestation-v1";
 let settings: ExtensionSettings = { ...DEFAULT_EXTENSION_SETTINGS };
 let initPromise: Promise<void> | null = null;
 let storageListenerRegistered = false;
-let cachedClient: { key: string; client: TrpcClient } | null = null;
+const cachedClientsByKey = new Map<string, TrpcClient>();
 
 type TrpcClient = TRPCUntypedClient<never>;
 type ParsedViewPostOutput = ReturnType<typeof viewPostOutputSchema.parse>;
@@ -64,6 +64,7 @@ function registerStorageListener(): void {
       return;
     }
 
+    cachedClientsByKey.clear();
     void loadSettingsFromStorage().catch((err) => {
       console.error("Failed to refresh extension settings:", err);
     });
@@ -83,6 +84,7 @@ export async function init(): Promise<void> {
   } catch (err) {
     initPromise = null;
     settings = { ...DEFAULT_EXTENSION_SETTINGS };
+    cachedClientsByKey.clear();
     console.error("Failed to initialize extension API settings:", err);
   }
 }
@@ -132,8 +134,9 @@ function getOrCreateTrpcClient(options: {
   includeUserOpenAiHeader: boolean;
 }): TrpcClient {
   const key = clientKeyFor(settings, options.includeUserOpenAiHeader);
-  if (cachedClient && cachedClient.key === key) {
-    return cachedClient.client;
+  const cachedClient = cachedClientsByKey.get(key);
+  if (cachedClient) {
+    return cachedClient;
   }
 
   const client = createTRPCUntypedClient({
@@ -176,7 +179,7 @@ function getOrCreateTrpcClient(options: {
     ],
   });
 
-  cachedClient = { key, client };
+  cachedClientsByKey.set(key, client);
   return client;
 }
 
