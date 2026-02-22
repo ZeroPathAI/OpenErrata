@@ -439,9 +439,13 @@ const resolvedDatabaseEncryptionKey = resolveSecretWithRandom(
   "generated-database-encryption-key",
 );
 
+// The namespace is expected to be pre-created by the cluster admin (see
+// src/kubernetes/ci-rbac/setup.sh) so the CI ServiceAccount's RBAC can be
+// scoped to it.  `import: true` tells Pulumi to adopt an existing namespace
+// rather than failing with a conflict.
 const namespace = new k8s.core.v1.Namespace("namespace", {
   metadata: { name: namespaceName },
-});
+}, { import: namespaceName });
 
 function truncateK8sName(value: string): string {
   return value.slice(0, 63).replace(/-+$/, "");

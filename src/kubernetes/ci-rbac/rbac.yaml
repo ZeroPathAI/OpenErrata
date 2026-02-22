@@ -1,0 +1,132 @@
+# CI deploy ServiceAccount with least-privilege RBAC.
+#
+# Grants the GitHub Actions worker permission to:
+#   1. Read and update the openerrata-main and openerrata-staging Namespaces
+#      (but NOT create or delete arbitrary namespaces).
+#   2. Fully manage workload resources inside those two namespaces.
+#
+# Prerequisites: the two target namespaces must already exist before applying
+# this manifest, because the RoleBindings live inside them.  The companion
+# setup.sh script handles ordering automatically.
+
+---
+# ── ServiceAccount (lives in kube-system so it survives namespace wipes) ──
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openerrata-ci
+  namespace: kube-system
+
+---
+# ── Long-lived token for kubeconfig generation ──
+apiVersion: v1
+kind: Secret
+metadata:
+  name: openerrata-ci-token
+  namespace: kube-system
+  annotations:
+    kubernetes.io/service-account.name: openerrata-ci
+type: kubernetes.io/service-account-token
+
+---
+# ── ClusterRole: manage the two specific namespaces ──
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: openerrata-ci-namespaces
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    resourceNames: ["openerrata-main", "openerrata-staging"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openerrata-ci-namespaces
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: openerrata-ci-namespaces
+subjects:
+  - kind: ServiceAccount
+    name: openerrata-ci
+    namespace: kube-system
+
+---
+# ── ClusterRole: full control of workload resources (namespace-scoped) ──
+#
+# This ClusterRole defines WHAT the SA can do.  The per-namespace
+# RoleBindings below restrict WHERE it can do it.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: openerrata-ci-workloads
+rules:
+  # Core resources deployed by the Helm chart
+  - apiGroups: [""]
+    resources:
+      - configmaps
+      - secrets
+      - services
+      - pods
+      - persistentvolumeclaims
+      - serviceaccounts
+      - events
+    verbs: ["*"]
+  # Workload controllers
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "statefulsets"]
+    verbs: ["*"]
+  # Jobs & CronJobs (migration job, selector cronjob)
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["*"]
+  # Networking
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses", "networkpolicies"]
+    verbs: ["*"]
+  # RBAC inside the namespace (if the chart ever adds Roles)
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["*"]
+  # Autoscaling
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["*"]
+  # Policy
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["*"]
+
+---
+# ── RoleBindings: scope the workloads ClusterRole to each namespace ──
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: openerrata-ci-workloads
+  namespace: openerrata-main
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: openerrata-ci-workloads
+subjects:
+  - kind: ServiceAccount
+    name: openerrata-ci
+    namespace: kube-system
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: openerrata-ci-workloads
+  namespace: openerrata-staging
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: openerrata-ci-workloads
+subjects:
+  - kind: ServiceAccount
+    name: openerrata-ci
+    namespace: kube-system
