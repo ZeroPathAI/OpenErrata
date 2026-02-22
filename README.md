@@ -1,10 +1,24 @@
 # OpenErrata
 
-OpenErrata is a browser extension that tells you when the content you're reading includes misleading & false information. It preinvestigates popular posts in the background with LLMs (presently GPT-5.2), and when you browse to them, pre-underlines empirically incorrect claims, showing the details of any mistakes on hover, with receipts. The tool prioritizes an extremely low false-positive rate over coverage, and it's built so that the prompts, details, and reasoning behind every investigation are both auditable and free from bias. It also understands context and is instructed not to surface corrections for satire, jokes, etc.
-
 <p align="center">
   <img src="assets/demo-hover.jpg" alt="OpenErrata highlighting an incorrect claim on Astral Codex Ten with a hover tooltip showing the correction and source" width="800" />
 </p>
+
+OpenErrata is a browser extension that tells you when the content you're reading includes misleading & false information. It preinvestigates popular posts with LLMs (presently GPT-5.2), and when you browse to them, pre-underlines the unambiguously incorrect claims. The tool prioritizes an extremely low false-positive rate over coverage, and its prompts, details, and reasoning behind every investigation are designed to be auditable and free from bias. It also understands context and is instructed not to surface corrections for satire, jokes, etc.
+
+## Install
+
+**Chrome Web Store** — Coming soon.
+
+**Manual install** from [GitHub Releases](https://github.com/ZeroPathAI/openerrata/releases):
+
+1. Download the latest `openerrata-extension-*.zip` from the [Releases page](https://github.com/ZeroPathAI/openerrata/releases)
+2. Unzip the file
+3. Open `chrome://extensions` in Chrome
+4. Enable **Developer mode** (toggle in the top-right)
+5. Click **Load unpacked** and select the unzipped folder
+
+The extension connects to the hosted API at `api.openerrata.com` by default — no configuration needed. To point it at a self-hosted instance, open the extension options page and change the API URL.
 
 ## How It Works
 

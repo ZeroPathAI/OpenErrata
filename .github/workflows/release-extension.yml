@@ -1,0 +1,111 @@
+name: Release Extension
+
+on:
+  push:
+    tags:
+      - "ext-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/typescript
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.24.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.13.1"
+          cache: pnpm
+          cache-dependency-path: src/typescript/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm db:generate
+
+      - name: Typecheck/lint/dead-code checks
+        run: pnpm check
+
+      - name: Run tests
+        run: pnpm test
+
+      - name: Build workspace
+        run: pnpm build
+
+      - name: Determine version
+        id: version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            echo "version=${GITHUB_REF_NAME#ext-v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$(date +%Y%m%d)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Package extension zip
+        run: |
+          cd extension/dist
+          zip -r "$GITHUB_WORKSPACE/openerrata-extension-${{ steps.version.outputs.version }}.zip" .
+
+      - name: Create GitHub Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: openerrata-extension-${{ steps.version.outputs.version }}.zip
+          generate_release_notes: true
+
+      - name: Upload artifact (non-tag builds)
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: openerrata-extension-${{ steps.version.outputs.version }}
+          path: openerrata-extension-${{ steps.version.outputs.version }}.zip
+
+      - name: Publish to Chrome Web Store
+        if: >-
+          github.ref_type == 'tag' &&
+          env.CHROME_EXTENSION_ID != '' &&
+          env.CHROME_CLIENT_ID != '' &&
+          env.CHROME_CLIENT_SECRET != '' &&
+          env.CHROME_REFRESH_TOKEN != ''
+        env:
+          CHROME_EXTENSION_ID: ${{ secrets.CHROME_EXTENSION_ID }}
+          CHROME_CLIENT_ID: ${{ secrets.CHROME_CLIENT_ID }}
+          CHROME_CLIENT_SECRET: ${{ secrets.CHROME_CLIENT_SECRET }}
+          CHROME_REFRESH_TOKEN: ${{ secrets.CHROME_REFRESH_TOKEN }}
+        run: |
+          npx -y chrome-webstore-upload-cli@3 upload \
+            --source "$GITHUB_WORKSPACE/openerrata-extension-${{ steps.version.outputs.version }}.zip" \
+            --extension-id "$CHROME_EXTENSION_ID" \
+            --client-id "$CHROME_CLIENT_ID" \
+            --client-secret "$CHROME_CLIENT_SECRET" \
+            --refresh-token "$CHROME_REFRESH_TOKEN" \
+            --auto-publish

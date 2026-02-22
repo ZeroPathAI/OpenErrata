@@ -92,6 +92,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Generate Prisma client
+        run: pnpm db:generate
+
       - name: Typecheck/lint/dead-code checks
         run: pnpm check
 
