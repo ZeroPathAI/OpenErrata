@@ -2,6 +2,10 @@
 
 A browser extension that prevents you from being misled about factual information on Substack/Twitter/LessWrong. It preinvestigates posts in the background with LLMs, and when you browse to them, it underlines empirically incorrect claims and shows you the details of the mistake & sources on hover and click, respectively. The tool prioritizes an extremely low false-positive rate over coverage - it's built so that the prompts, details, and reasoning behind every investigation are both auditable and free from bias.
 
+<p align="center">
+  <img src="assets/demo-hover.jpg" alt="OpenErrata highlighting an incorrect claim on Astral Codex Ten with a hover tooltip showing the correction and source" width="800" />
+</p>
+
 ## How It Works
 
 1. **You browse normally.** The extension detects supported posts and sends observed content to the API, which records views and returns any existing investigation results.
