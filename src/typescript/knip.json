@@ -37,7 +37,8 @@
       "project": ["src/**/*.ts", "test/**/*.ts"]
     },
     "pulumi": {
-      "project": ["**/*.ts"]
+      "project": ["**/*.ts"],
+      "ignoreDependencies": ["tsx"]
     }
   }
 }
