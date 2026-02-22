@@ -1,9 +1,9 @@
 import type { RequestEvent } from "@sveltejs/kit";
 import { prisma } from "$lib/db/client";
-import { getConfiguredApiKeys } from "$lib/config/env.js";
 import { hashContent } from "@openerrata/shared";
 import { verifyHmac } from "$lib/services/hmac.js";
 import { deriveIpRangePrefix } from "$lib/network/ip.js";
+import { findActiveInstanceApiKeyHash } from "$lib/services/instance-api-key.js";
 
 export type Context = {
   event: RequestEvent;
@@ -17,11 +17,11 @@ export type Context = {
 };
 
 export async function createContext(event: RequestEvent): Promise<Context> {
-  const authenticatedApiKey = getAuthenticatedApiKey(event);
+  const authenticatedApiKeyHash = await getAuthenticatedApiKeyHash(event);
   const userOpenAiApiKey = getUserOpenAiApiKey(event);
-  const viewerKey = await deriveViewerKey(event, authenticatedApiKey);
+  const viewerKey = await deriveViewerKey(event, authenticatedApiKeyHash);
   const ipRangeKey = await deriveIpRangeKey(event);
-  const isAuthenticated = authenticatedApiKey !== null;
+  const isAuthenticated = authenticatedApiKeyHash !== null;
   const canInvestigate = isAuthenticated || userOpenAiApiKey !== null;
   const hasValidAttestation = await verifyRequestAttestation(event);
 
@@ -37,14 +37,12 @@ export async function createContext(event: RequestEvent): Promise<Context> {
   };
 }
 
-function getAuthenticatedApiKey(event: RequestEvent): string | null {
+async function getAuthenticatedApiKeyHash(
+  event: RequestEvent,
+): Promise<string | null> {
   const apiKey = event.request.headers.get("x-api-key")?.trim();
   if (!apiKey) return null;
-
-  const configured = getConfiguredApiKeys();
-  if (configured.length === 0) return null;
-
-  return configured.includes(apiKey) ? apiKey : null;
+  return findActiveInstanceApiKeyHash(prisma, apiKey);
 }
 
 function getUserOpenAiApiKey(event: RequestEvent): string | null {
@@ -54,12 +52,12 @@ function getUserOpenAiApiKey(event: RequestEvent): string | null {
 
 async function deriveViewerKey(
   event: RequestEvent,
-  authenticatedApiKey: string | null,
+  authenticatedApiKeyHash: string | null,
 ): Promise<string> {
-  // For authenticated users (API key), the key is derived from the API key.
+  // For authenticated users, derive from API key hash.
   // For anonymous users, hash IP + UA as a best-effort identifier.
-  if (authenticatedApiKey) {
-    return hashContent(`apikey:${authenticatedApiKey}`);
+  if (authenticatedApiKeyHash) {
+    return hashContent(`apikey:${authenticatedApiKeyHash}`);
   }
   const ip = event.getClientAddress();
   const ua = event.request.headers.get("user-agent") ?? "";

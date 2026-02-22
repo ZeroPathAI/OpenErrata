@@ -561,7 +561,7 @@ measures are required:
    network targets and enforce count/size limits before upload to blob storage.
 
 These measures are not sufficient against a determined attacker but are adequate for v1. Stronger
-measures (API keys, proof-of-work, behavioral analysis) are planned for future versions.
+measures (proof-of-work, behavioral analysis) are planned for future versions.
 
 ---
 

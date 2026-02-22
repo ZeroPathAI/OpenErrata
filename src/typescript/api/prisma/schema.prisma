@@ -101,6 +101,18 @@ model Author {
   @@unique([platform, platformUserId])
 }
 
+model InstanceApiKey {
+  id        String   @id @default(cuid())
+  name      String
+  keyHash   String   @unique
+  revokedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([name])
+  @@index([revokedAt])
+}
+
 model LesswrongMeta {
   postId      String    @id
   post        Post      @relation(fields: [postId], references: [id])

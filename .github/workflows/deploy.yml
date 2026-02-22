@@ -1,0 +1,403 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - staging
+      - main
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment/stack to deploy"
+        required: true
+        default: "staging"
+        type: choice
+        options:
+          - staging
+          - main
+
+concurrency:
+  group: deploy-${{ github.event_name == 'push' && github.ref_name || format('dispatch-{0}', github.run_id) }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  resolve-target:
+    runs-on: ubuntu-latest
+    outputs:
+      deploy_environment: ${{ steps.target.outputs.deploy_environment }}
+    steps:
+      - name: Resolve deployment environment
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" = "push" ]; then
+            DEPLOY_ENV="${{ github.ref_name }}"
+          else
+            DEPLOY_ENV="${{ inputs.environment }}"
+          fi
+
+          case "$DEPLOY_ENV" in
+            staging|main) ;;
+            *)
+              echo "Unsupported deploy environment: $DEPLOY_ENV"
+              exit 1
+              ;;
+          esac
+
+          echo "deploy_environment=$DEPLOY_ENV" >> "$GITHUB_OUTPUT"
+
+  detect-changes:
+    needs: resolve-target
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      deployable: ${{ steps.filter.outputs.deployable }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect deployable path changes
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            deployable:
+              - 'src/helm/openerrata/**'
+              - 'src/typescript/api/**'
+              - 'src/typescript/shared/**'
+              - 'src/typescript/pulumi/**'
+              - 'src/typescript/package.json'
+              - 'src/typescript/pnpm-lock.yaml'
+              - 'src/typescript/pnpm-workspace.yaml'
+              - 'src/typescript/api/Dockerfile'
+              - '.github/workflows/deploy.yml'
+
+  decide-deploy:
+    needs: [resolve-target, detect-changes]
+    if: always()
+    runs-on: ubuntu-latest
+    outputs:
+      should_deploy: ${{ steps.decide.outputs.should_deploy }}
+    steps:
+      - name: Decide whether to deploy
+        id: decide
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Manual dispatch requested; deploying."
+            echo "should_deploy=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "${{ needs.detect-changes.outputs.deployable }}" = "true" ]; then
+            echo "Deployable files changed; deploying."
+            echo "should_deploy=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "No deployable files changed; skipping deployment."
+          echo "should_deploy=false" >> "$GITHUB_OUTPUT"
+
+  quality-gate:
+    needs: [resolve-target, decide-deploy]
+    if: needs.decide-deploy.outputs.should_deploy == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/typescript
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.24.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.13.1"
+          cache: pnpm
+          cache-dependency-path: src/typescript/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck/lint/dead-code checks
+        run: pnpm check
+
+      - name: Run tests
+        run: pnpm test
+
+      - name: Build workspace
+        run: pnpm build
+
+  build-image:
+    needs: [resolve-target, decide-deploy, quality-gate]
+    if: needs.decide-deploy.outputs.should_deploy == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image_repository: ${{ steps.meta.outputs.image_repository }}
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+      image_digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Compute image metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          OWNER="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          REPOSITORY="ghcr.io/${OWNER}/openerrata-api"
+          DEPLOY_ENV="${{ needs.resolve-target.outputs.deploy_environment }}"
+          SHORT_SHA="$(echo '${{ github.sha }}' | cut -c1-12)"
+          IMAGE_TAG="${DEPLOY_ENV}-${SHORT_SHA}"
+          LATEST_TAG="${DEPLOY_ENV}-latest"
+
+          echo "image_repository=$REPOSITORY" >> "$GITHUB_OUTPUT"
+          echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+          echo "latest_tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push API image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: src/typescript
+          file: src/typescript/api/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image_repository }}:${{ steps.meta.outputs.image_tag }}
+            ${{ steps.meta.outputs.image_repository }}:${{ steps.meta.outputs.latest_tag }}
+          cache-from: type=registry,ref=${{ steps.meta.outputs.image_repository }}:${{ steps.meta.outputs.latest_tag }}
+          cache-to: type=inline
+          provenance: false
+
+  deploy:
+    needs: [resolve-target, decide-deploy, build-image]
+    if: needs.decide-deploy.outputs.should_deploy == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-target.outputs.deploy_environment }}
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: src/typescript
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.24.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.13.1"
+          cache: pnpm
+          cache-dependency-path: src/typescript/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Pulumi CLI
+        uses: pulumi/actions@v6
+        with:
+          command: version
+          work-dir: src/typescript/pulumi
+
+      - name: Configure kubeconfig
+        shell: bash
+        env:
+          KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KUBE_CONFIG_DATA:-}" ]; then
+            echo "KUBE_CONFIG_DATA secret is required"
+            exit 1
+          fi
+
+          mkdir -p "$HOME/.kube"
+          TMP_CONFIG="$(mktemp)"
+          if printf '%s' "$KUBE_CONFIG_DATA" | base64 --decode > "$TMP_CONFIG" 2>/dev/null \
+            && grep -q '^apiVersion:' "$TMP_CONFIG"; then
+            mv "$TMP_CONFIG" "$HOME/.kube/config"
+          else
+            rm -f "$TMP_CONFIG"
+            printf '%s\n' "$KUBE_CONFIG_DATA" > "$HOME/.kube/config"
+          fi
+          chmod 600 "$HOME/.kube/config"
+
+      - name: Configure Pulumi stack values
+        working-directory: src/typescript/pulumi
+        shell: bash
+        env:
+          PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
+          STACK: ${{ needs.resolve-target.outputs.deploy_environment }}
+          PULUMI_BLOB_STORAGE_BUCKET: ${{ secrets.PULUMI_BLOB_STORAGE_BUCKET }}
+          PULUMI_BLOB_STORAGE_PUBLIC_URL_PREFIX: ${{ secrets.PULUMI_BLOB_STORAGE_PUBLIC_URL_PREFIX }}
+          PULUMI_BLOB_STORAGE_ENDPOINT: ${{ secrets.PULUMI_BLOB_STORAGE_ENDPOINT }}
+          PULUMI_DATABASE_URL: ${{ secrets.PULUMI_DATABASE_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          PULUMI_BLOB_STORAGE_ACCESS_KEY_ID: ${{ secrets.PULUMI_BLOB_STORAGE_ACCESS_KEY_ID }}
+          PULUMI_BLOB_STORAGE_SECRET_ACCESS_KEY: ${{ secrets.PULUMI_BLOB_STORAGE_SECRET_ACCESS_KEY }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          set -euo pipefail
+
+          pulumi stack select "$STACK" --create
+
+          pulumi config set releaseName "openerrata-${STACK}" --stack "$STACK"
+          pulumi config set namespace "openerrata-${STACK}" --stack "$STACK"
+
+          needs_aws_resources=false
+
+          manual_blob_vars=(
+            PULUMI_BLOB_STORAGE_BUCKET
+            PULUMI_BLOB_STORAGE_PUBLIC_URL_PREFIX
+            PULUMI_BLOB_STORAGE_SECRET_ACCESS_KEY
+          )
+          configured_manual_blob_values=0
+          for manual_blob_var in "${manual_blob_vars[@]}"; do
+            if [ -n "${!manual_blob_var:-}" ]; then
+              configured_manual_blob_values=$((configured_manual_blob_values + 1))
+            fi
+          done
+
+          if [ "$configured_manual_blob_values" -ne 0 ] && [ "$configured_manual_blob_values" -ne 3 ]; then
+            echo "Manual blob storage config is partial."
+            echo "Set all or none of: PULUMI_BLOB_STORAGE_BUCKET, PULUMI_BLOB_STORAGE_PUBLIC_URL_PREFIX, PULUMI_BLOB_STORAGE_SECRET_ACCESS_KEY"
+            exit 1
+          fi
+
+          if [ "$configured_manual_blob_values" -eq 3 ]; then
+            echo "Using manually provided blob storage configuration."
+            pulumi config set blobStorageBucket "$PULUMI_BLOB_STORAGE_BUCKET" --stack "$STACK"
+            pulumi config set blobStoragePublicUrlPrefix "$PULUMI_BLOB_STORAGE_PUBLIC_URL_PREFIX" --stack "$STACK"
+            pulumi config set blobStorageAccessKeyId "${PULUMI_BLOB_STORAGE_ACCESS_KEY_ID:-openerrata}" --stack "$STACK"
+            pulumi config set --secret blobStorageSecretAccessKey "$PULUMI_BLOB_STORAGE_SECRET_ACCESS_KEY" --stack "$STACK"
+            if [ -n "${PULUMI_BLOB_STORAGE_ENDPOINT:-}" ]; then
+              pulumi config set blobStorageEndpoint "$PULUMI_BLOB_STORAGE_ENDPOINT" --stack "$STACK"
+            else
+              pulumi config rm blobStorageEndpoint --stack "$STACK" >/dev/null 2>&1 || true
+            fi
+          else
+            echo "No manual blob storage credentials supplied; using Pulumi-managed AWS S3 blob storage."
+            needs_aws_resources=true
+            pulumi config rm blobStorageBucket --stack "$STACK" >/dev/null 2>&1 || true
+            pulumi config rm blobStoragePublicUrlPrefix --stack "$STACK" >/dev/null 2>&1 || true
+            pulumi config rm blobStorageEndpoint --stack "$STACK" >/dev/null 2>&1 || true
+            pulumi config rm blobStorageAccessKeyId --stack "$STACK" >/dev/null 2>&1 || true
+            pulumi config rm blobStorageSecretAccessKey --stack "$STACK" >/dev/null 2>&1 || true
+          fi
+
+          if [ -n "${PULUMI_DATABASE_URL:-}" ]; then
+            echo "Using manually provided database URL."
+            pulumi config set --secret databaseUrl "$PULUMI_DATABASE_URL" --stack "$STACK"
+          else
+            echo "No database URL supplied; using Pulumi-managed AWS RDS database."
+            needs_aws_resources=true
+            pulumi config rm databaseUrl --stack "$STACK" >/dev/null 2>&1 || true
+          fi
+
+          if [ "$needs_aws_resources" = "true" ]; then
+            if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+              echo "AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are required when Pulumi-managed AWS resources are enabled."
+              exit 1
+            fi
+            pulumi config set aws:region "${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}" --stack "$STACK"
+          fi
+
+          if [ -n "${OPENAI_API_KEY:-}" ]; then
+            pulumi config set --secret openaiApiKey "$OPENAI_API_KEY" --stack "$STACK"
+          fi
+
+      - name: Cancel stale Pulumi lock
+        working-directory: src/typescript/pulumi
+        shell: bash
+        env:
+          PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
+          STACK: ${{ needs.resolve-target.outputs.deploy_environment }}
+        run: |
+          set +e
+          output="$(pulumi cancel --stack "$STACK" --yes 2>&1)"
+          rc=$?
+          set -e
+          echo "$output"
+
+          if [ $rc -eq 0 ]; then
+            exit 0
+          fi
+
+          if echo "$output" | grep -qi "no update in progress"; then
+            echo "No active lock; continuing."
+            exit 0
+          fi
+
+          echo "pulumi cancel failed unexpectedly"
+          exit $rc
+
+      - name: Pulumi deploy
+        uses: pulumi/actions@v6
+        with:
+          command: up
+          stack-name: ${{ needs.resolve-target.outputs.deploy_environment }}
+          work-dir: src/typescript/pulumi
+          refresh: true
+          upsert: true
+        env:
+          PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
+          PULUMI_K8S_DELETE_UNREACHABLE: "true"
+          CI_IMAGE_REPOSITORY: ${{ needs.build-image.outputs.image_repository }}
+          CI_IMAGE_TAG: ${{ needs.build-image.outputs.image_tag }}
+          CI_IMAGE_DIGEST: ${{ needs.build-image.outputs.image_digest }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}

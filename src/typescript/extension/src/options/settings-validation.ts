@@ -26,7 +26,7 @@ type SettingsProbeInput = {
   openaiApiKey: string;
 };
 
-export type SettingsProbeResult =
+type SettingsProbeResult =
   | { status: "ok"; validation: SettingsValidationOutput }
   | { status: "error"; message: string };
 

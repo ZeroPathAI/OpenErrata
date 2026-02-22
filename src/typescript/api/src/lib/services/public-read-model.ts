@@ -12,13 +12,13 @@ type PublicTrustSignals = {
   fetchFailureReason: string | null;
 };
 
-export type PublicClaimSource = {
+type PublicClaimSource = {
   url: string;
   title: string;
   snippet: string;
 };
 
-export type PublicClaim = {
+type PublicClaim = {
   id: string;
   text: string;
   context: string;
@@ -27,7 +27,7 @@ export type PublicClaim = {
   sources: PublicClaimSource[];
 };
 
-export type PublicInvestigation = PublicTrustSignals & {
+type PublicInvestigation = PublicTrustSignals & {
   id: string;
   checkedAt: Date | null;
   promptVersion: string;
@@ -35,31 +35,31 @@ export type PublicInvestigation = PublicTrustSignals & {
   model: string;
 };
 
-export type PublicPost = {
+type PublicPost = {
   platform: Platform;
   externalId: string;
   url: string;
 };
 
-export type PublicInvestigationResult = {
+type PublicInvestigationResult = {
   investigation: PublicInvestigation;
   post: PublicPost;
   claims: PublicClaim[];
 };
 
-export type PublicPostInvestigationSummary = PublicTrustSignals & {
+type PublicPostInvestigationSummary = PublicTrustSignals & {
   id: string;
   contentHash: string;
   checkedAt: Date | null;
   claimCount: number;
 };
 
-export type PublicPostInvestigationsResult = {
+type PublicPostInvestigationsResult = {
   post: PublicPost | null;
   investigations: PublicPostInvestigationSummary[];
 };
 
-export type PublicSearchInvestigationSummary = PublicTrustSignals & {
+type PublicSearchInvestigationSummary = PublicTrustSignals & {
   id: string;
   contentHash: string;
   checkedAt: Date | null;
@@ -69,11 +69,11 @@ export type PublicSearchInvestigationSummary = PublicTrustSignals & {
   claimCount: number;
 };
 
-export type PublicSearchInvestigationsResult = {
+type PublicSearchInvestigationsResult = {
   investigations: PublicSearchInvestigationSummary[];
 };
 
-export type PublicMetricsResult = {
+type PublicMetricsResult = {
   totalInvestigatedPosts: number;
   investigatedPostsWithFlags: number;
   factCheckIncidence: number;

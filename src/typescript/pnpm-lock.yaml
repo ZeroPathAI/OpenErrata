@@ -154,12 +154,18 @@ importers:
 
   pulumi:
     dependencies:
+      '@pulumi/aws':
+        specifier: ^7.20.0
+        version: 7.20.0(typescript@5.9.3)
       '@pulumi/kubernetes':
         specifier: ^4.26.0
         version: 4.26.0(typescript@5.9.3)
       '@pulumi/pulumi':
         specifier: ^3.222.0
         version: 3.222.0(typescript@5.9.3)
+      '@pulumi/random':
+        specifier: ^4.19.1
+        version: 4.19.1(typescript@5.9.3)
     devDependencies:
       typescript:
         specifier: ^5.9.3
@@ -1071,6 +1077,9 @@ packages:
   '@protobufjs/utf8@1.1.0':
     resolution: {integrity: sha512-Vvn3zZrhQZkkBE8LSuW3em98c0FwgO4nxzv6OdSxPKJIEKY2bGbHn+mhGIPerzI4twdxaP8/0+06HBpwf345Lw==}
 
+  '@pulumi/aws@7.20.0':
+    resolution: {integrity: sha512-f8efmjHXKRUQY4fojfw7vuWN7Q07Cz0bjqbIwD/qtOuz+qs+zrKWU50uAB0HcWXAxjI0ll4KslGu2oLRiMTxng==}
+
   '@pulumi/kubernetes@4.26.0':
     resolution: {integrity: sha512-W6vzWby5Kq98xDkSHME056+5BzfG57cxTfDeU96DZqGlAT7T1+eLotiXiZ/GpDWtTf9kGSNZ4bzDpS32NvuJAw==}
 
@@ -1085,6 +1094,9 @@ packages:
         optional: true
       typescript:
         optional: true
+
+  '@pulumi/random@4.19.1':
+    resolution: {integrity: sha512-gDotQyxtl+pcJb4oaGfbi6PsK8OtzjBmF1D8PYLvr13kCup98KTIIv/8wF2xbgbFf7ljJn3EblADxZ0u8AC/Dg==}
 
   '@repeaterjs/repeater@3.0.6':
     resolution: {integrity: sha512-Javneu5lsuhwNCryN+pXH93VPQ8g0dBX7wItHFgYiwQmzE1sVdg5tWHiOgHywzL2W21XQopa7IwIEnNbmeUJYA==}
@@ -2628,6 +2640,11 @@ packages:
   micromatch@4.0.8:
     resolution: {integrity: sha512-PXwfBhYu0hBCPw8Dn0E+WDYb7af3dSLVWKi3HGv84IdF4TyFoC0ysxFd0Goxw7nSv4T/PzEJQxsYsEiFCKo2BA==}
     engines: {node: '>=8.6'}
+
+  mime@2.6.0:
+    resolution: {integrity: sha512-USPkMeET31rOMiarsBNIHZKLGgvKc/LrjofAnBlOttf5ajRvqiRA8QsenbcooctK6d6Ts6aqZXBA+XbkKthiQg==}
+    engines: {node: '>=4.0.0'}
+    hasBin: true
 
   mimic-fn@2.1.0:
     resolution: {integrity: sha512-OqbOk5oEQeAZ8WXWydlu9HJjz9WVdEIvamMCcXmuqUYjTknH/sqsWvhQ3vgwKFRR1HpjvNBKQ37nbJgYzGqGcg==}
@@ -4744,6 +4761,15 @@ snapshots:
 
   '@protobufjs/utf8@1.1.0': {}
 
+  '@pulumi/aws@7.20.0(typescript@5.9.3)':
+    dependencies:
+      '@pulumi/pulumi': 3.222.0(typescript@5.9.3)
+      mime: 2.6.0
+    transitivePeerDependencies:
+      - supports-color
+      - ts-node
+      - typescript
+
   '@pulumi/kubernetes@4.26.0(typescript@5.9.3)':
     dependencies:
       '@pulumi/pulumi': 3.222.0(typescript@5.9.3)
@@ -4788,6 +4814,14 @@ snapshots:
       typescript: 5.9.3
     transitivePeerDependencies:
       - supports-color
+
+  '@pulumi/random@4.19.1(typescript@5.9.3)':
+    dependencies:
+      '@pulumi/pulumi': 3.222.0(typescript@5.9.3)
+    transitivePeerDependencies:
+      - supports-color
+      - ts-node
+      - typescript
 
   '@repeaterjs/repeater@3.0.6': {}
 
@@ -6466,6 +6500,8 @@ snapshots:
     dependencies:
       braces: 3.0.3
       picomatch: 2.3.1
+
+  mime@2.6.0: {}
 
   mimic-fn@2.1.0: {}
 

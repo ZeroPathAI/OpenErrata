@@ -4,7 +4,10 @@ replicaCount:
 
 image:
   repository: ghcr.io/zeropathAI/openerrata-api
+  # TODO: Pin an immutable release tag or digest before first production rollout.
   tag: latest
+  # Optional immutable digest (sha256:...). When set, it takes precedence over tag.
+  digest: ""
   pullPolicy: Always
 
 migration:
@@ -35,8 +38,6 @@ secrets:
   databaseUrl: ""
   # Optional when running in modes that rely on user-provided API keys only.
   openaiApiKey: ""
-  # Optional comma-separated static API keys for trusted callers.
-  validApiKeys: ""
   # Required: shared secret used to verify request signatures.
   hmacSecret: ""
   # Required: symmetric key used to encrypt transient DB-stored secrets.

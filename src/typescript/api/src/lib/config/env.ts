@@ -44,7 +44,6 @@ const environmentSchema = z.object({
   OPENAI_API_KEY: z.string().trim().min(1).optional(),
   OPENAI_MODEL_ID: z.string().trim().min(1).default("gpt-5.2"),
   OPENAI_MAX_RESPONSE_TOOL_ROUNDS: positiveIntegerFromEnv.default(150),
-  VALID_API_KEYS: z.string().default(""),
   HMAC_SECRET: z.string().trim().min(1, "HMAC_SECRET is required"),
   SELECTOR_BUDGET: positiveIntegerFromEnv.default(100),
   IP_RANGE_CREDIT_CAP: positiveIntegerFromEnv.default(10),
@@ -89,13 +88,6 @@ const environment: Environment = parseEnvironment();
 
 export function getEnv(): Environment {
   return environment;
-}
-
-export function getConfiguredApiKeys(): string[] {
-  return getEnv()
-    .VALID_API_KEYS.split(",")
-    .map((key) => key.trim())
-    .filter((key) => key.length > 0);
 }
 
 export function requireOpenAiApiKey(): string {

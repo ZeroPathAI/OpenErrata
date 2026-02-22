@@ -1,0 +1,140 @@
+name: PR Checks
+
+on:
+  pull_request:
+    branches:
+      - staging
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-checks-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  should-run:
+    runs-on: ubuntu-latest
+    outputs:
+      skip_all: ${{ steps.gate.outputs.skip_all }}
+      has_relevant_changes: ${{ steps.changes.outputs.relevant }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect relevant file changes
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            relevant:
+              - 'src/typescript/**'
+              - 'src/helm/openerrata/**'
+              - '.github/workflows/**'
+
+      - name: Check for promote PR
+        id: gate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          HEAD_REF="${{ github.head_ref }}"
+          HEAD_REPO="${{ github.event.pull_request.head.repo.full_name }}"
+          BASE_REPO="${{ github.repository }}"
+
+          if [ "$HEAD_REPO" = "$BASE_REPO" ] && { [ "$HEAD_REF" = "staging" ] || [ "$HEAD_REF" = "main" ]; }; then
+            echo "skip_all=true" >> "$GITHUB_OUTPUT"
+            echo "Skipping PR checks for promote branch: $HEAD_REF"
+          else
+            echo "skip_all=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  checks:
+    needs: [should-run]
+    if: >-
+      needs.should-run.outputs.skip_all != 'true' &&
+      needs.should-run.outputs.has_relevant_changes == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/typescript
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.24.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.13.1"
+          cache: pnpm
+          cache-dependency-path: src/typescript/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck/lint/dead-code checks
+        run: pnpm check
+
+      - name: Run tests
+        run: pnpm test
+
+      - name: Build workspace
+        run: pnpm build
+
+  no-relevant-changes:
+    needs: [should-run]
+    if: >-
+      needs.should-run.outputs.skip_all != 'true' &&
+      needs.should-run.outputs.has_relevant_changes != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Skip informational step
+        run: echo "No relevant files changed; skipping TypeScript checks."
+
+  pr-ok:
+    needs: [should-run, checks, no-relevant-changes]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Final PR gate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "${{ needs.should-run.outputs.skip_all }}" = "true" ]; then
+            echo "Promote PR; deploy workflow is the source of truth."
+            exit 0
+          fi
+
+          if [ "${{ needs.checks.result }}" = "success" ]; then
+            echo "Checks job succeeded."
+            exit 0
+          fi
+
+          if [ "${{ needs.no-relevant-changes.result }}" = "success" ]; then
+            echo "No relevant changes; PR gate passes."
+            exit 0
+          fi
+
+          echo "PR checks did not pass."
+          exit 1

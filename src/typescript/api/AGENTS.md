@@ -69,7 +69,9 @@ upserts by hash.
 
 - Anonymous viewers: identified by hashed IP+UA.
 - Authenticated viewers: provide a valid `x-api-key` header. Valid keys are
-  configured via `VALID_API_KEYS` env var (comma-separated).
+  looked up in the `InstanceApiKey` table by SHA-256 hash.
+- Manage instance keys with:
+  `pnpm --filter @openerrata/api run instance-api-key <list|activate|revoke>`.
 - Attestation: extension sends HMAC signature in `x-openerrata-signature` header.
   Verified in context but treated as a low-confidence signal, not a security boundary.
 

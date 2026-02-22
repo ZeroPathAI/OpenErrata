@@ -19,7 +19,7 @@ export interface Releasable {
   release(): void | Promise<void>;
 }
 
-export interface QueueManager<T> {
+interface QueueManager<T> {
   acquire(): Promise<T>;
   close(): Promise<void>;
 }

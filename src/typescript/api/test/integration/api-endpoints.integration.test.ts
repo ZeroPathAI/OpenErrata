@@ -12,7 +12,6 @@ process.env.NODE_ENV ??= "test";
 process.env.DATABASE_URL ??=
   "postgresql://openerrata:openerrata_dev@localhost:5433/openerrata";
 process.env.HMAC_SECRET ??= "test-hmac-secret";
-process.env.VALID_API_KEYS ??= "test-api-key";
 process.env.BLOB_STORAGE_BUCKET ??= "test-openerrata-images";
 process.env.BLOB_STORAGE_ACCESS_KEY_ID ??= "test-blob-access-key";
 process.env.BLOB_STORAGE_SECRET_ACCESS_KEY ??= "test-blob-secret";
@@ -35,6 +34,8 @@ function withIntegrationPrefix(value: string): string {
 const [
   { appRouter },
   { prisma },
+  { createContext },
+  { hashInstanceApiKey },
   { GET: healthGet },
   { POST: graphqlPost },
   { closeQueueUtils },
@@ -43,6 +44,8 @@ const [
   await Promise.all([
     import("../../src/lib/trpc/router.js"),
     import("../../src/lib/db/client.js"),
+    import("../../src/lib/trpc/context.js"),
+    import("../../src/lib/services/instance-api-key.js"),
     import("../../src/routes/health/+server.js"),
     import("../../src/routes/graphql/+server.js"),
     import("../../src/lib/services/queue.js"),
@@ -120,6 +123,30 @@ async function queryPublicGraphql<TData>(
   }
   assert.ok(payload.data);
   return payload.data;
+}
+
+function createMockRequestEvent(headers?: HeadersInit): RequestEvent {
+  return {
+    request: new Request("http://localhost/trpc/post.validateSettings", {
+      method: "POST",
+      headers,
+    }),
+    getClientAddress: () => "203.0.113.1",
+  } as unknown as RequestEvent;
+}
+
+async function seedInstanceApiKey(input: {
+  name: string;
+  rawKey: string;
+  revokedAt?: Date;
+}): Promise<void> {
+  await prisma.instanceApiKey.create({
+    data: {
+      name: withIntegrationPrefix(input.name),
+      keyHash: hashInstanceApiKey(input.rawKey),
+      revokedAt: input.revokedAt ?? null,
+    },
+  });
 }
 
 async function resetDatabase(): Promise<void> {
@@ -212,6 +239,12 @@ async function resetDatabase(): Promise<void> {
     await tx.author.deleteMany({
       where: {
         platformUserId: { startsWith: INTEGRATION_DATA_PREFIX },
+      },
+    });
+
+    await tx.instanceApiKey.deleteMany({
+      where: {
+        name: { startsWith: INTEGRATION_DATA_PREFIX },
       },
     });
   });
@@ -1607,4 +1640,46 @@ void test("post.validateSettings reports instance api-key acceptance", async () 
 
   assert.equal(anonymousResult.instanceApiKeyAccepted, false);
   assert.equal(anonymousResult.openaiApiKeyStatus, "missing");
+});
+
+void test("createContext authenticates active instance API keys from database", async () => {
+  const rawKey = withIntegrationPrefix("instance-api-key-active");
+  await seedInstanceApiKey({
+    name: "instance-api-key-active",
+    rawKey,
+  });
+
+  const context = await createContext(
+    createMockRequestEvent({
+      "x-api-key": rawKey,
+    }),
+  );
+
+  assert.equal(context.isAuthenticated, true);
+  assert.equal(context.canInvestigate, true);
+});
+
+void test("createContext rejects unknown and revoked instance API keys", async () => {
+  const revokedRawKey = withIntegrationPrefix("instance-api-key-revoked");
+  await seedInstanceApiKey({
+    name: "instance-api-key-revoked",
+    rawKey: revokedRawKey,
+    revokedAt: new Date("2026-02-23T00:00:00.000Z"),
+  });
+
+  const unknownContext = await createContext(
+    createMockRequestEvent({
+      "x-api-key": withIntegrationPrefix("instance-api-key-missing"),
+    }),
+  );
+  assert.equal(unknownContext.isAuthenticated, false);
+  assert.equal(unknownContext.canInvestigate, false);
+
+  const revokedContext = await createContext(
+    createMockRequestEvent({
+      "x-api-key": revokedRawKey,
+    }),
+  );
+  assert.equal(revokedContext.isAuthenticated, false);
+  assert.equal(revokedContext.canInvestigate, false);
 });

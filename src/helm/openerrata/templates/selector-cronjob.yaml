@@ -19,7 +19,7 @@ spec:
           restartPolicy: OnFailure
           containers:
             - name: selector
-              image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+              image: {{ include "openerrata.image" . | quote }}
               imagePullPolicy: {{ .Values.image.pullPolicy }}
               command: ["node", "node_modules/tsx/dist/cli.mjs", "src/lib/services/selector-entrypoint.ts"]
               envFrom:
