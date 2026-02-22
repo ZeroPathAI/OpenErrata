@@ -2,5 +2,5 @@ name: openerrata
 runtime:
   name: nodejs
   options:
-    typescript: true
+    nodeargs: "--import tsx"
 description: OpenErrata hosted deployment — deploys the Helm chart with hosted-specific overrides
