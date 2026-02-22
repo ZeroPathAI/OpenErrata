@@ -12,7 +12,7 @@
     "worker": "tsx src/lib/services/worker-entrypoint.ts",
     "selector": "tsx src/lib/services/selector-entrypoint.ts",
     "instance-api-key": "tsx src/lib/services/instance-api-key-entrypoint.ts",
-    "prisma:generate": "prisma generate",
+    "prisma:generate": "svelte-kit sync && prisma generate",
     "prisma:migrate:dev": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",
     "typecheck": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json"
