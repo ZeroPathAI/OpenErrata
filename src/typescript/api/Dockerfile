@@ -10,6 +10,7 @@ COPY shared/package.json shared/
 COPY api/package.json api/
 RUN pnpm install --frozen-lockfile
 # Now copy source files (changes here won't bust the install cache).
+COPY tsconfig.base.json ./
 COPY shared/ shared/
 COPY api/ api/
 RUN DATABASE_URL="postgresql://build:build@localhost:5432/build" pnpm --filter @openerrata/api run prisma:generate
