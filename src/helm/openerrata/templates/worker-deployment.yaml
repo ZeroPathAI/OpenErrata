@@ -21,7 +21,7 @@ spec:
         - name: worker
           image: {{ include "openerrata.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["node", "node_modules/tsx/dist/cli.mjs", "src/lib/services/worker-entrypoint.ts"]
+          command: ["node", "node_modules/tsx/dist/cli.mjs", "--tsconfig", "tsconfig.runtime.json", "src/lib/services/worker-entrypoint.ts"]
           envFrom:
             - secretRef:
                 name: {{ include "openerrata.fullname" . }}

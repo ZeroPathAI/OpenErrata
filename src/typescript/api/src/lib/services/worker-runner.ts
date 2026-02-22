@@ -1,8 +1,9 @@
 import { run } from "graphile-worker";
 import { getEnv } from "$lib/config/env.js";
+import { normalizePgConnectionStringForNode } from "$lib/db/connection-string.js";
 import { orchestrateInvestigation } from "./orchestrator.js";
 
-const databaseUrl = getEnv().DATABASE_URL;
+const databaseUrl = normalizePgConnectionStringForNode(getEnv().DATABASE_URL);
 
 function isInvestigatePayload(
   payload: unknown,

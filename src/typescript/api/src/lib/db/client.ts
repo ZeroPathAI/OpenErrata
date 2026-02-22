@@ -1,5 +1,6 @@
 import "./prisma-enum-compat.js";
 import { PrismaPg } from "@prisma/adapter-pg";
+import { normalizePgConnectionStringForNode } from "$lib/db/connection-string.js";
 import { PrismaClient } from "$lib/generated/prisma/client";
 import { getEnv } from "$lib/config/env.js";
 import { Pool } from "pg";
@@ -13,7 +14,7 @@ declare global {
 
 function createPrismaClient(): PrismaClient {
   const env = getEnv();
-  const databaseUrl = env.DATABASE_URL;
+  const databaseUrl = normalizePgConnectionStringForNode(env.DATABASE_URL);
 
   const pool = new Pool({
     connectionString: databaseUrl,

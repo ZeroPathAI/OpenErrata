@@ -1,9 +1,12 @@
 import { makeWorkerUtils } from "graphile-worker";
 import { getEnv } from "$lib/config/env.js";
+import { normalizePgConnectionStringForNode } from "$lib/db/connection-string.js";
 import { createQueueManager } from "./queue-lifecycle.js";
 
+const databaseUrl = normalizePgConnectionStringForNode(getEnv().DATABASE_URL);
+
 const manager = createQueueManager(() =>
-  makeWorkerUtils({ connectionString: getEnv().DATABASE_URL }),
+  makeWorkerUtils({ connectionString: databaseUrl }),
 );
 
 export async function enqueueInvestigationRun(

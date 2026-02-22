@@ -1,5 +1,6 @@
 import { config as loadDotenv } from "dotenv";
 import { PrismaPg } from "@prisma/adapter-pg";
+import { normalizePgConnectionStringForNode } from "$lib/db/connection-string.js";
 import { PrismaClient, type Prisma } from "$lib/generated/prisma/client";
 import { Pool } from "pg";
 import { hashInstanceApiKey } from "$lib/services/instance-api-key.js";
@@ -173,7 +174,7 @@ function requireDatabaseUrl(): string {
   if (typeof value !== "string" || value.trim().length === 0) {
     throw new Error("DATABASE_URL is required.");
   }
-  return value.trim();
+  return normalizePgConnectionStringForNode(value.trim());
 }
 
 function createScriptPrismaClient(): PrismaClient {

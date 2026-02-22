@@ -28,6 +28,7 @@ COPY --from=build /app/api/prisma /app/api/prisma
 COPY --from=build /app/api/prisma.config.ts /app/api/prisma.config.ts
 COPY --from=build /app/api/src /app/api/src
 COPY --from=build /app/api/package.json /app/api/package.json
+COPY --from=build /app/api/tsconfig.runtime.json /app/api/tsconfig.runtime.json
 
 EXPOSE 3000
 ENV PORT=3000
