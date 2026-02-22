@@ -1,7 +1,13 @@
 import { defineConfig, build, type Plugin } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { resolve } from "node:path";
-import { copyFileSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import {
+  copyFileSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+} from "node:fs";
 
 /**
  * After the main build, run a second build for the content script as IIFE.
@@ -68,6 +74,16 @@ function copyExtensionAssets(): Plugin {
         resolve(__dirname, "src/manifest.json"),
         resolve(dist, "manifest.json"),
       );
+
+      // Copy extension icons
+      const iconsSrc = resolve(__dirname, "src/icons");
+      const iconsDist = resolve(dist, "icons");
+      mkdirSync(iconsDist, { recursive: true });
+      for (const file of readdirSync(iconsSrc)) {
+        if (file.endsWith(".png")) {
+          copyFileSync(resolve(iconsSrc, file), resolve(iconsDist, file));
+        }
+      }
 
       mkdirSync(resolve(dist, "content"), { recursive: true });
       copyFileSync(
