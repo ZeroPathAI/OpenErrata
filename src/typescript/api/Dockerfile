@@ -17,13 +17,17 @@ RUN DATABASE_URL="postgresql://build:build@localhost:5432/build" pnpm --filter @
 RUN pnpm --filter @openerrata/api build
 
 FROM base AS runtime
-WORKDIR /app
-COPY --from=build /app/api/build build/
-COPY --from=build /app/api/node_modules node_modules/
-COPY --from=build /app/api/prisma prisma/
-COPY --from=build /app/api/prisma.config.ts prisma.config.ts
-COPY --from=build /app/api/src src/
-COPY --from=build /app/api/package.json package.json
+WORKDIR /app/api
+# Preserve workspace paths so pnpm symlinks in /app/api/node_modules keep
+# pointing at /app/node_modules/.pnpm and workspace-linked packages.
+COPY --from=build /app/node_modules /app/node_modules
+COPY --from=build /app/shared /app/shared
+COPY --from=build /app/api/build /app/api/build
+COPY --from=build /app/api/node_modules /app/api/node_modules
+COPY --from=build /app/api/prisma /app/api/prisma
+COPY --from=build /app/api/prisma.config.ts /app/api/prisma.config.ts
+COPY --from=build /app/api/src /app/api/src
+COPY --from=build /app/api/package.json /app/api/package.json
 
 EXPOSE 3000
 ENV PORT=3000
