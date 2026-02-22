@@ -562,7 +562,7 @@ jobs:
           command: up
           stack-name: ${{ needs.resolve-target.outputs.deploy_environment }}
           work-dir: src/typescript/pulumi
-          refresh: true
+          refresh: false
           upsert: true
         env:
           PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
