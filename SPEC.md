@@ -1300,7 +1300,7 @@ interface PlatformContent {
   platform: Platform;
   externalId: string;
   url: string;
-  contentText: string; // Client-observed normalized plain text
+  contentText: string; // Client-observed normalized plain text; may be ""
   mediaState: "text_only" | "has_images" | "video_only";
   imageUrls: string[];
   metadata: Record<string, unknown>;
@@ -1321,6 +1321,9 @@ function normalizeContent(raw: string): string {
     .trim();
 }
 ```
+
+`contentText` remains required even when normalization yields no text. For image-only
+or otherwise textless posts, adapters send `contentText: ""`.
 
 ## 3.9 LessWrong Content Script
 
@@ -1364,6 +1367,11 @@ Skip only `video_only` tweets (video present, no extracted images).
    (`post_preview/{numericId}/twitter.jpg` pattern).
 4. Content root selector: `.body.markup`.
 
+Because custom-domain Substack publishers can use arbitrary hostnames, the extension cannot
+pre-enumerate all required origins in the manifest. v1 therefore keeps broad host permissions
+and applies strict runtime checks before injection (path must be `/p/*` and Substack fingerprint
+must be present). This is an intentional tradeoff for custom-domain support.
+
 ## 3.12 Extension Manifest (v3)
 
 ```jsonc
@@ -1372,15 +1380,10 @@ Skip only `video_only` tweets (video present, no extracted images).
   "name": "OpenErrata",
   "version": "0.1.0",
   "description": "Fact-check LessWrong, X, and Substack posts with AI-powered claim verification.",
-  "permissions": ["activeTab", "storage", "scripting"],
+  "permissions": ["activeTab", "storage", "scripting", "webNavigation", "alarms"],
   "host_permissions": [
-    "https://www.lesswrong.com/*",
-    "https://lesswrong.com/*",
-    "https://*.substack.com/*",
-    "https://x.com/*",
-    "https://twitter.com/*",
-    "https://api.openerrata.com/*",
-    "http://localhost/*",
+    "https://*/*",
+    "http://*/*",
   ],
   "background": {
     "service_worker": "src/background/index.ts",

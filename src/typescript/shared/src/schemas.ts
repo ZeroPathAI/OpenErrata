@@ -187,7 +187,9 @@ export const batchStatusOutputSchema = z.object({
 const platformContentBaseSchema = z.object({
   externalId: z.string().min(1),
   url: z.string().url(),
-  contentText: z.string().min(1),
+  // Normalized plain text as observed by the client. This may be an empty
+  // string for valid image-only posts.
+  contentText: z.string(),
   mediaState: postMediaStateSchema,
   imageUrls: z.array(z.string().url()),
 });

@@ -69,6 +69,17 @@ test("platformContentSchema parses valid LESSWRONG, X, and SUBSTACK payloads", (
   assert.deepEqual(platformContentSchema.parse(substackPayload), substackPayload);
 });
 
+test("platformContentSchema allows empty normalized contentText", () => {
+  const xPayload = createXContent();
+  const payload = {
+    ...xPayload,
+    contentText: "",
+  };
+
+  const parsed = platformContentSchema.parse(payload);
+  assert.equal(parsed.contentText, "");
+});
+
 test("platformContentSchema rejects LESSWRONG payloads missing htmlContent", () => {
   const lesswrongPayload = createLesswrongContent();
   const { htmlContent, ...metadataWithoutHtml } = lesswrongPayload.metadata;
@@ -108,4 +119,3 @@ test("investigationClaimSchema rejects invalid claim payloads", () => {
   assert.equal(emptySources.success, false);
   assert.equal(emptyReasoning.success, false);
 });
-

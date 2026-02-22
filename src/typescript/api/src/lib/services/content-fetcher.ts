@@ -147,7 +147,7 @@ async function fetchLesswrongContent(postId: string): Promise<FetchResult> {
     return { success: false, failureReason: `LW API returned ${response.status}` };
   }
 
-  const data = await response.json();
+  const data: unknown = await response.json();
   const html = extractLesswrongHtml(data);
   if (!html) {
     return {

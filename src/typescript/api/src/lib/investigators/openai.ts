@@ -724,7 +724,7 @@ export class OpenAIInvestigator implements Investigator {
     const responseAudits: InvestigatorResponseAudit[] = [];
 
     let round = 0;
-    while (MAX_RESPONSE_TOOL_ROUNDS === undefined || round < MAX_RESPONSE_TOOL_ROUNDS) {
+    while (round < MAX_RESPONSE_TOOL_ROUNDS) {
       const responseRequest =
         round === 0
           ? {
@@ -810,9 +810,7 @@ export class OpenAIInvestigator implements Investigator {
     );
     if (unfinishedToolCalls.length > 0) {
       const cause = new InvestigatorStructuredOutputError(
-        MAX_RESPONSE_TOOL_ROUNDS === undefined
-          ? "Model returned unfinished tool calls after an unbounded tool loop"
-          : `Model exceeded tool call round limit (${MAX_RESPONSE_TOOL_ROUNDS.toString()})`,
+        `Model exceeded tool call round limit (${MAX_RESPONSE_TOOL_ROUNDS.toString()})`,
       );
       throw new InvestigatorExecutionError(
         cause.message,

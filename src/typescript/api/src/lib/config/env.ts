@@ -43,7 +43,7 @@ const environmentSchema = z.object({
     ),
   OPENAI_API_KEY: z.string().trim().min(1).optional(),
   OPENAI_MODEL_ID: z.string().trim().min(1).default("gpt-5.2"),
-  OPENAI_MAX_RESPONSE_TOOL_ROUNDS: positiveIntegerFromEnv.optional(),
+  OPENAI_MAX_RESPONSE_TOOL_ROUNDS: positiveIntegerFromEnv.default(150),
   VALID_API_KEYS: z.string().default(""),
   HMAC_SECRET: z.string().trim().min(1, "HMAC_SECRET is required"),
   SELECTOR_BUDGET: positiveIntegerFromEnv.default(100),
