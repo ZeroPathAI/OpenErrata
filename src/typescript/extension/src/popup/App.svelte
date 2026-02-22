@@ -332,7 +332,7 @@
             <button class="btn" onclick={requestInvestigation}>Investigate Now</button>
           {:else}
             <p class="state-subtitle">
-              Free tier. Add your OpenAI API key in Settings to run on-demand investigations.
+              Add your OpenAI API key in Settings to run automatic or on-demand investigations.
             </p>
           {/if}
         </section>
