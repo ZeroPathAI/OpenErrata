@@ -2,13 +2,28 @@ import { runStartupChecks } from "$lib/config/startup.js";
 import type { Handle } from "@sveltejs/kit";
 import { sequence } from "@sveltejs/kit/hooks";
 
-const startupChecks = runStartupChecks("api").catch((error: unknown) => {
-  console.error("[startup:api] Startup checks failed", error);
-  throw error;
-});
+// Deferred to first request so that `vite build` can compile the server bundle
+// without requiring runtime secrets or a database connection.
+let startupChecks: Promise<void> | undefined;
+
+function runApiStartupChecksOnce(): Promise<void> {
+  if (startupChecks) {
+    return startupChecks;
+  }
+
+  startupChecks = runStartupChecks("api").catch((error: unknown) => {
+    // Startup checks can fail transiently (e.g. DB unavailable briefly). Clear
+    // the cached rejection so the next request can retry.
+    startupChecks = undefined;
+    console.error("[startup:api] Startup checks failed", error);
+    throw error;
+  });
+
+  return startupChecks;
+}
 
 const startupGuard: Handle = async ({ event, resolve }) => {
-  await startupChecks;
+  await runApiStartupChecksOnce();
   return resolve(event);
 };
 

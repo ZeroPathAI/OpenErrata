@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import { prisma } from "$lib/db/client";
+import { getPrisma } from "$lib/db/client";
 import { requireOpenAiApiKey } from "./env.js";
 
 type StartupComponent = "api" | "worker" | "selector";
@@ -30,7 +30,7 @@ function startupCheckKey(
 
 async function assertDatabaseCredentials(component: StartupComponent): Promise<void> {
   try {
-    await prisma.$queryRaw`SELECT 1`;
+    await getPrisma().$queryRaw`SELECT 1`;
   } catch (error) {
     throw new Error(
       `[startup:${component}] Database credential check failed`,
@@ -54,21 +54,27 @@ async function assertOpenAiCredentials(component: StartupComponent): Promise<voi
 export async function runStartupChecks(component: StartupComponent): Promise<void> {
   const policy = startupCheckPolicyByComponent[component];
   const key = startupCheckKey(component, policy);
-  const existing = startupCheckPromises.get(key);
-  if (existing) {
-    await existing;
-    return;
+  let startupPromise = startupCheckPromises.get(key);
+  if (!startupPromise) {
+    startupPromise = (async () => {
+      if (policy.checkDatabase) {
+        await assertDatabaseCredentials(component);
+      }
+      if (policy.checkOpenAiCredentials) {
+        await assertOpenAiCredentials(component);
+      }
+    })();
+    startupCheckPromises.set(key, startupPromise);
   }
 
-  const startupPromise = (async () => {
-    if (policy.checkDatabase) {
-      await assertDatabaseCredentials(component);
+  try {
+    await startupPromise;
+  } catch (error) {
+    // Retry on next call after a failed startup check. Guard by identity so a
+    // newer in-flight promise for the same key is not removed accidentally.
+    if (startupCheckPromises.get(key) === startupPromise) {
+      startupCheckPromises.delete(key);
     }
-    if (policy.checkOpenAiCredentials) {
-      await assertOpenAiCredentials(component);
-    }
-  })();
-
-  startupCheckPromises.set(key, startupPromise);
-  await startupPromise;
+    throw error;
+  }
 }

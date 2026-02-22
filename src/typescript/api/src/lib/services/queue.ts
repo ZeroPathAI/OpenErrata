@@ -2,9 +2,8 @@ import { makeWorkerUtils } from "graphile-worker";
 import { getEnv } from "$lib/config/env.js";
 import { createQueueManager } from "./queue-lifecycle.js";
 
-const databaseUrl = getEnv().DATABASE_URL;
 const manager = createQueueManager(() =>
-  makeWorkerUtils({ connectionString: databaseUrl }),
+  makeWorkerUtils({ connectionString: getEnv().DATABASE_URL }),
 );
 
 export async function enqueueInvestigationRun(
