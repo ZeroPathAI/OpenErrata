@@ -645,7 +645,7 @@ jobs:
             --yes \
             --non-interactive \
             --skip-preview \
-            --refresh=false
+            --refresh=true
 
   promote-image-latest:
     needs: [resolve-target, decide-deploy, build-image, deploy]
