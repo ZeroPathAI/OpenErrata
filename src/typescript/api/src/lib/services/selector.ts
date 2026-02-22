@@ -1,4 +1,4 @@
-import { prisma } from "$lib/db/client";
+import { getPrisma } from "$lib/db/client";
 import { getOrCreateCurrentPrompt } from "./prompt.js";
 import { fetchCanonicalContent } from "./content-fetcher.js";
 import {
@@ -14,6 +14,7 @@ import {
 import { getSelectorBudget } from "$lib/config/runtime.js";
 
 export async function runSelector(): Promise<number> {
+  const prisma = getPrisma();
   const budget = getSelectorBudget();
   const prompt = await getOrCreateCurrentPrompt();
 

@@ -1,4 +1,4 @@
-import { prisma } from "$lib/db/client";
+import { getPrisma } from "$lib/db/client";
 import { requireOpenAiApiKey } from "$lib/config/env.js";
 import { isRecordNotFoundError } from "$lib/db/errors.js";
 import {
@@ -258,6 +258,7 @@ async function tryClaimRunLease(
   workerIdentity: string,
 ): Promise<"CLAIMED" | "MISSING" | "TERMINAL" | "LEASE_HELD"> {
   const now = new Date();
+  const prisma = getPrisma();
   const claimed = await prisma.investigationRun.updateMany({
     where: {
       id: runId,
@@ -302,7 +303,7 @@ async function tryClaimRunLease(
 }
 
 async function loadClaimedRun(runId: string): Promise<InvestigationRunWithContext | null> {
-  return prisma.investigationRun.findUnique({
+  return getPrisma().investigationRun.findUnique({
     where: { id: runId },
     include: runContextInclude,
   });
@@ -313,6 +314,7 @@ function startRunHeartbeat(
   workerIdentity: string,
   logger: Logger,
 ): { stop(): void } {
+  const prisma = getPrisma();
   const timer = setInterval(() => {
     void prisma.investigationRun
       .updateMany({
@@ -348,7 +350,7 @@ async function replaceInvestigationImages(
   investigationId: string,
   imageBlobs: ImageBlob[],
 ): Promise<void> {
-  await prisma.$transaction(async (tx) => {
+  await getPrisma().$transaction(async (tx) => {
     await tx.investigationImage.deleteMany({
       where: { investigationId },
     });
@@ -618,7 +620,7 @@ async function persistFailedAttemptAndMarkInvestigationFailed(
     attemptAudit: InvestigatorAttemptAudit | null;
   },
 ): Promise<void> {
-  await prisma.$transaction(async (tx) => {
+  await getPrisma().$transaction(async (tx) => {
     if (input.attemptAudit) {
       await persistAttemptAudit(tx, {
         investigationId: input.investigationId,
@@ -654,7 +656,7 @@ async function persistFailedAttemptAndResetInvestigationPending(
     attemptAudit: InvestigatorAttemptAudit | null;
   },
 ): Promise<void> {
-  await prisma.$transaction(async (tx) => {
+  await getPrisma().$transaction(async (tx) => {
     if (input.attemptAudit) {
       await persistAttemptAudit(tx, {
         investigationId: input.investigationId,
@@ -709,6 +711,7 @@ export async function orchestrateInvestigation(
     return;
   }
 
+  const prisma = getPrisma();
   const investigation = run.investigation;
   if (investigation.status !== "PROCESSING") {
     await prisma.investigation.update({

@@ -50,7 +50,83 @@ jobs:
             echo "skip_all=false" >> "$GITHUB_OUTPUT"
           fi
 
-  checks:
+  # Quality gate: four parallel jobs replacing the former sequential checks job.
+  # Only the test job needs a real Postgres; the others use a dummy DATABASE_URL
+  # just so `prisma generate` can parse the schema without connecting.
+
+  typecheck:
+    needs: [should-run]
+    if: >-
+      needs.should-run.outputs.skip_all != 'true' &&
+      needs.should-run.outputs.has_relevant_changes == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/typescript
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.24.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.13.1"
+          cache: pnpm
+          cache-dependency-path: src/typescript/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm db:generate
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+  lint:
+    needs: [should-run]
+    if: >-
+      needs.should-run.outputs.skip_all != 'true' &&
+      needs.should-run.outputs.has_relevant_changes == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/typescript
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.24.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.13.1"
+          cache: pnpm
+          cache-dependency-path: src/typescript/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm db:generate
+
+      - name: Lint and dead-code checks
+        run: pnpm lint && pnpm knip
+
+  test:
     needs: [should-run]
     if: >-
       needs.should-run.outputs.skip_all != 'true' &&
@@ -95,11 +171,41 @@ jobs:
       - name: Generate Prisma client
         run: pnpm db:generate
 
-      - name: Typecheck/lint/dead-code checks
-        run: pnpm check
-
       - name: Run tests
         run: pnpm test
+
+  build:
+    needs: [should-run]
+    if: >-
+      needs.should-run.outputs.skip_all != 'true' &&
+      needs.should-run.outputs.has_relevant_changes == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/typescript
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.24.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.13.1"
+          cache: pnpm
+          cache-dependency-path: src/typescript/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm db:generate
 
       - name: Build workspace
         run: pnpm build
@@ -115,7 +221,7 @@ jobs:
         run: echo "No relevant files changed; skipping TypeScript checks."
 
   pr-ok:
-    needs: [should-run, checks, no-relevant-changes]
+    needs: [should-run, typecheck, lint, test, build, no-relevant-changes]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -129,8 +235,14 @@ jobs:
             exit 0
           fi
 
-          if [ "${{ needs.checks.result }}" = "success" ]; then
-            echo "Checks job succeeded."
+          TYPECHECK="${{ needs.typecheck.result }}"
+          LINT="${{ needs.lint.result }}"
+          TEST="${{ needs.test.result }}"
+          BUILD="${{ needs.build.result }}"
+
+          if [ "$TYPECHECK" = "success" ] && [ "$LINT" = "success" ] && \
+             [ "$TEST" = "success" ] && [ "$BUILD" = "success" ]; then
+            echo "All quality gate jobs passed."
             exit 0
           fi
 
@@ -140,4 +252,8 @@ jobs:
           fi
 
           echo "PR checks did not pass."
+          echo "  typecheck: $TYPECHECK"
+          echo "  lint: $LINT"
+          echo "  test: $TEST"
+          echo "  build: $BUILD"
           exit 1

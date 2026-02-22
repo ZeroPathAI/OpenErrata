@@ -33,7 +33,7 @@ function withIntegrationPrefix(value: string): string {
 
 const [
   { appRouter },
-  { prisma },
+  { getPrisma },
   { createContext },
   { hashInstanceApiKey },
   { GET: healthGet },
@@ -51,6 +51,8 @@ const [
     import("../../src/lib/services/queue.js"),
     import("../../src/lib/services/selector.js"),
   ]);
+
+const prisma = getPrisma();
 
 type CallerOptions = {
   isAuthenticated?: boolean;

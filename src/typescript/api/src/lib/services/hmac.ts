@@ -1,11 +1,9 @@
 import { getEnv } from "$lib/config/env.js";
 
-const HMAC_SECRET = getEnv().HMAC_SECRET;
-
 async function computeHmac(body: string): Promise<string> {
   const key = await crypto.subtle.importKey(
     "raw",
-    new TextEncoder().encode(HMAC_SECRET),
+    new TextEncoder().encode(getEnv().HMAC_SECRET),
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"],

@@ -1,4 +1,4 @@
-import { prisma } from "$lib/db/client.js";
+import { getPrisma } from "$lib/db/client.js";
 import {
   publicGraphqlSchema,
   type PublicGraphqlContext,
@@ -10,7 +10,7 @@ const yoga = createYoga<PublicGraphqlContext>({
   schema: publicGraphqlSchema,
   graphqlEndpoint: "/graphql",
   logging: false,
-  context: () => ({ prisma }),
+  context: () => ({ prisma: getPrisma() }),
 });
 
 export const POST: RequestHandler = async ({ request }) => yoga.fetch(request);

@@ -4,6 +4,8 @@ import { PrismaClient } from "$lib/generated/prisma/client";
 import { getEnv } from "$lib/config/env.js";
 import { Pool } from "pg";
 
+export type { PrismaClient } from "$lib/generated/prisma/client";
+
 declare global {
   // Reused across HMR reloads in development.
   var __openerrataPrisma: PrismaClient | undefined;
@@ -23,8 +25,16 @@ function createPrismaClient(): PrismaClient {
   return new PrismaClient({ adapter });
 }
 
-export const prisma = globalThis.__openerrataPrisma ?? createPrismaClient();
+// Lazy singleton: deferred from module-load time so that `vite build` can
+// compile the server bundle without a database connection or runtime secrets.
+let prismaInstance: PrismaClient | undefined;
 
-if (getEnv().NODE_ENV !== "production") {
-  globalThis.__openerrataPrisma = prisma;
+export function getPrisma(): PrismaClient {
+  if (!prismaInstance) {
+    prismaInstance = globalThis.__openerrataPrisma ?? createPrismaClient();
+    if (getEnv().NODE_ENV !== "production") {
+      globalThis.__openerrataPrisma = prismaInstance;
+    }
+  }
+  return prismaInstance;
 }

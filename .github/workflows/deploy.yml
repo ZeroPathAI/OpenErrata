@@ -160,7 +160,79 @@ jobs:
           echo "No deployable files changed since last successful deploy; skipping."
           echo "should_deploy=false" >> "$GITHUB_OUTPUT"
 
-  quality-gate:
+  # Quality gate: four parallel jobs replacing the former sequential quality-gate.
+  # Only the test job needs a real Postgres; the others use a dummy DATABASE_URL
+  # just so `prisma generate` can parse the schema without connecting.
+
+  typecheck:
+    needs: [resolve-target, decide-deploy]
+    if: needs.decide-deploy.outputs.should_deploy == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/typescript
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.24.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.13.1"
+          cache: pnpm
+          cache-dependency-path: src/typescript/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm db:generate
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+  lint:
+    needs: [resolve-target, decide-deploy]
+    if: needs.decide-deploy.outputs.should_deploy == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/typescript
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.24.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.13.1"
+          cache: pnpm
+          cache-dependency-path: src/typescript/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm db:generate
+
+      - name: Lint and dead-code checks
+        run: pnpm lint && pnpm knip
+
+  test:
     needs: [resolve-target, decide-deploy]
     if: needs.decide-deploy.outputs.should_deploy == 'true'
     runs-on: ubuntu-latest
@@ -203,17 +275,48 @@ jobs:
       - name: Generate Prisma client
         run: pnpm db:generate
 
-      - name: Typecheck/lint/dead-code checks
-        run: pnpm check
-
       - name: Run tests
         run: pnpm test
+
+  build:
+    needs: [resolve-target, decide-deploy]
+    if: needs.decide-deploy.outputs.should_deploy == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/typescript
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.24.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.13.1"
+          cache: pnpm
+          cache-dependency-path: src/typescript/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm db:generate
 
       - name: Build workspace
         run: pnpm build
 
+  # Docker image build runs in parallel with quality gate jobs.
+  # The deploy job gates on both build-image AND all quality gate jobs,
+  # so we never deploy unchecked code while saving wall-clock time.
   build-image:
-    needs: [resolve-target, decide-deploy, quality-gate]
+    needs: [resolve-target, decide-deploy]
     if: needs.decide-deploy.outputs.should_deploy == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -222,6 +325,7 @@ jobs:
     outputs:
       image_repository: ${{ steps.meta.outputs.image_repository }}
       image_tag: ${{ steps.meta.outputs.image_tag }}
+      latest_tag: ${{ steps.meta.outputs.latest_tag }}
       image_digest: ${{ steps.build.outputs.digest }}
     steps:
       - name: Checkout
@@ -262,13 +366,12 @@ jobs:
           push: true
           tags: |
             ${{ steps.meta.outputs.image_repository }}:${{ steps.meta.outputs.image_tag }}
-            ${{ steps.meta.outputs.image_repository }}:${{ steps.meta.outputs.latest_tag }}
           cache-from: type=registry,ref=${{ steps.meta.outputs.image_repository }}:${{ steps.meta.outputs.latest_tag }}
           cache-to: type=inline
           provenance: false
 
   deploy:
-    needs: [resolve-target, decide-deploy, build-image]
+    needs: [resolve-target, decide-deploy, typecheck, lint, test, build, build-image]
     if: needs.decide-deploy.outputs.should_deploy == 'true'
     runs-on: ubuntu-latest
     environment: ${{ needs.resolve-target.outputs.deploy_environment }}
@@ -457,3 +560,29 @@ jobs:
           AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
           AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
+
+  promote-image-latest:
+    needs: [resolve-target, decide-deploy, build-image, deploy]
+    if: needs.decide-deploy.outputs.should_deploy == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Promote deployed image to latest tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_IMAGE="${{ needs.build-image.outputs.image_repository }}@${{ needs.build-image.outputs.image_digest }}"
+          TARGET_IMAGE="${{ needs.build-image.outputs.image_repository }}:${{ needs.build-image.outputs.latest_tag }}"
+          docker buildx imagetools create --tag "$TARGET_IMAGE" "$SOURCE_IMAGE"

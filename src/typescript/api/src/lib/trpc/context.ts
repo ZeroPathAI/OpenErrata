@@ -1,5 +1,5 @@
 import type { RequestEvent } from "@sveltejs/kit";
-import { prisma } from "$lib/db/client";
+import { getPrisma, type PrismaClient } from "$lib/db/client";
 import { hashContent } from "@openerrata/shared";
 import { verifyHmac } from "$lib/services/hmac.js";
 import { deriveIpRangePrefix } from "$lib/network/ip.js";
@@ -7,7 +7,7 @@ import { findActiveInstanceApiKeyHash } from "$lib/services/instance-api-key.js"
 
 export type Context = {
   event: RequestEvent;
-  prisma: typeof prisma;
+  prisma: PrismaClient;
   viewerKey: string;
   ipRangeKey: string;
   isAuthenticated: boolean;
@@ -25,6 +25,7 @@ export async function createContext(event: RequestEvent): Promise<Context> {
   const canInvestigate = isAuthenticated || userOpenAiApiKey !== null;
   const hasValidAttestation = await verifyRequestAttestation(event);
 
+  const prisma = getPrisma();
   return {
     event,
     prisma,
@@ -42,7 +43,7 @@ async function getAuthenticatedApiKeyHash(
 ): Promise<string | null> {
   const apiKey = event.request.headers.get("x-api-key")?.trim();
   if (!apiKey) return null;
-  return findActiveInstanceApiKeyHash(prisma, apiKey);
+  return findActiveInstanceApiKeyHash(getPrisma(), apiKey);
 }
 
 function getUserOpenAiApiKey(event: RequestEvent): string | null {

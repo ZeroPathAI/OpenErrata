@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { MAX_IMAGE_BYTES } from "@openerrata/shared";
-import { prisma } from "$lib/db/client.js";
+import { getPrisma } from "$lib/db/client.js";
 import { isUniqueConstraintError } from "$lib/db/errors.js";
 import type { ImageBlob } from "$lib/generated/prisma/client";
 import {
@@ -179,6 +179,7 @@ async function findOrCreateImageBlob(
     mimeType: string;
   },
 ): Promise<ImageBlob | null> {
+  const prisma = getPrisma();
   const existing = await prisma.imageBlob.findUnique({
     where: { contentHash: input.contentHash },
   });

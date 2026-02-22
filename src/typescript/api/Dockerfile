@@ -3,10 +3,15 @@ RUN corepack enable
 
 FROM base AS build
 WORKDIR /app
+# Copy dependency manifests first so pnpm install is cached unless
+# package.json or pnpm-lock.yaml changes.
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
+COPY shared/package.json shared/
+COPY api/package.json api/
+RUN pnpm install --frozen-lockfile
+# Now copy source files (changes here won't bust the install cache).
 COPY shared/ shared/
 COPY api/ api/
-RUN pnpm install --frozen-lockfile
 RUN pnpm --filter @openerrata/api run prisma:generate
 RUN pnpm --filter @openerrata/api build
 

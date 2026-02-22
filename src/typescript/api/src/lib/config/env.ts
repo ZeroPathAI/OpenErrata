@@ -1,13 +1,6 @@
 import { config as loadDotenv } from "dotenv";
 import { z } from "zod";
 
-// Explicitly load .env into process.env. Vite/SvelteKit only exposes .env
-// vars through $env virtual modules, not process.env, and the worker/selector
-// entrypoints (tsx) don't load .env at all. In production the .env file
-// typically doesn't exist and env vars come from the system, making this a
-// no-op.
-loadDotenv();
-
 const positiveIntegerFromEnv = z.preprocess((value) => {
   if (value === undefined || value === null || value === "") return undefined;
   if (typeof value === "number") return value;
@@ -81,12 +74,24 @@ function parseEnvironment(): Environment {
   process.exit(1);
 }
 
-// Validated eagerly on first import. If invalid, the process exits immediately
-// with a descriptive message instead of throwing through Vite's module runner
-// and producing a stack trace on every request.
-const environment: Environment = parseEnvironment();
+// Validated lazily on first getEnv() call. Deferred from module-load time so
+// that `vite build` can compile the server bundle without requiring runtime
+// secrets. On first runtime call the environment is validated once; if invalid,
+// the process exits immediately with a descriptive message.
+let environment: Environment | undefined;
+let dotenvLoaded = false;
 
 export function getEnv(): Environment {
+  if (!dotenvLoaded) {
+    // Explicitly load .env into process.env. Vite/SvelteKit only exposes .env
+    // vars through $env virtual modules, not process.env, and the
+    // worker/selector entrypoints (tsx) don't load .env at all. In production
+    // the .env file typically doesn't exist and env vars come from the system,
+    // making this a no-op.
+    loadDotenv();
+    dotenvLoaded = true;
+  }
+  environment ??= parseEnvironment();
   return environment;
 }
 

@@ -1,5 +1,5 @@
 import { runStartupChecks } from "$lib/config/startup.js";
-import { prisma } from "$lib/db/client";
+import { getPrisma } from "$lib/db/client";
 import { runSelector } from "./selector.js";
 
 async function runOnce(): Promise<void> {
@@ -13,7 +13,7 @@ async function runOnce(): Promise<void> {
     exitCode = 1;
   } finally {
     try {
-      await prisma.$disconnect();
+      await getPrisma().$disconnect();
     } catch (disconnectError) {
       console.error("Failed to disconnect Prisma in selector:", disconnectError);
       exitCode = 1;

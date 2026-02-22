@@ -17,18 +17,6 @@ jobs:
         working-directory: src/typescript
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
-    services:
-      postgres:
-        image: postgres:17
-        env:
-          POSTGRES_PASSWORD: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -51,14 +39,17 @@ jobs:
       - name: Generate Prisma client
         run: pnpm db:generate
 
-      - name: Typecheck/lint/dead-code checks
-        run: pnpm check
+      - name: Typecheck
+        run: pnpm typecheck
 
-      - name: Run tests
-        run: pnpm test
+      - name: Lint and dead-code checks
+        run: pnpm lint && pnpm knip
 
-      - name: Build workspace
-        run: pnpm build
+      - name: Run extension tests
+        run: pnpm run test:unit:shared && pnpm run test:unit:extension
+
+      - name: Build extension
+        run: pnpm --filter @openerrata/extension build
 
       - name: Determine version
         id: version

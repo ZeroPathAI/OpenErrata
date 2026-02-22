@@ -1,4 +1,4 @@
-import { prisma } from "$lib/db/client";
+import { getPrisma } from "$lib/db/client";
 import { isUniqueConstraintError } from "$lib/db/errors.js";
 import {
   INVESTIGATION_SYSTEM_PROMPT,
@@ -31,6 +31,7 @@ export function getOrCreateCurrentPrompt(): Promise<{ id: string }> {
  * concurrent processes (e.g. multiple server instances starting up).
  */
 async function resolveCurrentPrompt(): Promise<{ id: string }> {
+  const prisma = getPrisma();
   const text = INVESTIGATION_SYSTEM_PROMPT;
   const hash = await hashContent(text);
   const version = INVESTIGATION_PROMPT_VERSION;
