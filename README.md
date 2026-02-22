@@ -29,7 +29,28 @@ The extension connects to the hosted API at `api.openerrata.com` by default — 
 3. **The LLM investigates.** The full post text (plus images) are sent to GPT-5.2, which uses native web search and browsing tools to verify claims. Only demonstrably incorrect claims are flagged — disputed, ambiguous, or unverifiable claims are left alone.
 4. **Incorrect claims are highlighted.** For all extension users, every incorrect sentence gets a red underline in the post. Hover for a summary; click for full reasoning and sources.
 
-Currently supports only Substack, Twitter, and LessWrong.
+## Supported Platforms
+
+| Platform | Detection | Content Script |
+|----------|-----------|----------------|
+| LessWrong | URL match (`lesswrong.com`) | Static HTML extraction, MutationObserver for React re-renders |
+| X (Twitter) | URL match (`x.com`, `twitter.com`) | SPA-aware with MutationObserver, `[data-testid="tweetText"]` selector |
+| Substack | URL match (`*.substack.com/p/*`) + DOM fingerprint for custom domains | `link[href*="substackcdn.com"]` detection, `.body.markup` content root |
+
+## Design Principles
+
+- **When in doubt, don't flag.** False positives erode trust and will be adversarially scrutinized. The system only flags claims with concrete, credible counter-evidence.
+- **Transparency.** The design, spec, code, and individual investigations are all publicly inspectable. Every investigation stores full audit artifacts (prompt, model metadata, tool traces, source snapshots).
+- **Lean on frontier models.** The LLM uses provider-native web search and browsing rather than a custom search-and-scrape pipeline. We orchestrate; the model investigates.
+- **Single-pass investigation.** The entire post is investigated in one agentic call, giving the model full context for understanding caveats, qualifications, and claim relationships.
+
+## Public API
+
+Completed investigations are publicly accessible via GraphQL at `POST /graphql`. No authentication required. Responses include trust signals (content provenance, corroboration count, server verification timestamps) so consumers can apply their own trust policy.
+
+## Documentation
+
+- **[SPEC.md](SPEC.md)** — Full product spec covering design goals, architecture, data model, API surface, and implementation details. This is the source of truth for product behavior.
 
 ## Repository Layout
 
@@ -122,31 +143,6 @@ helm install openerrata ./src/helm/openerrata \
 ```
 
 **Hosted:** The official hosted deployment uses Pulumi (`src/typescript/pulumi/`) to deploy the same Helm chart with hosted-specific overrides (Supabase connection, domain, TLS, autoscaling). This guarantees identical workload definitions between on-prem and hosted — no deployment drift.
-
-## Supported Platforms
-
-| Platform | Detection | Content Script |
-|----------|-----------|----------------|
-| LessWrong | URL match (`lesswrong.com`) | Static HTML extraction, MutationObserver for React re-renders |
-| X (Twitter) | URL match (`x.com`, `twitter.com`) | SPA-aware with MutationObserver, `[data-testid="tweetText"]` selector |
-| Substack | URL match (`*.substack.com/p/*`) + DOM fingerprint for custom domains | `link[href*="substackcdn.com"]` detection, `.body.markup` content root |
-
-## Public API
-
-Completed investigations are publicly accessible via GraphQL at `POST /graphql`. No authentication required. Responses include trust signals (content provenance, corroboration count, server verification timestamps) so consumers can apply their own trust policy.
-
-See [SPEC.md](SPEC.md) for the full GraphQL schema and resolver semantics.
-
-## Design Principles
-
-- **When in doubt, don't flag.** False positives erode trust and will be adversarially scrutinized. The system only flags claims with concrete, credible counter-evidence.
-- **Transparency.** The design, spec, code, and individual investigations are all publicly inspectable. Every investigation stores full audit artifacts (prompt, model metadata, tool traces, source snapshots).
-- **Lean on frontier models.** The LLM uses provider-native web search and browsing rather than a custom search-and-scrape pipeline. We orchestrate; the model investigates.
-- **Single-pass investigation.** The entire post is investigated in one agentic call, giving the model full context for understanding caveats, qualifications, and claim relationships.
-
-## Documentation
-
-- **[SPEC.md](SPEC.md)** — Full product spec covering design goals, architecture, data model, API surface, and implementation details. This is the source of truth for product behavior.
 
 ## License
 
