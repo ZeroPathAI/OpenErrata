@@ -1,16 +1,16 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
-  <!-- Document page -->
-  <rect x="4" y="2" width="88" height="110" rx="7" fill="#f5f5f5" stroke="#333" stroke-width="5"/>
-  <!-- Text lines on the document -->
-  <line x1="18" y1="28" x2="78" y2="28" stroke="#bbb" stroke-width="5" stroke-linecap="round"/>
-  <line x1="18" y1="44" x2="72" y2="44" stroke="#bbb" stroke-width="5" stroke-linecap="round"/>
-  <line x1="18" y1="60" x2="66" y2="60" stroke="#bbb" stroke-width="5" stroke-linecap="round"/>
-  <line x1="18" y1="76" x2="58" y2="76" stroke="#bbb" stroke-width="5" stroke-linecap="round"/>
-  <line x1="18" y1="92" x2="50" y2="92" stroke="#bbb" stroke-width="5" stroke-linecap="round"/>
-  <!-- Red wavy underline (errata annotation) on the second text line -->
-  <path d="M18,49 q5,-5 10,0 t10,0 t10,0 t10,0 t10,0 t6,0" fill="none" stroke="#e53935" stroke-width="3" stroke-linecap="round"/>
-  <!-- Magnifying glass -->
-  <circle cx="96" cy="94" r="28" fill="white" stroke="#1565c0" stroke-width="6"/>
-  <circle cx="96" cy="94" r="21" fill="rgba(21,101,192,0.06)"/>
-  <line x1="116" y1="114" x2="126" y2="126" stroke="#1565c0" stroke-width="8" stroke-linecap="round"/>
+  <!-- Document page — fills nearly the entire canvas -->
+  <rect x="4" y="2" width="120" height="122" rx="8" fill="#f5f5f5" stroke="#333" stroke-width="5"/>
+  <!-- Text lines spanning most of the page width -->
+  <line x1="18" y1="24" x2="108" y2="24" stroke="#bbb" stroke-width="5" stroke-linecap="round"/>
+  <line x1="18" y1="42" x2="100" y2="42" stroke="#bbb" stroke-width="5" stroke-linecap="round"/>
+  <line x1="18" y1="60" x2="92" y2="60" stroke="#bbb" stroke-width="5" stroke-linecap="round"/>
+  <line x1="18" y1="78" x2="84" y2="78" stroke="#bbb" stroke-width="5" stroke-linecap="round"/>
+  <line x1="18" y1="96" x2="60" y2="96" stroke="#bbb" stroke-width="5" stroke-linecap="round"/>
+  <!-- Red wavy underline (errata annotation) — wide and prominent under the second text line -->
+  <path d="M18,48 q6,-6 12,0 t12,0 t12,0 t12,0 t12,0 t12,0 t10,0" fill="none" stroke="#e53935" stroke-width="4" stroke-linecap="round"/>
+  <!-- Magnifying glass — inside the page, over the lower-right text area -->
+  <circle cx="84" cy="88" r="26" fill="white" stroke="#1565c0" stroke-width="6"/>
+  <circle cx="84" cy="88" r="19" fill="rgba(21,101,192,0.06)"/>
+  <line x1="103" y1="107" x2="116" y2="120" stroke="#1565c0" stroke-width="8" stroke-linecap="round"/>
 </svg>
