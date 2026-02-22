@@ -610,17 +610,18 @@ jobs:
           echo "pulumi cancel failed unexpectedly"
           exit $rc
 
-      - name: Delete stale selector jobs
+      - name: Delete stale selector/migrate jobs
         shell: bash
         env:
           TARGET_NAMESPACE: openerrata-${{ needs.resolve-target.outputs.deploy_environment }}
         run: |
           set -euo pipefail
-          # Selector jobs are cron-generated historical resources and can leave
-          # failed executions behind from a prior image rollout. Clearing them
-          # before `pulumi up` avoids awaiting stale job state.
+          # Selector and migrate jobs can be left behind with stale field managers
+          # (e.g. after interrupted updates), causing apply conflicts or await
+          # hangs. Clear them before `pulumi up` so the chart can recreate them
+          # with the current image and manager.
           kubectl -n "$TARGET_NAMESPACE" delete job \
-            -l app.kubernetes.io/component=selector \
+            -l 'app.kubernetes.io/component in (selector,migrate)' \
             --ignore-not-found=true
 
       - name: Pulumi deploy
