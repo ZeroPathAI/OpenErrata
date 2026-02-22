@@ -145,20 +145,21 @@ jobs:
         run: |
           set -euo pipefail
 
+          should_deploy=false
+
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "Manual dispatch requested; deploying."
-            echo "should_deploy=true" >> "$GITHUB_OUTPUT"
-            exit 0
+            should_deploy=true
+          elif [ "${{ needs.detect-changes.outputs.deployable }}" = "true" ]; then
+            should_deploy=true
           fi
 
-          if [ "${{ needs.detect-changes.outputs.deployable }}" = "true" ]; then
-            echo "Deployable files changed since last successful deploy; deploying."
-            echo "should_deploy=true" >> "$GITHUB_OUTPUT"
-            exit 0
+          if [ "$should_deploy" = "true" ]; then
+            echo "Deploy requested; deploying."
+          else
+            echo "No deployable files changed since last successful deploy; skipping."
           fi
 
-          echo "No deployable files changed since last successful deploy; skipping."
-          echo "should_deploy=false" >> "$GITHUB_OUTPUT"
+          echo "should_deploy=$should_deploy" >> "$GITHUB_OUTPUT"
 
   # Quality gate: four parallel jobs replacing the former sequential quality-gate.
   # Only the test job needs a real Postgres; the others use a dummy DATABASE_URL
