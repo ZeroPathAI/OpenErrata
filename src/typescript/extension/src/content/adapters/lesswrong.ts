@@ -11,6 +11,7 @@ export interface PlatformAdapter {
   platformKey: Platform;
   matches(url: string): boolean;
   detectFromDom?(document: Document): boolean;
+  detectPrivateOrGated?(document: Document): boolean;
   extract(document: Document): PlatformContent | null;
   getContentRoot(document: Document): Element | null;
 }

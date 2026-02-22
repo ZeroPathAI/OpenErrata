@@ -30,6 +30,59 @@ const SUBSTACK_POST_PATH_REGEX = /^\/p\/([^/?#]+)/i;
 const SUBSTACK_HOST_REGEX = /(^|\.)substack\.com$/i;
 const SUBSTACK_POST_PREVIEW_ID_REGEX = /post_preview\/(\d+)\/(?:twitter|facebook)\.(?:jpg|png)/i;
 const SUBSTACK_PUBLICATION_REGEX = /([a-z0-9-]+)\.substack\.com/i;
+const PRIVATE_OR_GATED_SELECTOR = [
+  '[class*="paywall"]',
+  '[id*="paywall"]',
+  '[data-testid*="paywall"]',
+  '[class*="subscriber-only"]',
+  '[id*="subscriber-only"]',
+  '[class*="subscription-required"]',
+  '[id*="subscription-required"]',
+].join(",");
+const PRIVATE_OR_GATED_PATTERNS = [
+  /subscribe to continue reading/i,
+  /this post is for paid subscribers/i,
+  /become a paid subscriber/i,
+  /already a paid subscriber/i,
+  /subscriber-only post/i,
+] as const;
+const ACCESS_CONTROL_TERMS = ["paywall", "subscriber", "subscription"] as const;
+
+function isHiddenElement(element: Element): boolean {
+  return element.closest('[hidden], [aria-hidden="true"]') !== null;
+}
+
+function hasPrivatePattern(text: string): boolean {
+  return PRIVATE_OR_GATED_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function hasAccessControlMarker(element: Element): boolean {
+  const className = element.getAttribute("class")?.toLowerCase() ?? "";
+  const id = element.getAttribute("id")?.toLowerCase() ?? "";
+  const testId = element.getAttribute("data-testid")?.toLowerCase() ?? "";
+  return ACCESS_CONTROL_TERMS.some(
+    (token) =>
+      className.includes(token) || id.includes(token) || testId.includes(token),
+  );
+}
+
+function hasSubscribeCta(element: Element): boolean {
+  if (
+    element.querySelector('a[href*="/subscribe"], a[href*="subscribe"]') !== null
+  ) {
+    return true;
+  }
+
+  const ctaButtons = element.querySelectorAll("button, [role='button']");
+  for (const button of ctaButtons) {
+    const text = normalizeContent(button.textContent).toLowerCase();
+    if (text.includes("subscribe")) {
+      return true;
+    }
+  }
+
+  return false;
+}
 
 function decodeCandidates(raw: string): string[] {
   const candidates = new Set<string>();
@@ -216,6 +269,53 @@ function hasSubstackPostPath(pathname: string): boolean {
   return SUBSTACK_POST_PATH_REGEX.test(pathname);
 }
 
+function hasPrivateOrGatedMarkers(document: Document): boolean {
+  const explicitMarkers = document.querySelectorAll(PRIVATE_OR_GATED_SELECTOR);
+  for (const marker of explicitMarkers) {
+    if (isHiddenElement(marker)) continue;
+    const text = normalizeContent(marker.textContent);
+    if (text.length === 0) continue;
+    if (hasPrivatePattern(text)) {
+      return true;
+    }
+  }
+
+  const contentRoot = document.querySelector(CONTENT_SELECTOR);
+  const hasExtractablePostContent =
+    contentRoot !== null && normalizeContent(contentRoot.textContent).length > 0;
+
+  const candidateRoots = new Set<Element>();
+  const main = document.querySelector("main");
+  const article = document.querySelector("article");
+  if (main) candidateRoots.add(main);
+  if (article) candidateRoots.add(article);
+  if (!hasExtractablePostContent) {
+    candidateRoots.add(document.body);
+  }
+
+  for (const root of candidateRoots) {
+    const candidateBlocks = root.querySelectorAll("section, article, div, aside, p");
+    for (const block of candidateBlocks) {
+      if (isHiddenElement(block)) continue;
+      const text = normalizeContent(block.textContent);
+      if (text.length === 0) continue;
+      if (!hasPrivatePattern(text)) continue;
+
+      const hasAccessMarker = hasAccessControlMarker(block);
+      const hasCta = hasSubscribeCta(block);
+      if (hasAccessMarker && hasCta) {
+        return true;
+      }
+
+      if (!hasExtractablePostContent && (hasAccessMarker || hasCta)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
 export const substackAdapter: PlatformAdapter = {
   platformKey: "SUBSTACK",
 
@@ -239,6 +339,10 @@ export const substackAdapter: PlatformAdapter = {
     }
 
     return document.querySelector(SUBSTACK_FINGERPRINT_SELECTOR) !== null;
+  },
+
+  detectPrivateOrGated(document: Document): boolean {
+    return hasPrivateOrGatedMarkers(document);
   },
 
   extract(document: Document): PlatformContent | null {

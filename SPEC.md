@@ -297,6 +297,8 @@ properties adapt to dark/light themes.
 ```
 User visits post
   → Content script extracts metadata + observed content text/media state/image URLs
+  → If the adapter detects private/gated access, emit `PAGE_SKIPPED(reason="private_or_gated")`
+    and stop (no `viewPost` request is sent)
   → Background worker calls API: viewPost(...)
       - Always include observedContentText
       - Include observed image URLs for metadata persistence
@@ -1291,6 +1293,7 @@ Each content script implements:
 interface PlatformAdapter {
   matches(url: string): boolean;
   detectFromDom?(document: Document): boolean;
+  detectPrivateOrGated?(document: Document): boolean;
   extract(document: Document): PlatformContent | null;
   getContentRoot(document: Document): Element | null;
   platformKey: string;
@@ -1326,6 +1329,10 @@ function normalizeContent(raw: string): string {
 treated as unsupported and are skipped by the extension (`reason: "no_text"`).
 This includes textless/image-only posts for now.
 
+Adapters may also detect private/gated access (e.g., protected or subscriber-only
+views). In that case, the extension must skip sending content to the API and emit
+`PAGE_SKIPPED` with `reason: "private_or_gated"`.
+
 Future work: design a dedicated UI/UX flow for fact-checking image-only posts
 without relying on text-span highlighting.
 
@@ -1343,8 +1350,9 @@ DOM manipulation is reliable.
 5. Extract image URLs (`<img src>`), filter malformed/data URLs, and compute `mediaState`.
 6. Send `{ platform: "LESSWRONG", externalId, url, observedContentText, observedImageUrls? }` to background worker.
 
-**Media behavior:** Posts with images are investigated. Only `video_only` posts (video/iframe
-without images) are skipped.
+**Media behavior:** Posts with images are investigated. Posts detected as private/gated are
+skipped (`reason: "private_or_gated"`). Among public posts, only `video_only` posts
+(video/iframe without images) are skipped.
 
 **React reconciliation:** LessWrong uses React 16+. Use `MutationObserver` to detect re-renders and
 re-apply annotations. Store annotations in extension state, not DOM.
@@ -1359,7 +1367,8 @@ X uses a React SPA with aggressive DOM recycling.
    maintenance.
 
 **Media behavior:** Extract image URLs separately from video detection. Investigate image posts.
-Skip only `video_only` tweets (video present, no extracted images).
+Skip private/protected tweets (`reason: "private_or_gated"`). Among accessible tweets, skip
+only `video_only` tweets (video present, no extracted images).
 
 ## 3.11 Substack Content Script
 
@@ -1370,6 +1379,8 @@ Skip only `video_only` tweets (video present, no extracted images).
 3. `externalId` is the numeric Substack post ID parsed from social image metadata
    (`post_preview/{numericId}/twitter.jpg` pattern).
 4. Content root selector: `.body.markup`.
+5. Subscriber-only/paywalled views are skipped (`reason: "private_or_gated"`) and are not sent
+   to `viewPost`/`investigateNow`.
 
 Because custom-domain Substack publishers can use arbitrary hostnames, the extension cannot
 pre-enumerate all required origins in the manifest. v1 therefore keeps broad host permissions

@@ -59,7 +59,9 @@ The `PlatformContent` includes a `platform` field (the string union value)
 and `metadata` with platform-specific fields (slug, title, author, etc.).
 
 **Media detection**: adapters classify posts as `text_only`, `has_images`, or
-`video_only`. Image posts are investigated; only `video_only` posts are skipped.
+`video_only`. Image posts are investigated; `video_only` posts are skipped.
+Adapters also skip private/protected/subscriber-only views with
+`reason: "private_or_gated"` and do not send content to the API in that case.
 The content script sends `PAGE_SKIPPED` when skipping.
 
 ### LessWrong Adapter

@@ -19,6 +19,7 @@ const REFRESH_DEBOUNCE_MS = 200;
 const REAPPLY_DEBOUNCE_MS = 300;
 const SYNC_RETRY_INITIAL_MS = 1_000;
 const SYNC_RETRY_MAX_MS = 30_000;
+const SUBSTACK_POST_PATH_REGEX = /^\/p\/([^/?#]+)/i;
 
 type PageSessionState =
   | {
@@ -78,6 +79,43 @@ function pageKeyFor(content: PlatformContent): string {
     content.mediaState,
     content.contentText,
   ].join(":");
+}
+
+function pageLocatorForSessionKey(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return url;
+  }
+}
+
+function inferIdentityForPrivateOrGatedSkip(
+  url: string,
+  adapter: PlatformAdapter,
+): { platform: Platform; externalId: string } | null {
+  const supportedIdentity = parseSupportedPageIdentity(url);
+  if (supportedIdentity) {
+    return supportedIdentity;
+  }
+
+  if (adapter.platformKey !== "SUBSTACK") {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(url);
+    const match = parsed.pathname.match(SUBSTACK_POST_PATH_REGEX);
+    if (!match?.[1]) {
+      return null;
+    }
+    return {
+      platform: "SUBSTACK",
+      externalId: match[1],
+    };
+  } catch {
+    return null;
+  }
 }
 
 function wordCount(text: string): number {
@@ -310,6 +348,30 @@ export class PageSessionController {
       };
     }
 
+    if (adapter.detectPrivateOrGated?.(document) === true) {
+      const identity = inferIdentityForPrivateOrGatedSkip(url, adapter);
+      if (!identity) {
+        return {
+          kind: "NONE",
+          sessionKey: null,
+        };
+      }
+
+      return {
+        kind: "SKIPPED",
+        sessionKey: [
+          "private_or_gated",
+          identity.platform,
+          identity.externalId,
+          pageLocatorForSessionKey(url),
+        ].join(":"),
+        platform: identity.platform,
+        externalId: identity.externalId,
+        pageUrl: url,
+        reason: "private_or_gated",
+      };
+    }
+
     const content = adapter.extract(document);
     if (!content) {
       const supportedIdentity = parseSupportedPageIdentity(url);
@@ -517,7 +579,8 @@ export class PageSessionController {
     if (this.#state.kind === "SKIPPED") {
       if (
         (this.#state.reason === "unsupported_content" ||
-          this.#state.reason === "no_text") &&
+          this.#state.reason === "no_text" ||
+          this.#state.reason === "private_or_gated") &&
         getAdapter(currentUrl, document)
       ) {
         this.#scheduleRefreshFromMutation();

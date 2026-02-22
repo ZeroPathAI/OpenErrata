@@ -55,6 +55,9 @@
     if (reason === "no_text") {
       return "This post has no extractable text. Textless/image-only fact-check UX is not supported yet.";
     }
+    if (reason === "private_or_gated") {
+      return "This post appears to be private or subscriber-only. OpenErrata skipped sending it for investigation.";
+    }
     if (reason === "unsupported_content") {
       return "OpenErrata could not extract this post. Try reloading the page or opening the canonical post URL.";
     }

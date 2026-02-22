@@ -34,6 +34,49 @@ const RESERVED_HANDLE_SEGMENTS = new Set([
 ]);
 
 const TWEET_TEXT_SELECTOR = '[data-testid="tweetText"]';
+const PRIVATE_OR_GATED_PATTERNS = [
+  /these posts are protected/i,
+  /only confirmed followers have access/i,
+  /unable to view this post/i,
+  /account owner limits who can view their posts/i,
+  /this account['\u2019]s posts are protected/i,
+] as const;
+
+function isStatusHrefForTweetId(
+  href: string | null | undefined,
+  tweetId: string,
+): boolean {
+  if (!href) return false;
+  try {
+    const parsed = new URL(href, window.location.origin);
+    const pathMatch = parsed.pathname.match(STATUS_PATH_REGEX);
+    return pathMatch?.[2] === tweetId;
+  } catch {
+    return false;
+  }
+}
+
+function findTargetTweetContainer(document: Document, tweetId: string): Element | null {
+  const permalinkCandidates = document.querySelectorAll<HTMLAnchorElement>(
+    `article a[href*="/status/${tweetId}"]`,
+  );
+  for (const candidate of permalinkCandidates) {
+    if (!isStatusHrefForTweetId(candidate.getAttribute("href"), tweetId)) {
+      continue;
+    }
+    const container = candidate.closest("article");
+    if (container) {
+      return container;
+    }
+  }
+
+  // In some route variants, the primary column contains only the target tweet.
+  // Use that as a conservative fallback when permalink anchors are absent.
+  const primaryColumn = document.querySelector('[data-testid="primaryColumn"]');
+  if (!primaryColumn) return null;
+  const articles = primaryColumn.querySelectorAll("article");
+  return articles.length === 1 ? (articles[0] ?? null) : null;
+}
 
 function normalizeAuthorHandle(raw: string | null | undefined): string | null {
   if (!raw) return null;
@@ -171,6 +214,21 @@ function hasSupportedStatusPath(url: string): boolean {
   );
 }
 
+function hasPrivateOrGatedMessage(document: Document, tweetId: string): boolean {
+  if (findTargetTweetContainer(document, tweetId) !== null) {
+    return false;
+  }
+
+  const primaryColumn =
+    document.querySelector('[data-testid="primaryColumn"]') ?? document.body;
+  const text = normalizeContent(primaryColumn.textContent);
+  if (text.length === 0) {
+    return false;
+  }
+
+  return PRIVATE_OR_GATED_PATTERNS.some((pattern) => pattern.test(text));
+}
+
 export const xAdapter: PlatformAdapter = {
   platformKey: "X",
 
@@ -178,23 +236,30 @@ export const xAdapter: PlatformAdapter = {
     return hasSupportedStatusPath(url);
   },
 
+  detectPrivateOrGated(document: Document): boolean {
+    const statusFromUrl = parseStatusFromUrl(window.location.href);
+    if (!statusFromUrl) return false;
+    return hasPrivateOrGatedMessage(document, statusFromUrl.tweetId);
+  },
+
   extract(document: Document): PlatformContent | null {
     const statusFromUrl = parseStatusFromUrl(window.location.href);
     if (!statusFromUrl) return null;
 
-    const tweetTextEl = document.querySelector(TWEET_TEXT_SELECTOR);
+    const tweetId = statusFromUrl.tweetId;
+    const tweetContainer = findTargetTweetContainer(document, tweetId);
+    if (!tweetContainer) return null;
+
+    const tweetTextEl = tweetContainer.querySelector(TWEET_TEXT_SELECTOR);
     if (!tweetTextEl) return null;
 
-    const tweetId = statusFromUrl.tweetId;
     const rawText = tweetTextEl.textContent;
     const contentText = normalizeContent(rawText);
     const authorDisplayName = normalizeContent(
-      document.querySelector('article [data-testid="User-Name"]')?.textContent ??
-        "",
+      tweetContainer.querySelector('[data-testid="User-Name"]')?.textContent ?? "",
     );
 
     // Extract images separately from video detection so image posts are investigated.
-    const tweetContainer = tweetTextEl.closest("article") ?? document.body;
     const imageUrls = extractImageUrlsFromRoot(
       tweetContainer,
       window.location.origin,
@@ -236,6 +301,10 @@ export const xAdapter: PlatformAdapter = {
   },
 
   getContentRoot(document: Document): Element | null {
-    return document.querySelector(TWEET_TEXT_SELECTOR);
+    const statusFromUrl = parseStatusFromUrl(window.location.href);
+    if (!statusFromUrl) return null;
+    const tweetContainer = findTargetTweetContainer(document, statusFromUrl.tweetId);
+    if (!tweetContainer) return null;
+    return tweetContainer.querySelector(TWEET_TEXT_SELECTOR);
   },
 };

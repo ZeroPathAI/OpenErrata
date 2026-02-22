@@ -113,6 +113,19 @@ test("extensionSkippedStatusSchema accepts no_text skip reason", () => {
   assert.equal(parsed.reason, "no_text");
 });
 
+test("extensionSkippedStatusSchema accepts private_or_gated skip reason", () => {
+  const parsed = extensionSkippedStatusSchema.parse({
+    kind: "SKIPPED",
+    tabSessionId: 1,
+    platform: "SUBSTACK",
+    externalId: "paid-post",
+    pageUrl: "https://example.substack.com/p/paid-post",
+    reason: "private_or_gated",
+  });
+
+  assert.equal(parsed.reason, "private_or_gated");
+});
+
 test("platformContentSchema rejects LESSWRONG payloads missing htmlContent", () => {
   const lesswrongPayload = createLesswrongContent();
   const { htmlContent, ...metadataWithoutHtml } = lesswrongPayload.metadata;

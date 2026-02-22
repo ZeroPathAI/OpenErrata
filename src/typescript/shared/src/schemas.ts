@@ -268,6 +268,7 @@ const extensionSkippedReasonSchema = z.enum([
   "video_only",
   "word_count",
   "no_text",
+  "private_or_gated",
   "unsupported_content",
 ]);
 
