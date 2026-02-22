@@ -543,6 +543,19 @@ jobs:
           echo "pulumi cancel failed unexpectedly"
           exit $rc
 
+      - name: Delete stale selector jobs
+        shell: bash
+        env:
+          TARGET_NAMESPACE: openerrata-${{ needs.resolve-target.outputs.deploy_environment }}
+        run: |
+          set -euo pipefail
+          # Selector jobs are cron-generated historical resources and can leave
+          # failed executions behind from a prior image rollout. Clearing them
+          # before `pulumi up` avoids awaiting stale job state.
+          kubectl -n "$TARGET_NAMESPACE" delete job \
+            -l app.kubernetes.io/component=selector \
+            --ignore-not-found=true
+
       - name: Pulumi deploy
         uses: pulumi/actions@v6
         with:
