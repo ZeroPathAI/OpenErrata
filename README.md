@@ -1,6 +1,6 @@
 # OpenErrata
 
-A browser extension that fact-checks content on LessWrong, X, and Substack using frontier LLMs. It highlights empirically incorrect claims inline with sourced rebuttals, prioritizing an extremely low false-positive rate over coverage.
+A browser extension that prevents you from being misled about factual information on Substack/Twitter/LessWrong. It highlights empirically incorrect claims inline with sourced rebuttals, prioritizing an extremely low false-positive rate over coverage.
 
 ## How It Works
 
