@@ -1,5 +1,6 @@
 import browser from "webextension-polyfill";
 import {
+  API_BASE_URL_REQUIREMENTS_MESSAGE,
   DEFAULT_EXTENSION_SETTINGS,
   SETTINGS_KEYS,
   apiEndpointUrl,
@@ -12,6 +13,7 @@ import {
 } from "./settings-core.js";
 
 export {
+  API_BASE_URL_REQUIREMENTS_MESSAGE,
   DEFAULT_EXTENSION_SETTINGS,
   apiEndpointUrl,
   apiHostPermissionFor,

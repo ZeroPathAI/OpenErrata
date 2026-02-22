@@ -11,6 +11,7 @@ import {
   type TRPCUntypedClient,
 } from "@trpc/client";
 import {
+  API_BASE_URL_REQUIREMENTS_MESSAGE,
   apiEndpointUrl,
   normalizeApiBaseUrl,
   normalizeOpenaiApiKey,
@@ -166,7 +167,7 @@ export async function probeSettingsConfiguration(
   if (!normalizedApiBaseUrl) {
     return {
       status: "error",
-      message: "API Server URL must be a valid http(s) URL.",
+      message: API_BASE_URL_REQUIREMENTS_MESSAGE,
     };
   }
 

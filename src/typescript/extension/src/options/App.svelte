@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { SettingsValidationOutput } from "@openerrata/shared";
   import {
+    API_BASE_URL_REQUIREMENTS_MESSAGE,
     DEFAULT_EXTENSION_SETTINGS,
     ensureApiHostPermission,
     loadExtensionSettings,
@@ -154,7 +155,7 @@
 
     const normalizedApiUrl = normalizeApiBaseUrl(apiUrl);
     if (!normalizedApiUrl) {
-      error = "API Server URL must be a valid http(s) URL.";
+      error = API_BASE_URL_REQUIREMENTS_MESSAGE;
       return;
     }
 
@@ -226,7 +227,7 @@
     if (!normalizedApiUrl) {
       instanceFeedback = {
         tone: "error",
-        text: "API Server URL must be a valid http(s) URL.",
+        text: API_BASE_URL_REQUIREMENTS_MESSAGE,
       };
       if (openaiFormatError === null && normalizedOpenaiApiKey.length > 0) {
         openaiFeedback = {
