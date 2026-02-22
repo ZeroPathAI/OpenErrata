@@ -535,6 +535,11 @@ jobs:
             exit 0
           fi
 
+          if echo "$output" | grep -qi "has never been updated"; then
+            echo "Stack has never been updated; no lock to cancel."
+            exit 0
+          fi
+
           echo "pulumi cancel failed unexpectedly"
           exit $rc
 
