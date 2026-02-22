@@ -29,8 +29,6 @@ no runtime code) for tRPC client typing.
   for data model).
 - `src/typescript/api/src/lib/investigators/prompt.ts` — The LLM investigation
   prompt.
-- `src/typescript/api/prisma/migrations/0002_views_and_constraints/migration.sql`
-  — SQL constraints that enforce investigation provenance/run-lease consistency.
 
 ## Workspace Guidelines
 
