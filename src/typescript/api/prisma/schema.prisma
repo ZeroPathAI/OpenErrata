@@ -1,9 +1,8 @@
 // See SPEC.md §3.2 for data model documentation
 
 generator client {
-  provider        = "prisma-client"
-  output          = "../src/lib/generated/prisma"
-  previewFeatures = ["views"]
+  provider = "prisma-client"
+  output   = "../src/lib/generated/prisma"
 }
 
 datasource db {
