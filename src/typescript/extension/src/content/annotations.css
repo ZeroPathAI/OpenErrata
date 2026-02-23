@@ -7,6 +7,8 @@
   text-underline-offset: 3px;
   cursor: pointer;
   background: transparent;
+  color: inherit;
+  -webkit-text-fill-color: currentColor;
 }
 
 .openerrata-tooltip {
