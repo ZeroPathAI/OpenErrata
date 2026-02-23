@@ -45,6 +45,18 @@ function extractPublishedAt(document: Document): string | null {
   );
 }
 
+function toCanonicalVersioningHtml(contentRoot: Element): string {
+  const clone = contentRoot.cloneNode(true) as Element;
+
+  // LessWrong linkposts prepend a client-rendered callout block that is not
+  // present in GraphQL `contents.html`, so include only canonical post HTML.
+  clone.querySelectorAll(".LinkPostMessage-root").forEach((node) => {
+    node.remove();
+  });
+
+  return (clone as HTMLElement).innerHTML;
+}
+
 export const lesswrongAdapter: PlatformAdapter = {
   platformKey: "LESSWRONG",
 
@@ -90,7 +102,7 @@ export const lesswrongAdapter: PlatformAdapter = {
           : "text_only";
     const metadata = {
       slug,
-      htmlContent: body.innerHTML,
+      htmlContent: toCanonicalVersioningHtml(body),
       authorSlug,
       tags,
       ...(title === null ? {} : { title }),
