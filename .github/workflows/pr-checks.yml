@@ -36,12 +36,12 @@ jobs:
       - name: Check for promote PR
         id: gate
         shell: bash
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-
-          HEAD_REF="${{ github.head_ref }}"
-          HEAD_REPO="${{ github.event.pull_request.head.repo.full_name }}"
-          BASE_REPO="${{ github.repository }}"
 
           if [ "$HEAD_REPO" = "$BASE_REPO" ] && { [ "$HEAD_REF" = "staging" ] || [ "$HEAD_REF" = "main" ]; }; then
             echo "skip_all=true" >> "$GITHUB_OUTPUT"
