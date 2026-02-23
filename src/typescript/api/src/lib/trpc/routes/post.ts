@@ -2,7 +2,6 @@ import { router, publicProcedure } from "../init.js";
 import {
   viewPostInputSchema,
   getInvestigationInputSchema,
-  investigateNowInputSchema,
   batchStatusInputSchema,
   settingsValidationOutputSchema,
   normalizeContent,
@@ -646,7 +645,7 @@ export const postRouter = router({
     }),
 
   investigateNow: publicProcedure
-    .input(investigateNowInputSchema)
+    .input(viewPostInputSchema)
     .mutation(async ({ input, ctx }) => {
       if (!ctx.canInvestigate) {
         throw new TRPCError({

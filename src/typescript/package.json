@@ -24,7 +24,7 @@
     "lint:fix": "eslint . --fix",
     "knip": "DATABASE_URL=postgresql://localhost:5432/openerrata knip --config knip.json --no-progress",
     "check": "pnpm typecheck && pnpm lint && pnpm knip",
-    "verify:push": "pnpm db:generate && pnpm typecheck && pnpm lint && pnpm run test:unit:shared && pnpm run test:unit:extension && pnpm run test:unit:api"
+    "verify:push": "pnpm db:generate && pnpm typecheck && pnpm lint && pnpm knip && pnpm run test:unit:shared && pnpm run test:unit:extension && pnpm run test:unit:api"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

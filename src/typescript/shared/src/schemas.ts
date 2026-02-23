@@ -133,8 +133,6 @@ export const getInvestigationOutputSchema = investigationStatusOutputSchema.exte
   checkedAt: z.iso.datetime().optional(),
 });
 
-export const investigateNowInputSchema = viewPostInputSchema;
-
 export const investigateNowOutputSchema = z.object({
   investigationId: z.string().min(1),
   status: checkStatusSchema,
