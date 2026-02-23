@@ -6,6 +6,7 @@ import type {
   ViewPostInput,
   ViewPostOutput,
 } from "@openerrata/shared";
+import { ApiClientError } from "./api-client-error.js";
 
 type PostStatusInput = {
   tabSessionId: number;
@@ -99,7 +100,7 @@ export function createPostStatus(input: PostStatusInput): ExtensionPostStatus {
   };
 }
 
-export function viewPostErrorToFailureState(
+function apiErrorToFailureState(
   errorCode: ExtensionRuntimeErrorCode | undefined,
 ): Pick<PostStatusInput, "investigationState" | "status" | "claims"> {
   if (errorCode === "CONTENT_MISMATCH") {
@@ -114,4 +115,36 @@ export function viewPostErrorToFailureState(
     status: "FAILED",
     claims: null,
   };
+}
+
+/**
+ * Build the post status that should be cached when an API call fails.
+ *
+ * Every background handler that calls the API (viewPost, investigateNow,
+ * maybeAutoInvestigate) must use this function to produce the cached error
+ * state. This ensures new error codes like CONTENT_MISMATCH are handled
+ * uniformly instead of requiring each call site to remember independently.
+ */
+export function apiErrorToPostStatus(input: {
+  error: unknown;
+  tabSessionId: number;
+  platform: ViewPostInput["platform"];
+  externalId: string;
+  pageUrl: string;
+  investigationId?: string;
+  provenance?: ViewPostOutput["provenance"];
+}): ExtensionPostStatus {
+  const errorCode =
+    input.error instanceof ApiClientError ? input.error.errorCode : undefined;
+  return createPostStatus({
+    tabSessionId: input.tabSessionId,
+    platform: input.platform,
+    externalId: input.externalId,
+    pageUrl: input.pageUrl,
+    ...(input.investigationId === undefined
+      ? {}
+      : { investigationId: input.investigationId }),
+    ...(input.provenance === undefined ? {} : { provenance: input.provenance }),
+    ...apiErrorToFailureState(errorCode),
+  });
 }

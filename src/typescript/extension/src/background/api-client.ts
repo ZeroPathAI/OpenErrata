@@ -4,7 +4,6 @@ import type {
   GetInvestigationInput,
   GetInvestigationOutput,
   InvestigateNowOutput,
-  ExtensionRuntimeErrorCode,
   ExtensionApiInput,
   ExtensionApiMutationPath,
   ExtensionApiOutput,
@@ -29,6 +28,8 @@ import {
   type ExtensionSettings,
 } from "../lib/settings.js";
 import { extractApiErrorCode } from "./api-error-code.js";
+export { ApiClientError } from "./api-client-error.js";
+import { ApiClientError } from "./api-client-error.js";
 
 const BUNDLED_ATTESTATION_SECRET = "openerrata-attestation-v1";
 
@@ -45,22 +46,6 @@ type ParsedGetInvestigationOutput = ReturnType<
 type ParsedInvestigateNowOutput = ReturnType<
   typeof investigateNowOutputSchema.parse
 >;
-
-export class ApiClientError extends Error {
-  readonly errorCode: ExtensionRuntimeErrorCode | undefined;
-
-  constructor(
-    message: string,
-    options?: {
-      cause?: unknown;
-      errorCode?: ExtensionRuntimeErrorCode;
-    },
-  ) {
-    super(message, { cause: options?.cause });
-    this.name = "ApiClientError";
-    this.errorCode = options?.errorCode;
-  }
-}
 
 async function loadSettingsFromStorage(): Promise<void> {
   settings = await loadExtensionSettings();

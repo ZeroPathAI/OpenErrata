@@ -35,7 +35,7 @@ import {
 import { toViewPostInput } from "../lib/view-post-input.js";
 import {
   createPostStatus,
-  viewPostErrorToFailureState,
+  apiErrorToPostStatus,
 } from "./post-status.js";
 
 // Initialize API client on worker start.
@@ -567,7 +567,8 @@ async function maybeAutoInvestigate(
   } catch (error) {
     await cachePostStatus(
       input.tabId,
-      createPostStatus({
+      apiErrorToPostStatus({
+        error,
         tabSessionId: input.tabSessionId,
         platform: input.request.platform,
         externalId: input.request.externalId,
@@ -576,10 +577,7 @@ async function maybeAutoInvestigate(
         input.existingStatus.investigationId !== undefined
           ? { investigationId: input.existingStatus.investigationId }
           : {}),
-        investigationState: "NOT_INVESTIGATED",
-        status: undefined,
         provenance: input.provenance,
-        claims: null,
       }),
     );
     throw error;
@@ -631,9 +629,6 @@ async function handlePageContent(
   try {
     result = await viewPost(request);
   } catch (error) {
-    const errorCode =
-      error instanceof ApiClientError ? error.errorCode : undefined;
-    const failureState = viewPostErrorToFailureState(errorCode);
     // Cache a terminal error state so the popup shows a stable status instead
     // of hanging on "Checking This Page" indefinitely.
     if (sender.tab?.id !== undefined) {
@@ -643,12 +638,12 @@ async function handlePageContent(
         stopInvestigationPolling(tabId);
         await cachePostStatus(
           tabId,
-          createPostStatus({
+          apiErrorToPostStatus({
+            error,
             tabSessionId: payload.tabSessionId,
             platform: request.platform,
             externalId: request.externalId,
             pageUrl: request.url,
-            ...failureState,
           }),
         );
       }
@@ -822,7 +817,26 @@ async function handleInvestigateNow(
   }
 
   const request = payload.request;
-  const result = await investigateNow(request);
+
+  let result: InvestigateNowOutput;
+  try {
+    result = await investigateNow(request);
+  } catch (error) {
+    if (sender.tab?.id !== undefined) {
+      stopInvestigationPolling(sender.tab.id);
+      await cachePostStatus(
+        sender.tab.id,
+        apiErrorToPostStatus({
+          error,
+          tabSessionId: payload.tabSessionId,
+          platform: request.platform,
+          externalId: request.externalId,
+          pageUrl: request.url,
+        }),
+      );
+    }
+    throw error;
+  }
 
   if (sender.tab?.id !== undefined) {
     await cacheInvestigateNowResult({
