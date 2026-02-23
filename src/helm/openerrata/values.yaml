@@ -47,6 +47,7 @@ selector:
 
 config:
   ipRangeCreditCap: "10"
+  workerConcurrency: "250"
   databaseEncryptionKeyId: "primary"
   # Required: blob storage backend provider ("aws" or "s3_compatible").
   blobStorageProvider: ""

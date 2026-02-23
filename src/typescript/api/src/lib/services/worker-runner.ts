@@ -12,9 +12,10 @@ function isInvestigatePayload(
 }
 
 export async function startWorker(): Promise<void> {
+  const env = getEnv();
   const runner = await run({
-    connectionString: normalizePgConnectionStringForNode(getEnv().DATABASE_URL),
-    concurrency: 5,
+    connectionString: normalizePgConnectionStringForNode(env.DATABASE_URL),
+    concurrency: env.WORKER_CONCURRENCY,
     pollInterval: 1000,
     taskList: {
       investigate: async (payload, helpers) => {

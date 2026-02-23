@@ -24,6 +24,16 @@ test("accepts aws blob storage configuration with an explicit region", () => {
   assert.equal(environment.BLOB_STORAGE_PROVIDER, "aws");
   assert.equal(environment.BLOB_STORAGE_REGION, "us-west-2");
   assert.equal(environment.BLOB_STORAGE_ENDPOINT, undefined);
+  assert.equal(environment.WORKER_CONCURRENCY, 250);
+});
+
+test("accepts a custom worker concurrency", () => {
+  const environment = parseEnvironmentValues(
+    createBaseEnvironment({
+      WORKER_CONCURRENCY: "32",
+    }),
+  );
+  assert.equal(environment.WORKER_CONCURRENCY, 32);
 });
 
 test("rejects aws blob storage configuration when endpoint is set", () => {

@@ -757,6 +757,7 @@ const chart = new k8s.helm.v3.Chart(releaseName, {
         }),
     config: {
       ipRangeCreditCap: config.get("ipRangeCreditCap") ?? "10",
+      workerConcurrency: config.get("workerConcurrency") ?? "250",
       databaseEncryptionKeyId: config.get("databaseEncryptionKeyId") ?? "primary",
       blobStorageProvider: blobStorage.provider,
       blobStorageRegion: blobStorage.region,
