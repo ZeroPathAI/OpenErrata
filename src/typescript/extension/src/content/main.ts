@@ -1,8 +1,6 @@
-import {
-  contentControlMessageSchema,
-} from "@openerrata/shared";
 import browser from "webextension-polyfill";
 import { PageSessionController } from "./page-session-controller";
+import { handleContentControlMessage } from "./control-message-handler";
 
 declare global {
   interface Window {
@@ -13,26 +11,10 @@ declare global {
 const controller = new PageSessionController();
 
 browser.runtime.onMessage.addListener((message: unknown) => {
-  const parsedMessage = contentControlMessageSchema.safeParse(message);
-  if (!parsedMessage.success) return false;
-  const controlMessage = parsedMessage.data;
+  const response = handleContentControlMessage(controller, message);
+  if (response === false) return false;
 
-  const handle = async () => {
-    switch (controlMessage.type) {
-      case "REQUEST_INVESTIGATE":
-        return controller.requestInvestigation();
-      case "SHOW_ANNOTATIONS":
-        return controller.showAnnotations();
-      case "HIDE_ANNOTATIONS":
-        return controller.hideAnnotations();
-      case "GET_ANNOTATION_VISIBILITY":
-        return controller.getAnnotationVisibility();
-      default:
-        return null;
-    }
-  };
-
-  return handle().catch((error: unknown) => {
+  return response.catch((error: unknown) => {
     console.error("Content script message handler error:", error);
     throw error;
   });

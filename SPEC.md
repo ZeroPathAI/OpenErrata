@@ -300,7 +300,8 @@ User visits post
   → If the adapter detects private/gated access, emit `PAGE_SKIPPED(reason="private_or_gated")`
     and stop (no `viewPost` request is sent)
   → Background worker calls API: viewPost(...)
-      - Always include observedContentText
+      - Include observedContentText for X/Substack
+      - For LessWrong, include metadata.htmlContent (do not include observedContentText)
       - Include observed image URLs for metadata persistence
   → API upserts Post + metadata and increments raw viewCount / unique-view signals
   → API checks whether this observed content version already has a completed investigation:
@@ -308,7 +309,7 @@ User visits post
              (already investigated for this content version; client is done)
       MISS → continue
   → For misses only, API attempts server-side verification (best effort):
-      VERIFIED + matches observed content → continue with `SERVER_VERIFIED`
+      VERIFIED + matches selected observed version source → continue with `SERVER_VERIFIED`
       VERIFIED + mismatch                 → reject request (`CONTENT_MISMATCH`)
                                             and do not update post/view/corroboration signals
       NOT VERIFIED                        → continue with `CLIENT_FALLBACK`
@@ -388,15 +389,17 @@ completed investigation matching the current version.
 
 - **On every view**: The API records the latest observed post content/version, increments raw
   viewCount, updates uniqueViewScore with capped credit rules, and then checks for cached results.
-- **Client input simplification**: the extension sends normalized text; the API computes the
-  version key internally.
+- **Client input simplification**: the extension sends platform-observed content; the API computes
+  the version key internally.
 - **Hit**: Return claims. The view still increments the counter.
 - **Miss**: Return `{ investigated: false }`. The view is recorded; the selector may pick this post
   up later.
 - **Strict version rule**: Never return or render an investigation for a different content version
   of the same post. No fallback to older versions.
-- **Version key semantics**: In v1 the version key is derived from normalized text only. Attached
-  images are investigation context but are not part of the version key.
+- **Version key semantics**: In v1 the version key is derived from normalized text only. For
+  LessWrong, normalized text is derived server-side from `metadata.htmlContent`; for X/Substack it
+  is derived from `observedContentText`. Attached images are investigation context but are not part
+  of the version key.
 - **Idempotent creation**: If a duplicate investigation is requested (same post + content version), reuse the
   existing row rather than creating a second one.
 - **Stale prompt**: If the investigation's prompt version doesn't match the current server prompt,
@@ -1019,9 +1022,10 @@ interface InvestigationResult {
 ```typescript
 // Record a view. Returns cached results if they exist.
 // Upserts Post + platform metadata. Increments raw viewCount and updates uniqueViewScore.
-// Client sends observed content text only; API computes hashes server-side.
+// Client sends platform-observed content; API computes hashes server-side.
 postRouter.viewPost
-  Input:  { platform, externalId, url, observedContentText, observedImageUrls?,
+  Input:  { platform, externalId, url, observedImageUrls?,
+            observedContentText?, // required for X/Substack; omitted for LessWrong
             metadata: { title?, authorName?, ... } }
   Output: { investigated: boolean, provenance?: ContentProvenance, claims: Claim[] | null }
 
@@ -1038,7 +1042,8 @@ postRouter.getInvestigation
 // current status (which may be COMPLETE or FAILED, not just PENDING).
 // All paths are async queue-backed; user-key requests attach an encrypted short-lived lease.
 postRouter.investigateNow
-  Input:  { platform, externalId, url, observedContentText, observedImageUrls?,
+  Input:  { platform, externalId, url, observedImageUrls?,
+            observedContentText?, // required for X/Substack; omitted for LessWrong
             metadata: { title?, authorName?, ... } }
   Output: { investigationId, status: CheckStatus, provenance: ContentProvenance, claims?: Claim[] }
 
@@ -1183,13 +1188,10 @@ In v1, public metrics focus on incidence rather than truth-rate leaderboards:
 
 `factCheckIncidence = investigated_posts_with_>=1_flagged_claim / total_investigated_posts`
 
-### Migration & deprecation
+### Public Surface
 
-- During migration, both surfaces may coexist: GraphQL (`/graphql`) and
-  legacy `publicRouter.*` tRPC procedures.
-- New external integrations must use GraphQL.
-- Legacy `publicRouter.*` endpoints are considered deprecated and may be removed
-  after clients migrate.
+- External public integrations use GraphQL (`/graphql`).
+- Extension/internal traffic uses `postRouter.*` tRPC procedures.
 
 ## 3.5 Cache & Idempotency Implementation
 
@@ -1348,7 +1350,7 @@ DOM manipulation is reliable.
 3. Extract post ID from URL: `/posts/{postId}/{slug}`.
 4. Normalize `textContent`.
 5. Extract image URLs (`<img src>`), filter malformed/data URLs, and compute `mediaState`.
-6. Send `{ platform: "LESSWRONG", externalId, url, observedContentText, observedImageUrls? }` to background worker.
+6. Send `{ platform: "LESSWRONG", externalId, url, metadata.htmlContent, observedImageUrls? }` to background worker.
 
 **Media behavior:** Posts with images are investigated. Posts detected as private/gated are
 skipped (`reason: "private_or_gated"`). Among public posts, only `video_only` posts

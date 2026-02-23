@@ -21,6 +21,7 @@ import {
   parseInvestigatorAttemptAudit,
   type InvestigatorAttemptAudit,
 } from "$lib/investigators/interface.js";
+import { toDate, toOptionalDate } from "$lib/date.js";
 import type {
   ImageBlob,
   Prisma,
@@ -186,19 +187,6 @@ function toPromptPostContext(post: InvestigationPostContext): PromptPostContext 
     default:
       return unreachablePlatform(post.platform);
   }
-}
-
-function toDate(value: string): Date {
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.valueOf())) {
-    throw new Error(`Invalid ISO timestamp: ${value}`);
-  }
-  return parsed;
-}
-
-function toOptionalDate(value: string | null): Date | null {
-  if (value === null) return null;
-  return toDate(value);
 }
 
 function unwrapError(error: unknown): UnwrappedError {
@@ -438,7 +426,7 @@ async function persistAttemptAudit(
       responseModelVersion: attemptAudit.response?.responseModelVersion ?? null,
       responseOutputText: attemptAudit.response?.responseOutputText ?? null,
       startedAt: toDate(attemptAudit.startedAt),
-      completedAt: toOptionalDate(attemptAudit.completedAt),
+      completedAt: toOptionalDate(attemptAudit.completedAt, { strict: true }),
     },
     update: {
       outcome: input.outcome,
@@ -452,7 +440,7 @@ async function persistAttemptAudit(
       responseModelVersion: attemptAudit.response?.responseModelVersion ?? null,
       responseOutputText: attemptAudit.response?.responseOutputText ?? null,
       startedAt: toDate(attemptAudit.startedAt),
-      completedAt: toOptionalDate(attemptAudit.completedAt),
+      completedAt: toOptionalDate(attemptAudit.completedAt, { strict: true }),
     },
   });
 
@@ -580,8 +568,8 @@ async function persistAttemptAudit(
         status: toolCall.status,
         rawPayload: toolCall.rawPayload,
         capturedAt: toDate(toolCall.capturedAt),
-        providerStartedAt: toOptionalDate(toolCall.providerStartedAt),
-        providerCompletedAt: toOptionalDate(toolCall.providerCompletedAt),
+        providerStartedAt: toOptionalDate(toolCall.providerStartedAt, { strict: true }),
+        providerCompletedAt: toOptionalDate(toolCall.providerCompletedAt, { strict: true }),
       },
     });
   }

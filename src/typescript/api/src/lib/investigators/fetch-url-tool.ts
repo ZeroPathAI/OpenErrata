@@ -1,6 +1,7 @@
 import { normalizeContent } from "@openerrata/shared";
 import { z } from "zod";
 import { isBlockedHost } from "$lib/network/host-safety.js";
+import { isRedirectStatus } from "$lib/network/http-status.js";
 
 const MAX_FETCH_URL_BYTES = 1_000_000;
 const MAX_FETCH_URL_TEXT_LENGTH = 20_000;
@@ -130,10 +131,6 @@ function truncateUtf8(value: string, maxBytes: number): { value: string; truncat
 function parseContentType(contentTypeHeader: string | null): string {
   if (!contentTypeHeader) return "";
   return contentTypeHeader.split(";")[0]?.trim().toLowerCase() ?? "";
-}
-
-function isRedirectStatus(status: number): boolean {
-  return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
 }
 
 function hasEmbeddedCredentials(url: URL): boolean {

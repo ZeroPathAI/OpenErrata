@@ -3,11 +3,16 @@
     annotationVisibilityResponseSchema,
     extensionPageStatusSchema,
     extensionRuntimeErrorResponseSchema,
+    focusClaimResponseSchema,
     requestInvestigateResponseSchema,
   } from "@openerrata/shared";
-  import type { ExtensionPageStatus, ExtensionSkippedReason } from "@openerrata/shared";
+  import type {
+    ExtensionMessage,
+    ExtensionSkippedReason,
+  } from "@openerrata/shared";
   import browser from "webextension-polyfill";
   import { isSupportedPostUrl, parseSupportedPageIdentity } from "../lib/post-identity";
+  import { computePostView, type PopupClaim, type PostPopupView } from "./post-view";
   import { isSubstackPostPathUrl, statusMatchesIdentity } from "./status-identity";
   import { loadExtensionSettings } from "../lib/settings";
 
@@ -18,20 +23,13 @@
   // computes the entire view atomically after all async work completes, so
   // the template never sees an inconsistent intermediate state.
 
-  type PostStatus = Extract<ExtensionPageStatus, { kind: "POST" }>;
-  type PopupClaim = NonNullable<PostStatus["claims"]>[number];
-
   type PopupView =
     | { kind: "loading" }
     | { kind: "error"; message: string }
     | { kind: "unsupported" }
     | { kind: "awaiting_status" }
     | { kind: "skipped"; message: string }
-    | { kind: "found_claims"; claims: PopupClaim[] }
-    | { kind: "clean" }
-    | { kind: "failed" }
-    | { kind: "investigating" }
-    | { kind: "not_investigated"; canRequest: boolean };
+    | PostPopupView;
 
   // ── Utilities ─────────────────────────────────────────────────────────────
 
@@ -71,20 +69,28 @@
     return String(error);
   }
 
-  function computePostView(matched: PostStatus, canRequest: boolean): PopupView {
-    if (matched.investigationState === "INVESTIGATED" && matched.claims.length > 0) {
-      return { kind: "found_claims", claims: matched.claims };
+  type PopupContentControlMessage = Extract<
+    ExtensionMessage,
+    {
+      type:
+        | "REQUEST_INVESTIGATE"
+        | "SHOW_ANNOTATIONS"
+        | "HIDE_ANNOTATIONS"
+        | "GET_ANNOTATION_VISIBILITY"
+        | "FOCUS_CLAIM";
     }
-    if (matched.investigationState === "INVESTIGATED") {
-      return { kind: "clean" };
-    }
-    if (matched.investigationState === "FAILED") {
-      return { kind: "failed" };
-    }
-    if (matched.investigationState === "INVESTIGATING") {
-      return { kind: "investigating" };
-    }
-    return { kind: "not_investigated", canRequest };
+  >;
+
+  async function withActiveTab<T>(run: (tabId: number) => Promise<T>): Promise<T | null> {
+    const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) return null;
+    return run(tab.id);
+  }
+
+  async function sendContentControlMessage(
+    message: PopupContentControlMessage,
+  ): Promise<unknown | null> {
+    return withActiveTab((tabId) => browser.tabs.sendMessage(tabId, message));
   }
 
   // ── Reactive state ────────────────────────────────────────────────────────
@@ -153,11 +159,10 @@
 
   async function syncHighlightVisibility() {
     try {
-      const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
-      if (!tab?.id) return;
-      const response = await browser.tabs.sendMessage(tab.id, {
+      const response = await sendContentControlMessage({
         type: "GET_ANNOTATION_VISIBILITY",
       });
+      if (response === null) return;
       const parsed = annotationVisibilityResponseSchema.safeParse(response);
       if (parsed.success) {
         showHighlights = parsed.data.visible;
@@ -168,19 +173,17 @@
   }
 
   async function requestInvestigation() {
-    const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.id) {
-      view = { kind: "error", message: "No active tab available" };
-      return;
-    }
-
     // Give immediate feedback before the content script round-trip.
     view = { kind: "investigating" };
 
     try {
-      const response = await browser.tabs.sendMessage(tab.id, {
+      const response = await sendContentControlMessage({
         type: "REQUEST_INVESTIGATE",
       });
+      if (response === null) {
+        view = { kind: "error", message: "No active tab available" };
+        return;
+      }
       const parsedResponse = requestInvestigateResponseSchema.safeParse(response);
       if (!parsedResponse.success) {
         view = { kind: "error", message: "Could not start investigation" };
@@ -202,19 +205,46 @@
 
   async function toggleHighlights() {
     const nextVisibility = !showHighlights;
-    const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.id) return;
 
     try {
-      await browser.tabs.sendMessage(tab.id, {
+      const response = await sendContentControlMessage({
         type: nextVisibility ? "SHOW_ANNOTATIONS" : "HIDE_ANNOTATIONS",
       });
+      if (response === null) return;
       showHighlights = nextVisibility;
     } catch (toggleError) {
       console.error(
         `Could not update highlights: ${describeError(toggleError)}`,
       );
       view = { kind: "error", message: "Could not update highlights" };
+    }
+  }
+
+  async function focusClaim(claimIndex: number) {
+    try {
+      const response = await sendContentControlMessage({
+        type: "FOCUS_CLAIM",
+        payload: { claimIndex },
+      });
+      if (response === null) {
+        view = { kind: "error", message: "No active tab available" };
+        return;
+      }
+      const parsed = focusClaimResponseSchema.safeParse(response);
+      if (!parsed.success || !parsed.data.ok) {
+        view = {
+          kind: "error",
+          message: "The server returned errata, but we could not find their targets on the page.",
+        };
+        return;
+      }
+
+      window.close();
+    } catch (focusError) {
+      console.error(
+        `Could not focus claim: ${describeError(focusError)}`,
+      );
+      view = { kind: "error", message: "Could not reach content script" };
     }
   }
 
@@ -303,8 +333,15 @@
           <span><strong>{view.claims.length}</strong> incorrect claim{view.claims.length !== 1 ? "s" : ""} found</span>
         </div>
         <ul class="claims">
-          {#each view.claims as claim (claim.text)}
-            <li>{claim.summary}</li>
+          {#each view.claims as claim, claimIndex (`${claim.text}:${claimIndex.toString()}`)}
+            <li>
+              <button
+                class="claim-focus-btn"
+                onclick={() => void focusClaim(claimIndex)}
+              >
+                {claim.summary}
+              </button>
+            </li>
           {/each}
         </ul>
       {:else if view.kind === "clean"}
@@ -316,6 +353,14 @@
         <section class="state-panel error-panel">
           <p class="state-title">Investigation failed.</p>
           <button class="btn" onclick={requestInvestigation}>Investigate Again</button>
+        </section>
+      {:else if view.kind === "content_mismatch"}
+        <section class="state-panel">
+          <p class="state-title">Content Mismatch</p>
+          <p class="state-subtitle">
+            This page's extracted content does not match the server-verified canonical
+            post content. Reload the page or open the canonical post URL.
+          </p>
         </section>
       {:else if view.kind === "investigating"}
         <section class="state-panel">
@@ -558,15 +603,25 @@
 
   .claims li {
     position: relative;
-    padding: 9px 10px 9px 18px;
-    font-size: 13px;
-    line-height: 1.45;
-    color: #334155;
   }
   .claims li + li {
     border-top: 1px solid #f1f5f9;
   }
-  .claims li::before {
+
+  .claim-focus-btn {
+    position: relative;
+    width: 100%;
+    padding: 9px 28px 9px 18px;
+    background: transparent;
+    border: none;
+    text-align: left;
+    font-size: 13px;
+    line-height: 1.45;
+    color: #334155;
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+  }
+  .claim-focus-btn::before {
     content: "";
     position: absolute;
     left: 8px;
@@ -575,6 +630,23 @@
     height: 5px;
     border-radius: 50%;
     background: #ef4444;
+  }
+  .claim-focus-btn::after {
+    content: "↘";
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 11px;
+    color: #94a3b8;
+  }
+  .claim-focus-btn:hover {
+    background: #f8fafc;
+  }
+  .claim-focus-btn:focus-visible {
+    outline: 2px solid #93c5fd;
+    outline-offset: -2px;
+    border-radius: 8px;
   }
 
   .btn {

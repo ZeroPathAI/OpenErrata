@@ -5,6 +5,8 @@
   "scripts": {
     "dev:api": "pnpm --filter @openerrata/api dev",
     "dev:ext": "pnpm --filter @openerrata/extension dev",
+    "prepare": "cd ../.. && husky .husky",
+    "lint-staged": "lint-staged",
     "test:unit:shared": "pnpm --filter @openerrata/shared test:unit",
     "test:unit:extension": "pnpm --filter @openerrata/extension test:unit",
     "test:e2e:extension": "pnpm --filter @openerrata/extension test:e2e",
@@ -21,7 +23,8 @@
     "lint": "eslint . --max-warnings 0",
     "lint:fix": "eslint . --fix",
     "knip": "DATABASE_URL=postgresql://localhost:5432/openerrata knip --config knip.json --no-progress",
-    "check": "pnpm typecheck && pnpm lint && pnpm knip"
+    "check": "pnpm typecheck && pnpm lint && pnpm knip",
+    "verify:push": "pnpm db:generate && pnpm typecheck && pnpm lint && pnpm run test:unit:shared && pnpm run test:unit:extension && pnpm run test:unit:api"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -29,9 +32,14 @@
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-svelte": "^3.15.0",
     "globals": "^17.3.0",
+    "husky": "^9.1.7",
     "knip": "^5.84.1",
+    "lint-staged": "^15.5.2",
     "prettier": "^3.8.1",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.56.0"
+  },
+  "lint-staged": {
+    "*.{ts,js,svelte}": "eslint --fix --max-warnings 0"
   }
 }

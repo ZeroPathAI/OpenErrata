@@ -19,6 +19,52 @@ export interface Releasable {
   release(): void | Promise<void>;
 }
 
+export const QUEUE_ERROR_CODES = {
+  CLOSED: "QUEUE_CLOSED",
+  CONNECT_FAILED: "QUEUE_CONNECT_FAILED",
+  RELEASE_FAILED: "QUEUE_RELEASE_FAILED",
+} as const;
+
+export type QueueErrorCode =
+  (typeof QUEUE_ERROR_CODES)[keyof typeof QUEUE_ERROR_CODES];
+
+class QueueLifecycleError extends Error {
+  constructor(
+    readonly code: QueueErrorCode,
+    message: string,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = new.target.name;
+  }
+}
+
+export class QueueClosedError extends QueueLifecycleError {
+  constructor() {
+    super(QUEUE_ERROR_CODES.CLOSED, "Queue utilities are closed");
+  }
+}
+
+export class QueueConnectError extends QueueLifecycleError {
+  constructor(cause: unknown) {
+    super(
+      QUEUE_ERROR_CODES.CONNECT_FAILED,
+      "Queue utilities failed to initialize",
+      { cause },
+    );
+  }
+}
+
+export class QueueReleaseError extends QueueLifecycleError {
+  constructor(cause: unknown) {
+    super(
+      QUEUE_ERROR_CODES.RELEASE_FAILED,
+      "Queue utilities failed to release",
+      { cause },
+    );
+  }
+}
+
 interface QueueManager<T> {
   acquire(): Promise<T>;
   close(): Promise<void>;
@@ -52,7 +98,7 @@ export function createQueueManager<T extends Releasable>(
     while (true) {
       switch (state.phase) {
         case "closed":
-          throw new Error("Queue utilities are closed");
+          throw new QueueClosedError();
 
         case "closing":
           // Wait for close to finish, then re-check. Swallow close errors —
@@ -81,7 +127,7 @@ export function createQueueManager<T extends Releasable>(
           } catch (error) {
             if (isActiveInit(promise)) {
               state = { phase: "idle" };
-              throw error;
+              throw new QueueConnectError(error);
             }
             // State changed during init (e.g. close was requested).
             // Swallow the connection error and re-check — callers should
@@ -106,7 +152,7 @@ export function createQueueManager<T extends Releasable>(
     } catch (error) {
       // Release failed — revert to idle so close can be retried.
       state = { phase: "idle" };
-      throw error;
+      throw new QueueReleaseError(error);
     }
   }
 

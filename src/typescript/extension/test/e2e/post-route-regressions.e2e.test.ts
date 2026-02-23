@@ -31,8 +31,24 @@ interface ExpectedPostStatus {
   investigationState?: ExtensionPostStatus["investigationState"];
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+async function getCachedStatus(
+  serviceWorker: Worker,
+): Promise<unknown> {
+  return serviceWorker.evaluate(async () => {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab?.id === undefined) {
+      return null;
+    }
+
+    const [result] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: async () => {
+        return chrome.runtime.sendMessage({ type: "GET_CACHED" });
+      },
+    });
+
+    return result?.result ?? null;
+  });
 }
 
 function hasMatchingSkippedStatus(
@@ -102,26 +118,7 @@ async function expectSkippedStatus(
   expected: ExpectedSkippedStatus,
 ): Promise<void> {
   await expect
-    .poll(async () => {
-      const records = await serviceWorker.evaluate(async () => {
-        const storageSnapshot = await chrome.storage.local.get(null);
-        return Object.values(storageSnapshot);
-      });
-
-      if (!Array.isArray(records)) {
-        return false;
-      }
-
-      for (const record of records) {
-        if (!isRecord(record)) continue;
-        const skippedStatus = record["skippedStatus"];
-        if (hasMatchingSkippedStatus(skippedStatus, expected)) {
-          return true;
-        }
-      }
-
-      return false;
-    })
+    .poll(async () => hasMatchingSkippedStatus(await getCachedStatus(serviceWorker), expected))
     .toBe(true);
 }
 
@@ -130,26 +127,7 @@ async function expectPostStatus(
   expected: ExpectedPostStatus,
 ): Promise<void> {
   await expect
-    .poll(async () => {
-      const records = await serviceWorker.evaluate(async () => {
-        const storageSnapshot = await chrome.storage.local.get(null);
-        return Object.values(storageSnapshot);
-      });
-
-      if (!Array.isArray(records)) {
-        return false;
-      }
-
-      for (const record of records) {
-        if (!isRecord(record)) continue;
-        const activePostStatus = record["activePostStatus"];
-        if (hasMatchingPostStatus(activePostStatus, expected)) {
-          return true;
-        }
-      }
-
-      return false;
-    })
+    .poll(async () => hasMatchingPostStatus(await getCachedStatus(serviceWorker), expected))
     .toBe(true);
 }
 

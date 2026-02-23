@@ -1,5 +1,6 @@
 import {
   annotationVisibilityResponseSchema,
+  focusClaimResponseSchema,
   normalizeContent,
   requestInvestigateResponseSchema,
   WORD_COUNT_LIMIT,
@@ -11,15 +12,20 @@ import {
 import type { PlatformAdapter } from "./adapters/index";
 import { getAdapter } from "./adapters/index";
 import { parseSupportedPageIdentity } from "../lib/post-identity";
+import { isContentMismatchRuntimeError } from "../lib/runtime-error";
+import { toViewPostInput } from "../lib/view-post-input";
 import { AnnotationController } from "./annotations";
 import { PageObserver } from "./observer";
 import { ContentSyncClient, type ParsedExtensionPageStatus } from "./sync";
+import { mapClaimsToDom } from "./dom-mapper";
 
 const REFRESH_DEBOUNCE_MS = 200;
 const REAPPLY_DEBOUNCE_MS = 300;
 const SYNC_RETRY_INITIAL_MS = 1_000;
 const SYNC_RETRY_MAX_MS = 30_000;
 const SUBSTACK_POST_PATH_REGEX = /^\/p\/([^/?#]+)/i;
+const CLAIM_FOCUS_CLASS = "openerrata-focus-target";
+const CLAIM_FOCUS_DURATION_MS = 1_500;
 
 type PageSessionState =
   | {
@@ -42,6 +48,7 @@ type PageSessionState =
       sessionKey: string;
       platform: Platform;
       externalId: string;
+      observedText: string;
       adapter: PlatformAdapter;
       request: ViewPostInput;
     };
@@ -126,34 +133,38 @@ function exceedsWordCountLimit(text: string): boolean {
   return wordCount(text) > WORD_COUNT_LIMIT;
 }
 
-function toViewPostInput(content: PlatformContent): ViewPostInput {
-  const common = {
-    externalId: content.externalId,
-    url: content.url,
-    observedContentText: content.contentText,
-    observedImageUrls: content.imageUrls,
-  };
+function resolveClaimAnchor(range: Range): HTMLElement | null {
+  const startContainer = range.startContainer;
+  const startElement =
+    startContainer instanceof HTMLElement
+      ? startContainer
+      : startContainer instanceof Text
+        ? startContainer.parentElement
+        : startContainer instanceof Element
+          ? startContainer.parentElement
+          : null;
+  if (!startElement) return null;
+  return startElement.closest(".openerrata-annotation") ?? startElement;
+}
 
-  switch (content.platform) {
-    case "LESSWRONG":
-      return {
-        ...common,
-        platform: "LESSWRONG",
-        metadata: content.metadata,
-      };
-    case "X":
-      return {
-        ...common,
-        platform: "X",
-        metadata: content.metadata,
-      };
-    case "SUBSTACK":
-      return {
-        ...common,
-        platform: "SUBSTACK",
-        metadata: content.metadata,
-      };
-  }
+function scrollToClaimRange(range: Range): boolean {
+  const anchor = resolveClaimAnchor(range);
+  if (!anchor) return false;
+
+  anchor.scrollIntoView({
+    behavior: "smooth",
+    block: "center",
+    inline: "nearest",
+  });
+
+  anchor.classList.add(CLAIM_FOCUS_CLASS);
+  window.setTimeout(() => {
+    if (anchor.isConnected) {
+      anchor.classList.remove(CLAIM_FOCUS_CLASS);
+    }
+  }, CLAIM_FOCUS_DURATION_MS);
+
+  return true;
 }
 
 export class PageSessionController {
@@ -254,6 +265,38 @@ export class PageSessionController {
   getAnnotationVisibility(): { visible: boolean } {
     return annotationVisibilityResponseSchema.parse({
       visible: this.#annotations.isVisible(),
+    });
+  }
+
+  focusClaim(claimIndex: number): { ok: boolean } {
+    if (this.#state.kind !== "TRACKED_POST") {
+      return focusClaimResponseSchema.parse({ ok: false });
+    }
+
+    const claim = this.#annotations.getClaims()[claimIndex];
+    if (!claim) {
+      return focusClaimResponseSchema.parse({ ok: false });
+    }
+
+    const root = this.#state.adapter.getContentRoot(document);
+    if (!root) {
+      return focusClaimResponseSchema.parse({ ok: false });
+    }
+
+    if (this.#annotations.isVisible()) {
+      const applied = this.#annotations.render(this.#state.adapter);
+      if (!applied) {
+        this.scheduleRefresh();
+      }
+    }
+
+    const [mappedClaim] = mapClaimsToDom([claim], root);
+    if (!mappedClaim?.matched || !mappedClaim.range) {
+      return focusClaimResponseSchema.parse({ ok: false });
+    }
+
+    return focusClaimResponseSchema.parse({
+      ok: scrollToClaimRange(mappedClaim.range),
     });
   }
 
@@ -448,6 +491,14 @@ export class PageSessionController {
     try {
       viewPost = await this.#sync.sendPageContent(tabSessionId, snapshot.content);
     } catch (error) {
+      if (isContentMismatchRuntimeError(error)) {
+        this.#resetSyncRetryState();
+        console.warn(
+          "Page content mismatch with server-verified canonical content; skipping retries.",
+          error,
+        );
+        return;
+      }
       console.error("Failed to sync page content with background:", error);
       this.#scheduleSyncRetry(snapshot.sessionKey);
       return;
@@ -513,6 +564,7 @@ export class PageSessionController {
       sessionKey: snapshot.sessionKey,
       platform: snapshot.platform,
       externalId: snapshot.externalId,
+      observedText: snapshot.content.contentText,
       adapter: snapshot.adapter,
       request: snapshot.request,
     };
@@ -540,7 +592,10 @@ export class PageSessionController {
       return;
     }
 
-    if (status.investigationState === "FAILED") {
+    if (
+      status.investigationState === "FAILED" ||
+      status.investigationState === "CONTENT_MISMATCH"
+    ) {
       this.#annotations.clearAll();
     }
   }
@@ -595,7 +650,7 @@ export class PageSessionController {
     }
 
     const normalizedText = normalizeContent(root.textContent);
-    if (normalizedText !== this.#state.request.observedContentText) {
+    if (normalizedText !== this.#state.observedText) {
       this.#scheduleRefreshFromMutation();
       return;
     }

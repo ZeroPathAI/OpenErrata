@@ -1,4 +1,5 @@
 import { normalizeContent, hashContent, type Platform } from "@openerrata/shared";
+import { parseFragment, type DefaultTreeAdapterMap } from "parse5";
 
 type FetchResult =
   | {
@@ -41,60 +42,58 @@ function extractLesswrongHtml(value: unknown): string | null {
   return typeof html === "string" ? html : null;
 }
 
-/** Standard HTML named character references (HTML5 §12.5). */
-const NAMED_ENTITIES: Partial<Record<string, string>> = {
-  amp: "&",
-  lt: "<",
-  gt: ">",
-  quot: '"',
-  apos: "'",
-  nbsp: "\u00A0",
-  ndash: "\u2013",
-  mdash: "\u2014",
-  lsquo: "\u2018",
-  rsquo: "\u2019",
-  ldquo: "\u201C",
-  rdquo: "\u201D",
-  hellip: "\u2026",
-  copy: "\u00A9",
-  reg: "\u00AE",
-  trade: "\u2122",
-  bull: "\u2022",
-  middot: "\u00B7",
-  ensp: "\u2002",
-  emsp: "\u2003",
-  thinsp: "\u2009",
-  zwnj: "\u200C",
-  zwj: "\u200D",
-  lrm: "\u200E",
-  rlm: "\u200F",
-};
+function isTextNode(
+  node: DefaultTreeAdapterMap["node"],
+): node is DefaultTreeAdapterMap["textNode"] {
+  return node.nodeName === "#text";
+}
 
-/**
- * Decode HTML character references (named + numeric) in a string.
- * Handles `&name;`, `&#NNN;`, and `&#xHHH;` forms.
- */
-function decodeHtmlEntities(text: string): string {
-  return text.replace(
-    /&(#x([0-9a-fA-F]+)|#([0-9]+)|([a-zA-Z]+));/g,
-    (match, _full: string, hex: string | undefined, dec: string | undefined, name: string | undefined) => {
-      if (hex !== undefined) return String.fromCodePoint(parseInt(hex, 16));
-      if (dec !== undefined) return String.fromCodePoint(parseInt(dec, 10));
-      if (name !== undefined) {
-        const resolved: string | undefined = NAMED_ENTITIES[name];
-        return resolved ?? match;
+function hasChildren(
+  node: DefaultTreeAdapterMap["node"],
+): node is DefaultTreeAdapterMap["parentNode"] {
+  return "childNodes" in node;
+}
+
+function htmlToTextContent(html: string): string {
+  const fragment = parseFragment(html);
+  const stack: DefaultTreeAdapterMap["node"][] = [];
+  for (let index = fragment.childNodes.length - 1; index >= 0; index -= 1) {
+    const child = fragment.childNodes[index];
+    if (child !== undefined) {
+      stack.push(child);
+    }
+  }
+
+  const chunks: string[] = [];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (!node) continue;
+
+    if (isTextNode(node)) {
+      chunks.push(node.value);
+      continue;
+    }
+
+    if (!hasChildren(node)) {
+      continue;
+    }
+
+    for (let index = node.childNodes.length - 1; index >= 0; index -= 1) {
+      const child = node.childNodes[index];
+      if (child !== undefined) {
+        stack.push(child);
       }
-      return match;
-    },
-  );
+    }
+  }
+
+  return chunks.join("");
 }
 
 /**
- * Extract text content from HTML, matching browser `textContent` behavior:
- * strip tags, decode character references, concatenate text nodes.
+ * Convert LessWrong post HTML into normalized plain text for hashing/storage.
  */
-function htmlToTextContent(html: string): string {
-  return decodeHtmlEntities(html.replace(/<[^>]*>/g, ""));
+export function lesswrongHtmlToNormalizedText(html: string): string {
+  return normalizeContent(htmlToTextContent(html));
 }
 
 export async function fetchCanonicalContent(
@@ -156,7 +155,7 @@ async function fetchLesswrongContent(postId: string): Promise<FetchResult> {
     };
   }
 
-  const contentText = normalizeContent(htmlToTextContent(html));
+  const contentText = lesswrongHtmlToNormalizedText(html);
   const contentHash = await hashContent(contentText);
   return { success: true, contentText, contentHash };
 }

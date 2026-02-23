@@ -10,10 +10,14 @@ import {
   type Platform,
   type InvestigationClaim,
   type ContentProvenance,
+  type ExtensionRuntimeErrorCode,
   type PlatformMetadataByPlatform,
   type ViewPostInput,
 } from "@openerrata/shared";
-import { fetchCanonicalContent } from "$lib/services/content-fetcher.js";
+import {
+  fetchCanonicalContent,
+  lesswrongHtmlToNormalizedText,
+} from "$lib/services/content-fetcher.js";
 import { getOrCreateCurrentPrompt } from "$lib/services/prompt.js";
 import {
   ensureInvestigationQueued,
@@ -25,6 +29,7 @@ import { maybeIncrementUniqueViewScore } from "$lib/services/view-credit.js";
 import { isUniqueConstraintError } from "$lib/db/errors.js";
 import { attachOpenAiKeySourceIfPendingRun } from "$lib/services/user-key-source.js";
 import { validateOpenAiApiKeyForSettings } from "$lib/services/openai-key-validation.js";
+import { toOptionalDate } from "$lib/date.js";
 import type { PrismaClient } from "$lib/generated/prisma/client";
 import { TRPCError } from "@trpc/server";
 
@@ -60,6 +65,8 @@ type CanonicalContentVersion = ContentVersion & {
   fetchFailureReason?: string;
 };
 
+const CONTENT_MISMATCH_ERROR_CODE: ExtensionRuntimeErrorCode = "CONTENT_MISMATCH";
+
 function unreachableInvestigationStatus(status: never): never {
   throw new TRPCError({
     code: "INTERNAL_SERVER_ERROR",
@@ -70,12 +77,9 @@ function unreachableInvestigationStatus(status: never): never {
 function contentMismatchError(): TRPCError {
   return new TRPCError({
     code: "BAD_REQUEST",
-    message: "CONTENT_MISMATCH",
+    message: "Observed content does not match canonical content",
+    cause: { openerrataCode: CONTENT_MISMATCH_ERROR_CODE },
   });
-}
-
-function toOptionalDate(value: string | null | undefined): Date | null {
-  return value ? new Date(value) : null;
 }
 
 function trimToOptionalNonEmpty(value: string | null | undefined): string | undefined {
@@ -116,8 +120,13 @@ async function upsertAuthorAndAttachToPost(
   });
 }
 
-async function toObservedContentVersion(observedContentText: string): Promise<ContentVersion> {
-  const contentText = normalizeContent(observedContentText);
+async function toObservedContentVersion(input: ViewPostInput): Promise<ContentVersion> {
+  // LessWrong versioning is anchored on HTML-derived text so the observed and
+  // server-verified paths use one canonicalization pipeline.
+  const contentText =
+    input.platform === "LESSWRONG"
+      ? lesswrongHtmlToNormalizedText(input.metadata.htmlContent)
+      : normalizeContent(input.observedContentText);
   const contentHash = await hashContent(contentText);
   return { contentText, contentHash };
 }
@@ -520,7 +529,7 @@ async function preparePostForInvestigation(
   input: ViewPostInput,
   options: { countAsView: boolean },
 ): Promise<PreparedPostForInvestigation> {
-  const observed = await toObservedContentVersion(input.observedContentText);
+  const observed = await toObservedContentVersion(input);
 
   const existingPostId = await findPostId(prisma, {
     platform: input.platform,

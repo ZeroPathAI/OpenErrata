@@ -7,18 +7,24 @@ import {
   WORD_COUNT_LIMIT,
   type Platform,
 } from "@openerrata/shared";
+import {
+  createDeterministicRandom,
+  randomInt,
+  sleep,
+} from "../helpers/fuzz-utils.js";
 
-process.env['NODE_ENV'] ??= "test";
+process.env['NODE_ENV'] = "test";
 process.env['DATABASE_URL'] ??=
   "postgresql://openerrata:openerrata_dev@localhost:5433/openerrata";
-process.env['HMAC_SECRET'] ??= "test-hmac-secret";
-process.env['BLOB_STORAGE_PROVIDER'] ??= "aws";
-process.env['BLOB_STORAGE_REGION'] ??= "us-east-1";
-process.env['BLOB_STORAGE_BUCKET'] ??= "test-openerrata-images";
-process.env['BLOB_STORAGE_ACCESS_KEY_ID'] ??= "test-blob-access-key";
-process.env['BLOB_STORAGE_SECRET_ACCESS_KEY'] ??= "test-blob-secret";
-process.env['BLOB_STORAGE_PUBLIC_URL_PREFIX'] ??= "https://example.test/images";
-process.env['DATABASE_ENCRYPTION_KEY'] ??= "integration-test-database-encryption-key";
+process.env['HMAC_SECRET'] = "test-hmac-secret";
+process.env['BLOB_STORAGE_PROVIDER'] = "aws";
+process.env['BLOB_STORAGE_REGION'] = "us-east-1";
+process.env['BLOB_STORAGE_ENDPOINT'] = "";
+process.env['BLOB_STORAGE_BUCKET'] = "test-openerrata-images";
+process.env['BLOB_STORAGE_ACCESS_KEY_ID'] = "test-blob-access-key";
+process.env['BLOB_STORAGE_SECRET_ACCESS_KEY'] = "test-blob-secret";
+process.env['BLOB_STORAGE_PUBLIC_URL_PREFIX'] = "https://example.test/images";
+process.env['DATABASE_ENCRYPTION_KEY'] = "integration-test-database-encryption-key";
 
 const INTEGRATION_TEST_RUN_ID = [
   Date.now().toString(36),
@@ -42,6 +48,7 @@ const [
   { POST: graphqlPost },
   { closeQueueUtils },
   { runSelector },
+  { lesswrongHtmlToNormalizedText },
 ] =
   await Promise.all([
     import("../../src/lib/trpc/router.js"),
@@ -52,6 +59,7 @@ const [
     import("../../src/routes/graphql/+server.js"),
     import("../../src/lib/services/queue.js"),
     import("../../src/lib/services/selector.js"),
+    import("../../src/lib/services/content-fetcher.js"),
   ]);
 
 const prisma = getPrisma();
@@ -501,6 +509,75 @@ function buildXViewInput(input: {
   };
 }
 
+function buildLesswrongViewInput(input: {
+  externalId: string;
+  htmlContent: string;
+}) {
+  const externalId = withIntegrationPrefix(input.externalId);
+
+  return {
+    platform: "LESSWRONG" as const,
+    externalId,
+    url: `https://www.lesswrong.com/posts/${externalId}/integration-post`,
+    metadata: {
+      slug: `${externalId}-integration-post`,
+      title: "Integration LW Post",
+      htmlContent: input.htmlContent,
+      tags: [],
+    },
+  };
+}
+
+async function withMockLesswrongFetch<ResponseType>(
+  htmlContent: string,
+  run: () => Promise<ResponseType>,
+): Promise<ResponseType> {
+  const lesswrongGraphqlUrl = "https://www.lesswrong.com/graphql";
+  let sawLesswrongRequest = false;
+  const originalFetch = globalThis.fetch;
+  const mockedFetch: typeof fetch = async (input, init) => {
+    const url =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url;
+    if (url !== lesswrongGraphqlUrl) {
+      return originalFetch(input, init);
+    }
+    sawLesswrongRequest = true;
+
+    return new Response(
+      JSON.stringify({
+        data: {
+          post: {
+            result: {
+              contents: {
+                html: htmlContent,
+              },
+            },
+          },
+        },
+      }),
+      {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+        },
+      },
+    );
+  };
+
+  globalThis.fetch = mockedFetch;
+  try {
+    const result = await run();
+    assert.equal(sawLesswrongRequest, true);
+    return result;
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
 async function seedPostForXViewInput(input: XViewInput): Promise<SeededPost> {
   return seedPost({
     platform: input.platform,
@@ -627,6 +704,46 @@ void test("post.viewPost stores content and reports not investigated without mat
   assert.ok(post);
   assert.equal(post.latestContentHash, expectedObservedHash);
   assert.equal(post.latestContentText, normalizeContent(input.observedContentText));
+  assert.equal(post.uniqueViewScore, 1);
+  assert.equal(post.viewCount, 1);
+});
+
+void test("post.viewPost for LessWrong derives observed content from html metadata", async () => {
+  const caller = createCaller();
+  const htmlContent = '<p data-note="x > y">Alpha</p>\n<p>Beta</p>';
+  const input = buildLesswrongViewInput({
+    externalId: "view-post-lesswrong-observed-html-1",
+    htmlContent,
+  });
+
+  const result = await withMockLesswrongFetch(htmlContent, () =>
+    caller.post.viewPost(input),
+  );
+
+  assert.equal(result.investigated, false);
+  assert.equal(result.claims, null);
+
+  const post = await prisma.post.findUnique({
+    where: {
+      platform_externalId: {
+        platform: input.platform,
+        externalId: input.externalId,
+      },
+    },
+    select: {
+      latestContentHash: true,
+      latestContentText: true,
+      uniqueViewScore: true,
+      viewCount: true,
+    },
+  });
+
+  const expectedCanonicalText = lesswrongHtmlToNormalizedText(htmlContent);
+  const expectedCanonicalHash = await hashContent(expectedCanonicalText);
+
+  assert.ok(post);
+  assert.equal(post.latestContentText, expectedCanonicalText);
+  assert.equal(post.latestContentHash, expectedCanonicalHash);
   assert.equal(post.uniqueViewScore, 1);
   assert.equal(post.viewCount, 1);
 });
@@ -848,6 +965,253 @@ void test("post.investigateNow deduplicates concurrent user-key callers to one a
   assert.equal(typeof keySource.keyId, "string");
   assert.equal(keySource.keyId.length > 0, true);
   assert.notEqual(keySource.expiresAt, null);
+});
+
+void test("post.investigateNow randomized concurrency fuzz preserves dedupe invariants", async () => {
+  const random = createDeterministicRandom(0x1a2b3c4d);
+  const rounds = 12;
+  const scenarios = [
+    "NONE",
+    "FAILED",
+    "PENDING",
+    "PROCESSING_STALE",
+    "PROCESSING_ACTIVE",
+    "COMPLETE",
+  ] as const;
+  const callerModes = ["authenticated", "user_key", "mixed"] as const;
+
+  for (let round = 0; round < rounds; round += 1) {
+    const scenario = scenarios[randomInt(random, 0, scenarios.length - 1)];
+    const callerMode = callerModes[randomInt(random, 0, callerModes.length - 1)];
+    const roundTag = `round=${round.toString()} scenario=${scenario} callerMode=${callerMode}`;
+    const input = buildXViewInput({
+      externalId: `investigate-now-fuzz-${round.toString()}`,
+      observedContentText: `Concurrency fuzz payload for ${roundTag}`,
+    });
+
+    let seededInvestigationId: string | null = null;
+    if (scenario !== "NONE") {
+      const seeded = await seedInvestigationForXViewInput({
+        viewInput: input,
+        status:
+          scenario === "COMPLETE"
+            ? "COMPLETE"
+            : scenario === "FAILED"
+              ? "FAILED"
+              : scenario === "PENDING"
+                ? "PENDING"
+                : "PROCESSING",
+        provenance: "CLIENT_FALLBACK",
+      });
+      seededInvestigationId = seeded.investigationId;
+
+      if (scenario === "PROCESSING_STALE") {
+        await seedInvestigationRun({
+          investigationId: seeded.investigationId,
+          leaseOwner: withIntegrationPrefix(`stale-worker-${round.toString()}`),
+          leaseExpiresAt: new Date(Date.now() - 10 * 60_000),
+          startedAt: new Date(Date.now() - 20 * 60_000),
+          heartbeatAt: new Date(Date.now() - 10 * 60_000),
+        });
+      }
+
+      if (scenario === "PROCESSING_ACTIVE") {
+        await seedInvestigationRun({
+          investigationId: seeded.investigationId,
+          leaseOwner: withIntegrationPrefix(`active-worker-${round.toString()}`),
+          leaseExpiresAt: new Date(Date.now() + 10 * 60_000),
+          startedAt: new Date(Date.now() - 60_000),
+          heartbeatAt: new Date(),
+        });
+      }
+    }
+
+    const callerCount = randomInt(random, 4, 14);
+    const callerPlans = Array.from({ length: callerCount }, (_, index) => {
+      const jitterMs = randomInt(random, 0, 12);
+      const viewerKey = withIntegrationPrefix(
+        `fuzz-viewer-${round.toString()}-${index.toString()}`,
+      );
+      const ipRangeKey = withIntegrationPrefix(
+        `fuzz-ip-${round.toString()}-${index.toString()}`,
+      );
+
+      if (callerMode === "authenticated") {
+        return {
+          jitterMs,
+          caller: createCaller({
+            isAuthenticated: true,
+            viewerKey,
+            ipRangeKey,
+          }),
+        };
+      }
+
+      if (callerMode === "user_key") {
+        return {
+          jitterMs,
+          caller: createCaller({
+            userOpenAiApiKey: `sk-test-fuzz-${round.toString()}-${index.toString()}`,
+            viewerKey,
+            ipRangeKey,
+          }),
+        };
+      }
+
+      if (index % 2 === 0) {
+        return {
+          jitterMs,
+          caller: createCaller({
+            isAuthenticated: true,
+            viewerKey,
+            ipRangeKey,
+          }),
+        };
+      }
+
+      return {
+        jitterMs,
+        caller: createCaller({
+          userOpenAiApiKey: `sk-test-fuzz-mixed-${round.toString()}-${index.toString()}`,
+          viewerKey,
+          ipRangeKey,
+        }),
+      };
+    });
+
+    const results = await Promise.all(
+      callerPlans.map(async ({ caller, jitterMs }) => {
+        await sleep(jitterMs);
+        return caller.post.investigateNow(input);
+      }),
+    );
+
+    const investigationIds = new Set(results.map((result) => result.investigationId));
+    assert.equal(investigationIds.size, 1, `all callers should converge to one investigation (${roundTag})`);
+    const firstResult = results[0];
+    assert.ok(firstResult, `missing first result (${roundTag})`);
+    const investigationId = firstResult.investigationId;
+    if (seededInvestigationId !== null) {
+      assert.equal(
+        investigationId,
+        seededInvestigationId,
+        `existing investigation identity should be preserved (${roundTag})`,
+      );
+    }
+
+    const expectedStoredStatus =
+      scenario === "COMPLETE"
+        ? "COMPLETE"
+        : scenario === "PROCESSING_ACTIVE"
+          ? "PROCESSING"
+          : "PENDING";
+    const returnedStatuses = new Set(results.map((result) => result.status));
+    const allowedReturnedStatuses =
+      scenario === "PROCESSING_STALE"
+        ? new Set(["PENDING", "PROCESSING"])
+        : new Set([expectedStoredStatus]);
+    assert.equal(
+      Array.from(returnedStatuses).every((status) =>
+        allowedReturnedStatuses.has(status),
+      ),
+      true,
+      `returned statuses fell outside allowed transition window (${roundTag})`,
+    );
+    if (scenario === "PROCESSING_STALE") {
+      assert.equal(
+        returnedStatuses.has("PENDING"),
+        true,
+        `stale-processing scenario should include at least one recovered PENDING result (${roundTag})`,
+      );
+    }
+
+    const post = await prisma.post.findUnique({
+      where: {
+        platform_externalId: {
+          platform: input.platform,
+          externalId: input.externalId,
+        },
+      },
+      select: { id: true },
+    });
+    assert.ok(post, `post should exist after investigateNow (${roundTag})`);
+
+    const storedInvestigations = await prisma.investigation.findMany({
+      where: { postId: post.id },
+      select: { id: true, status: true },
+    });
+    assert.equal(
+      storedInvestigations.length,
+      1,
+      `there should be exactly one investigation row (${roundTag})`,
+    );
+    const storedInvestigation = storedInvestigations[0];
+    assert.ok(storedInvestigation, `missing stored investigation (${roundTag})`);
+    assert.equal(storedInvestigation.id, investigationId, `stored investigation id mismatch (${roundTag})`);
+    assert.equal(
+      storedInvestigation.status,
+      expectedStoredStatus,
+      `stored investigation status mismatch (${roundTag})`,
+    );
+
+    const storedRuns = await prisma.investigationRun.findMany({
+      where: { investigationId },
+      select: {
+        id: true,
+        queuedAt: true,
+        leaseOwner: true,
+        leaseExpiresAt: true,
+      },
+    });
+
+    if (scenario === "COMPLETE") {
+      assert.equal(
+        storedRuns.length,
+        0,
+        `complete scenarios should not create runs via investigateNow path (${roundTag})`,
+      );
+      continue;
+    }
+
+    assert.equal(storedRuns.length, 1, `there should be exactly one run row (${roundTag})`);
+    const run = storedRuns[0];
+    assert.ok(run, `missing run record (${roundTag})`);
+
+    if (expectedStoredStatus === "PENDING") {
+      assert.notEqual(run.queuedAt, null, `pending investigations must have queuedAt (${roundTag})`);
+    }
+
+    if (expectedStoredStatus === "PROCESSING") {
+      assert.notEqual(
+        run.leaseOwner,
+        null,
+        `active processing investigations must retain lease ownership (${roundTag})`,
+      );
+      assert.notEqual(
+        run.leaseExpiresAt,
+        null,
+        `active processing investigations must retain lease expiry (${roundTag})`,
+      );
+    }
+
+    const keySourceCount = await prisma.investigationOpenAiKeySource.count({
+      where: { runId: run.id },
+    });
+    const hasUserKeyCaller = callerMode !== "authenticated";
+    if (expectedStoredStatus === "PENDING" && hasUserKeyCaller) {
+      assert.equal(
+        keySourceCount <= 1,
+        true,
+        `pending investigateNow with user keys should attach at most one source (${roundTag})`,
+      );
+    } else {
+      assert.equal(
+        keySourceCount,
+        0,
+        `non-pending or no-user-key scenarios should not attach key source (${roundTag})`,
+      );
+    }
+  }
 });
 
 void test("post.investigateNow allows user OpenAI key callers and returns inline claims for complete investigations", async () => {

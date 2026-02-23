@@ -131,8 +131,16 @@ export type ExtensionPageStatus = z.infer<
   typeof import("./schemas.js").extensionPageStatusSchema
 >;
 
+export type ExtensionRuntimeErrorCode = z.infer<
+  typeof import("./schemas.js").extensionRuntimeErrorCodeSchema
+>;
+
 export type AnnotationVisibilityResponse = z.infer<
   typeof import("./schemas.js").annotationVisibilityResponseSchema
+>;
+
+export type FocusClaimResponse = z.infer<
+  typeof import("./schemas.js").focusClaimResponseSchema
 >;
 
 // ── Extension message protocol ────────────────────────────────────────────

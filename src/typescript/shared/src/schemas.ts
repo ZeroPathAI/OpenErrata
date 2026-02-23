@@ -85,27 +85,29 @@ export const substackMetadataSchema = z.object({
 
 // ── Core request/response schemas ─────────────────────────────────────────
 
-const viewPostInputBaseSchema = z.object({
+const viewPostInputSharedSchema = z.object({
   externalId: z.string().min(1),
   url: z.url(),
-  observedContentText: observedContentTextSchema,
   observedImageUrls: z.array(z.url()).optional(),
 });
 
-const lesswrongViewPostInputSchema = viewPostInputBaseSchema.extend({
+const lesswrongViewPostInputSchema = viewPostInputSharedSchema.extend({
   platform: z.literal("LESSWRONG"),
+  // LessWrong versioning derives canonical text from metadata.htmlContent.
   metadata: lesswrongMetadataSchema,
-});
+}).strict();
 
-const xViewPostInputSchema = viewPostInputBaseSchema.extend({
+const xViewPostInputSchema = viewPostInputSharedSchema.extend({
   platform: z.literal("X"),
+  observedContentText: observedContentTextSchema,
   metadata: xMetadataSchema,
-});
+}).strict();
 
-const substackViewPostInputSchema = viewPostInputBaseSchema.extend({
+const substackViewPostInputSchema = viewPostInputSharedSchema.extend({
   platform: z.literal("SUBSTACK"),
+  observedContentText: observedContentTextSchema,
   metadata: substackMetadataSchema,
-});
+}).strict();
 
 export const viewPostInputSchema = z.discriminatedUnion("platform", [
   lesswrongViewPostInputSchema,
@@ -127,19 +129,11 @@ export const getInvestigationInputSchema = z.object({
   investigationId: z.string().min(1),
 });
 
-export const getInvestigationOutputSchema = z.object({
-  investigated: z.boolean(),
-  status: checkStatusSchema.optional(),
-  provenance: contentProvenanceSchema.optional(),
-  claims: z.array(investigationClaimSchema).nullable(),
+export const getInvestigationOutputSchema = investigationStatusOutputSchema.extend({
   checkedAt: z.iso.datetime().optional(),
 });
 
-export const investigateNowInputSchema = z.discriminatedUnion("platform", [
-  lesswrongViewPostInputSchema,
-  xViewPostInputSchema,
-  substackViewPostInputSchema,
-]);
+export const investigateNowInputSchema = viewPostInputSchema;
 
 export const investigateNowOutputSchema = z.object({
   investigationId: z.string().min(1),
@@ -251,6 +245,12 @@ const extensionPostFailedSchema = extensionPostStatusBaseSchema.extend({
   claims: z.null(),
 });
 
+const extensionPostContentMismatchSchema = extensionPostStatusBaseSchema.extend({
+  investigationState: z.literal("CONTENT_MISMATCH"),
+  status: z.undefined().optional(),
+  claims: z.null(),
+});
+
 const extensionPostInvestigatedSchema = extensionPostStatusBaseSchema.extend({
   investigationState: z.literal("INVESTIGATED"),
   status: z.literal("COMPLETE").optional(),
@@ -261,6 +261,7 @@ export const extensionPostStatusSchema = z.discriminatedUnion("investigationStat
   extensionPostNotInvestigatedSchema,
   extensionPostInvestigatingSchema,
   extensionPostFailedSchema,
+  extensionPostContentMismatchSchema,
   extensionPostInvestigatedSchema,
 ]);
 
@@ -290,21 +291,56 @@ export const requestInvestigateResponseSchema = z.object({
   ok: z.boolean(),
 });
 
+export const focusClaimResponseSchema = z.object({
+  ok: z.boolean(),
+});
+
 export const annotationVisibilityResponseSchema = z.object({
   visible: z.boolean(),
 });
 
+export const extensionRuntimeErrorCodeSchema = z.enum([
+  "CONTENT_MISMATCH",
+]);
+
 export const extensionRuntimeErrorResponseSchema = z.object({
   ok: z.literal(false),
   error: z.string().min(1),
+  errorCode: extensionRuntimeErrorCodeSchema.optional(),
 });
 
-export const contentControlMessageSchema = z.union([
-  z.object({ type: z.literal("REQUEST_INVESTIGATE") }),
-  z.object({ type: z.literal("SHOW_ANNOTATIONS") }),
-  z.object({ type: z.literal("HIDE_ANNOTATIONS") }),
-  z.object({ type: z.literal("GET_ANNOTATION_VISIBILITY") }),
-]);
+const requestInvestigateMessageSchema = z.object({
+  type: z.literal("REQUEST_INVESTIGATE"),
+});
+
+const showAnnotationsMessageSchema = z.object({
+  type: z.literal("SHOW_ANNOTATIONS"),
+});
+
+const hideAnnotationsMessageSchema = z.object({
+  type: z.literal("HIDE_ANNOTATIONS"),
+});
+
+const getAnnotationVisibilityMessageSchema = z.object({
+  type: z.literal("GET_ANNOTATION_VISIBILITY"),
+});
+
+const focusClaimMessageSchema = z.object({
+  type: z.literal("FOCUS_CLAIM"),
+  payload: z.object({
+    claimIndex: z.number().int().nonnegative(),
+  }),
+});
+
+const contentControlMessageSchemas = [
+  requestInvestigateMessageSchema,
+  showAnnotationsMessageSchema,
+  hideAnnotationsMessageSchema,
+  getAnnotationVisibilityMessageSchema,
+  focusClaimMessageSchema,
+] as const;
+
+export const contentControlMessageSchema = z.union(contentControlMessageSchemas);
 
 export const extensionMessageSchema = z.discriminatedUnion("type", [
   z.object({
@@ -343,10 +379,7 @@ export const extensionMessageSchema = z.discriminatedUnion("type", [
       request: viewPostInputSchema,
     }),
   }),
-  z.object({ type: z.literal("REQUEST_INVESTIGATE") }),
-  z.object({ type: z.literal("SHOW_ANNOTATIONS") }),
-  z.object({ type: z.literal("HIDE_ANNOTATIONS") }),
-  z.object({ type: z.literal("GET_ANNOTATION_VISIBILITY") }),
+  ...contentControlMessageSchemas,
   z.object({ type: z.literal("GET_CACHED") }),
   z.object({
     type: z.literal("STATUS_RESPONSE"),

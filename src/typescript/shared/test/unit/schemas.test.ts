@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { MAX_OBSERVED_CONTENT_TEXT_CHARS } from "../../src/constants.js";
 import {
+  contentControlMessageSchema,
   extensionSkippedStatusSchema,
+  extensionPostStatusSchema,
+  extensionMessageSchema,
+  extensionRuntimeErrorResponseSchema,
   investigationClaimSchema,
   platformContentSchema,
   viewPostInputSchema,
@@ -100,6 +104,55 @@ test("viewPostInputSchema enforces observedContentText max length", () => {
   assert.equal(result.success, false);
 });
 
+test("viewPostInputSchema allows LessWrong payloads without observedContentText", () => {
+  const lesswrongInput = {
+    platform: "LESSWRONG" as const,
+    externalId: "lw-without-observed",
+    url: "https://www.lesswrong.com/posts/abc123/example",
+    metadata: {
+      slug: "example-post",
+      htmlContent: "<p>Example post content</p>",
+      tags: ["rationality"],
+    },
+  };
+
+  const result = viewPostInputSchema.safeParse(lesswrongInput);
+  assert.equal(result.success, true);
+});
+
+test("viewPostInputSchema rejects LessWrong payloads with observedContentText", () => {
+  const lesswrongInputWithObserved = {
+    platform: "LESSWRONG" as const,
+    externalId: "lw-with-observed",
+    url: "https://www.lesswrong.com/posts/abc123/example",
+    observedContentText: "unexpected observed text",
+    metadata: {
+      slug: "example-post",
+      htmlContent: "<p>Example post content</p>",
+      tags: ["rationality"],
+    },
+  };
+
+  const result = viewPostInputSchema.safeParse(lesswrongInputWithObserved);
+  assert.equal(result.success, false);
+});
+
+test("viewPostInputSchema requires observedContentText for X payloads", () => {
+  const xInputMissingObserved = {
+    platform: "X" as const,
+    externalId: "x-missing-observed",
+    url: "https://x.com/example/status/x-missing-observed",
+    metadata: {
+      authorHandle: "example",
+      text: "Example tweet content",
+      mediaUrls: [],
+    },
+  };
+
+  const result = viewPostInputSchema.safeParse(xInputMissingObserved);
+  assert.equal(result.success, false);
+});
+
 test("extensionSkippedStatusSchema accepts no_text skip reason", () => {
   const parsed = extensionSkippedStatusSchema.parse({
     kind: "SKIPPED",
@@ -124,6 +177,20 @@ test("extensionSkippedStatusSchema accepts private_or_gated skip reason", () => 
   });
 
   assert.equal(parsed.reason, "private_or_gated");
+});
+
+test("extensionPostStatusSchema accepts CONTENT_MISMATCH state", () => {
+  const parsed = extensionPostStatusSchema.parse({
+    kind: "POST",
+    tabSessionId: 1,
+    platform: "LESSWRONG",
+    externalId: "lw-content-mismatch",
+    pageUrl: "https://www.lesswrong.com/posts/abc123/example",
+    investigationState: "CONTENT_MISMATCH",
+    claims: null,
+  });
+
+  assert.equal(parsed.investigationState, "CONTENT_MISMATCH");
 });
 
 test("platformContentSchema rejects LESSWRONG payloads missing htmlContent", () => {
@@ -164,4 +231,47 @@ test("investigationClaimSchema rejects invalid claim payloads", () => {
 
   assert.equal(emptySources.success, false);
   assert.equal(emptyReasoning.success, false);
+});
+
+test("contentControlMessageSchema accepts FOCUS_CLAIM with non-negative index", () => {
+  const parsed = contentControlMessageSchema.parse({
+    type: "FOCUS_CLAIM",
+    payload: {
+      claimIndex: 0,
+    },
+  });
+
+  assert.equal(parsed.type, "FOCUS_CLAIM");
+  assert.equal(parsed.payload.claimIndex, 0);
+});
+
+test("extensionMessageSchema rejects FOCUS_CLAIM with negative claim index", () => {
+  const parsed = extensionMessageSchema.safeParse({
+    type: "FOCUS_CLAIM",
+    payload: {
+      claimIndex: -1,
+    },
+  });
+
+  assert.equal(parsed.success, false);
+});
+
+test("extensionRuntimeErrorResponseSchema accepts structured mismatch code", () => {
+  const parsed = extensionRuntimeErrorResponseSchema.parse({
+    ok: false,
+    error: "Request failed",
+    errorCode: "CONTENT_MISMATCH",
+  });
+
+  assert.equal(parsed.errorCode, "CONTENT_MISMATCH");
+});
+
+test("extensionRuntimeErrorResponseSchema rejects unknown error codes", () => {
+  const parsed = extensionRuntimeErrorResponseSchema.safeParse({
+    ok: false,
+    error: "Request failed",
+    errorCode: "SOMETHING_ELSE",
+  });
+
+  assert.equal(parsed.success, false);
 });

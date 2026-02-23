@@ -15,6 +15,7 @@ import type {
 } from "@openerrata/shared";
 import browser, { type Runtime } from "webextension-polyfill";
 import {
+  ApiClientError,
   init,
   viewPost,
   getInvestigation,
@@ -31,6 +32,11 @@ import {
   getActiveStatus,
   syncToolbarBadgesForOpenTabs,
 } from "./cache.js";
+import { toViewPostInput } from "../lib/view-post-input.js";
+import {
+  createPostStatus,
+  viewPostErrorToFailureState,
+} from "./post-status.js";
 
 // Initialize API client on worker start.
 void init();
@@ -92,12 +98,19 @@ function describeError(error: unknown): string {
   return String(error);
 }
 
+function isContentMismatchError(error: unknown): boolean {
+  return error instanceof ApiClientError && error.errorCode === "CONTENT_MISMATCH";
+}
+
 function toRuntimeErrorResponse(
   error: unknown,
 ): ExtensionRuntimeErrorResponse {
+  const errorCode =
+    error instanceof ApiClientError ? error.errorCode : undefined;
   return extensionRuntimeErrorResponseSchema.parse({
     ok: false,
     error: describeError(error),
+    ...(errorCode === undefined ? {} : { errorCode }),
   });
 }
 
@@ -214,87 +227,6 @@ function investigationStateFor(input: {
     return "INVESTIGATING";
   }
   return "NOT_INVESTIGATED";
-}
-
-type PostStatusInput = {
-  tabSessionId: number;
-  platform: ViewPostInput["platform"];
-  externalId: string;
-  pageUrl: string;
-  investigationId?: string;
-  investigationState: ExtensionPostStatus["investigationState"];
-  status?: GetInvestigationOutput["status"];
-  provenance?: ViewPostOutput["provenance"];
-  claims: InvestigationStatusOutput["claims"];
-};
-
-function toPostStatusBase(input: PostStatusInput): {
-  kind: "POST";
-  tabSessionId: number;
-  platform: ViewPostInput["platform"];
-  externalId: string;
-  pageUrl: string;
-  investigationId?: string;
-  provenance?: ViewPostOutput["provenance"];
-} {
-  return {
-    kind: "POST",
-    tabSessionId: input.tabSessionId,
-    platform: input.platform,
-    externalId: input.externalId,
-    pageUrl: input.pageUrl,
-    ...(input.investigationId === undefined
-      ? {}
-      : { investigationId: input.investigationId }),
-    ...(input.provenance === undefined ? {} : { provenance: input.provenance }),
-  };
-}
-
-function toPostStatus(input: PostStatusInput): ExtensionPostStatus {
-  const base = toPostStatusBase(input);
-
-  if (input.investigationState === "NOT_INVESTIGATED") {
-    if (input.status !== undefined) {
-      throw new Error("NOT_INVESTIGATED state must not include status");
-    }
-    return {
-      ...base,
-      investigationState: "NOT_INVESTIGATED",
-      claims: null,
-    };
-  }
-
-  if (input.investigationState === "INVESTIGATING") {
-    if (input.status !== "PENDING" && input.status !== "PROCESSING") {
-      throw new Error("INVESTIGATING state must include PENDING or PROCESSING status");
-    }
-    return {
-      ...base,
-      investigationState: "INVESTIGATING",
-      status: input.status,
-      claims: null,
-    };
-  }
-
-  if (input.investigationState === "FAILED") {
-    return {
-      ...base,
-      investigationState: "FAILED",
-      status: "FAILED",
-      claims: null,
-    };
-  }
-
-  if (input.status !== undefined && input.status !== "COMPLETE") {
-    throw new Error("INVESTIGATED state must only include COMPLETE status");
-  }
-
-  return {
-    ...base,
-    investigationState: "INVESTIGATED",
-    ...(input.status === undefined ? {} : { status: input.status }),
-    claims: input.claims ?? [],
-  };
 }
 
 type InvestigationPoller = {
@@ -425,7 +357,7 @@ async function startInvestigationPolling(input: {
       });
       await cachePostStatus(
         input.tabId,
-        toPostStatus({
+        createPostStatus({
           tabSessionId: input.tabSessionId,
           platform: input.platform,
           externalId: input.externalId,
@@ -542,101 +474,6 @@ async function restoreInvestigationPollingState(): Promise<void> {
   await restoreInvestigationPollingPromise;
 }
 
-function toViewPostInput(payload: ParsedPageContentPayload): ViewPostInput {
-  const content = payload.content;
-
-  if (content.platform === "LESSWRONG") {
-    const metadata: Extract<ViewPostInput, { platform: "LESSWRONG" }>["metadata"] =
-      {
-        slug: content.metadata.slug,
-        htmlContent: content.metadata.htmlContent,
-        tags: content.metadata.tags,
-        ...(content.metadata.title === undefined
-          ? {}
-          : { title: content.metadata.title }),
-        ...(content.metadata.authorName === undefined
-          ? {}
-          : { authorName: content.metadata.authorName }),
-        ...(content.metadata.authorSlug === undefined
-          ? {}
-          : { authorSlug: content.metadata.authorSlug }),
-        ...(content.metadata.publishedAt === undefined
-          ? {}
-          : { publishedAt: content.metadata.publishedAt }),
-      };
-
-    return {
-      platform: "LESSWRONG",
-      externalId: content.externalId,
-      url: content.url,
-      observedContentText: content.contentText,
-      observedImageUrls: content.imageUrls,
-      metadata,
-    };
-  }
-
-  if (content.platform === "X") {
-    const metadata: Extract<ViewPostInput, { platform: "X" }>["metadata"] = {
-      authorHandle: content.metadata.authorHandle,
-      text: content.metadata.text,
-      mediaUrls: content.metadata.mediaUrls,
-      ...(content.metadata.authorDisplayName === undefined
-        ? {}
-        : { authorDisplayName: content.metadata.authorDisplayName }),
-      ...(content.metadata.likeCount === undefined
-        ? {}
-        : { likeCount: content.metadata.likeCount }),
-      ...(content.metadata.retweetCount === undefined
-        ? {}
-        : { retweetCount: content.metadata.retweetCount }),
-      ...(content.metadata.postedAt === undefined
-        ? {}
-        : { postedAt: content.metadata.postedAt }),
-    };
-
-    return {
-      platform: "X",
-      externalId: content.externalId,
-      url: content.url,
-      observedContentText: content.contentText,
-      observedImageUrls: content.imageUrls,
-      metadata,
-    };
-  }
-
-  const metadata: Extract<ViewPostInput, { platform: "SUBSTACK" }>["metadata"] = {
-    substackPostId: content.metadata.substackPostId,
-    publicationSubdomain: content.metadata.publicationSubdomain,
-    slug: content.metadata.slug,
-    title: content.metadata.title,
-    authorName: content.metadata.authorName,
-    ...(content.metadata.subtitle === undefined
-      ? {}
-      : { subtitle: content.metadata.subtitle }),
-    ...(content.metadata.authorSubstackHandle === undefined
-      ? {}
-      : { authorSubstackHandle: content.metadata.authorSubstackHandle }),
-    ...(content.metadata.publishedAt === undefined
-      ? {}
-      : { publishedAt: content.metadata.publishedAt }),
-    ...(content.metadata.likeCount === undefined
-      ? {}
-      : { likeCount: content.metadata.likeCount }),
-    ...(content.metadata.commentCount === undefined
-      ? {}
-      : { commentCount: content.metadata.commentCount }),
-  };
-
-  return {
-    platform: "SUBSTACK",
-    externalId: content.externalId,
-    url: content.url,
-    observedContentText: content.contentText,
-    observedImageUrls: content.imageUrls,
-    metadata,
-  };
-}
-
 async function cacheInvestigateNowResult(
   input: {
     tabId: number;
@@ -649,7 +486,7 @@ async function cacheInvestigateNowResult(
 
   await cachePostStatus(
     tabId,
-    toPostStatus({
+    createPostStatus({
       tabSessionId,
       platform: request.platform,
       externalId: request.externalId,
@@ -675,7 +512,7 @@ async function cacheInvestigateNowResult(
 
   await cachePostStatus(
     tabId,
-    toPostStatus({
+    createPostStatus({
       tabSessionId,
       platform: request.platform,
       externalId: request.externalId,
@@ -730,7 +567,7 @@ async function maybeAutoInvestigate(
   } catch (error) {
     await cachePostStatus(
       input.tabId,
-      toPostStatus({
+      createPostStatus({
         tabSessionId: input.tabSessionId,
         platform: input.request.platform,
         externalId: input.request.externalId,
@@ -774,7 +611,11 @@ browser.runtime.onMessage.addListener(
     };
 
     return handle().catch((err: unknown) => {
-      console.error("Background handler error:", err);
+      if (isContentMismatchError(err)) {
+        console.warn("Background handler rejected mismatched page content:", err);
+      } else {
+        console.error("Background handler error:", err);
+      }
       return toRuntimeErrorResponse(err);
     });
   },
@@ -784,14 +625,17 @@ async function handlePageContent(
   payload: ParsedPageContentPayload,
   sender: Runtime.MessageSender,
 ): Promise<ViewPostOutput> {
-  const request = toViewPostInput(payload);
+  const request = toViewPostInput(payload.content);
 
   let result: ViewPostOutput;
   try {
     result = await viewPost(request);
   } catch (error) {
-    // Cache a FAILED status so the popup shows an error instead of hanging
-    // on "Checking This Page" indefinitely.
+    const errorCode =
+      error instanceof ApiClientError ? error.errorCode : undefined;
+    const failureState = viewPostErrorToFailureState(errorCode);
+    // Cache a terminal error state so the popup shows a stable status instead
+    // of hanging on "Checking This Page" indefinitely.
     if (sender.tab?.id !== undefined) {
       const tabId = sender.tab.id;
       if (!isStaleTabSession(tabId, payload.tabSessionId)) {
@@ -799,14 +643,12 @@ async function handlePageContent(
         stopInvestigationPolling(tabId);
         await cachePostStatus(
           tabId,
-          toPostStatus({
+          createPostStatus({
             tabSessionId: payload.tabSessionId,
             platform: request.platform,
             externalId: request.externalId,
             pageUrl: request.url,
-            investigationState: "FAILED",
-            status: "FAILED",
-            claims: null,
+            ...failureState,
           }),
         );
       }
@@ -834,7 +676,7 @@ async function handlePageContent(
     }
 
     const inferredStatus = result.investigated ? "COMPLETE" : existingForSession?.status;
-    const nextStatus = toPostStatus({
+    const nextStatus = createPostStatus({
       tabSessionId: payload.tabSessionId,
       platform: request.platform,
       externalId: request.externalId,
@@ -944,7 +786,7 @@ async function handleGetStatus(
 
       await cachePostStatus(
         sender.tab.id,
-        toPostStatus({
+        createPostStatus({
           tabSessionId: existing.tabSessionId,
           platform: existing.platform,
           externalId: existing.externalId,

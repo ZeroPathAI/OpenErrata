@@ -7,6 +7,7 @@ import {
   hasAddressIntersection,
   resolvePublicHostAddresses,
 } from "$lib/network/host-safety.js";
+import { isRedirectStatus } from "$lib/network/http-status.js";
 import { uploadImage } from "./blob-storage.js";
 
 const IMAGE_DOWNLOAD_TIMEOUT_MS = 15_000;
@@ -17,10 +18,6 @@ function parseImageContentType(contentTypeHeader: string | null): string | null 
   const normalized = contentTypeHeader.split(";")[0]?.trim().toLowerCase() ?? "";
   if (!normalized.startsWith("image/")) return null;
   return normalized;
-}
-
-function isRedirectStatus(status: number): boolean {
-  return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
 }
 
 function uniqueImageUrls(urls: string[]): string[] {

@@ -11,6 +11,7 @@ import {
   type ViewPostOutput,
 } from "@openerrata/shared";
 import browser from "webextension-polyfill";
+import { ExtensionRuntimeError } from "../lib/runtime-error.js";
 
 export type ParsedExtensionPageStatus = ReturnType<
   typeof extensionPageStatusSchema.parse
@@ -21,7 +22,10 @@ type CachedStatusListener = () => void;
 function throwIfRuntimeError(response: unknown): void {
   const parsedError = extensionRuntimeErrorResponseSchema.safeParse(response);
   if (!parsedError.success) return;
-  throw new Error(parsedError.data.error);
+  throw new ExtensionRuntimeError(
+    parsedError.data.error,
+    parsedError.data.errorCode,
+  );
 }
 
 export class ContentSyncClient {

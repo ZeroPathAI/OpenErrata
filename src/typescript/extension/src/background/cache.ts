@@ -17,10 +17,6 @@ interface TabCacheRecord {
 }
 
 const memoryCache = new Map<number, TabCacheRecord>();
-type ParsedExtensionPostStatus = ReturnType<typeof extensionPostStatusSchema.parse>;
-type ParsedExtensionSkippedStatus = ReturnType<
-  typeof extensionSkippedStatusSchema.parse
->;
 
 function storageKey(tabId: number): string {
   return `tab:${tabId.toString()}`;
@@ -37,121 +33,22 @@ function emptyRecord(): TabCacheRecord {
   };
 }
 
-function normalizeParsedPostStatus(
-  status: ParsedExtensionPostStatus,
-): ExtensionPostStatus {
-  if (status.investigationState === "INVESTIGATED") {
-    return {
-      kind: "POST",
-      tabSessionId: status.tabSessionId,
-      platform: status.platform,
-      externalId: status.externalId,
-      pageUrl: status.pageUrl,
-      ...(status.investigationId === undefined
-        ? {}
-        : { investigationId: status.investigationId }),
-      ...(status.provenance === undefined ? {} : { provenance: status.provenance }),
-      investigationState: "INVESTIGATED",
-      ...(status.status === undefined ? {} : { status: status.status }),
-      claims: status.claims,
-    };
-  }
-  if (status.investigationState === "INVESTIGATING") {
-    return {
-      kind: "POST",
-      tabSessionId: status.tabSessionId,
-      platform: status.platform,
-      externalId: status.externalId,
-      pageUrl: status.pageUrl,
-      ...(status.investigationId === undefined
-        ? {}
-        : { investigationId: status.investigationId }),
-      ...(status.provenance === undefined ? {} : { provenance: status.provenance }),
-      investigationState: "INVESTIGATING",
-      status: status.status,
-      claims: null,
-    };
-  }
-  if (status.investigationState === "FAILED") {
-    return {
-      kind: "POST",
-      tabSessionId: status.tabSessionId,
-      platform: status.platform,
-      externalId: status.externalId,
-      pageUrl: status.pageUrl,
-      ...(status.investigationId === undefined
-        ? {}
-        : { investigationId: status.investigationId }),
-      ...(status.provenance === undefined ? {} : { provenance: status.provenance }),
-      investigationState: "FAILED",
-      status: "FAILED",
-      claims: null,
-    };
-  }
-  return {
-    kind: "POST",
-    tabSessionId: status.tabSessionId,
-    platform: status.platform,
-    externalId: status.externalId,
-    pageUrl: status.pageUrl,
-    ...(status.investigationId === undefined
-      ? {}
-      : { investigationId: status.investigationId }),
-    ...(status.provenance === undefined ? {} : { provenance: status.provenance }),
-    investigationState: "NOT_INVESTIGATED",
-    claims: null,
-  };
-}
-
-function normalizeParsedSkippedStatus(
-  status: ParsedExtensionSkippedStatus,
-): ExtensionSkippedStatus {
-  return {
-    kind: "SKIPPED",
-    tabSessionId: status.tabSessionId,
-    platform: status.platform,
-    externalId: status.externalId,
-    pageUrl: status.pageUrl,
-    reason: status.reason,
-  };
-}
-
 function parseStoredRecord(stored: unknown): TabCacheRecord | null {
   if (!isRecord(stored)) return null;
-
-  // Legacy format from first implementation.
-  if (stored["skipped"] === true && typeof stored["reason"] === "string") {
-    return emptyRecord();
-  }
 
   const skippedStatusParsed = extensionSkippedStatusSchema.safeParse(
     stored["skippedStatus"],
   );
-  const skippedStatus = skippedStatusParsed.success
-    ? normalizeParsedSkippedStatus(skippedStatusParsed.data)
+  const skippedStatus: ExtensionSkippedStatus | null = skippedStatusParsed.success
+    ? skippedStatusParsed.data
     : null;
 
   const activePostStatusParsed = extensionPostStatusSchema.safeParse(
     stored["activePostStatus"],
   );
-  const activePostStatus = activePostStatusParsed.success
-    ? normalizeParsedPostStatus(activePostStatusParsed.data)
+  const activePostStatus: ExtensionPostStatus | null = activePostStatusParsed.success
+    ? activePostStatusParsed.data
     : null;
-
-  // Legacy v2 format with activeCanonicalHash + postStatuses map.
-  if (!activePostStatus && isRecord(stored["postStatuses"])) {
-    const activeCanonicalHash = stored["activeCanonicalHash"];
-    if (typeof activeCanonicalHash === "string") {
-      const maybeLegacyStatus = stored["postStatuses"][activeCanonicalHash];
-      const parsedLegacyStatus = extensionPostStatusSchema.safeParse(maybeLegacyStatus);
-      if (parsedLegacyStatus.success) {
-        return {
-          activePostStatus: normalizeParsedPostStatus(parsedLegacyStatus.data),
-          skippedStatus,
-        };
-      }
-    }
-  }
 
   return {
     activePostStatus,

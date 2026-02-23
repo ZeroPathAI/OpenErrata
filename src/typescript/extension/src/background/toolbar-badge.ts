@@ -72,6 +72,7 @@ function stopIconAnimation(tabId: number): void {
  * - INVESTIGATED + claims:  "N" red     — N claims found
  * - INVESTIGATED + 0 claims: "✓" green  — clean, no claims
  * - FAILED:                 "!" red     — investigation failed
+ * - CONTENT_MISMATCH:       "!" amber   — client page differs from canonical post content
  * - NOT_INVESTIGATED / null: ""         — no badge
  */
 export function updateToolbarBadge(
@@ -142,6 +143,13 @@ function toToolbarBadgeState(
     return {
       text: "!",
       color: "#ef4444",
+    };
+  }
+
+  if (status.investigationState === "CONTENT_MISMATCH") {
+    return {
+      text: "!",
+      color: "#f59e0b",
     };
   }
 

@@ -1,0 +1,5 @@
+#!/usr/bin/env sh
+set -eu
+
+export DATABASE_URL="${DATABASE_URL:-postgresql://postgres:postgres@localhost:5432/postgres}"
+pnpm --dir src/typescript run verify:push

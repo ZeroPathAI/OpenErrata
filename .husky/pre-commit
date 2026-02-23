@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+set -eu
+
+pnpm --dir src/typescript run lint-staged
