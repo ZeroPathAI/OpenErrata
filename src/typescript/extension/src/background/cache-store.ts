@@ -34,7 +34,7 @@ type CacheStoreDeps = {
   warn: (message?: unknown, ...optionalParams: unknown[]) => void;
 };
 
-export type TabStatusCacheStore = {
+type TabStatusCacheStore = {
   cachePostStatus: (
     tabId: number | undefined,
     status: ExtensionPostStatus,

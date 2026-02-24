@@ -300,6 +300,9 @@ export class PageSessionController {
   }
 
   getAnnotationVisibility(): { visible: boolean } {
+    // Popup opens are a reliable user-driven sync point. Nudge a refresh in case
+    // a prior SPA route transition missed observer-driven refresh scheduling.
+    this.scheduleRefresh(0);
     return annotationVisibilityResponseSchema.parse({
       visible: this.#annotations.isVisible(),
     });

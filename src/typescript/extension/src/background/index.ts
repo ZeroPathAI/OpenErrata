@@ -173,6 +173,43 @@ async function injectContentScriptIntoTab(tabId: number): Promise<void> {
   ]);
 }
 
+async function hasContentScriptListener(tabId: number): Promise<boolean> {
+  try {
+    await browser.tabs.sendMessage(tabId, {
+      type: "GET_ANNOTATION_VISIBILITY",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function maybeInjectKnownDomainContentScript(
+  tabId: number,
+  tabUrl: string,
+): Promise<void> {
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(tabUrl);
+  } catch {
+    return;
+  }
+
+  if (!isKnownDeclarativeDomain(parsedUrl.hostname)) {
+    return;
+  }
+
+  if (await hasContentScriptListener(tabId)) {
+    return;
+  }
+
+  try {
+    await injectContentScriptIntoTab(tabId);
+  } catch (error) {
+    console.error("known-domain content script injection failed:", error);
+  }
+}
+
 async function maybeInjectCustomDomainSubstack(
   tabId: number,
   tabUrl: string,
@@ -212,6 +249,7 @@ async function ensureSubstackInjectionForOpenTabs(): Promise<void> {
   await Promise.all(
     tabs.map(async (tab) => {
       if (!tab.id || !tab.url) return;
+      await maybeInjectKnownDomainContentScript(tab.id, tab.url);
       await maybeInjectCustomDomainSubstack(tab.id, tab.url);
     }),
   );
@@ -925,7 +963,10 @@ browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
 // article content is already visible and parseable.
 chrome.webNavigation.onDOMContentLoaded.addListener((details) => {
   if (details.frameId !== 0) return;
-  void maybeInjectCustomDomainSubstack(details.tabId, details.url);
+  void Promise.all([
+    maybeInjectKnownDomainContentScript(details.tabId, details.url),
+    maybeInjectCustomDomainSubstack(details.tabId, details.url),
+  ]);
 });
 
 browser.tabs.onActivated.addListener(({ tabId }) => {
@@ -933,11 +974,22 @@ browser.tabs.onActivated.addListener(({ tabId }) => {
     .get(tabId)
     .then((tab) => {
       if (!tab.url) return;
-      return maybeInjectCustomDomainSubstack(tabId, tab.url);
+      return Promise.all([
+        maybeInjectKnownDomainContentScript(tabId, tab.url),
+        maybeInjectCustomDomainSubstack(tabId, tab.url),
+      ]);
     })
     .catch(() => {
       // Tab may have been closed between activation and the get() call.
     });
+});
+
+chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
+  if (details.frameId !== 0) return;
+  void Promise.all([
+    maybeInjectKnownDomainContentScript(details.tabId, details.url),
+    maybeInjectCustomDomainSubstack(details.tabId, details.url),
+  ]);
 });
 
 void ensureSubstackInjectionForOpenTabs().catch((error: unknown) => {

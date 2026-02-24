@@ -1232,7 +1232,9 @@ void test("ensureInvestigationQueued randomized state model preserves lifecycle 
   ] as const;
 
   for (let round = 0; round < rounds; round += 1) {
-    const seedCase = seedCases[randomInt(random, 0, seedCases.length - 1)];
+    const seedCaseIndex = randomInt(random, 0, seedCases.length - 1);
+    const seedCase = seedCases[seedCaseIndex];
+    assert.ok(seedCase, `seed case index out of bounds: ${seedCaseIndex.toString()}`);
     const allowRequeueFailed = randomChance(random, 0.5);
     const enqueue = randomChance(random, 0.7);
     const includeOnPendingRun = randomChance(random, 0.6);

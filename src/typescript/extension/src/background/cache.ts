@@ -3,12 +3,8 @@ import browser from "webextension-polyfill";
 import {
   createTabStatusCacheStore,
   type CacheBrowserApi,
-  type TabStatusCacheStore,
 } from "./cache-store.js";
 import { updateToolbarBadge } from "./toolbar-badge.js";
-
-export { createTabStatusCacheStore };
-export type { TabStatusCacheStore };
 
 const browserCacheApi: CacheBrowserApi = {
   storage: {
@@ -27,7 +23,12 @@ const browserCacheApi: CacheBrowserApi = {
   tabs: {
     query: async () => {
       const tabs = await browser.tabs.query({});
-      return tabs.map((tab) => ({ id: tab.id }));
+      return tabs.map((tab) => {
+        if (tab.id === undefined) {
+          return {};
+        }
+        return { id: tab.id };
+      });
     },
   },
 };
