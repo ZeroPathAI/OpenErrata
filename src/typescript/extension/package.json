@@ -1,10 +1,11 @@
 {
   "name": "@openerrata/extension",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "type": "module",
   "scripts": {
     "dev": "vite build --watch --mode development",
-    "build": "vite build",
+    "build": "vite build && pnpm verify:dist",
+    "verify:dist": "node ./scripts/assert-build-artifacts.mjs",
     "typecheck": "tsc --noEmit",
     "test:unit": "tsx --test \"test/unit/**/*.test.ts\"",
     "test:e2e": "pnpm build && playwright test -c playwright.config.ts"

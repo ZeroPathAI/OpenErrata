@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "OpenErrata",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Crowdsourced, inline LLM investigations of the things you're reading.",
   "permissions": ["activeTab", "storage", "scripting", "webNavigation", "alarms"],
   "host_permissions": [
