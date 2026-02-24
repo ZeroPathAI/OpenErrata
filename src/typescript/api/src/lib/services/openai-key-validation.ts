@@ -9,9 +9,9 @@ import {
   readOpenAiStatusCode,
 } from "$lib/openai/errors.js";
 
-type OpenAiKeyValidationResult = Pick<
+type OpenAiKeyValidationStatusOutcome = Omit<
   SettingsValidationOutput,
-  "openaiApiKeyStatus" | "openaiApiKeyMessage"
+  "instanceApiKeyAccepted"
 >;
 
 function isAbortError(error: unknown): boolean {
@@ -40,7 +40,7 @@ function readErrorMessage(error: unknown): string | null {
 
 export async function validateOpenAiApiKeyForSettings(
   openaiApiKey: string | null,
-): Promise<OpenAiKeyValidationResult> {
+): Promise<OpenAiKeyValidationStatusOutcome> {
   const normalizedOpenAiApiKey = openaiApiKey?.trim() ?? "";
   if (normalizedOpenAiApiKey.length === 0) {
     return { openaiApiKeyStatus: "missing" };

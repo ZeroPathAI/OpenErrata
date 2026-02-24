@@ -40,11 +40,6 @@ const viewPostOutputMatches: IsExactly<
   ExtensionApiProcedureContract["post.viewPost"]["output"]
 > = true;
 
-const getInvestigationOutputMatches: IsExactly<
-  RouterOutputs["post"]["getInvestigation"],
-  ExtensionApiProcedureContract["post.getInvestigation"]["output"]
-> = true;
-
 const investigateNowOutputMatches: IsExactly<
   RouterOutputs["post"]["investigateNow"],
   ExtensionApiProcedureContract["post.investigateNow"]["output"]
@@ -60,6 +55,5 @@ void getInvestigationInputMatches;
 void investigateNowInputMatches;
 void validateSettingsInputMatches;
 void viewPostOutputMatches;
-void getInvestigationOutputMatches;
 void investigateNowOutputMatches;
 void validateSettingsOutputMatches;

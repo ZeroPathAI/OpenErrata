@@ -885,7 +885,7 @@ export const postRouter = router({
             platform: post.platform,
             externalId: post.externalId,
             investigationState: "NOT_INVESTIGATED" as const,
-            incorrectClaimCount: 0,
+            incorrectClaimCount: 0 as const,
           };
         }
 
@@ -895,7 +895,7 @@ export const postRouter = router({
             platform: post.platform,
             externalId: post.externalId,
             investigationState: "NOT_INVESTIGATED" as const,
-            incorrectClaimCount: 0,
+            incorrectClaimCount: 0 as const,
           };
         }
 

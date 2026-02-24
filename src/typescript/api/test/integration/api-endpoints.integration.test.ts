@@ -1315,18 +1315,26 @@ void test("ensureInvestigationQueued randomized state model preserves lifecycle 
     let onPendingRunCalls = 0;
     let onPendingInvestigationId: string | null = null;
     let onPendingRunId: string | null = null;
+    const canonical =
+      canonicalProvenance === "CLIENT_FALLBACK"
+        ? {
+            contentHash: post.contentHash,
+            contentText: post.contentText,
+            provenance: "CLIENT_FALLBACK" as const,
+            fetchFailureReason:
+              canonicalFetchFailureReason ??
+              `fuzz-fetch-failure-fallback-${round.toString()}`,
+          }
+        : {
+            contentHash: post.contentHash,
+            contentText: post.contentText,
+            provenance: "SERVER_VERIFIED" as const,
+          };
     const result = await ensureInvestigationQueued({
       prisma,
       postId: post.id,
       promptId: prompt.id,
-      canonical: {
-        contentHash: post.contentHash,
-        contentText: post.contentText,
-        provenance: canonicalProvenance,
-        ...(canonicalFetchFailureReason === undefined
-          ? {}
-          : { fetchFailureReason: canonicalFetchFailureReason }),
-      },
+      canonical,
       allowRequeueFailed,
       enqueue,
       ...(includeOnPendingRun

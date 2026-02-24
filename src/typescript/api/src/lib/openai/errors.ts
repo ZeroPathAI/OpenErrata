@@ -2,13 +2,13 @@ import type { SettingsValidationOutput } from "@openerrata/shared";
 
 const NON_RETRYABLE_OPENAI_STATUS_CODES = new Set([400, 401, 403, 404, 422]);
 
-type OpenAiKeyValidationResult = Pick<
+type OpenAiKeyValidationStatusOutcome = Omit<
   SettingsValidationOutput,
-  "openaiApiKeyStatus" | "openaiApiKeyMessage"
+  "instanceApiKeyAccepted"
 >;
 
 const OPENAI_KEY_VALIDATION_RESULT_BY_STATUS: Partial<
-  Record<number, OpenAiKeyValidationResult>
+  Record<number, OpenAiKeyValidationStatusOutcome>
 > = {
   401: {
     openaiApiKeyStatus: "invalid",
@@ -34,7 +34,7 @@ export function readOpenAiStatusCode(error: unknown): number | null {
 
 export function classifyOpenAiKeyValidationStatus(
   statusCode: number | null,
-): OpenAiKeyValidationResult | null {
+): OpenAiKeyValidationStatusOutcome | null {
   if (statusCode === null) return null;
 
   const knownStatusResult = OPENAI_KEY_VALIDATION_RESULT_BY_STATUS[statusCode];
