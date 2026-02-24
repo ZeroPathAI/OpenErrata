@@ -519,7 +519,7 @@ const publicInvestigationOriginClientFallbackSchema = z.object({
   fetchFailureReason: z.string().min(1),
 });
 
-export const publicInvestigationOriginSchema = z.discriminatedUnion("provenance", [
+const publicInvestigationOriginSchema = z.discriminatedUnion("provenance", [
   publicInvestigationOriginServerVerifiedSchema,
   publicInvestigationOriginClientFallbackSchema,
 ]);
