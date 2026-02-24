@@ -529,7 +529,6 @@ async function maybeResumePollingFromCachedStatus(
     platform: status.platform,
     externalId: status.externalId,
     investigationId: status.investigationId,
-    fallbackProvenance: status.provenance,
   });
 }
 
