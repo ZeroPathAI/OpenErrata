@@ -24,7 +24,7 @@ Content Script (runs on LessWrong/X pages)
   → Background Service Worker
       → api-client.ts: HTTP POST to /trpc/post.viewPost
       → OpenErrata API
-  ← response with investigated + claims
+  ← response with investigationState + claims
   → Content Script renders annotations (or records "skipped")
 ```
 

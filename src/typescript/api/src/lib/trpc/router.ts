@@ -4,7 +4,7 @@ import { publicRouter } from "./routes/public.js";
 import type {
   ExtensionApiProcedureContract,
 } from "@openerrata/shared";
-import type { inferRouterInputs } from "@trpc/server";
+import type { inferRouterInputs, inferRouterOutputs } from "@trpc/server";
 
 export const appRouter = router({
   post: postRouter,
@@ -13,6 +13,7 @@ export const appRouter = router({
 
 type IsExactly<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
 type RouterInputs = inferRouterInputs<typeof appRouter>;
+type RouterOutputs = inferRouterOutputs<typeof appRouter>;
 
 const viewPostInputMatches: IsExactly<
   RouterInputs["post"]["viewPost"],
@@ -34,7 +35,31 @@ const validateSettingsInputMatches: IsExactly<
   ExtensionApiProcedureContract["post.validateSettings"]["input"]
 > = true;
 
+const viewPostOutputMatches: IsExactly<
+  RouterOutputs["post"]["viewPost"],
+  ExtensionApiProcedureContract["post.viewPost"]["output"]
+> = true;
+
+const getInvestigationOutputMatches: IsExactly<
+  RouterOutputs["post"]["getInvestigation"],
+  ExtensionApiProcedureContract["post.getInvestigation"]["output"]
+> = true;
+
+const investigateNowOutputMatches: IsExactly<
+  RouterOutputs["post"]["investigateNow"],
+  ExtensionApiProcedureContract["post.investigateNow"]["output"]
+> = true;
+
+const validateSettingsOutputMatches: IsExactly<
+  RouterOutputs["post"]["validateSettings"],
+  ExtensionApiProcedureContract["post.validateSettings"]["output"]
+> = true;
+
 void viewPostInputMatches;
 void getInvestigationInputMatches;
 void investigateNowInputMatches;
 void validateSettingsInputMatches;
+void viewPostOutputMatches;
+void getInvestigationOutputMatches;
+void investigateNowOutputMatches;
+void validateSettingsOutputMatches;

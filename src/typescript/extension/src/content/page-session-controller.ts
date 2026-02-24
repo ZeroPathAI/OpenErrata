@@ -256,19 +256,13 @@ export class PageSessionController {
     );
 
     if (investigateResult.status === "COMPLETE") {
-      if (investigateResult.claims !== undefined) {
-        if (!this.#isActiveTrackedSession(stateAtRequest)) {
-          return requestInvestigateResponseSchema.parse({ ok: true });
-        }
-        this.#annotations.setClaims(investigateResult.claims);
-        const applied = this.#annotations.render(stateAtRequest.adapter);
-        if (!applied) {
-          this.scheduleRefresh();
-        }
-      } else {
-        void this.#syncStatusFromBackgroundCache().catch((error: unknown) => {
-          console.error("Failed to sync completed investigation status:", error);
-        });
+      if (!this.#isActiveTrackedSession(stateAtRequest)) {
+        return requestInvestigateResponseSchema.parse({ ok: true });
+      }
+      this.#annotations.setClaims(investigateResult.claims);
+      const applied = this.#annotations.render(stateAtRequest.adapter);
+      if (!applied) {
+        this.scheduleRefresh();
       }
       return requestInvestigateResponseSchema.parse({ ok: true });
     }

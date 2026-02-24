@@ -34,7 +34,8 @@
     },
     "shared": {
       "entry": ["test/**/*.ts"],
-      "project": ["src/**/*.ts", "test/**/*.ts"]
+      "project": ["src/**/*.ts", "test/**/*.ts"],
+      "includeEntryExports": true
     },
     "pulumi": {
       "project": ["**/*.ts"],

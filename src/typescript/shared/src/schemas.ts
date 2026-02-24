@@ -1,6 +1,5 @@
 import { z } from "zod";
 import {
-  CHECK_STATUS_VALUES,
   CONTENT_PROVENANCE_VALUES,
   PLATFORM_VALUES,
 } from "./enums.js";
@@ -12,12 +11,8 @@ import {
 // ── Shared enum schemas ───────────────────────────────────────────────────
 
 export const platformSchema = z.enum(PLATFORM_VALUES);
-export const checkStatusSchema = z.enum(CHECK_STATUS_VALUES);
 export const contentProvenanceSchema = z.enum(CONTENT_PROVENANCE_VALUES);
-export const sha256HashSchema = z
-  .string()
-  .regex(/^[a-f0-9]{64}$/i, "Expected a SHA-256 hex digest");
-export const postMediaStateSchema = z.enum([
+const postMediaStateSchema = z.enum([
   "text_only",
   "has_images",
   "video_only",
@@ -30,7 +25,7 @@ const observedContentTextSchema = z
 
 // ── LLM output validation ─────────────────────────────────────────────────
 
-export const claimSourceSchema = z.object({
+const claimSourceSchema = z.object({
   url: z.url(),
   title: z.string().min(1),
   snippet: z.string().min(1),
@@ -50,7 +45,7 @@ export const investigationResultSchema = z.object({
 
 // ── Platform metadata schemas ─────────────────────────────────────────────
 
-export const lesswrongMetadataSchema = z.object({
+const lesswrongMetadataSchema = z.object({
   slug: z.string().min(1),
   title: z.string().min(1).optional(),
   htmlContent: z.string().min(1),
@@ -60,7 +55,7 @@ export const lesswrongMetadataSchema = z.object({
   publishedAt: z.iso.datetime().optional(),
 });
 
-export const xMetadataSchema = z.object({
+const xMetadataSchema = z.object({
   authorHandle: z.string().min(1),
   authorDisplayName: z.string().min(1).nullable().optional(),
   text: observedContentTextSchema,
@@ -70,7 +65,7 @@ export const xMetadataSchema = z.object({
   postedAt: z.iso.datetime().optional(),
 });
 
-export const substackMetadataSchema = z.object({
+const substackMetadataSchema = z.object({
   substackPostId: z.string().regex(/^\d+$/),
   publicationSubdomain: z.string().min(1),
   slug: z.string().min(1),
@@ -115,49 +110,141 @@ export const viewPostInputSchema = z.discriminatedUnion("platform", [
   substackViewPostInputSchema,
 ]);
 
-export const viewPostOutputSchema = z.object({
-  investigated: z.boolean(),
-  provenance: contentProvenanceSchema.optional(),
-  claims: z.array(investigationClaimSchema).nullable(),
+const investigationStatusNotInvestigatedSchema = z.object({
+  investigationState: z.literal("NOT_INVESTIGATED"),
+  claims: z.null(),
 });
 
-export const investigationStatusOutputSchema = viewPostOutputSchema.extend({
-  status: checkStatusSchema.optional(),
+const investigationStatusInvestigatingSchema = z.object({
+  investigationState: z.literal("INVESTIGATING"),
+  status: z.union([z.literal("PENDING"), z.literal("PROCESSING")]),
+  provenance: contentProvenanceSchema,
+  claims: z.null(),
 });
+
+const investigationStatusFailedSchema = z.object({
+  investigationState: z.literal("FAILED"),
+  provenance: contentProvenanceSchema,
+  claims: z.null(),
+});
+
+const investigationStatusInvestigatedSchema = z.object({
+  investigationState: z.literal("INVESTIGATED"),
+  provenance: contentProvenanceSchema,
+  claims: z.array(investigationClaimSchema),
+});
+
+export const viewPostOutputSchema = z.discriminatedUnion("investigationState", [
+  investigationStatusNotInvestigatedSchema,
+  investigationStatusInvestigatedSchema,
+]);
+
+export const investigationStatusOutputSchema = z.discriminatedUnion(
+  "investigationState",
+  [
+    investigationStatusNotInvestigatedSchema,
+    investigationStatusInvestigatingSchema,
+    investigationStatusFailedSchema,
+    investigationStatusInvestigatedSchema,
+  ],
+);
 
 export const getInvestigationInputSchema = z.object({
   investigationId: z.string().min(1),
 });
 
-export const getInvestigationOutputSchema = investigationStatusOutputSchema.extend({
-  checkedAt: z.iso.datetime().optional(),
+export const getInvestigationOutputSchema = z.discriminatedUnion(
+  "investigationState",
+  [
+    investigationStatusNotInvestigatedSchema.extend({
+      checkedAt: z.iso.datetime().optional(),
+    }),
+    investigationStatusInvestigatingSchema.extend({
+      checkedAt: z.iso.datetime().optional(),
+    }),
+    investigationStatusFailedSchema.extend({
+      checkedAt: z.iso.datetime().optional(),
+    }),
+    investigationStatusInvestigatedSchema.extend({
+      checkedAt: z.iso.datetime(),
+    }),
+  ],
+);
+
+const investigateNowOutputPendingSchema = z.object({
+  investigationId: z.string().min(1),
+  status: z.union([z.literal("PENDING"), z.literal("PROCESSING")]),
+  provenance: contentProvenanceSchema,
 });
 
-export const investigateNowOutputSchema = z.object({
+const investigateNowOutputFailedSchema = z.object({
   investigationId: z.string().min(1),
-  status: checkStatusSchema,
+  status: z.literal("FAILED"),
   provenance: contentProvenanceSchema,
-  claims: z.array(investigationClaimSchema).optional(),
 });
+
+const investigateNowOutputCompleteSchema = z.object({
+  investigationId: z.string().min(1),
+  status: z.literal("COMPLETE"),
+  provenance: contentProvenanceSchema,
+  claims: z.array(investigationClaimSchema),
+});
+
+export const investigateNowOutputSchema = z.discriminatedUnion("status", [
+  investigateNowOutputPendingSchema,
+  investigateNowOutputFailedSchema,
+  investigateNowOutputCompleteSchema,
+]);
 
 export const openaiApiKeyFormatSchema = z
   .string()
   .regex(/^sk-[A-Za-z0-9_-]{20,}$/, "Expected an OpenAI API key beginning with sk-");
 
-export const openaiApiKeyValidationStatusSchema = z.enum([
-  "missing",
-  "format_invalid",
-  "valid",
-  "authenticated_restricted",
-  "invalid",
-  "error",
-]);
-
-export const settingsValidationOutputSchema = z.object({
+const settingsValidationMissingSchema = z.object({
   instanceApiKeyAccepted: z.boolean(),
-  openaiApiKeyStatus: openaiApiKeyValidationStatusSchema,
-  openaiApiKeyMessage: z.string().optional(),
+  openaiApiKeyStatus: z.literal("missing"),
 });
+
+const settingsValidationValidSchema = z.object({
+  instanceApiKeyAccepted: z.boolean(),
+  openaiApiKeyStatus: z.literal("valid"),
+});
+
+const settingsValidationFormatInvalidSchema = z.object({
+  instanceApiKeyAccepted: z.boolean(),
+  openaiApiKeyStatus: z.literal("format_invalid"),
+  openaiApiKeyMessage: z.string().min(1),
+});
+
+const settingsValidationAuthenticatedRestrictedSchema = z.object({
+  instanceApiKeyAccepted: z.boolean(),
+  openaiApiKeyStatus: z.literal("authenticated_restricted"),
+  openaiApiKeyMessage: z.string().min(1),
+});
+
+const settingsValidationInvalidSchema = z.object({
+  instanceApiKeyAccepted: z.boolean(),
+  openaiApiKeyStatus: z.literal("invalid"),
+  openaiApiKeyMessage: z.string().min(1),
+});
+
+const settingsValidationErrorSchema = z.object({
+  instanceApiKeyAccepted: z.boolean(),
+  openaiApiKeyStatus: z.literal("error"),
+  openaiApiKeyMessage: z.string().min(1),
+});
+
+export const settingsValidationOutputSchema = z.discriminatedUnion(
+  "openaiApiKeyStatus",
+  [
+    settingsValidationMissingSchema,
+    settingsValidationValidSchema,
+    settingsValidationFormatInvalidSchema,
+    settingsValidationAuthenticatedRestrictedSchema,
+    settingsValidationInvalidSchema,
+    settingsValidationErrorSchema,
+  ],
+);
 
 export const batchStatusInputSchema = z.object({
   posts: z
@@ -173,12 +260,20 @@ export const batchStatusInputSchema = z.object({
 
 export const batchStatusOutputSchema = z.object({
   statuses: z.array(
-    z.object({
-      platform: platformSchema,
-      externalId: z.string().min(1),
-      investigated: z.boolean(),
-      incorrectClaimCount: z.number().int().nonnegative(),
-    }),
+    z.discriminatedUnion("investigationState", [
+      z.object({
+        platform: platformSchema,
+        externalId: z.string().min(1),
+        investigationState: z.literal("NOT_INVESTIGATED"),
+        incorrectClaimCount: z.literal(0),
+      }),
+      z.object({
+        platform: platformSchema,
+        externalId: z.string().min(1),
+        investigationState: z.literal("INVESTIGATED"),
+        incorrectClaimCount: z.number().int().nonnegative(),
+      }),
+    ]),
   ),
 });
 
@@ -222,7 +317,6 @@ const extensionPostStatusBaseSchema = z.object({
   externalId: z.string().min(1),
   pageUrl: z.url(),
   investigationId: z.string().min(1).optional(),
-  provenance: contentProvenanceSchema.optional(),
 });
 
 const extensionPostNotInvestigatedSchema = extensionPostStatusBaseSchema.extend({
@@ -234,12 +328,13 @@ const extensionPostNotInvestigatedSchema = extensionPostStatusBaseSchema.extend(
 const extensionPostInvestigatingSchema = extensionPostStatusBaseSchema.extend({
   investigationState: z.literal("INVESTIGATING"),
   status: z.union([z.literal("PENDING"), z.literal("PROCESSING")]),
+  provenance: contentProvenanceSchema,
   claims: z.null(),
 });
 
 const extensionPostFailedSchema = extensionPostStatusBaseSchema.extend({
   investigationState: z.literal("FAILED"),
-  status: z.literal("FAILED"),
+  provenance: contentProvenanceSchema.optional(),
   claims: z.null(),
 });
 
@@ -251,7 +346,7 @@ const extensionPostContentMismatchSchema = extensionPostStatusBaseSchema.extend(
 
 const extensionPostInvestigatedSchema = extensionPostStatusBaseSchema.extend({
   investigationState: z.literal("INVESTIGATED"),
-  status: z.literal("COMPLETE").optional(),
+  provenance: contentProvenanceSchema,
   claims: z.array(investigationClaimSchema),
 });
 
@@ -389,27 +484,6 @@ export const extensionMessageSchema = z.discriminatedUnion("type", [
   }),
 ]);
 
-// ── Generic transport schemas ─────────────────────────────────────────────
-
-export const trpcErrorSchema = z
-  .object({ message: z.string().optional() })
-  .loose();
-
-export const trpcJsonDataSchema = z
-  .object({ json: z.unknown() })
-  .loose();
-
-export const trpcResultSchema = z
-  .object({ data: z.unknown() })
-  .loose();
-
-export const trpcEnvelopeSchema = z
-  .object({
-    error: z.unknown().optional(),
-    result: trpcResultSchema.optional(),
-  })
-  .loose();
-
 // ── Public API schemas ────────────────────────────────────────────────────
 
 export const getPublicInvestigationInputSchema = z.object({
@@ -433,4 +507,79 @@ export const getMetricsInputSchema = z.object({
   authorId: z.string().optional(),
   windowStart: z.iso.datetime().optional(),
   windowEnd: z.iso.datetime().optional(),
+});
+
+const publicInvestigationOriginServerVerifiedSchema = z.object({
+  provenance: z.literal("SERVER_VERIFIED"),
+  serverVerifiedAt: z.iso.datetime(),
+});
+
+const publicInvestigationOriginClientFallbackSchema = z.object({
+  provenance: z.literal("CLIENT_FALLBACK"),
+  fetchFailureReason: z.string().min(1),
+});
+
+export const publicInvestigationOriginSchema = z.discriminatedUnion("provenance", [
+  publicInvestigationOriginServerVerifiedSchema,
+  publicInvestigationOriginClientFallbackSchema,
+]);
+
+const publicPostSchema = z.object({
+  platform: platformSchema,
+  externalId: z.string().min(1),
+  url: z.url(),
+});
+
+const publicInvestigationMetadataSchema = z.object({
+  id: z.string().min(1),
+  corroborationCount: z.number().int().nonnegative(),
+  checkedAt: z.iso.datetime(),
+  promptVersion: z.string().min(1),
+  provider: z.string().min(1),
+  model: z.string().min(1),
+  origin: publicInvestigationOriginSchema,
+});
+
+export const publicGetInvestigationOutputSchema = z
+  .object({
+    investigation: publicInvestigationMetadataSchema,
+    post: publicPostSchema,
+    claims: z.array(investigationClaimSchema),
+  })
+  .nullable();
+
+export const publicGetPostInvestigationsOutputSchema = z.object({
+  post: publicPostSchema.nullable(),
+  investigations: z.array(
+    z.object({
+      id: z.string().min(1),
+      contentHash: z.string().min(1),
+      corroborationCount: z.number().int().nonnegative(),
+      checkedAt: z.iso.datetime(),
+      claimCount: z.number().int().nonnegative(),
+      origin: publicInvestigationOriginSchema,
+    }),
+  ),
+});
+
+export const publicSearchInvestigationsOutputSchema = z.object({
+  investigations: z.array(
+    z.object({
+      id: z.string().min(1),
+      contentHash: z.string().min(1),
+      checkedAt: z.iso.datetime(),
+      platform: platformSchema,
+      externalId: z.string().min(1),
+      url: z.url(),
+      corroborationCount: z.number().int().nonnegative(),
+      claimCount: z.number().int().nonnegative(),
+      origin: publicInvestigationOriginSchema,
+    }),
+  ),
+});
+
+export const publicGetMetricsOutputSchema = z.object({
+  totalInvestigatedPosts: z.number().int().nonnegative(),
+  investigatedPostsWithFlags: z.number().int().nonnegative(),
+  factCheckIncidence: z.number().nonnegative(),
 });

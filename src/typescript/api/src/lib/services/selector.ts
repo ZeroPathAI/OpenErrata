@@ -8,7 +8,6 @@ import {
 } from "./investigation-lifecycle.js";
 import {
   WORD_COUNT_LIMIT,
-  type ContentProvenance,
   type Platform,
 } from "@openerrata/shared";
 import { getSelectorBudget } from "$lib/config/runtime.js";
@@ -57,8 +56,6 @@ export async function runSelector(): Promise<number> {
   for (const candidate of candidates) {
     let contentHash = candidate.latestContentHash;
     let contentText = candidate.latestContentText;
-    let provenance: ContentProvenance = "CLIENT_FALLBACK";
-    let fetchFailureReason: string | undefined;
 
     const canonical = await fetchCanonicalContent(
       candidate.platform,
@@ -66,20 +63,17 @@ export async function runSelector(): Promise<number> {
       candidate.externalId,
     );
 
-    if (canonical.success) {
+    if (canonical.provenance === "SERVER_VERIFIED") {
       contentHash = canonical.contentHash;
       contentText = canonical.contentText;
-      provenance = "SERVER_VERIFIED";
       await prisma.post.update({
         where: { id: candidate.id },
-        data: {
+      data: {
           latestContentHash: contentHash,
           latestContentText: contentText,
           wordCount: wordCount(contentText),
         },
       });
-    } else {
-      fetchFailureReason = canonical.failureReason;
     }
 
     if (exceedsInvestigationWordLimit(contentText)) {
@@ -90,12 +84,19 @@ export async function runSelector(): Promise<number> {
       prisma,
       postId: candidate.id,
       promptId: prompt.id,
-      canonical: {
-        contentHash,
-        contentText,
-        provenance,
-        ...(fetchFailureReason === undefined ? {} : { fetchFailureReason }),
-      },
+      canonical:
+        canonical.provenance === "SERVER_VERIFIED"
+          ? {
+              contentHash,
+              contentText,
+              provenance: "SERVER_VERIFIED" as const,
+            }
+          : {
+              contentHash,
+              contentText,
+              provenance: "CLIENT_FALLBACK" as const,
+              fetchFailureReason: canonical.fetchFailureReason,
+            },
       rejectOverWordLimitOnCreate: false,
     });
 

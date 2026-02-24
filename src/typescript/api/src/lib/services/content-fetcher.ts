@@ -1,7 +1,7 @@
 import { normalizeContent, hashContent, type Platform } from "@openerrata/shared";
 import { parseFragment, type DefaultTreeAdapterMap } from "parse5";
 
-type FetchResult =
+type ServerFetchResult =
   | {
       success: true;
       contentText: string;
@@ -11,6 +11,42 @@ type FetchResult =
       success: false;
       failureReason: string;
     };
+
+type CanonicalContentFetchResult =
+  | {
+      provenance: "SERVER_VERIFIED";
+      contentText: string;
+      contentHash: string;
+    }
+  | {
+      provenance: "CLIENT_FALLBACK";
+      fetchFailureReason: string;
+    };
+
+type CanonicalFetchStrategy =
+  | {
+      capability: "SERVER_VERIFIED";
+      fetchContent: (externalId: string) => Promise<ServerFetchResult>;
+    }
+  | {
+      capability: "CLIENT_FALLBACK_ONLY";
+      failureReason: string;
+    };
+
+const CANONICAL_FETCH_STRATEGIES: Record<Platform, CanonicalFetchStrategy> = {
+  LESSWRONG: {
+    capability: "SERVER_VERIFIED",
+    fetchContent: fetchLesswrongContent,
+  },
+  X: {
+    capability: "CLIENT_FALLBACK_ONLY",
+    failureReason: "X canonical server fetch unavailable",
+  },
+  SUBSTACK: {
+    capability: "CLIENT_FALLBACK_ONLY",
+    failureReason: "Substack canonical server fetch unavailable",
+  },
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -100,25 +136,37 @@ export async function fetchCanonicalContent(
   platform: Platform,
   _url: string,
   externalId: string,
-): Promise<FetchResult> {
+): Promise<CanonicalContentFetchResult> {
+  const strategy = CANONICAL_FETCH_STRATEGIES[platform];
+  if (strategy.capability === "CLIENT_FALLBACK_ONLY") {
+    return {
+      provenance: "CLIENT_FALLBACK",
+      fetchFailureReason: strategy.failureReason,
+    };
+  }
+
   try {
-    switch (platform) {
-      case "LESSWRONG":
-        return await fetchLesswrongContent(externalId);
-      case "X":
-        return fetchXContent();
-      case "SUBSTACK":
-        return fetchSubstackContent();
+    const fetched = await strategy.fetchContent(externalId);
+    if (!fetched.success) {
+      return {
+        provenance: "CLIENT_FALLBACK",
+        fetchFailureReason: fetched.failureReason,
+      };
     }
+    return {
+      provenance: "SERVER_VERIFIED",
+      contentText: fetched.contentText,
+      contentHash: fetched.contentHash,
+    };
   } catch (error) {
     return {
-      success: false,
-      failureReason: error instanceof Error ? error.message : "Unknown error",
+      provenance: "CLIENT_FALLBACK",
+      fetchFailureReason: error instanceof Error ? error.message : "Unknown error",
     };
   }
 }
 
-async function fetchLesswrongContent(postId: string): Promise<FetchResult> {
+async function fetchLesswrongContent(postId: string): Promise<ServerFetchResult> {
   const response = await fetch("https://www.lesswrong.com/graphql", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -158,23 +206,4 @@ async function fetchLesswrongContent(postId: string): Promise<FetchResult> {
   const contentText = lesswrongHtmlToNormalizedText(html);
   const contentHash = await hashContent(contentText);
   return { success: true, contentText, contentHash };
-}
-
-function fetchXContent(): FetchResult {
-  // X/Twitter server-side fetch is not implemented in v1.
-  // X API requires authenticated access with rate limits.
-  // All X investigations use CLIENT_FALLBACK provenance.
-  return {
-    success: false,
-    failureReason: "X server-side fetch not implemented in v1",
-  };
-}
-
-function fetchSubstackContent(): FetchResult {
-  // Substack server-side fetch is not implemented in v1.
-  // Investigations run from client-extracted content.
-  return {
-    success: false,
-    failureReason: "Substack server-side fetch not implemented in v1",
-  };
 }

@@ -5,7 +5,6 @@ import type {
 
 export const WORD_COUNT_LIMIT = 10000;
 export const POLL_INTERVAL_MS = 5000;
-export const MAX_INVESTIGATION_RETRIES = 3;
 export const MAX_BATCH_STATUS_POSTS = 100;
 export const MAX_IMAGES_PER_INVESTIGATION = 10;
 export const MAX_IMAGE_BYTES = 20_000_000;

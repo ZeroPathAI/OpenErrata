@@ -41,22 +41,30 @@ const typeDefs = /* GraphQL */ `
     CLIENT_FALLBACK
   }
 
+  type ServerVerifiedOrigin {
+    provenance: ContentProvenance!
+    serverVerifiedAt: DateTime!
+  }
+
+  type ClientFallbackOrigin {
+    provenance: ContentProvenance!
+    fetchFailureReason: String!
+  }
+
+  union InvestigationOrigin = ServerVerifiedOrigin | ClientFallbackOrigin
+
   """
   Metadata and trust signals for a single investigation. An investigation
   is the result of an LLM fact-checking a specific version of a post's content.
   """
   type PublicInvestigation {
     id: ID!
-    """How the investigated content was obtained (server-verified or client-submitted)."""
-    provenance: ContentProvenance!
+    """How the investigated content was obtained, with provenance-specific fields."""
+    origin: InvestigationOrigin!
     """Number of distinct authenticated users who independently submitted matching content for this investigation, providing independent confirmation of what the post said."""
     corroborationCount: Int!
-    """When the server successfully fetched and verified the post content. Null if the server has never successfully fetched this content version."""
-    serverVerifiedAt: DateTime
-    """Why the server-side content fetch failed (e.g. rate limit, anti-bot block). Null when provenance is SERVER_VERIFIED."""
-    fetchFailureReason: String
     """When this investigation was completed."""
-    checkedAt: DateTime
+    checkedAt: DateTime!
     """Version identifier of the LLM prompt used for this investigation."""
     promptVersion: String!
     """LLM provider used (e.g. "OPENAI")."""
@@ -125,16 +133,12 @@ const typeDefs = /* GraphQL */ `
     id: ID!
     """SHA-256 hash of the normalized post content that was investigated. Different hashes indicate the post was edited between investigations."""
     contentHash: String!
-    """How the investigated content was obtained (server-verified or client-submitted)."""
-    provenance: ContentProvenance!
+    """How the investigated content was obtained, with provenance-specific fields."""
+    origin: InvestigationOrigin!
     """Number of distinct authenticated users who independently submitted matching content."""
     corroborationCount: Int!
-    """When the server successfully fetched and verified the post content. Null if never server-verified."""
-    serverVerifiedAt: DateTime
-    """Why the server-side content fetch failed. Null when provenance is SERVER_VERIFIED."""
-    fetchFailureReason: String
     """When this investigation was completed."""
-    checkedAt: DateTime
+    checkedAt: DateTime!
     """Number of incorrect claims flagged in this investigation."""
     claimCount: Int!
   }
@@ -159,20 +163,16 @@ const typeDefs = /* GraphQL */ `
     """SHA-256 hash of the normalized post content that was investigated."""
     contentHash: String!
     """When this investigation was completed."""
-    checkedAt: DateTime
+    checkedAt: DateTime!
     platform: Platform!
     """Platform-specific identifier for the post."""
     externalId: String!
     """Original URL of the post on the platform."""
     url: String!
-    """How the investigated content was obtained."""
-    provenance: ContentProvenance!
+    """How the investigated content was obtained, with provenance-specific fields."""
+    origin: InvestigationOrigin!
     """Number of distinct authenticated users who independently submitted matching content."""
     corroborationCount: Int!
-    """When the server successfully fetched and verified the post content. Null if never server-verified."""
-    serverVerifiedAt: DateTime
-    """Why the server-side content fetch failed. Null when provenance is SERVER_VERIFIED."""
-    fetchFailureReason: String
     """Number of incorrect claims flagged in this investigation."""
     claimCount: Int!
   }
@@ -275,6 +275,17 @@ type PublicMetricsArgs = {
 
 const resolvers = {
   DateTime: DateTimeResolver,
+  InvestigationOrigin: {
+    __resolveType: (
+      value: unknown,
+    ): "ServerVerifiedOrigin" | "ClientFallbackOrigin" | null => {
+      if (value === null || typeof value !== "object") return null;
+      const origin = value as { provenance?: string };
+      if (origin.provenance === "SERVER_VERIFIED") return "ServerVerifiedOrigin";
+      if (origin.provenance === "CLIENT_FALLBACK") return "ClientFallbackOrigin";
+      return null;
+    },
+  },
   Query: {
     publicInvestigation: async (
       _root: unknown,

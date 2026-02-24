@@ -2,8 +2,6 @@ import type { z } from "zod";
 
 // ── LLM output structure (spec §3.2) ─────────────────────────────────────
 
-export type ClaimSource = z.infer<typeof import("./schemas.js").claimSourceSchema>;
-
 export type InvestigationClaim = z.infer<
   typeof import("./schemas.js").investigationClaimSchema
 >;
@@ -13,26 +11,22 @@ export type InvestigationResult = z.infer<
 >;
 
 // ── Platform metadata contracts ───────────────────────────────────────────
-
-export type LesswrongMetadata = z.infer<
-  typeof import("./schemas.js").lesswrongMetadataSchema
->;
-
-export type XMetadata = z.infer<typeof import("./schemas.js").xMetadataSchema>;
-
-export type SubstackMetadata = z.infer<
-  typeof import("./schemas.js").substackMetadataSchema
->;
-
 export interface PlatformMetadataByPlatform {
-  LESSWRONG: LesswrongMetadata;
-  X: XMetadata;
-  SUBSTACK: SubstackMetadata;
+  LESSWRONG: Extract<
+    z.infer<typeof import("./schemas.js").viewPostInputSchema>,
+    { platform: "LESSWRONG" }
+  >["metadata"];
+  X: Extract<
+    z.infer<typeof import("./schemas.js").viewPostInputSchema>,
+    { platform: "X" }
+  >["metadata"];
+  SUBSTACK: Extract<
+    z.infer<typeof import("./schemas.js").viewPostInputSchema>,
+    { platform: "SUBSTACK" }
+  >["metadata"];
 }
 
 // ── Platform adapter (spec §3.8) ──────────────────────────────────────────
-
-export type PostMediaState = z.infer<typeof import("./schemas.js").postMediaStateSchema>;
 
 export type PlatformContent = z.infer<typeof import("./schemas.js").platformContentSchema>;
 
@@ -60,12 +54,6 @@ export type InvestigateNowOutput = z.infer<
 
 export type SettingsValidationOutput = z.infer<
   typeof import("./schemas.js").settingsValidationOutputSchema
->;
-
-export type BatchStatusInput = z.infer<typeof import("./schemas.js").batchStatusInputSchema>;
-
-export type BatchStatusOutput = z.infer<
-  typeof import("./schemas.js").batchStatusOutputSchema
 >;
 
 // ── Extension/API tRPC contract ───────────────────────────────────────────
@@ -133,14 +121,6 @@ export type ExtensionPageStatus = z.infer<
 
 export type ExtensionRuntimeErrorCode = z.infer<
   typeof import("./schemas.js").extensionRuntimeErrorCodeSchema
->;
-
-export type AnnotationVisibilityResponse = z.infer<
-  typeof import("./schemas.js").annotationVisibilityResponseSchema
->;
-
-export type FocusClaimResponse = z.infer<
-  typeof import("./schemas.js").focusClaimResponseSchema
 >;
 
 // ── Extension message protocol ────────────────────────────────────────────

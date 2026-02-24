@@ -4,7 +4,7 @@ import type { ExtensionPageStatus } from "@openerrata/shared";
 import { computePostView } from "../../src/popup/post-view.js";
 
 function createPostStatus(
-  investigationState: Extract<ExtensionPageStatus, { kind: "POST" }>["investigationState"],
+  investigationState: "FAILED" | "CONTENT_MISMATCH",
 ): Extract<ExtensionPageStatus, { kind: "POST" }> {
   return {
     kind: "POST",

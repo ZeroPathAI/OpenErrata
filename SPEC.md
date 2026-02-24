@@ -305,7 +305,7 @@ User visits post
       - Include observed image URLs for metadata persistence
   → API upserts Post + metadata and increments raw viewCount / unique-view signals
   → API checks whether this observed content version already has a completed investigation:
-      HIT  → return { investigated: true, claims: [...] }
+      HIT  → return { investigationState: "INVESTIGATED", claims: [...] }
              (already investigated for this content version; client is done)
       MISS → continue
   → For misses only, API attempts server-side verification (best effort):
@@ -315,9 +315,9 @@ User visits post
       NOT VERIFIED                        → continue with `CLIENT_FALLBACK`
   → API updates canonical content-version signals and corroboration signals
   → API checks whether the selected content version has a completed investigation:
-      HIT  → return { investigated: true, claims: [...] }
+      HIT  → return { investigationState: "INVESTIGATED", claims: [...] }
              (already investigated for this content version; client is done)
-      MISS → return { investigated: false }
+      MISS → return { investigationState: "NOT_INVESTIGATED", claims: null }
              (no completed investigation yet for this content version)
   → Client renders current state; viewPost alone does not enqueue a new investigation
   → Investigation begins only via investigateNow(...) or selector queueing
@@ -333,7 +333,7 @@ User clicks "Investigate Now" (or auto-investigate triggers)
       no row     → create PENDING row, start background run,
                    return { investigationId, status: PENDING }
   → If a row already exists, API returns immediately with status-based behavior:
-      COMPLETE   → return { investigationId, status: COMPLETE } (claims may be included)
+      COMPLETE   → return { investigationId, status: COMPLETE, claims }
       FAILED     → return { investigationId, status: FAILED } (unless explicit retry action is requested)
       PROCESSING → return { investigationId, status: PROCESSING }; no second run is started
       PENDING    → if request includes a user OpenAI key and no user-key source is attached yet,
@@ -348,7 +348,7 @@ User clicks "Investigate Now" (or auto-investigate triggers)
 **Auto-investigate (extension-side):**
 
 ```
-After viewPost returns { investigated: false }
+After viewPost returns { investigationState: "NOT_INVESTIGATED", claims: null }
   → If user OpenAI key exists and auto-investigate is enabled:
       background worker calls investigateNow(...) and then polls for completion
   → Result is cached locally when returned
@@ -392,7 +392,7 @@ completed investigation matching the current version.
 - **Client input simplification**: the extension sends platform-observed content; the API computes
   the version key internally.
 - **Hit**: Return claims. The view still increments the counter.
-- **Miss**: Return `{ investigated: false }`. The view is recorded; the selector may pick this post
+- **Miss**: Return `{ investigationState: "NOT_INVESTIGATED", claims: null }`. The view is recorded; the selector may pick this post
   up later.
 - **Strict version rule**: Never return or render an investigation for a different content version
   of the same post. No fallback to older versions.
@@ -1027,13 +1027,21 @@ postRouter.viewPost
   Input:  { platform, externalId, url, observedImageUrls?,
             observedContentText?, // required for X/Substack; omitted for LessWrong
             metadata: { title?, authorName?, ... } }
-  Output: { investigated: boolean, provenance?: ContentProvenance, claims: Claim[] | null }
+  Output:
+    | { investigationState: "NOT_INVESTIGATED", claims: null }
+    | { investigationState: "INVESTIGATED", provenance: ContentProvenance, claims: Claim[] }
 
 // Fetch results for a specific investigation (used for polling)
 postRouter.getInvestigation
   Input:  { investigationId }
-  Output: { investigated: boolean, status?: CheckStatus, provenance?: ContentProvenance,
-            claims: Claim[] | null, checkedAt? }
+  Output:
+    | { investigationState: "NOT_INVESTIGATED", claims: null, checkedAt?: DateTime }
+    | { investigationState: "INVESTIGATING", status: "PENDING" | "PROCESSING",
+        provenance: ContentProvenance, claims: null, checkedAt?: DateTime }
+    | { investigationState: "FAILED", provenance: ContentProvenance,
+        claims: null, checkedAt?: DateTime }
+    | { investigationState: "INVESTIGATED", provenance: ContentProvenance,
+        claims: Claim[], checkedAt: DateTime }
 
 // Request immediate investigation.
 // Authorization: instance API key OR request-scoped user OpenAI key (`x-openai-api-key`).
@@ -1045,12 +1053,18 @@ postRouter.investigateNow
   Input:  { platform, externalId, url, observedImageUrls?,
             observedContentText?, // required for X/Substack; omitted for LessWrong
             metadata: { title?, authorName?, ... } }
-  Output: { investigationId, status: CheckStatus, provenance: ContentProvenance, claims?: Claim[] }
+  Output:
+    | { investigationId, status: "PENDING" | "PROCESSING", provenance: ContentProvenance }
+    | { investigationId, status: "FAILED", provenance: ContentProvenance }
+    | { investigationId, status: "COMPLETE", provenance: ContentProvenance, claims: Claim[] }
 
 // Batch check (for listing pages — which posts have results?)
 postRouter.batchStatus
   Input:  { posts: { platform, externalId }[] }
-  Output: { statuses: { platform, externalId, investigated, incorrectClaimCount }[] }
+  Output: { statuses: (
+              | { platform, externalId, investigationState: "NOT_INVESTIGATED", incorrectClaimCount: 0 }
+              | { platform, externalId, investigationState: "INVESTIGATED", incorrectClaimCount }
+            )[] }
 ```
 
 ## 3.4 Public API (GraphQL)
@@ -1077,11 +1091,9 @@ enum ContentProvenance {
 
 type PublicInvestigation {
   id: ID!
-  provenance: ContentProvenance!
+  origin: InvestigationOrigin!
   corroborationCount: Int!
-  serverVerifiedAt: DateTime
-  fetchFailureReason: String
-  checkedAt: DateTime
+  checkedAt: DateTime!
   promptVersion: String!
   provider: String!
   model: String!
@@ -1117,11 +1129,9 @@ type PublicInvestigationResult {
 type PostInvestigationSummary {
   id: ID!
   contentHash: String!
-  provenance: ContentProvenance!
+  origin: InvestigationOrigin!
   corroborationCount: Int!
-  serverVerifiedAt: DateTime
-  fetchFailureReason: String
-  checkedAt: DateTime
+  checkedAt: DateTime!
   claimCount: Int!
 }
 
@@ -1133,16 +1143,26 @@ type PostInvestigationsResult {
 type SearchInvestigationSummary {
   id: ID!
   contentHash: String!
-  checkedAt: DateTime
+  checkedAt: DateTime!
   platform: Platform!
   externalId: String!
   url: String!
-  provenance: ContentProvenance!
+  origin: InvestigationOrigin!
   corroborationCount: Int!
-  serverVerifiedAt: DateTime
-  fetchFailureReason: String
   claimCount: Int!
 }
+
+type ServerVerifiedOrigin {
+  provenance: ContentProvenance! # SERVER_VERIFIED
+  serverVerifiedAt: DateTime!
+}
+
+type ClientFallbackOrigin {
+  provenance: ContentProvenance! # CLIENT_FALLBACK
+  fetchFailureReason: String!
+}
+
+union InvestigationOrigin = ServerVerifiedOrigin | ClientFallbackOrigin
 
 type SearchInvestigationsResult {
   investigations: [SearchInvestigationSummary!]!

@@ -1,14 +1,17 @@
 import { router, publicProcedure } from "../init.js";
 import {
   viewPostInputSchema,
+  viewPostOutputSchema,
   getInvestigationInputSchema,
+  getInvestigationOutputSchema,
+  investigateNowOutputSchema,
   batchStatusInputSchema,
+  batchStatusOutputSchema,
   settingsValidationOutputSchema,
   normalizeContent,
   hashContent,
   type Platform,
   type InvestigationClaim,
-  type ContentProvenance,
   type ExtensionRuntimeErrorCode,
   type PlatformMetadataByPlatform,
   type ViewPostInput,
@@ -59,10 +62,14 @@ type ContentVersion = {
   contentHash: string;
 };
 
-type CanonicalContentVersion = ContentVersion & {
-  provenance: ContentProvenance;
-  fetchFailureReason?: string;
-};
+type CanonicalContentVersion =
+  | (ContentVersion & {
+      provenance: "SERVER_VERIFIED";
+    })
+  | (ContentVersion & {
+      provenance: "CLIENT_FALLBACK";
+      fetchFailureReason: string;
+    });
 
 const CONTENT_MISMATCH_ERROR_CODE: ExtensionRuntimeErrorCode = "CONTENT_MISMATCH";
 
@@ -71,6 +78,19 @@ function unreachableInvestigationStatus(status: never): never {
     code: "INTERNAL_SERVER_ERROR",
     message: `Unexpected investigation status: ${String(status)}`,
   });
+}
+
+function requireCompleteCheckedAtIso(
+  investigationId: string,
+  checkedAt: Date | null,
+): string {
+  if (checkedAt === null) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: `Investigation ${investigationId} is COMPLETE with null checkedAt`,
+    });
+  }
+  return checkedAt.toISOString();
 }
 
 function contentMismatchError(): TRPCError {
@@ -144,7 +164,7 @@ async function resolveCanonicalContentVersionForMiss(
     input.externalId,
   );
 
-  if (serverResult.success) {
+  if (serverResult.provenance === "SERVER_VERIFIED") {
     if (serverResult.contentHash !== observed.contentHash) {
       throw contentMismatchError();
     }
@@ -160,7 +180,7 @@ async function resolveCanonicalContentVersionForMiss(
     contentText: observed.contentText,
     contentHash: observed.contentHash,
     provenance: "CLIENT_FALLBACK",
-    fetchFailureReason: serverResult.failureReason,
+    fetchFailureReason: serverResult.fetchFailureReason,
   };
 }
 
@@ -514,6 +534,7 @@ function toCanonicalFromObserved(observed: ContentVersion): CanonicalContentVers
     contentText: observed.contentText,
     contentHash: observed.contentHash,
     provenance: "CLIENT_FALLBACK",
+    fetchFailureReason: "Canonical server fetch unavailable",
   };
 }
 
@@ -583,6 +604,7 @@ async function preparePostForInvestigation(
 export const postRouter = router({
   viewPost: publicProcedure
     .input(viewPostInputSchema)
+    .output(viewPostOutputSchema)
     .mutation(async ({ input, ctx }) => {
       const { post, canonical, complete } = await preparePostForInvestigation(
         ctx.prisma,
@@ -608,20 +630,21 @@ export const postRouter = router({
 
       if (complete) {
         return {
-          investigated: true,
+          investigationState: "INVESTIGATED" as const,
           provenance: complete.contentProvenance,
           claims: formatClaims(complete.claims),
         };
       }
 
       return {
-        investigated: false,
+        investigationState: "NOT_INVESTIGATED" as const,
         claims: null,
       };
     }),
 
   getInvestigation: publicProcedure
     .input(getInvestigationInputSchema)
+    .output(getInvestigationOutputSchema)
     .query(async ({ input, ctx }) => {
       const investigation = await loadInvestigationWithClaims(
         ctx.prisma,
@@ -629,23 +652,47 @@ export const postRouter = router({
       );
 
       if (!investigation) {
-        return { investigated: false, claims: null };
+        return {
+          investigationState: "NOT_INVESTIGATED" as const,
+          claims: null,
+        };
       }
 
-      return {
-        investigated: investigation.status === "COMPLETE",
-        status: investigation.status,
-        provenance: investigation.contentProvenance,
-        claims:
-          investigation.status === "COMPLETE"
-            ? formatClaims(investigation.claims)
-            : null,
-        checkedAt: investigation.checkedAt?.toISOString(),
-      };
+      switch (investigation.status) {
+        case "COMPLETE":
+          return {
+            investigationState: "INVESTIGATED" as const,
+            provenance: investigation.contentProvenance,
+            claims: formatClaims(investigation.claims),
+            checkedAt: requireCompleteCheckedAtIso(
+              investigation.id,
+              investigation.checkedAt,
+            ),
+          };
+        case "PENDING":
+        case "PROCESSING":
+          return {
+            investigationState: "INVESTIGATING" as const,
+            status: investigation.status,
+            provenance: investigation.contentProvenance,
+            claims: null,
+            checkedAt: investigation.checkedAt?.toISOString(),
+          };
+        case "FAILED":
+          return {
+            investigationState: "FAILED" as const,
+            provenance: investigation.contentProvenance,
+            claims: null,
+            checkedAt: investigation.checkedAt?.toISOString(),
+          };
+        default:
+          return unreachableInvestigationStatus(investigation.status);
+      }
     }),
 
   investigateNow: publicProcedure
     .input(viewPostInputSchema)
+    .output(investigateNowOutputSchema)
     .mutation(async ({ input, ctx }) => {
       if (!ctx.canInvestigate) {
         throw new TRPCError({
@@ -672,14 +719,19 @@ export const postRouter = router({
 
       const prompt = await getOrCreateCurrentPrompt();
       try {
-        const canonicalInvestigationContent = {
-          contentHash: canonical.contentHash,
-          contentText: canonical.contentText,
-          provenance: canonical.provenance,
-          ...(canonical.fetchFailureReason === undefined
-            ? {}
-            : { fetchFailureReason: canonical.fetchFailureReason }),
-        };
+        const canonicalInvestigationContent =
+          canonical.provenance === "SERVER_VERIFIED"
+            ? {
+                contentHash: canonical.contentHash,
+                contentText: canonical.contentText,
+                provenance: "SERVER_VERIFIED" as const,
+              }
+            : {
+                contentHash: canonical.contentHash,
+                contentText: canonical.contentText,
+                provenance: "CLIENT_FALLBACK" as const,
+                fetchFailureReason: canonical.fetchFailureReason,
+              };
 
         const { investigation } = await ensureInvestigationQueued({
           prisma: ctx.prisma,
@@ -740,6 +792,7 @@ export const postRouter = router({
     }),
 
   validateSettings: publicProcedure
+    .output(settingsValidationOutputSchema)
     .query(async ({ ctx }) => {
       const openaiValidation = await validateOpenAiApiKeyForSettings(
         ctx.userOpenAiApiKey,
@@ -753,6 +806,7 @@ export const postRouter = router({
 
   batchStatus: publicProcedure
     .input(batchStatusInputSchema)
+    .output(batchStatusOutputSchema)
     .query(async ({ input, ctx }) => {
       const postLookupKey = (platform: Platform, externalId: string): string =>
         `${platform}:${externalId}`;
@@ -830,17 +884,26 @@ export const postRouter = router({
           return {
             platform: post.platform,
             externalId: post.externalId,
-            investigated: false,
+            investigationState: "NOT_INVESTIGATED" as const,
             incorrectClaimCount: 0,
           };
         }
 
         const claimCount = incorrectClaimCountByPostId.get(matchedPost.id);
+        if (claimCount === undefined) {
+          return {
+            platform: post.platform,
+            externalId: post.externalId,
+            investigationState: "NOT_INVESTIGATED" as const,
+            incorrectClaimCount: 0,
+          };
+        }
+
         return {
           platform: post.platform,
           externalId: post.externalId,
-          investigated: claimCount !== undefined,
-          incorrectClaimCount: claimCount ?? 0,
+          investigationState: "INVESTIGATED" as const,
+          incorrectClaimCount: claimCount,
         };
       });
 

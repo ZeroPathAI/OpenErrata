@@ -175,6 +175,7 @@ model Investigation {
   contentHash          String
   contentText          String
   contentProvenance    ContentProvenance
+  // Required and non-empty for CLIENT_FALLBACK, null for SERVER_VERIFIED.
   fetchFailureReason   String?
   serverVerifiedAt     DateTime?
   status               CheckStatus
@@ -183,6 +184,7 @@ model Investigation {
   provider             InvestigationProvider
   model                InvestigationModel
   modelVersion         String?
+  // Null until completion; enforced by DB check constraint with `status`.
   checkedAt            DateTime?
   run                  InvestigationRun?
   attempts             InvestigationAttempt[]

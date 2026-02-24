@@ -41,7 +41,7 @@ function createPostStatus(input: {
   investigationState: ExtensionPostStatus["investigationState"];
   investigationId?: string;
 }): ExtensionPostStatus {
-  return {
+  const base = {
     kind: "POST",
     tabSessionId: input.tabSessionId,
     platform: input.platform,
@@ -50,8 +50,23 @@ function createPostStatus(input: {
     ...(input.investigationId === undefined
       ? {}
       : { investigationId: input.investigationId }),
-    investigationState: input.investigationState,
-    claims: input.investigationState === "INVESTIGATED" ? [] : null,
+  } as const;
+
+  if (input.investigationState === "INVESTIGATING") {
+    return {
+      ...base,
+      investigationState: "INVESTIGATING",
+      status: "PENDING",
+      provenance: "CLIENT_FALLBACK",
+      claims: null,
+    };
+  }
+
+  return {
+    ...base,
+    investigationState: "INVESTIGATED",
+    provenance: "CLIENT_FALLBACK",
+    claims: [],
   };
 }
 

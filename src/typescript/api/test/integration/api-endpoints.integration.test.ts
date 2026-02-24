@@ -686,7 +686,7 @@ void test("post.viewPost stores content and reports not investigated without mat
 
   const result = await caller.post.viewPost(input);
 
-  assert.equal(result.investigated, false);
+  assert.equal(result.investigationState, "NOT_INVESTIGATED");
   assert.equal(result.claims, null);
 
   const post = await prisma.post.findUnique({
@@ -723,7 +723,7 @@ void test("post.viewPost for LessWrong derives observed content from html metada
     caller.post.viewPost(input),
   );
 
-  assert.equal(result.investigated, false);
+  assert.equal(result.investigationState, "NOT_INVESTIGATED");
   assert.equal(result.claims, null);
 
   const post = await prisma.post.findUnique({
@@ -786,7 +786,7 @@ void test("post.viewPost applies strict hash lookup and does not reuse stale inv
 
   const result = await caller.post.viewPost(updatedInput);
 
-  assert.equal(result.investigated, false);
+  assert.equal(result.investigationState, "NOT_INVESTIGATED");
   assert.equal(result.claims, null);
 });
 
@@ -847,8 +847,7 @@ void test("post.getInvestigation returns complete investigation with claims", as
     investigationId: investigation.id,
   });
 
-  assert.equal(result.investigated, true);
-  assert.equal(result.status, "COMPLETE");
+  assert.equal(result.investigationState, "INVESTIGATED");
   assert.equal(result.provenance, "CLIENT_FALLBACK");
   assert.ok(result.claims);
   assert.equal(result.claims.length, 1);
@@ -1834,7 +1833,7 @@ void test("post.investigateNow rejects content over word-count limit", async () 
   assert.equal(investigationCount, 0);
 });
 
-void test("post.batchStatus returns investigated flag and incorrect claim counts", async () => {
+void test("post.batchStatus returns investigation state and incorrect claim counts", async () => {
   const caller = createCaller();
 
   const investigatedPost = await seedPost({
@@ -1879,12 +1878,12 @@ void test("post.batchStatus returns investigated flag and incorrect claim counts
 
   const investigated = byExternalId.get(investigatedPost.externalId);
   assert.ok(investigated);
-  assert.equal(investigated.investigated, true);
+  assert.equal(investigated.investigationState, "INVESTIGATED");
   assert.equal(investigated.incorrectClaimCount, 2);
 
   const notInvestigated = byExternalId.get(pendingPost.externalId);
   assert.ok(notInvestigated);
-  assert.equal(notInvestigated.investigated, false);
+  assert.equal(notInvestigated.investigationState, "NOT_INVESTIGATED");
   assert.equal(notInvestigated.incorrectClaimCount, 0);
 });
 
@@ -1911,10 +1910,9 @@ void test("public.getInvestigation returns complete investigation and trust sign
 
   assert.ok(result);
   assert.equal(result.investigation.id, investigation.id);
-  assert.equal(result.investigation.status, "COMPLETE");
-  assert.equal(result.investigation.provenance, "SERVER_VERIFIED");
+  assert.equal(result.investigation.origin.provenance, "SERVER_VERIFIED");
   assert.equal(result.investigation.corroborationCount, 0);
-  assert.equal(typeof result.investigation.serverVerifiedAt, "string");
+  assert.equal(typeof result.investigation.origin.serverVerifiedAt, "string");
   assert.equal(result.post.platform, post.platform);
   assert.equal(result.post.externalId, post.externalId);
   assert.equal(result.claims.length, 1);
@@ -1923,10 +1921,18 @@ void test("public.getInvestigation returns complete investigation and trust sign
     publicInvestigation: {
       investigation: {
         id: string;
-        provenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK";
+        origin:
+          | {
+              __typename: "ServerVerifiedOrigin";
+              provenance: "SERVER_VERIFIED";
+              serverVerifiedAt: string;
+            }
+          | {
+              __typename: "ClientFallbackOrigin";
+              provenance: "CLIENT_FALLBACK";
+              fetchFailureReason: string;
+            };
         corroborationCount: number;
-        serverVerifiedAt: string | null;
-        fetchFailureReason: string | null;
       };
       post: {
         platform: Platform;
@@ -1940,10 +1946,18 @@ void test("public.getInvestigation returns complete investigation and trust sign
         publicInvestigation(investigationId: $investigationId) {
           investigation {
             id
-            provenance
+            origin {
+              __typename
+              ... on ServerVerifiedOrigin {
+                provenance
+                serverVerifiedAt
+              }
+              ... on ClientFallbackOrigin {
+                provenance
+                fetchFailureReason
+              }
+            }
             corroborationCount
-            serverVerifiedAt
-            fetchFailureReason
           }
           post {
             platform
@@ -1961,10 +1975,9 @@ void test("public.getInvestigation returns complete investigation and trust sign
   assert.ok(graphqlResult.publicInvestigation);
   const graphqlInvestigation = graphqlResult.publicInvestigation.investigation;
   assert.equal(graphqlInvestigation.id, investigation.id);
-  assert.equal(graphqlInvestigation.provenance, "SERVER_VERIFIED");
+  assert.equal(graphqlInvestigation.origin.provenance, "SERVER_VERIFIED");
   assert.equal(graphqlInvestigation.corroborationCount, 0);
-  assert.notEqual(graphqlInvestigation.serverVerifiedAt, null);
-  assert.equal(graphqlInvestigation.fetchFailureReason, null);
+  assert.equal(graphqlInvestigation.origin.__typename, "ServerVerifiedOrigin");
 });
 
 void test("public.getInvestigation returns CLIENT_FALLBACK without corroboration", async () => {
@@ -1988,18 +2001,25 @@ void test("public.getInvestigation returns CLIENT_FALLBACK without corroboration
 
   assert.ok(result);
   assert.equal(result.investigation.id, investigation.id);
-  assert.equal(result.investigation.provenance, "CLIENT_FALLBACK");
+  assert.equal(result.investigation.origin.provenance, "CLIENT_FALLBACK");
   assert.equal(result.investigation.corroborationCount, 0);
-  assert.equal(result.investigation.serverVerifiedAt, undefined);
-  assert.equal(result.investigation.fetchFailureReason, "fetch unavailable");
+  assert.equal(result.investigation.origin.fetchFailureReason, "fetch unavailable");
 
   const graphqlResult = await queryPublicGraphql<{
     publicInvestigation: {
       investigation: {
-        provenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK";
+        origin:
+          | {
+              __typename: "ServerVerifiedOrigin";
+              provenance: "SERVER_VERIFIED";
+              serverVerifiedAt: string;
+            }
+          | {
+              __typename: "ClientFallbackOrigin";
+              provenance: "CLIENT_FALLBACK";
+              fetchFailureReason: string;
+            };
         corroborationCount: number;
-        serverVerifiedAt: string | null;
-        fetchFailureReason: string | null;
       };
     } | null;
   }>(
@@ -2007,10 +2027,18 @@ void test("public.getInvestigation returns CLIENT_FALLBACK without corroboration
       query PublicInvestigation($investigationId: ID!) {
         publicInvestigation(investigationId: $investigationId) {
           investigation {
-            provenance
+            origin {
+              __typename
+              ... on ServerVerifiedOrigin {
+                provenance
+                serverVerifiedAt
+              }
+              ... on ClientFallbackOrigin {
+                provenance
+                fetchFailureReason
+              }
+            }
             corroborationCount
-            serverVerifiedAt
-            fetchFailureReason
           }
         }
       }
@@ -2020,13 +2048,16 @@ void test("public.getInvestigation returns CLIENT_FALLBACK without corroboration
 
   assert.ok(graphqlResult.publicInvestigation);
   assert.equal(
-    graphqlResult.publicInvestigation.investigation.provenance,
+    graphqlResult.publicInvestigation.investigation.origin.provenance,
     "CLIENT_FALLBACK",
   );
   assert.equal(graphqlResult.publicInvestigation.investigation.corroborationCount, 0);
-  assert.equal(graphqlResult.publicInvestigation.investigation.serverVerifiedAt, null);
   assert.equal(
-    graphqlResult.publicInvestigation.investigation.fetchFailureReason,
+    graphqlResult.publicInvestigation.investigation.origin.__typename,
+    "ClientFallbackOrigin",
+  );
+  assert.equal(
+    graphqlResult.publicInvestigation.investigation.origin.fetchFailureReason,
     "fetch unavailable",
   );
 });
@@ -2054,7 +2085,7 @@ void test("public.getInvestigation reports corroborationCount for CLIENT_FALLBAC
 
   assert.ok(result);
   assert.equal(result.investigation.id, investigation.id);
-  assert.equal(result.investigation.provenance, "CLIENT_FALLBACK");
+  assert.equal(result.investigation.origin.provenance, "CLIENT_FALLBACK");
   assert.equal(result.investigation.corroborationCount, 3);
   assert.equal(result.claims.length, 1);
 });
@@ -2101,19 +2132,29 @@ void test("public.getPostInvestigations lists all complete investigations for a 
   const byId = new Map(result.investigations.map((item) => [item.id, item]));
   const fallback = byId.get(fallbackInvestigation.id);
   assert.ok(fallback);
-  assert.equal(fallback.provenance, "CLIENT_FALLBACK");
+  assert.equal(fallback.origin.provenance, "CLIENT_FALLBACK");
   assert.equal(fallback.corroborationCount, 2);
 
   const serverVerified = byId.get(serverVerifiedInvestigation.id);
   assert.ok(serverVerified);
-  assert.equal(serverVerified.provenance, "SERVER_VERIFIED");
+  assert.equal(serverVerified.origin.provenance, "SERVER_VERIFIED");
   assert.equal(serverVerified.claimCount, 1);
 
   const graphqlResult = await queryPublicGraphql<{
     postInvestigations: {
       investigations: Array<{
         id: string;
-        provenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK";
+        origin:
+          | {
+              __typename: "ServerVerifiedOrigin";
+              provenance: "SERVER_VERIFIED";
+              serverVerifiedAt: string;
+            }
+          | {
+              __typename: "ClientFallbackOrigin";
+              provenance: "CLIENT_FALLBACK";
+              fetchFailureReason: string;
+            };
         corroborationCount: number;
       }>;
     };
@@ -2123,7 +2164,17 @@ void test("public.getPostInvestigations lists all complete investigations for a 
         postInvestigations(platform: $platform, externalId: $externalId) {
           investigations {
             id
-            provenance
+            origin {
+              __typename
+              ... on ServerVerifiedOrigin {
+                provenance
+                serverVerifiedAt
+              }
+              ... on ClientFallbackOrigin {
+                provenance
+                fetchFailureReason
+              }
+            }
             corroborationCount
           }
         }
@@ -2205,7 +2256,20 @@ void test("public.searchInvestigations filters by query/platform and includes fa
 
   const graphqlResult = await queryPublicGraphql<{
     searchInvestigations: {
-      investigations: Array<{ id: string; provenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK" }>;
+      investigations: Array<{
+        id: string;
+        origin:
+          | {
+              __typename: "ServerVerifiedOrigin";
+              provenance: "SERVER_VERIFIED";
+              serverVerifiedAt: string;
+            }
+          | {
+              __typename: "ClientFallbackOrigin";
+              provenance: "CLIENT_FALLBACK";
+              fetchFailureReason: string;
+            };
+      }>;
     };
   }>(
     `
@@ -2213,7 +2277,17 @@ void test("public.searchInvestigations filters by query/platform and includes fa
         searchInvestigations(query: $query, limit: $limit, offset: $offset) {
           investigations {
             id
-            provenance
+            origin {
+              __typename
+              ... on ServerVerifiedOrigin {
+                provenance
+                serverVerifiedAt
+              }
+              ... on ClientFallbackOrigin {
+                provenance
+                fetchFailureReason
+              }
+            }
           }
         }
       }

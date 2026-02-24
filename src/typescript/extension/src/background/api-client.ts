@@ -234,34 +234,19 @@ async function mutateApi<Path extends ExtensionApiMutationPath>(
 function normalizeViewPostOutput(
   value: ParsedViewPostOutput,
 ): ViewPostOutput {
-  return {
-    investigated: value.investigated,
-    ...(value.provenance === undefined ? {} : { provenance: value.provenance }),
-    claims: value.claims,
-  };
+  return value;
 }
 
 function normalizeGetInvestigationOutput(
   value: ParsedGetInvestigationOutput,
 ): GetInvestigationOutput {
-  return {
-    investigated: value.investigated,
-    ...(value.status === undefined ? {} : { status: value.status }),
-    ...(value.provenance === undefined ? {} : { provenance: value.provenance }),
-    claims: value.claims,
-    ...(value.checkedAt === undefined ? {} : { checkedAt: value.checkedAt }),
-  };
+  return value;
 }
 
 function normalizeInvestigateNowOutput(
   value: ParsedInvestigateNowOutput,
 ): InvestigateNowOutput {
-  return {
-    investigationId: value.investigationId,
-    status: value.status,
-    provenance: value.provenance,
-    ...(value.claims === undefined ? {} : { claims: value.claims }),
-  };
+  return value;
 }
 
 async function assertApiHostPermissionGranted(apiBaseUrl: string): Promise<void> {

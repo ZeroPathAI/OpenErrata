@@ -12,12 +12,18 @@ import {
 } from "@openerrata/shared";
 import { enqueueInvestigationRun } from "./queue.js";
 
-type CanonicalInvestigationContent = {
-  contentHash: string;
-  contentText: string;
-  provenance: ContentProvenance;
-  fetchFailureReason?: string;
-};
+type CanonicalInvestigationContent =
+  | {
+      contentHash: string;
+      contentText: string;
+      provenance: "SERVER_VERIFIED";
+    }
+  | {
+      contentHash: string;
+      contentText: string;
+      provenance: "CLIENT_FALLBACK";
+      fetchFailureReason: string;
+    };
 
 export class InvestigationWordLimitError extends Error {
   readonly limit: number;
@@ -72,7 +78,10 @@ async function createInvestigation(
       contentHash: input.canonical.contentHash,
       contentText: input.canonical.contentText,
       contentProvenance: input.canonical.provenance,
-      fetchFailureReason: input.canonical.fetchFailureReason ?? null,
+      fetchFailureReason:
+        input.canonical.provenance === "CLIENT_FALLBACK"
+          ? input.canonical.fetchFailureReason
+          : null,
       serverVerifiedAt: serverVerifiedAtFor(input.canonical.provenance),
       status: "PENDING",
       promptId: input.promptId,

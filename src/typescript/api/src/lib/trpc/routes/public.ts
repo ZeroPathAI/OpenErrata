@@ -4,6 +4,10 @@ import {
   getPostInvestigationsInputSchema,
   searchInvestigationsInputSchema,
   getMetricsInputSchema,
+  publicGetInvestigationOutputSchema,
+  publicGetPostInvestigationsOutputSchema,
+  publicSearchInvestigationsOutputSchema,
+  publicGetMetricsOutputSchema,
 } from "@openerrata/shared";
 import {
   getPublicInvestigationById,
@@ -12,9 +16,33 @@ import {
   getPublicMetrics,
 } from "$lib/services/public-read-model.js";
 
+type PublicOrigin =
+  | {
+      provenance: "SERVER_VERIFIED";
+      serverVerifiedAt: Date;
+    }
+  | {
+      provenance: "CLIENT_FALLBACK";
+      fetchFailureReason: string;
+    };
+
+function toOriginOutput(origin: PublicOrigin) {
+  if (origin.provenance === "SERVER_VERIFIED") {
+    return {
+      provenance: "SERVER_VERIFIED" as const,
+      serverVerifiedAt: origin.serverVerifiedAt.toISOString(),
+    };
+  }
+  return {
+    provenance: "CLIENT_FALLBACK" as const,
+    fetchFailureReason: origin.fetchFailureReason,
+  };
+}
+
 export const publicRouter = router({
   getInvestigation: publicProcedure
     .input(getPublicInvestigationInputSchema)
+    .output(publicGetInvestigationOutputSchema)
     .query(async ({ input, ctx }) => {
       const result = await getPublicInvestigationById(
         ctx.prisma,
@@ -27,13 +55,9 @@ export const publicRouter = router({
       return {
         investigation: {
           id: result.investigation.id,
-          status: "COMPLETE" as const,
-          provenance: result.investigation.provenance,
           corroborationCount: result.investigation.corroborationCount,
-          checkedAt: result.investigation.checkedAt?.toISOString(),
-          serverVerifiedAt: result.investigation.serverVerifiedAt?.toISOString(),
-          fetchFailureReason:
-            result.investigation.fetchFailureReason ?? undefined,
+          checkedAt: result.investigation.checkedAt.toISOString(),
+          origin: toOriginOutput(result.investigation.origin),
           promptVersion: result.investigation.promptVersion,
           provider: result.investigation.provider,
           model: result.investigation.model,
@@ -45,6 +69,7 @@ export const publicRouter = router({
 
   getPostInvestigations: publicProcedure
     .input(getPostInvestigationsInputSchema)
+    .output(publicGetPostInvestigationsOutputSchema)
     .query(async ({ input, ctx }) => {
       const result = await getPublicPostInvestigations(ctx.prisma, input);
       return {
@@ -52,19 +77,17 @@ export const publicRouter = router({
         investigations: result.investigations.map((investigation) => ({
           id: investigation.id,
           contentHash: investigation.contentHash,
-          status: "COMPLETE" as const,
-          provenance: investigation.provenance,
           corroborationCount: investigation.corroborationCount,
-          serverVerifiedAt: investigation.serverVerifiedAt?.toISOString(),
-          fetchFailureReason: investigation.fetchFailureReason ?? undefined,
-          checkedAt: investigation.checkedAt?.toISOString(),
+          checkedAt: investigation.checkedAt.toISOString(),
           claimCount: investigation.claimCount,
+          origin: toOriginOutput(investigation.origin),
         })),
       };
     }),
 
   searchInvestigations: publicProcedure
     .input(searchInvestigationsInputSchema)
+    .output(publicSearchInvestigationsOutputSchema)
     .query(async ({ input, ctx }) => {
       const result = await searchPublicInvestigations(ctx.prisma, input);
 
@@ -72,20 +95,19 @@ export const publicRouter = router({
         investigations: result.investigations.map((investigation) => ({
           id: investigation.id,
           contentHash: investigation.contentHash,
-          checkedAt: investigation.checkedAt?.toISOString(),
+          checkedAt: investigation.checkedAt.toISOString(),
           platform: investigation.platform,
           externalId: investigation.externalId,
           url: investigation.url,
-          provenance: investigation.provenance,
           corroborationCount: investigation.corroborationCount,
-          serverVerifiedAt: investigation.serverVerifiedAt?.toISOString(),
-          fetchFailureReason: investigation.fetchFailureReason ?? undefined,
           claimCount: investigation.claimCount,
+          origin: toOriginOutput(investigation.origin),
         })),
       };
     }),
 
   getMetrics: publicProcedure
     .input(getMetricsInputSchema)
+    .output(publicGetMetricsOutputSchema)
     .query(async ({ input, ctx }) => getPublicMetrics(ctx.prisma, input)),
 });

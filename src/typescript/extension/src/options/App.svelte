@@ -57,30 +57,22 @@
       case "authenticated_restricted":
         return {
           tone: "error",
-          text:
-            validation.openaiApiKeyMessage ??
-            "OpenAI authenticated this key, but access is restricted for validation checks.",
+          text: validation.openaiApiKeyMessage,
         };
       case "format_invalid":
         return {
           tone: "error",
-          text:
-            validation.openaiApiKeyMessage ??
-            "OpenAI API key format is invalid.",
+          text: validation.openaiApiKeyMessage,
         };
       case "invalid":
         return {
           tone: "error",
-          text:
-            validation.openaiApiKeyMessage ??
-            "OpenAI rejected this API key.",
+          text: validation.openaiApiKeyMessage,
         };
       case "error":
         return {
           tone: "error",
-          text:
-            validation.openaiApiKeyMessage ??
-            "Could not validate OpenAI API key.",
+          text: validation.openaiApiKeyMessage,
         };
       default: {
         const neverStatus: never = validation.openaiApiKeyStatus;

@@ -5,6 +5,7 @@ import {
   POLL_INTERVAL_MS,
 } from "@openerrata/shared";
 import type {
+  ContentProvenance,
   ExtensionPageStatus,
   ExtensionPostStatus,
   GetInvestigationOutput,
@@ -34,7 +35,7 @@ import {
 } from "./cache.js";
 import { toViewPostInput } from "../lib/view-post-input.js";
 import {
-  createPostStatus,
+  createPostStatusFromInvestigation,
   apiErrorToPostStatus,
 } from "./post-status.js";
 
@@ -255,18 +256,6 @@ async function ensureSubstackInjectionForOpenTabs(): Promise<void> {
   );
 }
 
-function investigationStateFor(input: {
-  investigated: boolean;
-  status?: GetInvestigationOutput["status"];
-}): ExtensionPostStatus["investigationState"] {
-  if (input.investigated) return "INVESTIGATED";
-  if (input.status === "FAILED") return "FAILED";
-  if (input.status === "PENDING" || input.status === "PROCESSING") {
-    return "INVESTIGATING";
-  }
-  return "NOT_INVESTIGATED";
-}
-
 type InvestigationPoller = {
   tabSessionId: number;
   investigationId: string;
@@ -296,6 +285,46 @@ function isStaleTabSession(tabId: number, tabSessionId: number): boolean {
   const latest = latestTabSessionByTab.get(tabId);
   if (latest === undefined) return false;
   return tabSessionId < latest;
+}
+
+async function cacheApiErrorStatus(input: {
+  error: unknown;
+  tabId: number;
+  tabSessionId: number;
+  platform: ViewPostInput["platform"];
+  externalId: string;
+  pageUrl: string;
+  investigationId?: string;
+  provenance?: ContentProvenance;
+  skipIfStale?: boolean;
+  noteSession?: boolean;
+  stopPolling?: boolean;
+}): Promise<void> {
+  if (input.skipIfStale === true && isStaleTabSession(input.tabId, input.tabSessionId)) {
+    return;
+  }
+  if (input.noteSession === true) {
+    noteTabSession(input.tabId, input.tabSessionId);
+  }
+  if (input.stopPolling === true) {
+    stopInvestigationPolling(input.tabId);
+  }
+
+  const statusInput: Parameters<typeof apiErrorToPostStatus>[0] = {
+    error: input.error,
+    tabSessionId: input.tabSessionId,
+    platform: input.platform,
+    externalId: input.externalId,
+    pageUrl: input.pageUrl,
+  };
+  if (input.investigationId !== undefined) {
+    statusInput.investigationId = input.investigationId;
+  }
+  if (input.provenance !== undefined) {
+    statusInput.provenance = input.provenance;
+  }
+
+  await cachePostStatus(input.tabId, apiErrorToPostStatus(statusInput));
 }
 
 function pollRecoveryAlarmName(tabId: number): string {
@@ -343,10 +372,50 @@ function stopInvestigationPolling(tabId: number): void {
   investigationPollers.delete(tabId);
 }
 
-function isInvestigatingStatus(
-  status: GetInvestigationOutput["status"] | undefined,
+function isInvestigatingCheckStatus(
+  status: InvestigateNowOutput["status"],
 ): boolean {
   return status === "PENDING" || status === "PROCESSING";
+}
+
+function isInvestigatingSnapshot(
+  snapshot: Pick<InvestigationStatusOutput, "investigationState">,
+): boolean {
+  return snapshot.investigationState === "INVESTIGATING";
+}
+
+function toInvestigationStatusSnapshot(
+  output: GetInvestigationOutput,
+): InvestigationStatusOutput {
+  const { checkedAt: _checkedAt, ...snapshot } = output;
+  return snapshot;
+}
+
+function snapshotFromInvestigateNowResult(
+  result: InvestigateNowOutput,
+): InvestigationStatusOutput {
+  switch (result.status) {
+    case "COMPLETE":
+      return {
+        investigationState: "INVESTIGATED",
+        provenance: result.provenance,
+        claims: result.claims,
+      };
+    case "PENDING":
+    case "PROCESSING":
+      return {
+        investigationState: "INVESTIGATING",
+        status: result.status,
+        provenance: result.provenance,
+        claims: null,
+      };
+    case "FAILED":
+      return {
+        investigationState: "FAILED",
+        provenance: result.provenance,
+        claims: null,
+      };
+  }
 }
 
 async function startInvestigationPolling(input: {
@@ -355,7 +424,6 @@ async function startInvestigationPolling(input: {
   platform: ViewPostInput["platform"];
   externalId: string;
   investigationId: string;
-  fallbackProvenance: ViewPostOutput["provenance"] | undefined;
 }): Promise<void> {
   stopInvestigationPolling(input.tabId);
 
@@ -393,26 +461,21 @@ async function startInvestigationPolling(input: {
       const latest = await getInvestigation({
         investigationId: input.investigationId,
       });
+      const latestSnapshot = toInvestigationStatusSnapshot(latest);
       await cachePostStatus(
         input.tabId,
-        createPostStatus({
+        createPostStatusFromInvestigation({
           tabSessionId: input.tabSessionId,
           platform: input.platform,
           externalId: input.externalId,
           pageUrl: existing.pageUrl,
           investigationId: input.investigationId,
-          investigationState: investigationStateFor({
-            investigated: latest.investigated,
-            status: latest.status,
-          }),
-          status: latest.status,
-          provenance: latest.provenance ?? input.fallbackProvenance,
-          claims: latest.claims,
+          ...latestSnapshot,
         }),
         { setActive: false },
       );
 
-      if (!isInvestigatingStatus(latest.status)) {
+      if (!isInvestigatingSnapshot(latestSnapshot)) {
         stopInvestigationPolling(input.tabId);
       }
     } catch (error) {
@@ -522,49 +585,23 @@ async function cacheInvestigateNowResult(
 ): Promise<void> {
   const { tabId, tabSessionId, request, result } = input;
 
+  const initialSnapshot = snapshotFromInvestigateNowResult(result);
+
   await cachePostStatus(
     tabId,
-    createPostStatus({
+    createPostStatusFromInvestigation({
       tabSessionId,
       platform: request.platform,
       externalId: request.externalId,
       pageUrl: request.url,
       investigationId: result.investigationId,
-      investigationState: investigationStateFor({
-        investigated: result.status === "COMPLETE",
-        status: result.status,
-      }),
-      status: result.status,
-      provenance: result.provenance,
-      claims: result.status === "COMPLETE" ? (result.claims ?? null) : null,
+      ...initialSnapshot,
     }),
   );
 
-  if (result.status !== "COMPLETE" || result.claims !== undefined) {
+  if (result.status !== "COMPLETE") {
     return;
   }
-
-  const completed = await getInvestigation({
-    investigationId: result.investigationId,
-  });
-
-  await cachePostStatus(
-    tabId,
-    createPostStatus({
-      tabSessionId,
-      platform: request.platform,
-      externalId: request.externalId,
-      pageUrl: request.url,
-      investigationId: result.investigationId,
-      investigationState: investigationStateFor({
-        investigated: completed.investigated,
-        status: completed.status ?? result.status,
-      }),
-      status: completed.status ?? result.status,
-      provenance: completed.provenance ?? result.provenance,
-      claims: completed.claims,
-    }),
-  );
 }
 
 async function maybeAutoInvestigate(
@@ -572,7 +609,6 @@ async function maybeAutoInvestigate(
     tabId: number;
     tabSessionId: number;
     request: ViewPostInput;
-    provenance: ViewPostOutput["provenance"] | undefined;
     existingStatus: ExtensionPostStatus | null;
   },
 ): Promise<void> {
@@ -582,9 +618,15 @@ async function maybeAutoInvestigate(
   if (input.existingStatus?.investigationState === "INVESTIGATING") {
     return;
   }
+  if (isStaleTabSession(input.tabId, input.tabSessionId)) {
+    return;
+  }
 
   try {
     const result = await investigateNow(input.request);
+    if (isStaleTabSession(input.tabId, input.tabSessionId)) {
+      return;
+    }
     await cacheInvestigateNowResult({
       tabId: input.tabId,
       tabSessionId: input.tabSessionId,
@@ -592,32 +634,32 @@ async function maybeAutoInvestigate(
       result,
     });
 
-    if (isInvestigatingStatus(result.status)) {
+    if (isInvestigatingCheckStatus(result.status)) {
+      if (isStaleTabSession(input.tabId, input.tabSessionId)) {
+        return;
+      }
       await startInvestigationPolling({
         tabId: input.tabId,
         tabSessionId: input.tabSessionId,
         platform: input.request.platform,
         externalId: input.request.externalId,
         investigationId: result.investigationId,
-        fallbackProvenance: result.provenance,
       });
     }
   } catch (error) {
-    await cachePostStatus(
-      input.tabId,
-      apiErrorToPostStatus({
-        error,
-        tabSessionId: input.tabSessionId,
-        platform: input.request.platform,
-        externalId: input.request.externalId,
-        pageUrl: input.request.url,
-        ...(input.existingStatus?.tabSessionId === input.tabSessionId &&
-        input.existingStatus.investigationId !== undefined
-          ? { investigationId: input.existingStatus.investigationId }
-          : {}),
-        provenance: input.provenance,
-      }),
-    );
+    await cacheApiErrorStatus({
+      error,
+      tabId: input.tabId,
+      tabSessionId: input.tabSessionId,
+      platform: input.request.platform,
+      externalId: input.request.externalId,
+      pageUrl: input.request.url,
+      skipIfStale: true,
+      ...(input.existingStatus?.tabSessionId === input.tabSessionId &&
+      input.existingStatus.investigationId !== undefined
+        ? { investigationId: input.existingStatus.investigationId }
+        : {}),
+    });
     throw error;
   }
 }
@@ -667,24 +709,18 @@ async function handlePageContent(
   try {
     result = await viewPost(request);
   } catch (error) {
-    // Cache a terminal error state so the popup shows a stable status instead
-    // of hanging on "Checking This Page" indefinitely.
     if (sender.tab?.id !== undefined) {
-      const tabId = sender.tab.id;
-      if (!isStaleTabSession(tabId, payload.tabSessionId)) {
-        noteTabSession(tabId, payload.tabSessionId);
-        stopInvestigationPolling(tabId);
-        await cachePostStatus(
-          tabId,
-          apiErrorToPostStatus({
-            error,
-            tabSessionId: payload.tabSessionId,
-            platform: request.platform,
-            externalId: request.externalId,
-            pageUrl: request.url,
-          }),
-        );
-      }
+      await cacheApiErrorStatus({
+        error,
+        tabId: sender.tab.id,
+        tabSessionId: payload.tabSessionId,
+        platform: request.platform,
+        externalId: request.externalId,
+        pageUrl: request.url,
+        skipIfStale: true,
+        noteSession: true,
+        stopPolling: true,
+      });
     }
     throw error;
   }
@@ -708,8 +744,25 @@ async function handlePageContent(
       stopInvestigationPolling(tabId);
     }
 
-    const inferredStatus = result.investigated ? "COMPLETE" : existingForSession?.status;
-    const nextStatus = createPostStatus({
+    const snapshot =
+      result.investigationState === "INVESTIGATED"
+        ? result
+        : existingForSession?.investigationState === "INVESTIGATING"
+          ? {
+              investigationState: "INVESTIGATING" as const,
+              status: existingForSession.status,
+              provenance: existingForSession.provenance,
+              claims: null,
+            }
+          : existingForSession?.investigationState === "FAILED" &&
+              existingForSession.provenance !== undefined
+            ? {
+                investigationState: "FAILED" as const,
+                provenance: existingForSession.provenance,
+                claims: null,
+              }
+            : result;
+    const nextStatus = createPostStatusFromInvestigation({
       tabSessionId: payload.tabSessionId,
       platform: request.platform,
       externalId: request.externalId,
@@ -717,22 +770,15 @@ async function handlePageContent(
       ...(existingForSession?.investigationId === undefined
         ? {}
         : { investigationId: existingForSession.investigationId }),
-      investigationState: investigationStateFor({
-        investigated: result.investigated,
-        status: inferredStatus,
-      }),
-      status: inferredStatus,
-      provenance: result.provenance ?? existingForSession?.provenance,
-      claims: result.claims,
+      ...snapshot,
     });
     await cachePostStatus(tabId, nextStatus);
 
-    if (!result.investigated) {
+    if (result.investigationState === "NOT_INVESTIGATED") {
       void maybeAutoInvestigate({
         tabId,
         tabSessionId: payload.tabSessionId,
         request,
-        provenance: nextStatus.provenance,
         existingStatus: existingForSession,
       }).catch((error: unknown) => {
         console.error("auto investigate failed:", error);
@@ -776,18 +822,16 @@ async function handlePageReset(
   if (sender.tab?.id === undefined) {
     return;
   }
-  if (isStaleTabSession(sender.tab.id, payload.tabSessionId)) {
-    return;
-  }
-  retireTabSession(sender.tab.id, payload.tabSessionId);
+  const tabId = sender.tab.id;
+  retireTabSession(tabId, payload.tabSessionId);
 
-  const active = await getActiveStatus(sender.tab.id);
-  if (active && active.tabSessionId !== payload.tabSessionId) {
+  const active = await getActiveStatus(tabId);
+  if (active !== null && active.tabSessionId > payload.tabSessionId) {
     return;
   }
 
-  stopInvestigationPolling(sender.tab.id);
-  await clearActiveStatus(sender.tab.id);
+  stopInvestigationPolling(tabId);
+  await clearActiveStatus(tabId);
 }
 
 async function handleGetStatus(
@@ -797,14 +841,7 @@ async function handleGetStatus(
   const { tabSessionId, ...request } = payload;
   const result = await getInvestigation(request);
 
-  const response: InvestigationStatusOutput = {
-    investigated: result.investigated,
-    ...(result.status === undefined ? {} : { status: result.status }),
-    ...(result.provenance === undefined
-      ? {}
-      : { provenance: result.provenance }),
-    claims: result.claims,
-  };
+  const { checkedAt: _checkedAt, ...response } = result;
   investigationStatusOutputSchema.parse(response);
 
   if (sender.tab?.id !== undefined) {
@@ -819,19 +856,13 @@ async function handleGetStatus(
 
       await cachePostStatus(
         sender.tab.id,
-        createPostStatus({
+        createPostStatusFromInvestigation({
           tabSessionId: existing.tabSessionId,
           platform: existing.platform,
           externalId: existing.externalId,
           pageUrl: existing.pageUrl,
           investigationId: payload.investigationId,
-          investigationState: investigationStateFor({
-            investigated: result.investigated,
-            status: result.status,
-          }),
-          status: result.status,
-          provenance: result.provenance,
-          claims: result.claims,
+          ...response,
         }),
         { setActive: false },
       );
@@ -861,22 +892,24 @@ async function handleInvestigateNow(
     result = await investigateNow(request);
   } catch (error) {
     if (sender.tab?.id !== undefined) {
-      stopInvestigationPolling(sender.tab.id);
-      await cachePostStatus(
-        sender.tab.id,
-        apiErrorToPostStatus({
-          error,
-          tabSessionId: payload.tabSessionId,
-          platform: request.platform,
-          externalId: request.externalId,
-          pageUrl: request.url,
-        }),
-      );
+      await cacheApiErrorStatus({
+        error,
+        tabId: sender.tab.id,
+        tabSessionId: payload.tabSessionId,
+        platform: request.platform,
+        externalId: request.externalId,
+        pageUrl: request.url,
+        skipIfStale: true,
+        stopPolling: true,
+      });
     }
     throw error;
   }
 
   if (sender.tab?.id !== undefined) {
+    if (isStaleTabSession(sender.tab.id, payload.tabSessionId)) {
+      return result;
+    }
     await cacheInvestigateNowResult({
       tabId: sender.tab.id,
       tabSessionId: payload.tabSessionId,
@@ -884,14 +917,16 @@ async function handleInvestigateNow(
       result,
     });
 
-    if (isInvestigatingStatus(result.status)) {
+    if (isInvestigatingCheckStatus(result.status)) {
+      if (isStaleTabSession(sender.tab.id, payload.tabSessionId)) {
+        return result;
+      }
       await startInvestigationPolling({
         tabId: sender.tab.id,
         tabSessionId: payload.tabSessionId,
         platform: request.platform,
         externalId: request.externalId,
         investigationId: result.investigationId,
-        fallbackProvenance: result.provenance,
       });
     } else {
       stopInvestigationPolling(sender.tab.id);
