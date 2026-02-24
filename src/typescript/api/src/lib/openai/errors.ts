@@ -1,11 +1,24 @@
-import type { SettingsValidationOutput } from "@openerrata/shared";
-
 const NON_RETRYABLE_OPENAI_STATUS_CODES = new Set([400, 401, 403, 404, 422]);
 
-type OpenAiKeyValidationStatusOutcome = Omit<
-  SettingsValidationOutput,
-  "instanceApiKeyAccepted"
->;
+type OpenAiKeyValidationStatusOutcome =
+  | { openaiApiKeyStatus: "missing" }
+  | { openaiApiKeyStatus: "valid" }
+  | {
+      openaiApiKeyStatus: "format_invalid";
+      openaiApiKeyMessage: string;
+    }
+  | {
+      openaiApiKeyStatus: "authenticated_restricted";
+      openaiApiKeyMessage: string;
+    }
+  | {
+      openaiApiKeyStatus: "invalid";
+      openaiApiKeyMessage: string;
+    }
+  | {
+      openaiApiKeyStatus: "error";
+      openaiApiKeyMessage: string;
+    };
 
 const OPENAI_KEY_VALIDATION_RESULT_BY_STATUS: Partial<
   Record<number, OpenAiKeyValidationStatusOutcome>

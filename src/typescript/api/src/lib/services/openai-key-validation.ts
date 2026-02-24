@@ -1,4 +1,3 @@
-import type { SettingsValidationOutput } from "@openerrata/shared";
 import {
   openaiApiKeyFormatSchema,
   OPENAI_KEY_VALIDATION_TIMEOUT_MS,
@@ -9,10 +8,25 @@ import {
   readOpenAiStatusCode,
 } from "$lib/openai/errors.js";
 
-type OpenAiKeyValidationStatusOutcome = Omit<
-  SettingsValidationOutput,
-  "instanceApiKeyAccepted"
->;
+type OpenAiKeyValidationStatusOutcome =
+  | { openaiApiKeyStatus: "missing" }
+  | { openaiApiKeyStatus: "valid" }
+  | {
+      openaiApiKeyStatus: "format_invalid";
+      openaiApiKeyMessage: string;
+    }
+  | {
+      openaiApiKeyStatus: "authenticated_restricted";
+      openaiApiKeyMessage: string;
+    }
+  | {
+      openaiApiKeyStatus: "invalid";
+      openaiApiKeyMessage: string;
+    }
+  | {
+      openaiApiKeyStatus: "error";
+      openaiApiKeyMessage: string;
+    };
 
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
