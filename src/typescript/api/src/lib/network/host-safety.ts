@@ -1,5 +1,5 @@
 import { promises as dns } from "node:dns";
-import net from "node:net";
+import ipaddr from "ipaddr.js";
 
 type IpFamily = 4 | 6;
 
@@ -8,98 +8,76 @@ type ResolvedAddress = {
   family: IpFamily;
 };
 
-function parseIpv4Segments(ipAddress: string): [number, number, number, number] | null {
-  const parts = ipAddress.split(".").map((segment) => Number.parseInt(segment, 10));
-  if (parts.length !== 4 || parts.some((segment) => Number.isNaN(segment))) {
-    return null;
+const PRIVATE_IPV4_SUBNETS: Record<
+  string,
+  [ipaddr.IPv4, number] | [ipaddr.IPv4, number][]
+> = {
+  unspecified: [[ipaddr.IPv4.parse("0.0.0.0"), 8]],
+  private: [
+    [ipaddr.IPv4.parse("10.0.0.0"), 8],
+    [ipaddr.IPv4.parse("172.16.0.0"), 12],
+    [ipaddr.IPv4.parse("192.168.0.0"), 16],
+  ],
+  carrierGradeNat: [[ipaddr.IPv4.parse("100.64.0.0"), 10]],
+  loopback: [[ipaddr.IPv4.parse("127.0.0.0"), 8]],
+  linkLocal: [[ipaddr.IPv4.parse("169.254.0.0"), 16]],
+  ietfProtocol: [[ipaddr.IPv4.parse("192.0.0.0"), 24]],
+  benchmarking: [[ipaddr.IPv4.parse("198.18.0.0"), 15]],
+  reserved: [[ipaddr.IPv4.parse("240.0.0.0"), 4]],
+};
+
+function normalizeIpLiteralCandidate(input: string): string {
+  const trimmed = input.trim().toLowerCase();
+  const withoutBrackets =
+    trimmed.startsWith("[") && trimmed.endsWith("]")
+      ? trimmed.slice(1, -1)
+      : trimmed;
+  const zoneSeparatorIndex = withoutBrackets.indexOf("%");
+  if (zoneSeparatorIndex === -1) {
+    return withoutBrackets;
   }
-  if (parts.some((segment) => segment < 0 || segment > 255)) {
-    return null;
-  }
-  const a = parts[0];
-  const b = parts[1];
-  const c = parts[2];
-  const d = parts[3];
-  if (a === undefined || b === undefined || c === undefined || d === undefined) return null;
-  return [a, b, c, d];
+  return withoutBrackets.slice(0, zoneSeparatorIndex);
 }
 
-function isPrivateIPv4(ipAddress: string): boolean {
-  const segments = parseIpv4Segments(ipAddress);
-  if (!segments) return false;
-
-  const [a, b, c] = segments;
-  if (a === 0) return true;
-  if (a === 10) return true;
-  if (a === 100 && b >= 64 && b <= 127) return true;
-  if (a === 127) return true;
-  if (a === 169 && b === 254) return true;
-  if (a === 172 && b >= 16 && b <= 31) return true;
-  if (a === 192 && b === 168) return true;
-  if (a === 192 && b === 0 && c === 0) return true;
-  if (a === 198 && (b === 18 || b === 19)) return true;
-  if (a >= 240) return true;
-  return false;
+function parseIpAddress(input: string): ipaddr.IPv4 | ipaddr.IPv6 | null {
+  const candidate = normalizeIpLiteralCandidate(input);
+  if (ipaddr.IPv4.isValidFourPartDecimal(candidate)) {
+    return ipaddr.IPv4.parse(candidate);
+  }
+  if (ipaddr.IPv6.isValid(candidate)) {
+    return ipaddr.IPv6.parse(candidate);
+  }
+  return null;
 }
 
-function parseMappedIpv4Address(embeddedIpv4: string): string | null {
-  if (embeddedIpv4.includes(".")) {
-    return parseIpv4Segments(embeddedIpv4) ? embeddedIpv4 : null;
-  }
-
-  const parts = embeddedIpv4.split(":");
-  if (parts.length !== 2) return null;
-  const upper = Number.parseInt(parts[0] ?? "", 16);
-  const lower = Number.parseInt(parts[1] ?? "", 16);
-  if (
-    !Number.isFinite(upper) ||
-    !Number.isFinite(lower) ||
-    upper < 0 ||
-    upper > 0xffff ||
-    lower < 0 ||
-    lower > 0xffff
-  ) {
-    return null;
-  }
-
-  const octets = [
-    (upper >> 8) & 0xff,
-    upper & 0xff,
-    (lower >> 8) & 0xff,
-    lower & 0xff,
-  ];
-  return octets.join(".");
+function isIpv4Address(address: ipaddr.IPv4 | ipaddr.IPv6): address is ipaddr.IPv4 {
+  return address.kind() === "ipv4";
 }
 
-function isPrivateIPv6(ipAddress: string): boolean {
-  const normalized = ipAddress.trim().toLowerCase();
-  if (normalized === "::") return true;
-  if (normalized.startsWith("::ffff:")) {
-    const embeddedIpv4 = normalized.slice("::ffff:".length);
-    const mappedIpv4 = parseMappedIpv4Address(embeddedIpv4);
-    return mappedIpv4 ? isPrivateIPv4(mappedIpv4) : true;
-  }
-  if (normalized === "::1") return true;
-  if (normalized.startsWith("fc") || normalized.startsWith("fd")) return true;
+function isPrivateIPv4(address: ipaddr.IPv4): boolean {
+  return ipaddr.subnetMatch(address, PRIVATE_IPV4_SUBNETS, "public") !== "public";
+}
 
-  const firstHextetRaw = normalized.split(":")[0];
-  const firstHextet = firstHextetRaw ? Number.parseInt(firstHextetRaw, 16) : Number.NaN;
-  if (
-    Number.isFinite(firstHextet) &&
-    firstHextet >= 0xfe80 &&
-    firstHextet <= 0xfebf
-  ) {
-    return true;
+function isPrivateIPv6(address: ipaddr.IPv6): boolean {
+  if (address.isIPv4MappedAddress()) {
+    return isPrivateIPv4(address.toIPv4Address());
   }
-
-  return false;
+  const range = address.range();
+  return (
+    range === "unspecified" ||
+    range === "loopback" ||
+    range === "uniqueLocal" ||
+    range === "linkLocal"
+  );
 }
 
 export function isPrivateIpAddress(hostnameOrIp: string): boolean {
-  const ipVersion = net.isIP(hostnameOrIp);
-  if (ipVersion === 4) return isPrivateIPv4(hostnameOrIp);
-  if (ipVersion === 6) return isPrivateIPv6(hostnameOrIp);
-  return false;
+  const parsedAddress = parseIpAddress(hostnameOrIp);
+  if (!parsedAddress) return false;
+  if (isIpv4Address(parsedAddress)) {
+    return isPrivateIPv4(parsedAddress);
+  }
+  return isPrivateIPv6(parsedAddress);
 }
 
 function normalizeAddress(address: string): string {
@@ -108,9 +86,14 @@ function normalizeAddress(address: string): string {
 
 async function resolveHostAddresses(hostname: string): Promise<ResolvedAddress[]> {
   const normalizedHost = hostname.trim().toLowerCase();
-  const ipVersion = net.isIP(normalizedHost);
-  if (ipVersion === 4 || ipVersion === 6) {
-    return [{ address: normalizedHost, family: ipVersion }];
+  const parsedAddress = parseIpAddress(normalizedHost);
+  if (parsedAddress) {
+    return [
+      {
+        address: parsedAddress.toNormalizedString(),
+        family: parsedAddress.kind() === "ipv4" ? 4 : 6,
+      },
+    ];
   }
 
   const resolvedAddresses = await dns.lookup(normalizedHost, {

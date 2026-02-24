@@ -66,6 +66,7 @@ test("normalizeApiBaseUrl rejects public http URLs, non-http(s), and malformed v
   assert.equal(normalizeApiBaseUrl("http://api.openerrata.com"), null);
   assert.equal(normalizeApiBaseUrl("http://example.com"), null);
   assert.equal(normalizeApiBaseUrl("http://0.1.2.3:3000"), null);
+  assert.equal(normalizeApiBaseUrl("http://[::ffff:c0a8:0101]:3000"), null);
   assert.equal(normalizeApiBaseUrl("http://[2001:db8::1]:3000"), null);
   assert.equal(normalizeApiBaseUrl("ftp://api.openerrata.com"), null);
   assert.equal(normalizeApiBaseUrl("not-a-url"), null);

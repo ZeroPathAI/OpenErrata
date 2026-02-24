@@ -1,4 +1,5 @@
 import { normalizeContent } from "@openerrata/shared";
+import { decodeHTML } from "entities";
 import { z } from "zod";
 import { isBlockedHost } from "$lib/network/host-safety.js";
 import { isRedirectStatus } from "$lib/network/http-status.js";
@@ -67,43 +68,12 @@ export const fetchUrlToolDefinition = {
   },
 };
 
-function decodeHtmlEntities(text: string): string {
-  const namedEntities: Record<string, string> = {
-    amp: "&",
-    lt: "<",
-    gt: ">",
-    quot: '"',
-    apos: "'",
-    nbsp: " ",
-  };
-
-  const withNamedEntities = text.replace(
-    /&([a-zA-Z]+);/g,
-    (match: string, entity: string): string => namedEntities[entity] ?? match,
-  );
-  const withHexEntities = withNamedEntities.replace(
-    /&#x([0-9a-fA-F]+);/g,
-    (_match: string, hexCode: string): string => {
-      const codePoint = Number.parseInt(hexCode, 16);
-      return Number.isFinite(codePoint) ? String.fromCodePoint(codePoint) : "";
-    },
-  );
-
-  return withHexEntities.replace(
-    /&#([0-9]+);/g,
-    (_match: string, decimalCode: string): string => {
-      const codePoint = Number.parseInt(decimalCode, 10);
-      return Number.isFinite(codePoint) ? String.fromCodePoint(codePoint) : "";
-    },
-  );
-}
-
 function extractTitleFromHtml(html: string): string | null {
   const titleMatch = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html);
   if (!titleMatch) return null;
   const rawTitle = titleMatch[1];
   if (rawTitle === undefined) return null;
-  const title = normalizeContent(decodeHtmlEntities(rawTitle));
+  const title = normalizeContent(decodeHTML(rawTitle));
   return title.length > 0 ? title : null;
 }
 
@@ -113,7 +83,7 @@ function extractTextFromHtml(html: string): string {
   const withoutNoscript = withoutStyles.replace(/<noscript[\s\S]*?<\/noscript>/gi, " ");
   const withoutComments = withoutNoscript.replace(/<!--[\s\S]*?-->/g, " ");
   const withoutTags = withoutComments.replace(/<[^>]+>/g, " ");
-  return normalizeContent(decodeHtmlEntities(withoutTags));
+  return normalizeContent(decodeHTML(withoutTags));
 }
 
 function truncateUtf8(value: string, maxBytes: number): { value: string; truncated: boolean } {

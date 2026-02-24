@@ -1,3 +1,5 @@
+import ipaddr from "ipaddr.js";
+
 export interface ExtensionSettings {
   apiBaseUrl: string;
   apiKey: string;
@@ -32,114 +34,46 @@ export const SETTINGS_KEYS = [
 
 export type StoredSettings = Partial<Record<(typeof SETTINGS_KEYS)[number], unknown>>;
 
-function parseIpv4Octet(raw: string | undefined): number | null {
-  if (raw === undefined) return null;
-  if (!/^(0|[1-9]\d{0,2})$/.test(raw)) return null;
-
-  const parsed = Number(raw);
-  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 255) return null;
-  return parsed;
-}
-
-function parseIpv4(hostname: string): [number, number, number, number] | null {
-  const parts = hostname.split(".");
-  if (parts.length !== 4) return null;
-
-  const first = parseIpv4Octet(parts[0]);
-  const second = parseIpv4Octet(parts[1]);
-  const third = parseIpv4Octet(parts[2]);
-  const fourth = parseIpv4Octet(parts[3]);
-
-  if (first === null || second === null || third === null || fourth === null) {
-    return null;
+function normalizeIpLiteralHost(hostname: string): string {
+  const unwrapped =
+    hostname.startsWith("[") && hostname.endsWith("]")
+      ? hostname.slice(1, -1)
+      : hostname;
+  const zoneIndex = unwrapped.indexOf("%");
+  if (zoneIndex === -1) {
+    return unwrapped;
   }
-
-  return [first, second, third, fourth];
+  return unwrapped.slice(0, zoneIndex);
 }
 
 function isPrivateOrLoopbackIpv4(hostname: string): boolean {
-  const ipv4 = parseIpv4(hostname);
-  if (ipv4 === null) return false;
-
-  const [firstOctet, secondOctet, thirdOctet, fourthOctet] = ipv4;
-
-  if (
-    firstOctet === 0 &&
-    secondOctet === 0 &&
-    thirdOctet === 0 &&
-    fourthOctet === 0
-  ) {
-    return true;
-  }
-  if (firstOctet === 10) return true;
-  if (firstOctet === 127) return true;
-  if (firstOctet === 169 && secondOctet === 254) return true;
-  if (firstOctet === 172 && secondOctet >= 16 && secondOctet <= 31) return true;
-  if (firstOctet === 192 && secondOctet === 168) return true;
-
-  return false;
-}
-
-function parseFirstIpv6Hextet(hostname: string): number | null {
-  if (!hostname.startsWith("[") || !hostname.endsWith("]")) return null;
-
-  const unwrapped = hostname.slice(1, -1).toLowerCase();
-  if (unwrapped.length === 0) return null;
-
-  const zoneDelimiterIndex = unwrapped.indexOf("%");
-  const address =
-    zoneDelimiterIndex === -1
-      ? unwrapped
-      : unwrapped.slice(0, zoneDelimiterIndex);
-  if (address.length === 0) return null;
-
-  const condensedParts = address.split("::");
-  if (condensedParts.length > 2) return null;
-  const headRaw = condensedParts[0];
-  if (headRaw === undefined) return null;
-
-  const headParts = headRaw === "" ? [] : headRaw.split(":");
-  const tailRaw = condensedParts[1];
-  const tailParts =
-    tailRaw === undefined || tailRaw === "" ? [] : tailRaw.split(":");
-
-  const hextets = [...headParts, ...tailParts];
-  if (hextets.length > 8) return null;
-
-  for (const hextet of hextets) {
-    if (!/^[0-9a-f]{1,4}$/.test(hextet)) return null;
-  }
-
-  if (headParts.length === 0) return 0;
-
-  const firstHextet = headParts[0];
-  if (firstHextet === undefined) return null;
-
-  return Number.parseInt(firstHextet, 16);
+  if (!ipaddr.IPv4.isValidFourPartDecimal(hostname)) return false;
+  const parsed = ipaddr.IPv4.parse(hostname);
+  const isExactUnspecified =
+    parsed.octets[0] === 0 &&
+    parsed.octets[1] === 0 &&
+    parsed.octets[2] === 0 &&
+    parsed.octets[3] === 0;
+  const range = parsed.range();
+  return (
+    (range === "unspecified" && isExactUnspecified) ||
+    range === "private" ||
+    range === "loopback" ||
+    range === "linkLocal"
+  );
 }
 
 function isLocalIpv6(hostname: string): boolean {
-  const normalized = hostname.toLowerCase();
-  if (normalized === "[::1]" || normalized === "[::]") return true;
-
-  const mappedLoopbackMatch = normalized.match(/^\[::ffff:(\d+\.\d+\.\d+\.\d+)\]$/);
-  if (mappedLoopbackMatch !== null) {
-    const mappedIpv4 = mappedLoopbackMatch[1];
-    if (mappedIpv4 === undefined) return false;
-
-    return isPrivateOrLoopbackIpv4(mappedIpv4);
-  }
-
-  const firstHextet = parseFirstIpv6Hextet(normalized);
-  if (firstHextet === null) return false;
-
-  const isUniqueLocal = (firstHextet & 0xfe00) === 0xfc00; // fc00::/7
-  if (isUniqueLocal) return true;
-
-  const isLinkLocal = (firstHextet & 0xffc0) === 0xfe80; // fe80::/10
-  if (isLinkLocal) return true;
-
-  return false;
+  if (!ipaddr.IPv6.isValid(hostname)) return false;
+  const parsed = ipaddr.IPv6.parse(hostname);
+  if (parsed.isIPv4MappedAddress()) return false;
+  const range = parsed.range();
+  return (
+    range === "unspecified" ||
+    range === "loopback" ||
+    range === "uniqueLocal" ||
+    range === "linkLocal"
+  );
 }
 
 function isLocalDevelopmentHost(hostname: string): boolean {
@@ -152,8 +86,9 @@ function isLocalDevelopmentHost(hostname: string): boolean {
 
   if (LOCAL_DEV_HOSTNAMES.has(normalizedWithoutTrailingDot)) return true;
   if (normalizedWithoutTrailingDot.endsWith(".localhost")) return true;
-  if (isPrivateOrLoopbackIpv4(normalizedWithoutTrailingDot)) return true;
-  if (isLocalIpv6(normalizedWithoutTrailingDot)) return true;
+  const ipLiteralHost = normalizeIpLiteralHost(normalizedWithoutTrailingDot);
+  if (isPrivateOrLoopbackIpv4(ipLiteralHost)) return true;
+  if (isLocalIpv6(ipLiteralHost)) return true;
 
   return false;
 }

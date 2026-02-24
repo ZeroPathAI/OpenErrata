@@ -15,11 +15,13 @@ test("isPrivateIpAddress blocks reserved IPv4 ranges used for SSRF bypasses", ()
 test("isPrivateIpAddress blocks mapped IPv4 private ranges in IPv6 notation", () => {
   assert.equal(isPrivateIpAddress("::ffff:192.168.1.1"), true);
   assert.equal(isPrivateIpAddress("::ffff:c0a8:0101"), true);
+  assert.equal(isPrivateIpAddress("[::ffff:c0a8:0101]"), true);
 });
 
 test("isPrivateIpAddress allows normal public addresses", () => {
   assert.equal(isPrivateIpAddress("8.8.8.8"), false);
   assert.equal(isPrivateIpAddress("2606:4700:4700::1111"), false);
+  assert.equal(isPrivateIpAddress("[2606:4700:4700::1111]"), false);
 });
 
 test("hasAddressIntersection compares address sets case-insensitively", () => {

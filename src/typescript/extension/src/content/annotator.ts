@@ -1,23 +1,14 @@
 import type { InvestigationClaim } from "@openerrata/shared";
 import type { DomAnnotation } from "./dom-mapper";
+import { renderClaimReasoningHtml, toSafeSourceUrl } from "./claim-markdown";
 
-const SAFE_SOURCE_PROTOCOLS = new Set(["http:", "https:"]);
 const TOOLTIP_MARGIN_PX = 12;
 const TOOLTIP_GAP_PX = 8;
 const TOOLTIP_MIN_WIDTH_PX = 260;
 const TOOLTIP_MAX_WIDTH_PX = 680;
-const ALLOWED_RENDERED_MARKDOWN_TAGS = new Set([
-  "P",
-  "BR",
-  "OL",
-  "UL",
-  "LI",
-  "STRONG",
-  "EM",
-  "CODE",
-]);
 type ThemeMode = "light" | "dark";
 let activeDetailPanel: HTMLDivElement | null = null;
+let activeDetailPanelBackdrop: HTMLDivElement | null = null;
 let disposeActiveDetailPanel: (() => void) | null = null;
 
 function dismissDetailPanel(): void {
@@ -27,6 +18,10 @@ function dismissDetailPanel(): void {
     activeDetailPanel.remove();
   }
   activeDetailPanel = null;
+  if (activeDetailPanelBackdrop?.isConnected) {
+    activeDetailPanelBackdrop.remove();
+  }
+  activeDetailPanelBackdrop = null;
 }
 
 // ── Public API ────────────────────────────────────────────────────────────
@@ -73,7 +68,9 @@ export function clearAnnotations(): void {
 
   // Remove lingering tooltip and detail-panel elements
   document
-    .querySelectorAll(".openerrata-tooltip, .openerrata-detail-panel")
+    .querySelectorAll(
+      ".openerrata-tooltip, .openerrata-detail-panel, .openerrata-detail-panel-backdrop",
+    )
     .forEach((el) => el.remove());
 }
 
@@ -86,6 +83,9 @@ function showDetailPanel(
   anchor: HTMLElement | null = null,
 ): void {
   dismissDetailPanel();
+
+  const backdrop = document.createElement("div");
+  backdrop.className = "openerrata-detail-panel-backdrop";
 
   const panel = document.createElement("div");
   panel.className = "openerrata-detail-panel";
@@ -111,9 +111,7 @@ function showDetailPanel(
   reasoningHeading.textContent = "Explanation";
   reasoning.appendChild(reasoningHeading);
   const reasoningBody = document.createElement("div");
-  reasoningBody.innerHTML = sanitizeRenderedMarkdownHtml(
-    renderMarkdownToHtml(claim.reasoning),
-  );
+  reasoningBody.innerHTML = renderClaimReasoningHtml(claim.reasoning);
   reasoning.appendChild(reasoningBody);
   panel.appendChild(reasoning);
 
@@ -152,23 +150,6 @@ function showDetailPanel(
     }
   }
 
-  const onKey = (event: KeyboardEvent) => {
-    if (event.key === "Escape") {
-      closePanel();
-    }
-  };
-  const onDetached = new MutationObserver(() => {
-    if (!panel.isConnected) {
-      if (activeDetailPanel === panel) {
-        dismissDetailPanel();
-        return;
-      }
-      document.removeEventListener("keydown", onKey);
-      onDetached.disconnect();
-    }
-  });
-  onDetached.observe(document.body, { childList: true, subtree: true });
-
   const closePanel = () => {
     if (activeDetailPanel === panel) {
       dismissDetailPanel();
@@ -177,111 +158,49 @@ function showDetailPanel(
     if (panel.isConnected) {
       panel.remove();
     }
+    if (backdrop.isConnected) {
+      backdrop.remove();
+    }
   };
 
+  const onBackdropPointerDown = (event: PointerEvent) => {
+    if (event.target !== backdrop) return;
+    closePanel();
+  };
+
+  const onKey = (event: KeyboardEvent) => {
+    if (event.key === "Escape") {
+      closePanel();
+    }
+  };
+  const onDetached = new MutationObserver(() => {
+    if (!panel.isConnected || !backdrop.isConnected) {
+      if (activeDetailPanel === panel) {
+        dismissDetailPanel();
+        return;
+      }
+      document.removeEventListener("keydown", onKey);
+      backdrop.removeEventListener("pointerdown", onBackdropPointerDown);
+      onDetached.disconnect();
+    }
+  });
+  onDetached.observe(document.body, { childList: true, subtree: true });
+
+  backdrop.addEventListener("pointerdown", onBackdropPointerDown);
   closeBtn.addEventListener("click", closePanel);
   disposeActiveDetailPanel = () => {
     document.removeEventListener("keydown", onKey);
+    backdrop.removeEventListener("pointerdown", onBackdropPointerDown);
     onDetached.disconnect();
   };
   activeDetailPanel = panel;
+  activeDetailPanelBackdrop = backdrop;
 
   document.addEventListener("keydown", onKey);
-  document.body.appendChild(panel);
+  backdrop.appendChild(panel);
+  document.body.appendChild(backdrop);
 }
-
-// ── Markdown rendering ───────────────────────────────────────────────────
-
-/**
- * Convert a subset of Markdown (bold, italic, inline code, lists, paragraphs)
- * to HTML. Input is HTML-escaped before Markdown formatting and then sanitized
- * with an explicit allow-list before insertion into the DOM.
- */
-function renderMarkdownToHtml(md: string): string {
-  const stripped = md.replace(/\r\n/g, "\n");
-
-  const blocks = stripped.split(/\n{2,}/);
-  const rendered: string[] = [];
-
-  for (const block of blocks) {
-    const lines = block.split("\n");
-
-    // Ordered list: every line starts with `\d+. `
-    if (lines.every((l) => /^\d+\.\s/.test(l))) {
-      const items = lines.map((l) => `<li>${inlineMarkdown(l.replace(/^\d+\.\s/, ""))}</li>`);
-      rendered.push(`<ol>${items.join("")}</ol>`);
-      continue;
-    }
-
-    // Unordered list: every line starts with `- `
-    if (lines.every((l) => /^-\s/.test(l))) {
-      const items = lines.map((l) => `<li>${inlineMarkdown(l.replace(/^-\s/, ""))}</li>`);
-      rendered.push(`<ul>${items.join("")}</ul>`);
-      continue;
-    }
-
-    // Regular paragraph — preserve single newlines as <br>
-    rendered.push(`<p>${lines.map(inlineMarkdown).join("<br>")}</p>`);
-  }
-
-  return rendered.join("");
-}
-
-function sanitizeRenderedMarkdownHtml(rawHtml: string): string {
-  const template = document.createElement("template");
-  template.innerHTML = rawHtml;
-
-  const elements = Array.from(template.content.querySelectorAll("*"));
-  for (const element of elements) {
-    if (!ALLOWED_RENDERED_MARKDOWN_TAGS.has(element.tagName)) {
-      element.replaceWith(document.createTextNode(element.textContent));
-      continue;
-    }
-
-    for (const attribute of Array.from(element.attributes)) {
-      element.removeAttribute(attribute.name);
-    }
-  }
-
-  return template.innerHTML;
-}
-
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-/** Apply inline Markdown formatting: bold, italic, inline code. */
-function inlineMarkdown(text: string): string {
-  const escaped = escapeHtml(text);
-  return (
-    escaped
-      // inline code (must come before bold/italic to avoid conflicts inside backticks)
-      .replace(/`([^`]+)`/g, "<code>$1</code>")
-      // bold
-      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-      // italic
-      .replace(/\*(.+?)\*/g, "<em>$1</em>")
-  );
-}
-
 // ── Internal helpers ──────────────────────────────────────────────────────
-
-function toSafeSourceUrl(url: string): string | null {
-  try {
-    const parsed = new URL(url);
-    if (!SAFE_SOURCE_PROTOCOLS.has(parsed.protocol)) {
-      return null;
-    }
-    return parsed.toString();
-  } catch {
-    return null;
-  }
-}
 
 function createMarkElement(claim: InvestigationClaim): HTMLElement {
   const mark = document.createElement("mark");

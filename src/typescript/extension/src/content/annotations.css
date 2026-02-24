@@ -47,6 +47,13 @@
   color: var(--ts-muted, #64748b);
 }
 
+.openerrata-detail-panel-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: transparent;
+}
+
 .openerrata-detail-panel {
   position: fixed;
   top: 0;
@@ -152,6 +159,17 @@
 .openerrata-detail-panel .source a {
   color: var(--ts-link, #1d4ed8);
   text-decoration: underline;
+}
+
+.openerrata-detail-panel a,
+.openerrata-detail-panel a:visited {
+  color: var(--ts-link, #1d4ed8) !important;
+  text-decoration: underline !important;
+  text-underline-offset: 2px;
+}
+
+.openerrata-detail-panel a:hover {
+  text-decoration-thickness: 2px;
 }
 
 .openerrata-detail-panel .close-btn {
