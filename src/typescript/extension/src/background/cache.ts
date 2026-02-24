@@ -1,205 +1,49 @@
-import {
-  extensionPostStatusSchema,
-  extensionSkippedStatusSchema,
-} from "@openerrata/shared";
-import type {
-  ExtensionPageStatus,
-  ExtensionPostStatus,
-  ExtensionSkippedStatus,
-} from "@openerrata/shared";
 import browser from "webextension-polyfill";
 
+import {
+  createTabStatusCacheStore,
+  type CacheBrowserApi,
+  type TabStatusCacheStore,
+} from "./cache-store.js";
 import { updateToolbarBadge } from "./toolbar-badge.js";
 
-interface TabCacheRecord {
-  activePostStatus: ExtensionPostStatus | null;
-  skippedStatus: ExtensionSkippedStatus | null;
-}
+export { createTabStatusCacheStore };
+export type { TabStatusCacheStore };
 
-const memoryCache = new Map<number, TabCacheRecord>();
+const browserCacheApi: CacheBrowserApi = {
+  storage: {
+    local: {
+      get: async (key: string) => {
+        return browser.storage.local.get(key);
+      },
+      set: async (items: Record<string, unknown>) => {
+        await browser.storage.local.set(items);
+      },
+      remove: async (key: string) => {
+        await browser.storage.local.remove(key);
+      },
+    },
+  },
+  tabs: {
+    query: async () => {
+      const tabs = await browser.tabs.query({});
+      return tabs.map((tab) => ({ id: tab.id }));
+    },
+  },
+};
 
-function storageKey(tabId: number): string {
-  return `tab:${tabId.toString()}`;
-}
+const defaultStore = createTabStatusCacheStore({
+  browserApi: browserCacheApi,
+  updateBadge: updateToolbarBadge,
+  warn: (...args: unknown[]) => {
+    console.warn(...args);
+  },
+});
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function emptyRecord(): TabCacheRecord {
-  return {
-    activePostStatus: null,
-    skippedStatus: null,
-  };
-}
-
-function parseStoredRecord(stored: unknown): TabCacheRecord | null {
-  if (!isRecord(stored)) return null;
-
-  const skippedStatusParsed = extensionSkippedStatusSchema.safeParse(
-    stored["skippedStatus"],
-  );
-  const skippedStatus: ExtensionSkippedStatus | null = skippedStatusParsed.success
-    ? skippedStatusParsed.data
-    : null;
-
-  const activePostStatusParsed = extensionPostStatusSchema.safeParse(
-    stored["activePostStatus"],
-  );
-  const activePostStatus: ExtensionPostStatus | null = activePostStatusParsed.success
-    ? activePostStatusParsed.data
-    : null;
-
-  return {
-    activePostStatus,
-    skippedStatus,
-  };
-}
-
-async function loadRecord(tabId: number): Promise<TabCacheRecord> {
-  const fromMemory = memoryCache.get(tabId);
-  if (fromMemory) return fromMemory;
-
-  try {
-    const key = storageKey(tabId);
-    const stored = await browser.storage.local.get(key);
-    const parsed = parseStoredRecord(stored[key]);
-    if (parsed) {
-      memoryCache.set(tabId, parsed);
-      return parsed;
-    }
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new Error(
-      `Failed to load extension cache record for tab ${tabId.toString()}: ${reason}`,
-      { cause: error },
-    );
-  }
-
-  const created = emptyRecord();
-  memoryCache.set(tabId, created);
-  return created;
-}
-
-async function saveRecord(tabId: number, record: TabCacheRecord): Promise<void> {
-  memoryCache.set(tabId, record);
-  try {
-    const key = storageKey(tabId);
-    await browser.storage.local.set({ [key]: record });
-  } catch (error) {
-    // Best effort cache. Memory copy still works while worker is alive.
-    console.warn("Failed to persist extension cache record:", error);
-  }
-}
-
-function matchesActiveStatus(
-  activeStatus: ExtensionPostStatus,
-  incomingStatus: ExtensionPostStatus,
-): boolean {
-  if (activeStatus.tabSessionId !== incomingStatus.tabSessionId) {
-    return false;
-  }
-
-  if (
-    activeStatus.platform !== incomingStatus.platform ||
-    activeStatus.externalId !== incomingStatus.externalId ||
-    activeStatus.pageUrl !== incomingStatus.pageUrl
-  ) {
-    return false;
-  }
-
-  if (
-    activeStatus.investigationId !== undefined &&
-    incomingStatus.investigationId !== undefined
-  ) {
-    return activeStatus.investigationId === incomingStatus.investigationId;
-  }
-
-  return true;
-}
-
-export async function cachePostStatus(
-  tabId: number | undefined,
-  status: ExtensionPostStatus,
-  options: { setActive?: boolean } = {},
-): Promise<void> {
-  if (tabId === undefined) return;
-  const setActive = options.setActive ?? true;
-  const record = await loadRecord(tabId);
-
-  if (setActive) {
-    record.skippedStatus = null;
-    record.activePostStatus = status;
-    await saveRecord(tabId, record);
-    updateToolbarBadge(tabId, status);
-    return;
-  }
-
-  if (!record.activePostStatus) return;
-  if (!matchesActiveStatus(record.activePostStatus, status)) return;
-
-  // setActive=false updates are full replacements gated by identity matching.
-  record.activePostStatus = status;
-  await saveRecord(tabId, record);
-  updateToolbarBadge(tabId, status);
-}
-
-export async function cacheSkippedStatus(
-  tabId: number | undefined,
-  status: ExtensionSkippedStatus,
-): Promise<void> {
-  if (tabId === undefined) return;
-  const record = await loadRecord(tabId);
-  record.activePostStatus = null;
-  record.skippedStatus = status;
-  await saveRecord(tabId, record);
-  updateToolbarBadge(tabId, null);
-}
-
-export async function clearActiveStatus(tabId: number | undefined): Promise<void> {
-  if (tabId === undefined) return;
-  const record = await loadRecord(tabId);
-  record.activePostStatus = null;
-  record.skippedStatus = null;
-  await saveRecord(tabId, record);
-  updateToolbarBadge(tabId, null);
-}
-
-export async function getActiveStatus(tabId: number): Promise<ExtensionPageStatus | null> {
-  const record = await loadRecord(tabId);
-  if (record.skippedStatus) {
-    return record.skippedStatus;
-  }
-
-  return record.activePostStatus;
-}
-
-export async function getActivePostStatus(
-  tabId: number,
-): Promise<ExtensionPostStatus | null> {
-  const record = await loadRecord(tabId);
-  return record.activePostStatus;
-}
-
-export function clearCache(tabId: number): void {
-  memoryCache.delete(tabId);
-  updateToolbarBadge(tabId, null);
-  browser.storage.local.remove(storageKey(tabId)).catch((error: unknown) => {
-    console.warn("Failed to clear extension cache for tab:", error);
-  });
-}
-
-export async function syncToolbarBadgesForOpenTabs(): Promise<void> {
-  const tabs = await browser.tabs.query({});
-  await Promise.all(
-    tabs.map(async (tab) => {
-      if (tab.id === undefined) return;
-      const status = await getActiveStatus(tab.id);
-      if (status?.kind === "POST") {
-        updateToolbarBadge(tab.id, status);
-        return;
-      }
-      updateToolbarBadge(tab.id, null);
-    }),
-  );
-}
+export const cachePostStatus = defaultStore.cachePostStatus;
+export const cacheSkippedStatus = defaultStore.cacheSkippedStatus;
+export const clearActiveStatus = defaultStore.clearActiveStatus;
+export const getActiveStatus = defaultStore.getActiveStatus;
+export const getActivePostStatus = defaultStore.getActivePostStatus;
+export const clearCache = defaultStore.clearCache;
+export const syncToolbarBadgesForOpenTabs = defaultStore.syncToolbarBadgesForOpenTabs;

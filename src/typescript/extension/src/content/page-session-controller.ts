@@ -1,6 +1,7 @@
 import {
   annotationVisibilityResponseSchema,
   focusClaimResponseSchema,
+  type InvestigationClaim,
   normalizeContent,
   requestInvestigateResponseSchema,
   WORD_COUNT_LIMIT,
@@ -163,6 +164,42 @@ function scrollToClaimRange(range: Range): boolean {
       anchor.classList.remove(CLAIM_FOCUS_CLASS);
     }
   }, CLAIM_FOCUS_DURATION_MS);
+
+  return true;
+}
+
+function areClaimsEqual(
+  left: InvestigationClaim[],
+  right: InvestigationClaim[],
+): boolean {
+  if (left.length !== right.length) return false;
+
+  for (const [index, leftClaim] of left.entries()) {
+    const rightClaim = right[index];
+    if (!rightClaim) return false;
+
+    if (
+      leftClaim.text !== rightClaim.text ||
+      leftClaim.summary !== rightClaim.summary ||
+      leftClaim.context !== rightClaim.context ||
+      leftClaim.reasoning !== rightClaim.reasoning ||
+      leftClaim.sources.length !== rightClaim.sources.length
+    ) {
+      return false;
+    }
+
+    for (const [sourceIndex, leftSource] of leftClaim.sources.entries()) {
+      const rightSource = rightClaim.sources[sourceIndex];
+      if (!rightSource) return false;
+      if (
+        leftSource.url !== rightSource.url ||
+        leftSource.title !== rightSource.title ||
+        leftSource.snippet !== rightSource.snippet
+      ) {
+        return false;
+      }
+    }
+  }
 
   return true;
 }
@@ -584,10 +621,15 @@ export class PageSessionController {
     const state = this.#state;
 
     if (status.investigationState === "INVESTIGATED") {
-      this.#annotations.setClaims(status.claims);
-      const applied = this.#annotations.render(state.adapter);
-      if (!applied) {
-        this.scheduleRefresh();
+      const currentClaims = this.#annotations.getClaims();
+      if (!areClaimsEqual(currentClaims, status.claims)) {
+        this.#annotations.setClaims(status.claims);
+        const applied = this.#annotations.render(state.adapter);
+        if (!applied) {
+          this.scheduleRefresh();
+        }
+      } else {
+        this.#annotations.reapplyIfMissing(state.adapter);
       }
       return;
     }

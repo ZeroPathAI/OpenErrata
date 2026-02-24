@@ -409,13 +409,38 @@
     --ui-danger-soft: #fef2f2;
     --ui-success: #166534;
     --ui-success-soft: #f0fdf4;
-    width: min(420px, calc(100vw - 12px));
+    width: 100%;
+    min-height: 100vh;
     padding: 10px;
     background:
       radial-gradient(130% 100% at 0% 0%, var(--ui-bg-a) 0%, transparent 58%),
       linear-gradient(170deg, var(--ui-bg-b) 0%, #f4f7fc 100%);
     font-family: "Avenir Next", "Segoe UI", sans-serif;
     box-sizing: border-box;
+    overflow-y: auto;
+    /* Reserve only the right gutter so width doesn't jump when scrolling starts. */
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
+    scrollbar-color: #c8d2e1 transparent;
+  }
+
+  .popup::-webkit-scrollbar {
+    width: 10px;
+  }
+
+  .popup::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .popup::-webkit-scrollbar-thumb {
+    background-color: #c8d2e1;
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+
+  .popup::-webkit-scrollbar-thumb:hover {
+    background-color: #a7b6cd;
   }
 
   .surface {

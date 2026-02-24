@@ -9,6 +9,7 @@ import {
 } from "@openerrata/shared";
 import {
   createDeterministicRandom,
+  randomChance,
   randomInt,
   sleep,
 } from "../helpers/fuzz-utils.js";
@@ -47,6 +48,7 @@ const [
   { GET: healthGet },
   { POST: graphqlPost },
   { closeQueueUtils },
+  { ensureInvestigationQueued },
   { runSelector },
   { lesswrongHtmlToNormalizedText },
 ] =
@@ -58,6 +60,7 @@ const [
     import("../../src/routes/health/+server.js"),
     import("../../src/routes/graphql/+server.js"),
     import("../../src/lib/services/queue.js"),
+    import("../../src/lib/services/investigation-lifecycle.js"),
     import("../../src/lib/services/selector.js"),
     import("../../src/lib/services/content-fetcher.js"),
   ]);
@@ -1209,6 +1212,329 @@ void test("post.investigateNow randomized concurrency fuzz preserves dedupe inva
         keySourceCount,
         0,
         `non-pending or no-user-key scenarios should not attach key source (${roundTag})`,
+      );
+    }
+  }
+});
+
+void test("ensureInvestigationQueued randomized state model preserves lifecycle invariants", async () => {
+  const random = createDeterministicRandom(0x94ab73d1);
+  const rounds = 18;
+  const seedCases = [
+    { name: "new", status: null, runKind: "NONE" },
+    { name: "failed-no-run", status: "FAILED", runKind: "NONE" },
+    { name: "failed-with-run", status: "FAILED", runKind: "INERT" },
+    { name: "pending-no-run", status: "PENDING", runKind: "NONE" },
+    { name: "pending-with-run", status: "PENDING", runKind: "INERT" },
+    { name: "processing-no-run", status: "PROCESSING", runKind: "NONE" },
+    { name: "processing-stale-run", status: "PROCESSING", runKind: "STALE" },
+    { name: "processing-active-run", status: "PROCESSING", runKind: "ACTIVE" },
+  ] as const;
+
+  for (let round = 0; round < rounds; round += 1) {
+    const seedCase = seedCases[randomInt(random, 0, seedCases.length - 1)];
+    const allowRequeueFailed = randomChance(random, 0.5);
+    const enqueue = randomChance(random, 0.7);
+    const includeOnPendingRun = randomChance(random, 0.6);
+    const canonicalProvenance = randomChance(random, 0.5)
+      ? "SERVER_VERIFIED"
+      : "CLIENT_FALLBACK";
+    const canonicalFetchFailureReason =
+      canonicalProvenance === "CLIENT_FALLBACK"
+        ? `fuzz-fetch-failure-${round.toString()}`
+        : undefined;
+    const roundTag = [
+      `round=${round.toString()}`,
+      `seedCase=${seedCase.name}`,
+      `allowRequeueFailed=${allowRequeueFailed.toString()}`,
+      `enqueue=${enqueue.toString()}`,
+      `canonicalProvenance=${canonicalProvenance}`,
+    ].join(" ");
+
+    const post = await seedPost({
+      platform: "X",
+      externalId: `ensure-queued-fuzz-${round.toString()}`,
+      url: `https://x.com/openerrata/status/${withIntegrationPrefix(`ensure-queued-fuzz-${round.toString()}`)}`,
+      contentText: `ensureInvestigationQueued fuzz payload ${roundTag}`,
+    });
+    const prompt = await seedPrompt(`ensure-queued-fuzz-${round.toString()}`);
+
+    let seededInvestigationId: string | null = null;
+    let seededRunId: string | null = null;
+    let seededExistingProvenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK" | null = null;
+    let seededActiveLeaseOwner: string | null = null;
+    let seededActiveLeaseExpiresAt: Date | null = null;
+
+    if (seedCase.status !== null) {
+      seededExistingProvenance = randomChance(random, 0.5)
+        ? "SERVER_VERIFIED"
+        : "CLIENT_FALLBACK";
+      const investigation = await seedInvestigation({
+        postId: post.id,
+        contentHash: post.contentHash,
+        contentText: post.contentText,
+        provenance: seededExistingProvenance,
+        status: seedCase.status,
+        promptLabel: `ensure-queued-existing-${round.toString()}`,
+      });
+      seededInvestigationId = investigation.id;
+
+      if (seedCase.runKind !== "NONE") {
+        if (seedCase.runKind === "ACTIVE") {
+          seededActiveLeaseOwner = withIntegrationPrefix(
+            `active-worker-${round.toString()}`,
+          );
+          seededActiveLeaseExpiresAt = new Date(Date.now() + 10 * 60_000);
+          const run = await seedInvestigationRun({
+            investigationId: investigation.id,
+            leaseOwner: seededActiveLeaseOwner,
+            leaseExpiresAt: seededActiveLeaseExpiresAt,
+            startedAt: new Date(Date.now() - 2 * 60_000),
+            heartbeatAt: new Date(),
+          });
+          seededRunId = run.id;
+        } else if (seedCase.runKind === "STALE") {
+          const run = await seedInvestigationRun({
+            investigationId: investigation.id,
+            leaseOwner: withIntegrationPrefix(`stale-worker-${round.toString()}`),
+            leaseExpiresAt: new Date(Date.now() - 5 * 60_000),
+            startedAt: new Date(Date.now() - 15 * 60_000),
+            heartbeatAt: new Date(Date.now() - 5 * 60_000),
+          });
+          seededRunId = run.id;
+        } else {
+          const run = await seedInvestigationRun({
+            investigationId: investigation.id,
+          });
+          seededRunId = run.id;
+        }
+      }
+    }
+
+    let onPendingRunCalls = 0;
+    let onPendingInvestigationId: string | null = null;
+    let onPendingRunId: string | null = null;
+    const result = await ensureInvestigationQueued({
+      prisma,
+      postId: post.id,
+      promptId: prompt.id,
+      canonical: {
+        contentHash: post.contentHash,
+        contentText: post.contentText,
+        provenance: canonicalProvenance,
+        ...(canonicalFetchFailureReason === undefined
+          ? {}
+          : { fetchFailureReason: canonicalFetchFailureReason }),
+      },
+      allowRequeueFailed,
+      enqueue,
+      ...(includeOnPendingRun
+        ? {
+            onPendingRun: async ({ investigation, run }) => {
+              onPendingRunCalls += 1;
+              onPendingInvestigationId = investigation.id;
+              onPendingRunId = run.id;
+            },
+          }
+        : {}),
+    });
+
+    const startedWithoutInvestigation = seedCase.status === null;
+    const expectedCreated = startedWithoutInvestigation;
+    const statusAfterRecord =
+      startedWithoutInvestigation
+        ? "PENDING"
+        : seedCase.status === "FAILED" && allowRequeueFailed
+          ? "PENDING"
+          : seedCase.status;
+    const runExistedBeforeCall =
+      seedCase.status !== null && seedCase.runKind !== "NONE";
+    const expectedRunCreated = !runExistedBeforeCall;
+    const expectedRecoveredFromStaleProcessing =
+      statusAfterRecord === "PROCESSING" &&
+      (seedCase.runKind === "STALE" || seedCase.runKind === "NONE");
+    const expectedFinalStatus = expectedRecoveredFromStaleProcessing
+      ? "PENDING"
+      : statusAfterRecord;
+    const expectedEnqueued = enqueue && expectedFinalStatus === "PENDING";
+
+    assert.equal(result.created, expectedCreated, `created mismatch (${roundTag})`);
+    assert.equal(
+      result.runCreated,
+      expectedRunCreated,
+      `runCreated mismatch (${roundTag})`,
+    );
+    assert.equal(result.enqueued, expectedEnqueued, `enqueued mismatch (${roundTag})`);
+    assert.equal(
+      result.investigation.status,
+      expectedFinalStatus,
+      `result status mismatch (${roundTag})`,
+    );
+    if (seededInvestigationId !== null) {
+      assert.equal(
+        result.investigation.id,
+        seededInvestigationId,
+        `existing investigation identity mismatch (${roundTag})`,
+      );
+    }
+    if (seededRunId !== null) {
+      assert.equal(
+        result.run.id,
+        seededRunId,
+        `existing run identity mismatch (${roundTag})`,
+      );
+    }
+
+    const expectedOnPendingRunCalls =
+      includeOnPendingRun && expectedEnqueued ? 1 : 0;
+    assert.equal(
+      onPendingRunCalls,
+      expectedOnPendingRunCalls,
+      `onPendingRun invocation mismatch (${roundTag})`,
+    );
+    if (expectedOnPendingRunCalls === 1) {
+      assert.equal(
+        onPendingInvestigationId,
+        result.investigation.id,
+        `onPendingRun investigation mismatch (${roundTag})`,
+      );
+      assert.equal(onPendingRunId, result.run.id, `onPendingRun run mismatch (${roundTag})`);
+    }
+
+    const storedInvestigations = await prisma.investigation.findMany({
+      where: { postId: post.id },
+      select: {
+        id: true,
+        status: true,
+        contentProvenance: true,
+        fetchFailureReason: true,
+        serverVerifiedAt: true,
+      },
+    });
+    assert.equal(
+      storedInvestigations.length,
+      1,
+      `exactly one investigation row expected (${roundTag})`,
+    );
+    const storedInvestigation = storedInvestigations[0];
+    assert.ok(storedInvestigation, `missing stored investigation (${roundTag})`);
+    assert.equal(
+      storedInvestigation.id,
+      result.investigation.id,
+      `stored investigation id mismatch (${roundTag})`,
+    );
+    assert.equal(
+      storedInvestigation.status,
+      expectedFinalStatus,
+      `stored status mismatch (${roundTag})`,
+    );
+
+    const expectedProvenance =
+      seedCase.status === null
+        ? canonicalProvenance
+        : seededExistingProvenance === "SERVER_VERIFIED"
+          ? "SERVER_VERIFIED"
+          : canonicalProvenance === "SERVER_VERIFIED"
+            ? "SERVER_VERIFIED"
+            : "CLIENT_FALLBACK";
+    assert.equal(
+      storedInvestigation.contentProvenance,
+      expectedProvenance,
+      `stored provenance mismatch (${roundTag})`,
+    );
+    if (expectedProvenance === "SERVER_VERIFIED") {
+      assert.notEqual(
+        storedInvestigation.serverVerifiedAt,
+        null,
+        `server-verified rows should have serverVerifiedAt (${roundTag})`,
+      );
+      assert.equal(
+        storedInvestigation.fetchFailureReason,
+        null,
+        `server-verified rows should not retain fetch failures (${roundTag})`,
+      );
+    } else {
+      assert.equal(
+        storedInvestigation.serverVerifiedAt,
+        null,
+        `client-fallback rows should not have serverVerifiedAt (${roundTag})`,
+      );
+      if (seedCase.status === null) {
+        assert.equal(
+          storedInvestigation.fetchFailureReason,
+          canonicalFetchFailureReason ?? null,
+          `new client-fallback row should preserve canonical failure reason (${roundTag})`,
+        );
+      } else {
+        assert.equal(
+          storedInvestigation.fetchFailureReason,
+          "fetch unavailable",
+          `existing client-fallback row should preserve prior failure reason (${roundTag})`,
+        );
+      }
+    }
+
+    const storedRuns = await prisma.investigationRun.findMany({
+      where: { investigationId: result.investigation.id },
+      select: {
+        id: true,
+        queuedAt: true,
+        leaseOwner: true,
+        leaseExpiresAt: true,
+        heartbeatAt: true,
+      },
+    });
+    assert.equal(storedRuns.length, 1, `exactly one run row expected (${roundTag})`);
+    const storedRun = storedRuns[0];
+    assert.ok(storedRun, `missing run row (${roundTag})`);
+    assert.equal(storedRun.id, result.run.id, `stored run id mismatch (${roundTag})`);
+
+    const expectQueuedAtNotNull =
+      expectedRecoveredFromStaleProcessing ||
+      (expectedRunCreated && statusAfterRecord === "PENDING");
+    if (expectQueuedAtNotNull) {
+      assert.notEqual(
+        storedRun.queuedAt,
+        null,
+        `queuedAt should be populated (${roundTag})`,
+      );
+    } else {
+      assert.equal(storedRun.queuedAt, null, `queuedAt should remain null (${roundTag})`);
+    }
+
+    if (expectedRecoveredFromStaleProcessing) {
+      assert.equal(
+        storedRun.leaseOwner,
+        null,
+        `recovered stale runs should clear lease owner (${roundTag})`,
+      );
+      assert.equal(
+        storedRun.leaseExpiresAt,
+        null,
+        `recovered stale runs should clear lease expiry (${roundTag})`,
+      );
+      assert.equal(
+        storedRun.heartbeatAt,
+        null,
+        `recovered stale runs should clear heartbeat (${roundTag})`,
+      );
+    }
+
+    if (statusAfterRecord === "PROCESSING" && !expectedRecoveredFromStaleProcessing) {
+      assert.equal(
+        seedCase.runKind,
+        "ACTIVE",
+        `non-recovered processing cases must come from active run seeds (${roundTag})`,
+      );
+      assert.equal(
+        storedRun.leaseOwner,
+        seededActiveLeaseOwner,
+        `active processing run should keep lease owner (${roundTag})`,
+      );
+      assert.equal(
+        storedRun.leaseExpiresAt?.getTime(),
+        seededActiveLeaseExpiresAt?.getTime(),
+        `active processing run should keep lease expiry (${roundTag})`,
       );
     }
   }
