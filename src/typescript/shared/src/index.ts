@@ -3,3 +3,4 @@ export type * from "./types.js";
 export * from "./schemas.js";
 export * from "./normalize.js";
 export * from "./constants.js";
+export * from "./trpc-paths.js";

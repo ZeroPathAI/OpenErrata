@@ -4,6 +4,7 @@ import {
   PLATFORM_VALUES,
 } from "./enums.js";
 import {
+  EXTENSION_MESSAGE_PROTOCOL_VERSION,
   MAX_BATCH_STATUS_POSTS,
   MAX_OBSERVED_CONTENT_TEXT_CHARS,
 } from "./constants.js";
@@ -22,6 +23,18 @@ const observedContentTextSchema = z
   .string()
   .min(1)
   .max(MAX_OBSERVED_CONTENT_TEXT_CHARS);
+
+// ── Branded identifier schemas ────────────────────────────────────────────
+
+export const postIdSchema = z.string().min(1).brand<"PostId">();
+export const sessionIdSchema = z.number().int().nonnegative().brand<"SessionId">();
+export const investigationIdSchema = z
+  .string()
+  .min(1)
+  .brand<"InvestigationId">();
+export const extensionMessageProtocolVersionSchema = z.literal(
+  EXTENSION_MESSAGE_PROTOCOL_VERSION,
+);
 
 // ── LLM output validation ─────────────────────────────────────────────────
 
@@ -81,7 +94,7 @@ const substackMetadataSchema = z.object({
 // ── Core request/response schemas ─────────────────────────────────────────
 
 const viewPostInputSharedSchema = z.object({
-  externalId: z.string().min(1),
+  externalId: postIdSchema,
   url: z.url(),
   observedImageUrls: z.array(z.url()).optional(),
 });
@@ -150,7 +163,7 @@ export const investigationStatusOutputSchema = z.discriminatedUnion(
 );
 
 export const getInvestigationInputSchema = z.object({
-  investigationId: z.string().min(1),
+  investigationId: investigationIdSchema,
 });
 
 export const getInvestigationOutputSchema = z.discriminatedUnion(
@@ -172,19 +185,19 @@ export const getInvestigationOutputSchema = z.discriminatedUnion(
 );
 
 const investigateNowOutputPendingSchema = z.object({
-  investigationId: z.string().min(1),
+  investigationId: investigationIdSchema,
   status: z.union([z.literal("PENDING"), z.literal("PROCESSING")]),
   provenance: contentProvenanceSchema,
 });
 
 const investigateNowOutputFailedSchema = z.object({
-  investigationId: z.string().min(1),
+  investigationId: investigationIdSchema,
   status: z.literal("FAILED"),
   provenance: contentProvenanceSchema,
 });
 
 const investigateNowOutputCompleteSchema = z.object({
-  investigationId: z.string().min(1),
+  investigationId: investigationIdSchema,
   status: z.literal("COMPLETE"),
   provenance: contentProvenanceSchema,
   claims: z.array(investigationClaimSchema),
@@ -251,7 +264,7 @@ export const batchStatusInputSchema = z.object({
     .array(
       z.object({
         platform: platformSchema,
-        externalId: z.string().min(1),
+        externalId: postIdSchema,
       }),
     )
     .min(1)
@@ -263,13 +276,13 @@ export const batchStatusOutputSchema = z.object({
     z.discriminatedUnion("investigationState", [
       z.object({
         platform: platformSchema,
-        externalId: z.string().min(1),
+        externalId: postIdSchema,
         investigationState: z.literal("NOT_INVESTIGATED"),
         incorrectClaimCount: z.literal(0),
       }),
       z.object({
         platform: platformSchema,
-        externalId: z.string().min(1),
+        externalId: postIdSchema,
         investigationState: z.literal("INVESTIGATED"),
         incorrectClaimCount: z.number().int().nonnegative(),
       }),
@@ -312,11 +325,11 @@ export const platformContentSchema = z.discriminatedUnion("platform", [
 
 const extensionPostStatusBaseSchema = z.object({
   kind: z.literal("POST"),
-  tabSessionId: z.number().int().nonnegative(),
+  tabSessionId: sessionIdSchema,
   platform: platformSchema,
-  externalId: z.string().min(1),
+  externalId: postIdSchema,
   pageUrl: z.url(),
-  investigationId: z.string().min(1).optional(),
+  investigationId: investigationIdSchema.optional(),
 });
 
 const extensionPostNotInvestigatedSchema = extensionPostStatusBaseSchema.extend({
@@ -368,9 +381,9 @@ const extensionSkippedReasonSchema = z.enum([
 
 export const extensionSkippedStatusSchema = z.object({
   kind: z.literal("SKIPPED"),
-  tabSessionId: z.number().int().nonnegative(),
+  tabSessionId: sessionIdSchema,
   platform: platformSchema,
-  externalId: z.string().min(1),
+  externalId: postIdSchema,
   pageUrl: z.url(),
   reason: extensionSkippedReasonSchema,
 });
@@ -394,6 +407,7 @@ export const annotationVisibilityResponseSchema = z.object({
 
 export const extensionRuntimeErrorCodeSchema = z.enum([
   "CONTENT_MISMATCH",
+  "UNSUPPORTED_PROTOCOL_VERSION",
 ]);
 
 export const extensionRuntimeErrorResponseSchema = z.object({
@@ -402,28 +416,53 @@ export const extensionRuntimeErrorResponseSchema = z.object({
   errorCode: extensionRuntimeErrorCodeSchema.optional(),
 });
 
-const requestInvestigateMessageSchema = z.object({
-  type: z.literal("REQUEST_INVESTIGATE"),
-});
+function extensionMessageWithPayload<
+  TType extends string,
+  TPayload extends z.ZodType,
+>(
+  type: TType,
+  payload: TPayload,
+) {
+  return z
+    .object({
+      v: extensionMessageProtocolVersionSchema,
+      type: z.literal(type),
+      payload,
+    })
+    .strict();
+}
 
-const showAnnotationsMessageSchema = z.object({
-  type: z.literal("SHOW_ANNOTATIONS"),
-});
+function extensionMessageWithoutPayload<TType extends string>(type: TType) {
+  return z
+    .object({
+      v: extensionMessageProtocolVersionSchema,
+      type: z.literal(type),
+    })
+    .strict();
+}
 
-const hideAnnotationsMessageSchema = z.object({
-  type: z.literal("HIDE_ANNOTATIONS"),
-});
+const requestInvestigateMessageSchema = extensionMessageWithoutPayload(
+  "REQUEST_INVESTIGATE",
+);
 
-const getAnnotationVisibilityMessageSchema = z.object({
-  type: z.literal("GET_ANNOTATION_VISIBILITY"),
-});
+const showAnnotationsMessageSchema = extensionMessageWithoutPayload(
+  "SHOW_ANNOTATIONS",
+);
 
-const focusClaimMessageSchema = z.object({
-  type: z.literal("FOCUS_CLAIM"),
-  payload: z.object({
+const hideAnnotationsMessageSchema = extensionMessageWithoutPayload(
+  "HIDE_ANNOTATIONS",
+);
+
+const getAnnotationVisibilityMessageSchema = extensionMessageWithoutPayload(
+  "GET_ANNOTATION_VISIBILITY",
+);
+
+const focusClaimMessageSchema = extensionMessageWithPayload(
+  "FOCUS_CLAIM",
+  z.object({
     claimIndex: z.number().int().nonnegative(),
   }),
-});
+);
 
 const contentControlMessageSchemas = [
   requestInvestigateMessageSchema,
@@ -436,63 +475,63 @@ const contentControlMessageSchemas = [
 export const contentControlMessageSchema = z.union(contentControlMessageSchemas);
 
 export const extensionMessageSchema = z.discriminatedUnion("type", [
-  z.object({
-    type: z.literal("PAGE_CONTENT"),
-    payload: z.object({
-      tabSessionId: z.number().int().nonnegative(),
+  extensionMessageWithPayload(
+    "PAGE_CONTENT",
+    z.object({
+      tabSessionId: sessionIdSchema,
       content: platformContentSchema,
     }),
-  }),
-  z.object({
-    type: z.literal("PAGE_SKIPPED"),
-    payload: z.object({
-      tabSessionId: z.number().int().nonnegative(),
+  ),
+  extensionMessageWithPayload(
+    "PAGE_SKIPPED",
+    z.object({
+      tabSessionId: sessionIdSchema,
       platform: platformSchema,
-      externalId: z.string().min(1),
+      externalId: postIdSchema,
       pageUrl: z.url(),
       reason: extensionSkippedReasonSchema,
     }),
-  }),
-  z.object({
-    type: z.literal("PAGE_RESET"),
-    payload: z.object({
-      tabSessionId: z.number().int().nonnegative(),
+  ),
+  extensionMessageWithPayload(
+    "PAGE_RESET",
+    z.object({
+      tabSessionId: sessionIdSchema,
     }),
-  }),
-  z.object({
-    type: z.literal("GET_STATUS"),
-    payload: getInvestigationInputSchema.extend({
-      tabSessionId: z.number().int().nonnegative().optional(),
+  ),
+  extensionMessageWithPayload(
+    "GET_STATUS",
+    getInvestigationInputSchema.extend({
+      tabSessionId: sessionIdSchema.optional(),
     }),
-  }),
-  z.object({
-    type: z.literal("INVESTIGATE_NOW"),
-    payload: z.object({
-      tabSessionId: z.number().int().nonnegative(),
+  ),
+  extensionMessageWithPayload(
+    "INVESTIGATE_NOW",
+    z.object({
+      tabSessionId: sessionIdSchema,
       request: viewPostInputSchema,
     }),
-  }),
+  ),
   ...contentControlMessageSchemas,
-  z.object({ type: z.literal("GET_CACHED") }),
-  z.object({
-    type: z.literal("STATUS_RESPONSE"),
-    payload: investigationStatusOutputSchema,
-  }),
-  z.object({
-    type: z.literal("ANNOTATIONS"),
-    payload: z.object({ claims: z.array(investigationClaimSchema) }),
-  }),
+  extensionMessageWithoutPayload("GET_CACHED"),
+  extensionMessageWithPayload(
+    "STATUS_RESPONSE",
+    investigationStatusOutputSchema,
+  ),
+  extensionMessageWithPayload(
+    "ANNOTATIONS",
+    z.object({ claims: z.array(investigationClaimSchema) }),
+  ),
 ]);
 
 // ── Public API schemas ────────────────────────────────────────────────────
 
 export const getPublicInvestigationInputSchema = z.object({
-  investigationId: z.string().min(1),
+  investigationId: investigationIdSchema,
 });
 
 export const getPostInvestigationsInputSchema = z.object({
   platform: platformSchema,
-  externalId: z.string().min(1),
+  externalId: postIdSchema,
 });
 
 export const searchInvestigationsInputSchema = z.object({
@@ -526,12 +565,12 @@ const publicInvestigationOriginSchema = z.discriminatedUnion("provenance", [
 
 const publicPostSchema = z.object({
   platform: platformSchema,
-  externalId: z.string().min(1),
+  externalId: postIdSchema,
   url: z.url(),
 });
 
 const publicInvestigationMetadataSchema = z.object({
-  id: z.string().min(1),
+  id: investigationIdSchema,
   corroborationCount: z.number().int().nonnegative(),
   checkedAt: z.iso.datetime(),
   promptVersion: z.string().min(1),
@@ -552,7 +591,7 @@ export const publicGetPostInvestigationsOutputSchema = z.object({
   post: publicPostSchema.nullable(),
   investigations: z.array(
     z.object({
-      id: z.string().min(1),
+      id: investigationIdSchema,
       contentHash: z.string().min(1),
       corroborationCount: z.number().int().nonnegative(),
       checkedAt: z.iso.datetime(),
@@ -565,11 +604,11 @@ export const publicGetPostInvestigationsOutputSchema = z.object({
 export const publicSearchInvestigationsOutputSchema = z.object({
   investigations: z.array(
     z.object({
-      id: z.string().min(1),
+      id: investigationIdSchema,
       contentHash: z.string().min(1),
       checkedAt: z.iso.datetime(),
       platform: platformSchema,
-      externalId: z.string().min(1),
+      externalId: postIdSchema,
       url: z.url(),
       corroborationCount: z.number().int().nonnegative(),
       claimCount: z.number().int().nonnegative(),

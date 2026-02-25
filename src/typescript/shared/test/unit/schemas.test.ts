@@ -1,16 +1,29 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { MAX_OBSERVED_CONTENT_TEXT_CHARS } from "../../src/constants.js";
+import {
+  EXTENSION_MESSAGE_PROTOCOL_VERSION,
+  MAX_OBSERVED_CONTENT_TEXT_CHARS,
+} from "../../src/constants.js";
 import {
   contentControlMessageSchema,
+  extensionMessageProtocolVersionSchema,
   extensionSkippedStatusSchema,
   extensionPostStatusSchema,
   extensionMessageSchema,
   extensionRuntimeErrorResponseSchema,
+  investigationIdSchema,
   investigationClaimSchema,
   platformContentSchema,
+  postIdSchema,
+  sessionIdSchema,
   viewPostInputSchema,
 } from "../../src/schemas.js";
+import type {
+  ExtensionMessageProtocolVersion,
+  InvestigationId,
+  PostId,
+  SessionId,
+} from "../../src/types.js";
 
 function createLesswrongContent() {
   return {
@@ -235,6 +248,7 @@ test("investigationClaimSchema rejects invalid claim payloads", () => {
 
 test("contentControlMessageSchema accepts FOCUS_CLAIM with non-negative index", () => {
   const parsed = contentControlMessageSchema.parse({
+    v: EXTENSION_MESSAGE_PROTOCOL_VERSION,
     type: "FOCUS_CLAIM",
     payload: {
       claimIndex: 0,
@@ -247,6 +261,7 @@ test("contentControlMessageSchema accepts FOCUS_CLAIM with non-negative index", 
 
 test("extensionMessageSchema rejects FOCUS_CLAIM with negative claim index", () => {
   const parsed = extensionMessageSchema.safeParse({
+    v: EXTENSION_MESSAGE_PROTOCOL_VERSION,
     type: "FOCUS_CLAIM",
     payload: {
       claimIndex: -1,
@@ -254,6 +269,38 @@ test("extensionMessageSchema rejects FOCUS_CLAIM with negative claim index", () 
   });
 
   assert.equal(parsed.success, false);
+});
+
+test("extensionMessageSchema rejects messages without protocol version", () => {
+  const parsed = extensionMessageSchema.safeParse({
+    type: "GET_CACHED",
+  });
+
+  assert.equal(parsed.success, false);
+});
+
+test("extensionMessageSchema rejects unexpected protocol versions", () => {
+  const parsed = extensionMessageSchema.safeParse({
+    v: EXTENSION_MESSAGE_PROTOCOL_VERSION + 1,
+    type: "GET_CACHED",
+  });
+
+  assert.equal(parsed.success, false);
+});
+
+test("branded identifier schemas parse valid inputs and expose branded types", () => {
+  const postId: PostId = postIdSchema.parse("post-123");
+  const sessionId: SessionId = sessionIdSchema.parse(7);
+  const investigationId: InvestigationId = investigationIdSchema.parse("inv-123");
+  const protocolVersion: ExtensionMessageProtocolVersion =
+    extensionMessageProtocolVersionSchema.parse(
+      EXTENSION_MESSAGE_PROTOCOL_VERSION,
+    );
+
+  assert.equal(postId, "post-123");
+  assert.equal(sessionId, 7);
+  assert.equal(investigationId, "inv-123");
+  assert.equal(protocolVersion, EXTENSION_MESSAGE_PROTOCOL_VERSION);
 });
 
 test("extensionRuntimeErrorResponseSchema accepts structured mismatch code", () => {

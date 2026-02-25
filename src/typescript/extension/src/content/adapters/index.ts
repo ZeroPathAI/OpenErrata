@@ -1,7 +1,7 @@
 import { lesswrongAdapter } from "./lesswrong";
+import type { PlatformAdapter } from "./model";
 import { substackAdapter } from "./substack";
 import { xAdapter } from "./x";
-import type { PlatformAdapter } from "./lesswrong";
 
 const adapters: PlatformAdapter[] = [lesswrongAdapter, xAdapter, substackAdapter];
 

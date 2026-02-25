@@ -1,4 +1,5 @@
 import {
+  EXTENSION_MESSAGE_PROTOCOL_VERSION,
   extensionPageStatusSchema,
   extensionRuntimeErrorResponseSchema,
   investigateNowOutputSchema,
@@ -11,7 +12,10 @@ import {
   type ViewPostOutput,
 } from "@openerrata/shared";
 import browser from "webextension-polyfill";
-import { ExtensionRuntimeError } from "../lib/runtime-error.js";
+import {
+  ExtensionRuntimeError,
+  isExtensionContextInvalidatedError,
+} from "../lib/runtime-error.js";
 
 export type ParsedExtensionPageStatus = ReturnType<
   typeof extensionPageStatusSchema.parse
@@ -30,10 +34,18 @@ function throwIfRuntimeError(response: unknown): void {
 
 export class ContentSyncClient {
   sendPageReset(tabSessionId: number): void {
-    void browser.runtime.sendMessage({
-      type: "PAGE_RESET",
-      payload: { tabSessionId },
-    });
+    void browser.runtime
+      .sendMessage({
+        v: EXTENSION_MESSAGE_PROTOCOL_VERSION,
+        type: "PAGE_RESET",
+        payload: { tabSessionId },
+      })
+      .catch((error: unknown) => {
+        if (isExtensionContextInvalidatedError(error)) {
+          return;
+        }
+        console.error("Failed to send PAGE_RESET to background:", error);
+      });
   }
 
   sendPageSkipped(input: {
@@ -43,10 +55,18 @@ export class ContentSyncClient {
     pageUrl: string;
     reason: ExtensionSkippedReason;
   }): void {
-    void browser.runtime.sendMessage({
-      type: "PAGE_SKIPPED",
-      payload: input,
-    });
+    void browser.runtime
+      .sendMessage({
+        v: EXTENSION_MESSAGE_PROTOCOL_VERSION,
+        type: "PAGE_SKIPPED",
+        payload: input,
+      })
+      .catch((error: unknown) => {
+        if (isExtensionContextInvalidatedError(error)) {
+          return;
+        }
+        console.error("Failed to send PAGE_SKIPPED to background:", error);
+      });
   }
 
   async sendPageContent(
@@ -54,6 +74,7 @@ export class ContentSyncClient {
     content: PlatformContent,
   ): Promise<ViewPostOutput> {
     const response = await browser.runtime.sendMessage({
+      v: EXTENSION_MESSAGE_PROTOCOL_VERSION,
       type: "PAGE_CONTENT",
       payload: {
         tabSessionId,
@@ -70,6 +91,7 @@ export class ContentSyncClient {
     request: ViewPostInput,
   ): Promise<InvestigateNowOutput> {
     const response = await browser.runtime.sendMessage({
+      v: EXTENSION_MESSAGE_PROTOCOL_VERSION,
       type: "INVESTIGATE_NOW",
       payload: {
         tabSessionId,
@@ -82,13 +104,16 @@ export class ContentSyncClient {
   }
 
   async getCachedStatus(): Promise<ParsedExtensionPageStatus | null> {
-    const response = await browser.runtime.sendMessage({ type: "GET_CACHED" });
+    const response = await browser.runtime.sendMessage({
+      v: EXTENSION_MESSAGE_PROTOCOL_VERSION,
+      type: "GET_CACHED",
+    });
     throwIfRuntimeError(response);
     if (response === null) return null;
     return extensionPageStatusSchema.parse(response);
   }
 
-  installCachedStatusListener(listener: CachedStatusListener): void {
+  installCachedStatusListener(listener: CachedStatusListener): () => void {
     const onStorageChanged: Parameters<
       typeof browser.storage.onChanged.addListener
     >[0] = (changes, areaName) => {
@@ -98,5 +123,8 @@ export class ContentSyncClient {
     };
 
     browser.storage.onChanged.addListener(onStorageChanged);
+    return () => {
+      browser.storage.onChanged.removeListener(onStorageChanged);
+    };
   }
 }

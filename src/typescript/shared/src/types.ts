@@ -10,6 +10,14 @@ export type InvestigationResult = z.infer<
   typeof import("./schemas.js").investigationResultSchema
 >;
 
+// ── Branded identifiers ───────────────────────────────────────────────────
+
+export type PostId = z.infer<typeof import("./schemas.js").postIdSchema>;
+export type SessionId = z.infer<typeof import("./schemas.js").sessionIdSchema>;
+export type InvestigationId = z.infer<
+  typeof import("./schemas.js").investigationIdSchema
+>;
+
 // ── Platform metadata contracts ───────────────────────────────────────────
 export interface PlatformMetadataByPlatform {
   LESSWRONG: Extract<
@@ -33,6 +41,9 @@ export type PlatformContent = z.infer<typeof import("./schemas.js").platformCont
 // ── tRPC input/output shapes ──────────────────────────────────────────────
 
 export type ViewPostInput = z.infer<typeof import("./schemas.js").viewPostInputSchema>;
+export type ViewPostInputWire = z.input<
+  typeof import("./schemas.js").viewPostInputSchema
+>;
 
 export type ViewPostOutput = z.infer<typeof import("./schemas.js").viewPostOutputSchema>;
 
@@ -41,6 +52,9 @@ export type InvestigationStatusOutput = z.infer<
 >;
 
 export type GetInvestigationInput = z.infer<
+  typeof import("./schemas.js").getInvestigationInputSchema
+>;
+export type GetInvestigationInputWire = z.input<
   typeof import("./schemas.js").getInvestigationInputSchema
 >;
 
@@ -61,17 +75,17 @@ export type SettingsValidationOutput = z.infer<
 export interface ExtensionApiProcedureContract {
   "post.viewPost": {
     kind: "mutation";
-    input: ViewPostInput;
+    input: ViewPostInputWire;
     output: ViewPostOutput;
   };
   "post.getInvestigation": {
     kind: "query";
-    input: GetInvestigationInput;
+    input: GetInvestigationInputWire;
     output: GetInvestigationOutput;
   };
   "post.investigateNow": {
     kind: "mutation";
-    input: ViewPostInput;
+    input: ViewPostInputWire;
     output: InvestigateNowOutput;
   };
   "post.validateSettings": {
@@ -121,6 +135,10 @@ export type ExtensionPageStatus = z.infer<
 
 export type ExtensionRuntimeErrorCode = z.infer<
   typeof import("./schemas.js").extensionRuntimeErrorCodeSchema
+>;
+
+export type ExtensionMessageProtocolVersion = z.infer<
+  typeof import("./schemas.js").extensionMessageProtocolVersionSchema
 >;
 
 // ── Extension message protocol ────────────────────────────────────────────

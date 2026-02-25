@@ -1,6 +1,5 @@
-import type { PlatformContent } from "@openerrata/shared";
 import { normalizeContent } from "@openerrata/shared";
-import type { PlatformAdapter } from "./lesswrong";
+import type { AdapterExtractionResult, PlatformAdapter } from "./model";
 import {
   extractImageUrlsFromRoot,
   readFirstMetaDateAsIso,
@@ -31,6 +30,7 @@ const RESERVED_HANDLE_SEGMENTS = new Set([
 ]);
 
 const TWEET_TEXT_SELECTOR = '[data-testid="tweetText"]';
+const TWEET_CONTAINER_SELECTOR = "article";
 const PRIVATE_OR_GATED_PATTERNS = [
   /these posts are protected/i,
   /only confirmed followers have access/i,
@@ -106,28 +106,89 @@ function hasDocumentLevelTweetIdentity(document: Document, tweetId: string): boo
   return hrefCandidates.some((href) => parseStatusFromHref(href)?.tweetId === tweetId);
 }
 
-function findTargetTweetContainer(document: Document, tweetId: string): Element | null {
+type TweetContainerSelection =
+  | {
+      kind: "ready";
+      container: HTMLElement;
+    }
+  | {
+      kind: "not_ready";
+      reason: "hydrating" | "ambiguous_dom" | "missing_identity";
+    };
+
+function pickTargetTweetContainer(
+  document: Document,
+  tweetId: string,
+): TweetContainerSelection {
   const permalinkCandidates = document.querySelectorAll<HTMLAnchorElement>(
-    `article a[href*="/status/${tweetId}"]`,
+    `${TWEET_CONTAINER_SELECTOR} a[href*="/status/${tweetId}"]`,
   );
+  const permalinkContainers = new Set<HTMLElement>();
   for (const candidate of permalinkCandidates) {
     if (!isStatusHrefForTweetId(candidate.getAttribute("href"), tweetId)) {
       continue;
     }
-    const container = candidate.closest("article");
+    const container = candidate.closest<HTMLElement>(TWEET_CONTAINER_SELECTOR);
     if (container) {
-      return container;
+      permalinkContainers.add(container);
     }
+  }
+
+  if (permalinkContainers.size === 1) {
+    const [container] = Array.from(permalinkContainers);
+    if (!container) {
+      throw new Error("Expected one permalink-matching X tweet container");
+    }
+    return {
+      kind: "ready",
+      container,
+    };
+  }
+
+  if (permalinkContainers.size > 1) {
+    return {
+      kind: "not_ready",
+      reason: "ambiguous_dom",
+    };
   }
 
   // In some route variants, the primary column contains only the target tweet.
   // Require canonical/og identity proof before using this fallback.
   const primaryColumn = document.querySelector('[data-testid="primaryColumn"]');
-  if (!primaryColumn) return null;
-  const articles = primaryColumn.querySelectorAll("article");
-  if (articles.length !== 1) return null;
-  if (!hasDocumentLevelTweetIdentity(document, tweetId)) return null;
-  return articles[0] ?? null;
+  if (primaryColumn) {
+    const articles = Array.from(
+      primaryColumn.querySelectorAll<HTMLElement>(TWEET_CONTAINER_SELECTOR),
+    );
+    if (articles.length === 1 && hasDocumentLevelTweetIdentity(document, tweetId)) {
+      const [container] = articles;
+      if (!container) {
+        throw new Error("Expected one primary-column X tweet container");
+      }
+      return {
+        kind: "ready",
+        container,
+      };
+    }
+
+    if (articles.length > 1 && hasDocumentLevelTweetIdentity(document, tweetId)) {
+      return {
+        kind: "not_ready",
+        reason: "ambiguous_dom",
+      };
+    }
+  }
+
+  if (hasDocumentLevelTweetIdentity(document, tweetId)) {
+    return {
+      kind: "not_ready",
+      reason: "hydrating",
+    };
+  }
+
+  return {
+    kind: "not_ready",
+    reason: "missing_identity",
+  };
 }
 
 function normalizeAuthorHandle(raw: string | null | undefined): string | null {
@@ -230,7 +291,7 @@ function hasSupportedStatusPath(url: string): boolean {
 }
 
 function hasPrivateOrGatedMessage(document: Document, tweetId: string): boolean {
-  if (findTargetTweetContainer(document, tweetId) !== null) {
+  if (pickTargetTweetContainer(document, tweetId).kind === "ready") {
     return false;
   }
 
@@ -246,6 +307,7 @@ function hasPrivateOrGatedMessage(document: Document, tweetId: string): boolean 
 
 export const xAdapter: PlatformAdapter = {
   platformKey: "X",
+  contentRootSelector: TWEET_TEXT_SELECTOR,
 
   matches(url: string): boolean {
     return hasSupportedStatusPath(url);
@@ -257,16 +319,33 @@ export const xAdapter: PlatformAdapter = {
     return hasPrivateOrGatedMessage(document, statusFromUrl.tweetId);
   },
 
-  extract(document: Document): PlatformContent | null {
-    const statusFromUrl = parseStatusFromUrl(window.location.href);
-    if (!statusFromUrl) return null;
+  extract(document: Document): AdapterExtractionResult {
+    const url = window.location.href;
+    const statusFromUrl = parseStatusFromUrl(url);
+    if (!statusFromUrl) {
+      return {
+        kind: "not_ready",
+        reason: "unsupported",
+      };
+    }
 
     const tweetId = statusFromUrl.tweetId;
-    const tweetContainer = findTargetTweetContainer(document, tweetId);
-    if (!tweetContainer) return null;
+    const tweetSelection = pickTargetTweetContainer(document, tweetId);
+    if (tweetSelection.kind !== "ready") {
+      return {
+        kind: "not_ready",
+        reason: tweetSelection.reason,
+      };
+    }
+    const tweetContainer = tweetSelection.container;
 
     const tweetTextEl = tweetContainer.querySelector(TWEET_TEXT_SELECTOR);
-    if (!tweetTextEl) return null;
+    if (!tweetTextEl) {
+      return {
+        kind: "not_ready",
+        reason: "unsupported",
+      };
+    }
 
     const rawText = tweetTextEl.textContent;
     const contentText = normalizeContent(rawText);
@@ -295,22 +374,30 @@ export const xAdapter: PlatformAdapter = {
     const authorHandle =
       statusFromUrl.authorHandle ??
       inferAuthorHandle(document, tweetContainer, tweetId);
-    if (!authorHandle) return null;
+    if (!authorHandle) {
+      return {
+        kind: "not_ready",
+        reason: "missing_identity",
+      };
+    }
     const postedAt = extractPostedAt(document, tweetContainer);
 
     return {
-      platform: "X",
-      externalId: tweetId,
-      url: window.location.href,
-      contentText,
-      mediaState,
-      imageUrls,
-      metadata: {
-        authorHandle,
-        authorDisplayName: authorDisplayName || null,
-        text: contentText,
-        mediaUrls: imageUrls,
-        ...(postedAt === null ? {} : { postedAt }),
+      kind: "ready",
+      content: {
+        platform: "X",
+        externalId: tweetId,
+        url,
+        contentText,
+        mediaState,
+        imageUrls,
+        metadata: {
+          authorHandle,
+          authorDisplayName: authorDisplayName || null,
+          text: contentText,
+          mediaUrls: imageUrls,
+          ...(postedAt === null ? {} : { postedAt }),
+        },
       },
     };
   },
@@ -318,8 +405,9 @@ export const xAdapter: PlatformAdapter = {
   getContentRoot(document: Document): Element | null {
     const statusFromUrl = parseStatusFromUrl(window.location.href);
     if (!statusFromUrl) return null;
-    const tweetContainer = findTargetTweetContainer(document, statusFromUrl.tweetId);
-    if (!tweetContainer) return null;
+    const tweetSelection = pickTargetTweetContainer(document, statusFromUrl.tweetId);
+    if (tweetSelection.kind !== "ready") return null;
+    const tweetContainer = tweetSelection.container;
     return tweetContainer.querySelector(TWEET_TEXT_SELECTOR);
   },
 };

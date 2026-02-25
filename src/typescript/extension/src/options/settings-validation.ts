@@ -1,5 +1,6 @@
 import type { SettingsValidationOutput } from "@openerrata/shared";
 import {
+  EXTENSION_TRPC_PATH,
   openaiApiKeyFormatSchema,
   OPENAI_KEY_VALIDATION_TIMEOUT_MS,
   settingsValidationOutputSchema,
@@ -148,7 +149,10 @@ function createSettingsProbeClient(input: {
 
 function isMissingValidateSettingsProcedure(error: Error): boolean {
   const message = error.message.toLowerCase();
-  return message.includes("post.validatesettings") && message.includes("procedure");
+  return (
+    message.includes(EXTENSION_TRPC_PATH.VALIDATE_SETTINGS.toLowerCase()) &&
+    message.includes("procedure")
+  );
 }
 
 export function getOpenaiApiKeyFormatError(rawOpenaiApiKey: string): string | null {
@@ -183,7 +187,10 @@ export async function probeSettingsConfiguration(
   });
 
   try {
-    const response = await client.query("post.validateSettings", undefined);
+    const response = await client.query(
+      EXTENSION_TRPC_PATH.VALIDATE_SETTINGS,
+      undefined,
+    );
     const parsed = settingsValidationOutputSchema.safeParse(response);
 
     if (!parsed.success) {
@@ -203,7 +210,7 @@ export async function probeSettingsConfiguration(
       return {
         status: "error",
         message:
-          "Server is reachable but missing post.validateSettings. Confirm this is the OpenErrata API server.",
+          `Server is reachable but missing ${EXTENSION_TRPC_PATH.VALIDATE_SETTINGS}. Confirm this is the OpenErrata API server.`,
       };
     }
 

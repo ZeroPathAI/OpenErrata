@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
+  EXTENSION_MESSAGE_PROTOCOL_VERSION,
   extensionPageStatusSchema,
   type ExtensionPostStatus,
   type ExtensionSkippedReason,
@@ -34,7 +35,7 @@ interface ExpectedPostStatus {
 async function getCachedStatus(
   serviceWorker: Worker,
 ): Promise<unknown> {
-  return serviceWorker.evaluate(async () => {
+  return serviceWorker.evaluate(async (protocolVersion: number) => {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (tab?.id === undefined) {
       return null;
@@ -42,13 +43,17 @@ async function getCachedStatus(
 
     const [result] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
-      func: async () => {
-        return chrome.runtime.sendMessage({ type: "GET_CACHED" });
+      func: async (protocolVersion: number) => {
+        return chrome.runtime.sendMessage({
+          v: protocolVersion,
+          type: "GET_CACHED",
+        });
       },
+      args: [protocolVersion],
     });
 
     return result?.result ?? null;
-  });
+  }, EXTENSION_MESSAGE_PROTOCOL_VERSION);
 }
 
 function hasMatchingSkippedStatus(
@@ -116,9 +121,13 @@ async function closeExtensionHarness(harness: ExtensionHarness): Promise<void> {
 async function expectSkippedStatus(
   serviceWorker: Worker,
   expected: ExpectedSkippedStatus,
+  options: { timeoutMs?: number } = {},
 ): Promise<void> {
   await expect
-    .poll(async () => hasMatchingSkippedStatus(await getCachedStatus(serviceWorker), expected))
+    .poll(
+      async () => hasMatchingSkippedStatus(await getCachedStatus(serviceWorker), expected),
+      options.timeoutMs === undefined ? undefined : { timeout: options.timeoutMs },
+    )
     .toBe(true);
 }
 
@@ -146,11 +155,18 @@ test("LessWrong post URL without slug still reaches a terminal skipped status", 
 <html>
   <head><meta charset="utf-8" /><title>LessWrong test post</title></head>
   <body>
-    <h1>LessWrong test post</h1>
-    <article class="PostsPage-postContent">
-      <p>This test post includes video-only media.</p>
-      <video controls src="https://example.com/video.mp4"></video>
-    </article>
+    <div id="postBody">
+      <script type="application/ld+json">
+        {"url":"https://www.lesswrong.com/posts/${postId}"}
+      </script>
+      <h1>LessWrong test post</h1>
+      <article class="PostsPage-postContent">
+        <div id="postContent">
+          <p>This test post includes video-only media.</p>
+          <video controls src="https://example.com/video.mp4"></video>
+        </div>
+      </article>
+    </div>
   </body>
 </html>`,
       });
@@ -345,7 +361,7 @@ test("X single-article fallback is allowed when canonical identity proves target
   }
 });
 
-test("X status routes require identity proof and skip when only unrelated article text is present", async () => {
+test("X status routes require identity proof and eventually skip when proof never appears", async () => {
   const harness = await launchExtensionHarness();
   try {
     const tweetId = "998877665544332211";
@@ -378,11 +394,15 @@ test("X status routes require identity proof and skip when only unrelated articl
     });
 
     await page.goto(url, { waitUntil: "domcontentloaded" });
-    await expectSkippedStatus(harness.serviceWorker, {
-      platform: "X",
-      externalId: tweetId,
-      reason: "unsupported_content",
-    });
+    await expectSkippedStatus(
+      harness.serviceWorker,
+      {
+        platform: "X",
+        externalId: tweetId,
+        reason: "unsupported_content",
+      },
+      { timeoutMs: 15_000 },
+    );
   } finally {
     await closeExtensionHarness(harness);
   }

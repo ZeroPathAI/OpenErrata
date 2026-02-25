@@ -2221,7 +2221,7 @@ void test("post.batchStatus returns investigation state and incorrect claim coun
   });
 
   assert.equal(result.statuses.length, 2);
-  const byExternalId = new Map(
+  const byExternalId = new Map<string, (typeof result.statuses)[number]>(
     result.statuses.map((status) => [status.externalId, status]),
   );
 
@@ -2478,7 +2478,9 @@ void test("public.getPostInvestigations lists all complete investigations for a 
   assert.equal(result.post.externalId, post.externalId);
   assert.equal(result.investigations.length, 2);
 
-  const byId = new Map(result.investigations.map((item) => [item.id, item]));
+  const byId = new Map<string, (typeof result.investigations)[number]>(
+    result.investigations.map((item) => [item.id, item]),
+  );
   const fallback = byId.get(fallbackInvestigation.id);
   assert.ok(fallback);
   assert.equal(fallback.origin.provenance, "CLIENT_FALLBACK");
@@ -2588,7 +2590,9 @@ void test("public.searchInvestigations filters by query/platform and includes fa
     offset: 0,
   });
 
-  const queryIds = new Set(queryResult.investigations.map((item) => item.id));
+  const queryIds = new Set<string>(
+    queryResult.investigations.map((item) => item.id),
+  );
   assert.equal(queryIds.has(moonInvestigation.id), true);
   assert.equal(queryIds.has(fallbackMoonInvestigation.id), true);
   assert.equal(queryResult.investigations.every((item) => item.platform === "LESSWRONG"), true);
@@ -2599,7 +2603,9 @@ void test("public.searchInvestigations filters by query/platform and includes fa
     offset: 0,
   });
 
-  const platformIds = new Set(platformResult.investigations.map((item) => item.id));
+  const platformIds = new Set<string>(
+    platformResult.investigations.map((item) => item.id),
+  );
   assert.equal(platformIds.has(xInvestigation.id), true);
   assert.equal(platformIds.has(moonInvestigation.id), false);
 

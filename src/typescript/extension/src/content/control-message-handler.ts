@@ -1,4 +1,5 @@
 import { contentControlMessageSchema } from "@openerrata/shared";
+import { unsupportedProtocolVersionResponse } from "../lib/protocol-version.js";
 
 type ContentControlController = {
   requestInvestigation: () => unknown;
@@ -12,6 +13,11 @@ export function handleContentControlMessage(
   controller: ContentControlController,
   message: unknown,
 ): Promise<unknown> | false {
+  const protocolError = unsupportedProtocolVersionResponse(message);
+  if (protocolError) {
+    return Promise.resolve(protocolError);
+  }
+
   const parsedMessage = contentControlMessageSchema.safeParse(message);
   if (!parsedMessage.success) return false;
   const controlMessage = parsedMessage.data;

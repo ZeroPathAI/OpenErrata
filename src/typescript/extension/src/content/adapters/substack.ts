@@ -1,6 +1,5 @@
-import type { PlatformContent } from "@openerrata/shared";
 import { normalizeContent } from "@openerrata/shared";
-import type { PlatformAdapter } from "./lesswrong";
+import type { AdapterExtractionResult, PlatformAdapter } from "./model";
 import {
   extractImageUrlsFromRoot,
   readFirstMetaDateAsIso,
@@ -318,6 +317,7 @@ function hasPrivateOrGatedMarkers(document: Document): boolean {
 
 export const substackAdapter: PlatformAdapter = {
   platformKey: "SUBSTACK",
+  contentRootSelector: CONTENT_SELECTOR,
 
   matches(url: string): boolean {
     try {
@@ -345,36 +345,71 @@ export const substackAdapter: PlatformAdapter = {
     return hasPrivateOrGatedMarkers(document);
   },
 
-  extract(document: Document): PlatformContent | null {
+  extract(document: Document): AdapterExtractionResult {
+    const url = window.location.href;
     const root = document.querySelector(CONTENT_SELECTOR);
-    if (!root) return null;
 
     let parsedUrl: URL;
     try {
-      parsedUrl = new URL(window.location.href);
+      parsedUrl = new URL(url);
     } catch {
-      return null;
+      return {
+        kind: "not_ready",
+        reason: "missing_identity",
+      };
     }
 
     const slug = parseSlug(parsedUrl);
-    if (!slug) return null;
+    if (!slug) {
+      return {
+        kind: "not_ready",
+        reason: "missing_identity",
+      };
+    }
+
+    if (!root) {
+      return {
+        kind: "not_ready",
+        reason: "hydrating",
+      };
+    }
 
     const title = normalizeContent(
       document.querySelector(TITLE_SELECTOR)?.textContent ?? document.title,
     );
-    if (title.length === 0) return null;
+    if (title.length === 0) {
+      return {
+        kind: "not_ready",
+        reason: "hydrating",
+      };
+    }
 
     const authorName = normalizeContent(
       document.querySelector(AUTHOR_META_SELECTOR)?.getAttribute("content") ?? "",
     );
-    if (authorName.length === 0) return null;
+    if (authorName.length === 0) {
+      return {
+        kind: "not_ready",
+        reason: "hydrating",
+      };
+    }
 
     const imageCandidates = extractMetaImageCandidates(document);
     const substackPostId = parseSubstackPostId(imageCandidates);
-    if (!substackPostId) return null;
+    if (!substackPostId) {
+      return {
+        kind: "not_ready",
+        reason: "missing_identity",
+      };
+    }
 
     const publicationSubdomain = parsePublicationSubdomain(parsedUrl, imageCandidates);
-    if (!publicationSubdomain) return null;
+    if (!publicationSubdomain) {
+      return {
+        kind: "not_ready",
+        reason: "missing_identity",
+      };
+    }
 
     const contentText = normalizeContent(root.textContent);
 
@@ -385,7 +420,7 @@ export const substackAdapter: PlatformAdapter = {
     const interactionCounts = extractInteractionCounts(document);
     const authorSubstackHandle = extractAuthorHandle(document);
 
-    const imageUrls = extractImageUrlsFromRoot(root, window.location.href);
+    const imageUrls = extractImageUrlsFromRoot(root, url);
     const hasVideo = root.querySelector("video, iframe") !== null;
     const mediaState =
       imageUrls.length > 0
@@ -395,29 +430,32 @@ export const substackAdapter: PlatformAdapter = {
           : "text_only";
 
     return {
-      platform: "SUBSTACK",
-      externalId: substackPostId,
-      url: window.location.href,
-      contentText,
-      mediaState,
-      imageUrls,
-      metadata: {
-        substackPostId,
-        publicationSubdomain,
-        slug,
-        title,
-        authorName,
-        ...(subtitle.length === 0 ? {} : { subtitle }),
-        ...(authorSubstackHandle === undefined
-          ? {}
-          : { authorSubstackHandle }),
-        ...(publishedAt === null ? {} : { publishedAt }),
-        ...(interactionCounts.likeCount === undefined
-          ? {}
-          : { likeCount: interactionCounts.likeCount }),
-        ...(interactionCounts.commentCount === undefined
-          ? {}
-          : { commentCount: interactionCounts.commentCount }),
+      kind: "ready",
+      content: {
+        platform: "SUBSTACK",
+        externalId: substackPostId,
+        url,
+        contentText,
+        mediaState,
+        imageUrls,
+        metadata: {
+          substackPostId,
+          publicationSubdomain,
+          slug,
+          title,
+          authorName,
+          ...(subtitle.length === 0 ? {} : { subtitle }),
+          ...(authorSubstackHandle === undefined
+            ? {}
+            : { authorSubstackHandle }),
+          ...(publishedAt === null ? {} : { publishedAt }),
+          ...(interactionCounts.likeCount === undefined
+            ? {}
+            : { likeCount: interactionCounts.likeCount }),
+          ...(interactionCounts.commentCount === undefined
+            ? {}
+            : { commentCount: interactionCounts.commentCount }),
+        },
       },
     };
   },

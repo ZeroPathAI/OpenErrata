@@ -16,3 +16,23 @@ export function isContentMismatchRuntimeError(error: unknown): boolean {
     error.errorCode === "CONTENT_MISMATCH"
   );
 }
+
+const EXTENSION_CONTEXT_INVALIDATED_PATTERNS = [
+  "Extension context invalidated",
+  "Could not establish connection. Receiving end does not exist.",
+  "The message port closed before a response was received.",
+] as const;
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error);
+}
+
+export function isExtensionContextInvalidatedError(error: unknown): boolean {
+  const message = errorMessage(error);
+  return EXTENSION_CONTEXT_INVALIDATED_PATTERNS.some((pattern) =>
+    message.includes(pattern),
+  );
+}

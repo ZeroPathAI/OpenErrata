@@ -1,4 +1,8 @@
-import type { PlatformContent, ViewPostInput } from "@openerrata/shared";
+import {
+  viewPostInputSchema,
+  type PlatformContent,
+  type ViewPostInput,
+} from "@openerrata/shared";
 
 export function toViewPostInput(content: PlatformContent): ViewPostInput {
   const common = {
@@ -9,24 +13,24 @@ export function toViewPostInput(content: PlatformContent): ViewPostInput {
 
   switch (content.platform) {
     case "LESSWRONG":
-      return {
+      return viewPostInputSchema.parse({
         ...common,
         platform: "LESSWRONG",
         metadata: content.metadata,
-      };
+      });
     case "X":
-      return {
+      return viewPostInputSchema.parse({
         ...common,
         platform: "X",
         observedContentText: content.contentText,
         metadata: content.metadata,
-      };
+      });
     case "SUBSTACK":
-      return {
+      return viewPostInputSchema.parse({
         ...common,
         platform: "SUBSTACK",
         observedContentText: content.contentText,
         metadata: content.metadata,
-      };
+      });
   }
 }

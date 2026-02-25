@@ -13,7 +13,10 @@ import {
 import type { PlatformAdapter } from "./adapters/index";
 import { getAdapter } from "./adapters/index";
 import { parseSupportedPageIdentity } from "../lib/post-identity";
-import { isContentMismatchRuntimeError } from "../lib/runtime-error";
+import {
+  isContentMismatchRuntimeError,
+  isExtensionContextInvalidatedError,
+} from "../lib/runtime-error";
 import { toViewPostInput } from "../lib/view-post-input";
 import { AnnotationController } from "./annotations";
 import { PageObserver } from "./observer";
@@ -98,7 +101,7 @@ function pageLocatorForSessionKey(url: string): string {
   }
 }
 
-function inferIdentityForPrivateOrGatedSkip(
+function inferIdentityForSkippedPage(
   url: string,
   adapter: PlatformAdapter,
 ): { platform: Platform; externalId: string } | null {
@@ -216,6 +219,7 @@ export class PageSessionController {
   #refreshInFlight = false;
   #refreshQueued = false;
   #booted = false;
+  #cachedStatusUnsubscribe: (() => void) | null = null;
   #pendingSyncRetrySessionKey: string | null = null;
   #nextSyncRetryDelayMs = SYNC_RETRY_INITIAL_MS;
   readonly #annotations = new AnnotationController();
@@ -234,14 +238,34 @@ export class PageSessionController {
     if (this.#booted) return;
     this.#booted = true;
 
-    this.#sync.installCachedStatusListener(() => {
-      void this.#syncStatusFromBackgroundCache().catch((error: unknown) => {
-        console.error("Failed to sync background status:", error);
-      });
-    });
+    this.#cachedStatusUnsubscribe = this.#sync.installCachedStatusListener(
+      () => {
+        void this.#syncStatusFromBackgroundCache().catch((error: unknown) => {
+          if (isExtensionContextInvalidatedError(error)) {
+            return;
+          }
+          console.error("Failed to sync background status:", error);
+        });
+      },
+    );
 
     this.#observer.start();
     this.scheduleRefresh();
+  }
+
+  dispose(): void {
+    if (!this.#booted) return;
+    this.#booted = false;
+
+    if (this.#refreshTimer !== null) {
+      clearTimeout(this.#refreshTimer);
+      this.#refreshTimer = null;
+    }
+    this.#refreshQueued = false;
+
+    this.#observer.stop();
+    this.#cachedStatusUnsubscribe?.();
+    this.#cachedStatusUnsubscribe = null;
   }
 
   async requestInvestigation(): Promise<{ ok: boolean }> {
@@ -268,6 +292,9 @@ export class PageSessionController {
     }
 
     void this.#syncStatusFromBackgroundCache().catch((error: unknown) => {
+      if (isExtensionContextInvalidatedError(error)) {
+        return;
+      }
       console.error("Failed to sync queued investigation status:", error);
     });
     return requestInvestigateResponseSchema.parse({ ok: true });
@@ -335,6 +362,7 @@ export class PageSessionController {
   }
 
   scheduleRefresh(delayMs = REFRESH_DEBOUNCE_MS): void {
+    if (!this.#booted) return;
     if (this.#refreshTimer !== null) {
       clearTimeout(this.#refreshTimer);
     }
@@ -375,6 +403,7 @@ export class PageSessionController {
   }
 
   async #runRefreshCycle(): Promise<void> {
+    if (!this.#booted) return;
     if (this.#refreshInFlight) {
       this.#refreshQueued = true;
       return;
@@ -426,7 +455,7 @@ export class PageSessionController {
     }
 
     if (adapter.detectPrivateOrGated?.(document) === true) {
-      const identity = inferIdentityForPrivateOrGatedSkip(url, adapter);
+      const identity = inferIdentityForSkippedPage(url, adapter);
       if (!identity) {
         return {
           kind: "NONE",
@@ -449,9 +478,39 @@ export class PageSessionController {
       };
     }
 
-    const content = adapter.extract(document);
-    if (!content) {
-      const supportedIdentity = parseSupportedPageIdentity(url);
+    const extraction = adapter.extract(document);
+    if (extraction.kind === "not_ready") {
+      if (extraction.reason === "missing_identity") {
+        const supportedIdentity = inferIdentityForSkippedPage(url, adapter);
+        if (!supportedIdentity) {
+          return {
+            kind: "NONE",
+            sessionKey: null,
+          };
+        }
+
+        return {
+          kind: "SKIPPED",
+          sessionKey: [
+            "unsupported_content",
+            supportedIdentity.platform,
+            supportedIdentity.externalId,
+          ].join(":"),
+          platform: supportedIdentity.platform,
+          externalId: supportedIdentity.externalId,
+          pageUrl: url,
+          reason: "unsupported_content",
+        };
+      }
+
+      if (extraction.reason !== "unsupported") {
+        return {
+          kind: "NONE",
+          sessionKey: null,
+        };
+      }
+
+      const supportedIdentity = inferIdentityForSkippedPage(url, adapter);
       if (!supportedIdentity) {
         return {
           kind: "NONE",
@@ -472,6 +531,7 @@ export class PageSessionController {
         reason: "unsupported_content",
       };
     }
+    const content = extraction.content;
 
     if (content.contentText.length === 0) {
       return {
@@ -533,6 +593,10 @@ export class PageSessionController {
         );
         return;
       }
+      if (isExtensionContextInvalidatedError(error)) {
+        this.#resetSyncRetryState();
+        return;
+      }
       console.error("Failed to sync page content with background:", error);
       this.#scheduleSyncRetry(snapshot.sessionKey);
       return;
@@ -540,11 +604,9 @@ export class PageSessionController {
 
     this.#resetSyncRetryState();
     this.#annotations.setClaims(viewPost.claims ?? []);
-    if (this.#annotations.getClaims().length > 0) {
-      const applied = this.#annotations.render(snapshot.adapter);
-      if (!applied) {
-        this.scheduleRefresh();
-      }
+    const applied = this.#annotations.render(snapshot.adapter);
+    if (!applied) {
+      this.scheduleRefresh();
     }
   }
 

@@ -1,5 +1,6 @@
 <script lang="ts">
   import {
+    EXTENSION_MESSAGE_PROTOCOL_VERSION,
     annotationVisibilityResponseSchema,
     extensionPageStatusSchema,
     extensionRuntimeErrorResponseSchema,
@@ -123,7 +124,10 @@
       const supportedIdentity = parseSupportedPageIdentity(tabUrl);
       const onSupportedPage = isSupportedPostUrl(tabUrl) || isSubstackPostPathUrl(tabUrl);
 
-      const response = await browser.runtime.sendMessage({ type: "GET_CACHED" });
+      const response = await browser.runtime.sendMessage({
+        v: EXTENSION_MESSAGE_PROTOCOL_VERSION,
+        type: "GET_CACHED",
+      });
       const runtimeError = extensionRuntimeErrorResponseSchema.safeParse(response);
       if (runtimeError.success) {
         throw new Error(runtimeError.data.error);
@@ -160,6 +164,7 @@
   async function syncHighlightVisibility() {
     try {
       const response = await sendContentControlMessage({
+        v: EXTENSION_MESSAGE_PROTOCOL_VERSION,
         type: "GET_ANNOTATION_VISIBILITY",
       });
       if (response === null) return;
@@ -178,6 +183,7 @@
 
     try {
       const response = await sendContentControlMessage({
+        v: EXTENSION_MESSAGE_PROTOCOL_VERSION,
         type: "REQUEST_INVESTIGATE",
       });
       if (response === null) {
@@ -208,6 +214,7 @@
 
     try {
       const response = await sendContentControlMessage({
+        v: EXTENSION_MESSAGE_PROTOCOL_VERSION,
         type: nextVisibility ? "SHOW_ANNOTATIONS" : "HIDE_ANNOTATIONS",
       });
       if (response === null) return;
@@ -223,6 +230,7 @@
   async function focusClaim(claimIndex: number) {
     try {
       const response = await sendContentControlMessage({
+        v: EXTENSION_MESSAGE_PROTOCOL_VERSION,
         type: "FOCUS_CLAIM",
         payload: { claimIndex },
       });

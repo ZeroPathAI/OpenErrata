@@ -1,6 +1,8 @@
 import {
+  EXTENSION_MESSAGE_PROTOCOL_VERSION,
   extensionMessageSchema,
   extensionRuntimeErrorResponseSchema,
+  getInvestigationInputSchema,
   investigationStatusOutputSchema,
   POLL_INTERVAL_MS,
 } from "@openerrata/shared";
@@ -38,6 +40,7 @@ import {
   createPostStatusFromInvestigation,
   apiErrorToPostStatus,
 } from "./post-status.js";
+import { unsupportedProtocolVersionResponse } from "../lib/protocol-version.js";
 
 // Initialize API client on worker start.
 void init();
@@ -177,6 +180,7 @@ async function injectContentScriptIntoTab(tabId: number): Promise<void> {
 async function hasContentScriptListener(tabId: number): Promise<boolean> {
   try {
     await browser.tabs.sendMessage(tabId, {
+      v: EXTENSION_MESSAGE_PROTOCOL_VERSION,
       type: "GET_ANNOTATION_VISIBILITY",
     });
     return true;
@@ -458,9 +462,11 @@ async function startInvestigationPolling(input: {
         return;
       }
 
-      const latest = await getInvestigation({
-        investigationId: input.investigationId,
-      });
+      const latest = await getInvestigation(
+        getInvestigationInputSchema.parse({
+          investigationId: input.investigationId,
+        }),
+      );
       const latestSnapshot = toInvestigationStatusSnapshot(latest);
       await cachePostStatus(
         input.tabId,
@@ -665,6 +671,11 @@ async function maybeAutoInvestigate(
 
 browser.runtime.onMessage.addListener(
   (message: unknown, sender: Runtime.MessageSender) => {
+    const protocolError = unsupportedProtocolVersionResponse(message);
+    if (protocolError) {
+      return protocolError;
+    }
+
     const parsedMessage = extensionMessageSchema.safeParse(message);
     if (!parsedMessage.success) return false;
     const typedMessage = parsedMessage.data;

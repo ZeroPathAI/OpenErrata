@@ -61,7 +61,10 @@ const typeAwareRules = {
   "@typescript-eslint/no-unnecessary-template-expression": "error",
   "@typescript-eslint/no-redundant-type-constituents": "error",
   "@typescript-eslint/no-duplicate-type-constituents": "error",
+  "@typescript-eslint/no-empty-object-type": "error",
   "@typescript-eslint/no-mixed-enums": "error",
+  "@typescript-eslint/no-unnecessary-parameter-property-assignment": "error",
+  "@typescript-eslint/no-unnecessary-qualifier": "error",
 
   // ── Void discipline ───────────────────────────────────────────
   "@typescript-eslint/no-confusing-void-expression": [
@@ -137,6 +140,7 @@ export default [
       "no-new-func": "error",
       // Correctness
       eqeqeq: ["error", "always", { null: "ignore" }],
+      "no-useless-catch": "error",
       "prefer-const": "error",
       "no-var": "error",
       "no-throw-literal": "error",

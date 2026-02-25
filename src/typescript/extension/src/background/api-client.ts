@@ -7,9 +7,11 @@ import type {
   ExtensionApiInput,
   ExtensionApiMutationPath,
   ExtensionApiOutput,
+  ExtensionApiProcedurePath,
   ExtensionApiQueryPath,
 } from "@openerrata/shared";
 import {
+  EXTENSION_TRPC_PATH,
   getInvestigationOutputSchema,
   investigateNowOutputSchema,
   viewPostOutputSchema,
@@ -127,8 +129,10 @@ function clientKeyFor(
   ].join("|");
 }
 
-function shouldIncludeUserOpenAiKeyHeader(path: string): boolean {
-  return path === "post.investigateNow";
+function shouldIncludeUserOpenAiKeyHeader(
+  path: ExtensionApiProcedurePath,
+): boolean {
+  return path === EXTENSION_TRPC_PATH.INVESTIGATE_NOW;
 }
 
 function getOrCreateTrpcClient(options: {
@@ -190,7 +194,7 @@ function describeError(error: unknown): string {
 }
 
 async function withTrpcClient<Output>(
-  path: string,
+  path: ExtensionApiProcedurePath,
   operation: (client: TrpcClient) => Promise<Output>,
 ): Promise<Output> {
   await init();
@@ -265,7 +269,9 @@ async function assertApiHostPermissionGranted(apiBaseUrl: string): Promise<void>
 export async function viewPost(
   input: ViewPostInput,
 ): Promise<ViewPostOutput> {
-  const output = viewPostOutputSchema.parse(await mutateApi("post.viewPost", input));
+  const output = viewPostOutputSchema.parse(
+    await mutateApi(EXTENSION_TRPC_PATH.VIEW_POST, input),
+  );
   return normalizeViewPostOutput(output);
 }
 
@@ -273,7 +279,7 @@ export async function getInvestigation(
   input: GetInvestigationInput,
 ): Promise<GetInvestigationOutput> {
   const output = getInvestigationOutputSchema.parse(
-    await queryApi("post.getInvestigation", input),
+    await queryApi(EXTENSION_TRPC_PATH.GET_INVESTIGATION, input),
   );
   return normalizeGetInvestigationOutput(output);
 }
@@ -282,7 +288,7 @@ export async function investigateNow(
   input: ViewPostInput,
 ): Promise<InvestigateNowOutput> {
   const output = investigateNowOutputSchema.parse(
-    await mutateApi("post.investigateNow", input),
+    await mutateApi(EXTENSION_TRPC_PATH.INVESTIGATE_NOW, input),
   );
   return normalizeInvestigateNowOutput(output);
 }

@@ -1,3 +1,4 @@
+import { extensionPostStatusSchema } from "@openerrata/shared";
 import type {
   ContentProvenance,
   ExtensionPostStatus,
@@ -81,36 +82,36 @@ export function createPostStatus(input: PostStatusInput): ExtensionPostStatus {
 
   switch (input.investigationState) {
     case "NOT_INVESTIGATED":
-      return {
+      return extensionPostStatusSchema.parse({
         ...base,
         investigationState: "NOT_INVESTIGATED",
         claims: null,
-      };
+      });
     case "INVESTIGATING":
-      return {
+      return extensionPostStatusSchema.parse({
         ...base,
         investigationState: "INVESTIGATING",
         status: input.status,
         claims: null,
-      };
+      });
     case "FAILED":
-      return {
+      return extensionPostStatusSchema.parse({
         ...base,
         investigationState: "FAILED",
         claims: null,
-      };
+      });
     case "CONTENT_MISMATCH":
-      return {
+      return extensionPostStatusSchema.parse({
         ...base,
         investigationState: "CONTENT_MISMATCH",
         claims: null,
-      };
+      });
     case "INVESTIGATED":
-      return {
+      return extensionPostStatusSchema.parse({
         ...base,
         investigationState: "INVESTIGATED",
         claims: input.claims ?? [],
-      };
+      });
   }
 }
 
