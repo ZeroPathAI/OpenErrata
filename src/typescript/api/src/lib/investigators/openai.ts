@@ -720,7 +720,7 @@ export class OpenAIInvestigator implements Investigator {
     };
 
     const startedAt = new Date().toISOString();
-    const baseAttemptAudit: InvestigatorAttemptAudit = {
+    const baseAttemptAudit: Omit<InvestigatorAttemptAudit, "response" | "error"> = {
       startedAt,
       completedAt: null,
       requestModel: OPENAI_MODEL_ID,
@@ -729,8 +729,6 @@ export class OpenAIInvestigator implements Investigator {
       requestReasoningEffort: requestReasoning.effort,
       requestReasoningSummary: requestReasoning.summary,
       requestedTools: extractRequestedTools(requestedTools),
-      response: null,
-      error: null,
     };
 
     let outputIndexOffset = 0;

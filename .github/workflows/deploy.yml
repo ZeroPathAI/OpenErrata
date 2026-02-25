@@ -55,6 +55,9 @@ jobs:
     needs: resolve-target
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     outputs:
       deployable: ${{ steps.filter.outputs.deployable }}
     steps:
