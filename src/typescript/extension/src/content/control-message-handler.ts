@@ -6,7 +6,7 @@ type ContentControlController = {
   showAnnotations: () => unknown;
   hideAnnotations: () => unknown;
   getAnnotationVisibility: () => unknown;
-  focusClaim: (claimIndex: number) => unknown;
+  focusClaim: (claimId: string) => unknown;
 };
 
 export function handleContentControlMessage(
@@ -32,7 +32,7 @@ export function handleContentControlMessage(
       case "GET_ANNOTATION_VISIBILITY":
         return controller.getAnnotationVisibility();
       case "FOCUS_CLAIM":
-        return controller.focusClaim(controlMessage.payload.claimIndex);
+        return controller.focusClaim(controlMessage.payload.claimId);
       default: {
         const unreachable: never = controlMessage;
         return unreachable;

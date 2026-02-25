@@ -32,11 +32,12 @@ export const investigationIdSchema = z
   .string()
   .min(1)
   .brand<"InvestigationId">();
+export const claimIdSchema = z.string().min(1).brand<"ClaimId">();
 export const extensionMessageProtocolVersionSchema = z.literal(
   EXTENSION_MESSAGE_PROTOCOL_VERSION,
 );
 
-// ── LLM output validation ─────────────────────────────────────────────────
+// ── Claim validation ──────────────────────────────────────────────────────
 
 const claimSourceSchema = z.object({
   url: z.url(),
@@ -44,7 +45,7 @@ const claimSourceSchema = z.object({
   snippet: z.string().min(1),
 });
 
-export const investigationClaimSchema = z.object({
+const investigationClaimPayloadSchema = z.object({
   text: z.string().min(1),
   context: z.string().min(1),
   summary: z.string().min(1),
@@ -52,8 +53,12 @@ export const investigationClaimSchema = z.object({
   sources: z.array(claimSourceSchema).min(1),
 });
 
+export const investigationClaimSchema = investigationClaimPayloadSchema.extend({
+  id: claimIdSchema,
+});
+
 export const investigationResultSchema = z.object({
-  claims: z.array(investigationClaimSchema),
+  claims: z.array(investigationClaimPayloadSchema),
 });
 
 // ── Platform metadata schemas ─────────────────────────────────────────────
@@ -457,11 +462,15 @@ const getAnnotationVisibilityMessageSchema = extensionMessageWithoutPayload(
   "GET_ANNOTATION_VISIBILITY",
 );
 
+const focusClaimPayloadSchema = z
+  .object({
+    claimId: claimIdSchema,
+  })
+  .strict();
+
 const focusClaimMessageSchema = extensionMessageWithPayload(
   "FOCUS_CLAIM",
-  z.object({
-    claimIndex: z.number().int().nonnegative(),
-  }),
+  focusClaimPayloadSchema,
 );
 
 const contentControlMessageSchemas = [

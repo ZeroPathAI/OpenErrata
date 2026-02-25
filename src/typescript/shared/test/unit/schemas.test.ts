@@ -11,6 +11,7 @@ import {
   extensionPostStatusSchema,
   extensionMessageSchema,
   extensionRuntimeErrorResponseSchema,
+  claimIdSchema,
   investigationIdSchema,
   investigationClaimSchema,
   platformContentSchema,
@@ -20,6 +21,7 @@ import {
 } from "../../src/schemas.js";
 import type {
   ExtensionMessageProtocolVersion,
+  ClaimId,
   InvestigationId,
   PostId,
   SessionId,
@@ -221,6 +223,7 @@ test("platformContentSchema rejects LESSWRONG payloads missing htmlContent", () 
 
 test("investigationClaimSchema rejects invalid claim payloads", () => {
   const emptySources = investigationClaimSchema.safeParse({
+    id: "claim-1",
     text: "Claim text",
     context: "Claim context",
     summary: "Claim summary",
@@ -229,6 +232,7 @@ test("investigationClaimSchema rejects invalid claim payloads", () => {
   });
 
   const emptyReasoning = investigationClaimSchema.safeParse({
+    id: "claim-1",
     text: "Claim text",
     context: "Claim context",
     summary: "Claim summary",
@@ -246,8 +250,24 @@ test("investigationClaimSchema rejects invalid claim payloads", () => {
   assert.equal(emptyReasoning.success, false);
 });
 
-test("contentControlMessageSchema accepts FOCUS_CLAIM with non-negative index", () => {
+test("contentControlMessageSchema accepts FOCUS_CLAIM with claimId", () => {
   const parsed = contentControlMessageSchema.parse({
+    v: EXTENSION_MESSAGE_PROTOCOL_VERSION,
+    type: "FOCUS_CLAIM",
+    payload: {
+      claimId: "claim-123",
+    },
+  });
+
+  assert.equal(parsed.type, "FOCUS_CLAIM");
+  assert.equal("claimId" in parsed.payload, true);
+  if ("claimId" in parsed.payload) {
+    assert.equal(parsed.payload.claimId, "claim-123");
+  }
+});
+
+test("contentControlMessageSchema rejects FOCUS_CLAIM claimIndex payload", () => {
+  const parsed = contentControlMessageSchema.safeParse({
     v: EXTENSION_MESSAGE_PROTOCOL_VERSION,
     type: "FOCUS_CLAIM",
     payload: {
@@ -255,16 +275,27 @@ test("contentControlMessageSchema accepts FOCUS_CLAIM with non-negative index", 
     },
   });
 
-  assert.equal(parsed.type, "FOCUS_CLAIM");
-  assert.equal(parsed.payload.claimIndex, 0);
+  assert.equal(parsed.success, false);
 });
 
-test("extensionMessageSchema rejects FOCUS_CLAIM with negative claim index", () => {
+test("extensionMessageSchema rejects FOCUS_CLAIM with claimIndex payload", () => {
   const parsed = extensionMessageSchema.safeParse({
     v: EXTENSION_MESSAGE_PROTOCOL_VERSION,
     type: "FOCUS_CLAIM",
     payload: {
       claimIndex: -1,
+    },
+  });
+
+  assert.equal(parsed.success, false);
+});
+
+test("extensionMessageSchema rejects FOCUS_CLAIM with empty claimId", () => {
+  const parsed = extensionMessageSchema.safeParse({
+    v: EXTENSION_MESSAGE_PROTOCOL_VERSION,
+    type: "FOCUS_CLAIM",
+    payload: {
+      claimId: "",
     },
   });
 
@@ -292,6 +323,7 @@ test("branded identifier schemas parse valid inputs and expose branded types", (
   const postId: PostId = postIdSchema.parse("post-123");
   const sessionId: SessionId = sessionIdSchema.parse(7);
   const investigationId: InvestigationId = investigationIdSchema.parse("inv-123");
+  const claimId: ClaimId = claimIdSchema.parse("claim-123");
   const protocolVersion: ExtensionMessageProtocolVersion =
     extensionMessageProtocolVersionSchema.parse(
       EXTENSION_MESSAGE_PROTOCOL_VERSION,
@@ -300,6 +332,7 @@ test("branded identifier schemas parse valid inputs and expose branded types", (
   assert.equal(postId, "post-123");
   assert.equal(sessionId, 7);
   assert.equal(investigationId, "inv-123");
+  assert.equal(claimId, "claim-123");
   assert.equal(protocolVersion, EXTENSION_MESSAGE_PROTOCOL_VERSION);
 });
 

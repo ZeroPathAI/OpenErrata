@@ -8,6 +8,7 @@
     requestInvestigateResponseSchema,
   } from "@openerrata/shared";
   import type {
+    ClaimId,
     ExtensionMessage,
     ExtensionSkippedReason,
   } from "@openerrata/shared";
@@ -227,12 +228,12 @@
     }
   }
 
-  async function focusClaim(claimIndex: number) {
+  async function focusClaim(claimId: ClaimId) {
     try {
       const response = await sendContentControlMessage({
         v: EXTENSION_MESSAGE_PROTOCOL_VERSION,
         type: "FOCUS_CLAIM",
-        payload: { claimIndex },
+        payload: { claimId },
       });
       if (response === null) {
         view = { kind: "error", message: "No active tab available" };
@@ -351,11 +352,11 @@
           <span><strong>{view.claims.length}</strong> incorrect claim{view.claims.length !== 1 ? "s" : ""} found</span>
         </div>
         <ul class="claims">
-          {#each view.claims as claim, claimIndex (`${claim.text}:${claimIndex.toString()}`)}
+          {#each view.claims as claim (claim.id)}
             <li>
               <button
                 class="claim-focus-btn"
-                onclick={() => void focusClaim(claimIndex)}
+                onclick={() => void focusClaim(claim.id)}
               >
                 {claim.summary}
               </button>

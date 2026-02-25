@@ -46,10 +46,9 @@ behind it was. Here are some rules so you do not write code that is bad in
 these ways.
 
 Always take the time to introduce new features and fix bugs in the codebase in
-the most maintainable way, even if it means modifying more than your user
-initially expects. Be sure to highlight such roundabout changes in your
-response, but otherwise feel free to perform refactors of bad code not
-originally mentioned in your prompt.
+the most complete, ideal, and maintainable way, even if it means modifying more
+than your user initially expects. Feel free to perform refactors of bad code
+not originally mentioned in your prompt. 
 
 **The underlying driving spec behind the software you're tasked with writing
 should be clearly understandable just by reading your code.** This is the most

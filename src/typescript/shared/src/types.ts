@@ -1,6 +1,6 @@
 import type { z } from "zod";
 
-// ── LLM output structure (spec §3.2) ─────────────────────────────────────
+// ── Claim/result structure (spec §3.2) ───────────────────────────────────
 
 export type InvestigationClaim = z.infer<
   typeof import("./schemas.js").investigationClaimSchema
@@ -17,6 +17,7 @@ export type SessionId = z.infer<typeof import("./schemas.js").sessionIdSchema>;
 export type InvestigationId = z.infer<
   typeof import("./schemas.js").investigationIdSchema
 >;
+export type ClaimId = z.infer<typeof import("./schemas.js").claimIdSchema>;
 
 // ── Platform metadata contracts ───────────────────────────────────────────
 export interface PlatformMetadataByPlatform {

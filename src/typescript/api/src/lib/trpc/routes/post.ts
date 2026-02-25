@@ -7,6 +7,7 @@ import {
   investigateNowOutputSchema,
   batchStatusInputSchema,
   batchStatusOutputSchema,
+  claimIdSchema,
   settingsValidationOutputSchema,
   normalizeContent,
   hashContent,
@@ -455,6 +456,7 @@ async function maybeRecordCorroboration(
 
 function formatClaims(
   claims: Array<{
+    id: string;
     text: string;
     context: string;
     summary: string;
@@ -463,6 +465,7 @@ function formatClaims(
   }>,
 ): InvestigationClaim[] {
   return claims.map((c) => ({
+    id: claimIdSchema.parse(c.id),
     text: c.text,
     context: c.context,
     summary: c.summary,

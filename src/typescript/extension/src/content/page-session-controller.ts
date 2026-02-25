@@ -182,6 +182,7 @@ function areClaimsEqual(
     if (!rightClaim) return false;
 
     if (
+      leftClaim.id !== rightClaim.id ||
       leftClaim.text !== rightClaim.text ||
       leftClaim.summary !== rightClaim.summary ||
       leftClaim.context !== rightClaim.context ||
@@ -329,12 +330,14 @@ export class PageSessionController {
     });
   }
 
-  focusClaim(claimIndex: number): { ok: boolean } {
+  focusClaim(claimId: string): { ok: boolean } {
     if (this.#state.kind !== "TRACKED_POST") {
       return focusClaimResponseSchema.parse({ ok: false });
     }
 
-    const claim = this.#annotations.getClaims()[claimIndex];
+    const claim = this.#annotations
+      .getClaims()
+      .find((candidate) => candidate.id === claimId);
     if (!claim) {
       return focusClaimResponseSchema.parse({ ok: false });
     }
