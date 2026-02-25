@@ -14,6 +14,10 @@
 #   ./setup.sh                       # prints kubeconfig to stdout
 #   ./setup.sh > ci-kubeconfig.yaml  # save to file
 #
+# Environment:
+#   TARGET_NAMESPACE (optional, default: openerrata-staging)
+#     The namespace encoded in the generated kubeconfig's context.
+#
 # The printed kubeconfig is the value you set as the KUBE_CONFIG_DATA GitHub
 # secret (you can base64-encode it or paste it raw; the deploy workflow
 # accepts either format).
@@ -25,6 +29,16 @@ SA_NAME="openerrata-ci"
 SA_NAMESPACE="kube-system"
 SECRET_NAME="openerrata-ci-token"
 NAMESPACES=("openerrata-main" "openerrata-staging")
+TARGET_NAMESPACE="${TARGET_NAMESPACE:-openerrata-staging}"
+
+case "$TARGET_NAMESPACE" in
+  openerrata-main|openerrata-staging) ;;
+  *)
+    echo "Unsupported TARGET_NAMESPACE: ${TARGET_NAMESPACE}" >&2
+    echo "Expected one of: openerrata-main, openerrata-staging" >&2
+    exit 1
+    ;;
+esac
 
 # ── 1. Create target namespaces ──────────────────────────────────────────
 for ns in "${NAMESPACES[@]}"; do
@@ -78,7 +92,7 @@ contexts:
     context:
       cluster: ${CLUSTER_NAME}
       user: ${SA_NAME}
-      namespace: ${NAMESPACES[0]}
+      namespace: ${TARGET_NAMESPACE}
 current-context: ${SA_NAME}@${CLUSTER_NAME}
 users:
   - name: ${SA_NAME}

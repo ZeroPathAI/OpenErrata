@@ -9,6 +9,8 @@
     "test:unit": "tsx --test \"test/unit/**/*.test.ts\"",
     "test:integration": "tsx test/integration/run-integration-tests.ts",
     "test:integration:raw": "tsx --test test/integration/api-endpoints.integration.test.ts",
+    "test:integration:canary": "tsx --test test/integration/live-canary.test.ts",
+    "refresh:fixtures:lesswrong": "tsx test/integration/refresh-lesswrong-fixtures.ts",
     "worker": "tsx --tsconfig tsconfig.runtime.json src/lib/services/worker-entrypoint.ts",
     "selector": "tsx --tsconfig tsconfig.runtime.json src/lib/services/selector-entrypoint.ts",
     "instance-api-key": "tsx --tsconfig tsconfig.runtime.json src/lib/services/instance-api-key-entrypoint.ts",

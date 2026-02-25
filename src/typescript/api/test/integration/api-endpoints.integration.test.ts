@@ -13,6 +13,10 @@ import {
   randomInt,
   sleep,
 } from "../helpers/fuzz-utils.js";
+import {
+  INTEGRATION_LESSWRONG_FIXTURE_KEYS,
+  readLesswrongFixture,
+} from "./lesswrong-fixtures.js";
 
 process.env['NODE_ENV'] = "test";
 process.env['DATABASE_URL'] ??=
@@ -593,12 +597,13 @@ function buildLesswrongViewInput(input: {
 }
 
 async function withMockLesswrongFetch<ResponseType>(
-  htmlContent: string,
+  fixtureKey: string,
   run: () => Promise<ResponseType>,
 ): Promise<ResponseType> {
   const lesswrongGraphqlUrl = "https://www.lesswrong.com/graphql";
   let sawLesswrongRequest = false;
   const originalFetch = globalThis.fetch;
+  const fixture = await readLesswrongFixture(fixtureKey);
   const mockedFetch: typeof fetch = async (input, init) => {
     const url =
       typeof input === "string"
@@ -617,7 +622,7 @@ async function withMockLesswrongFetch<ResponseType>(
           post: {
             result: {
               contents: {
-                html: htmlContent,
+                html: fixture.html,
               },
             },
           },
@@ -825,13 +830,17 @@ void test("post.viewPost stores content and reports not investigated without mat
 
 void test("post.viewPost for LessWrong derives observed content from html metadata", async () => {
   const caller = createCaller();
-  const htmlContent = '<p data-note="x > y">Alpha</p>\n<p>Beta</p>';
+  const lesswrongFixture = await readLesswrongFixture(
+    INTEGRATION_LESSWRONG_FIXTURE_KEYS.POST_VIEW_HTML,
+  );
   const input = buildLesswrongViewInput({
-    externalId: "view-post-lesswrong-observed-html-1",
-    htmlContent,
+    externalId: lesswrongFixture.externalId,
+    htmlContent: lesswrongFixture.html,
   });
 
-  const result = await withMockLesswrongFetch(htmlContent, () =>
+  const result = await withMockLesswrongFetch(
+    INTEGRATION_LESSWRONG_FIXTURE_KEYS.POST_VIEW_HTML,
+    () =>
     caller.post.viewPost(input),
   );
 
@@ -853,7 +862,7 @@ void test("post.viewPost for LessWrong derives observed content from html metada
     },
   });
 
-  const expectedCanonicalText = lesswrongHtmlToNormalizedText(htmlContent);
+  const expectedCanonicalText = lesswrongHtmlToNormalizedText(lesswrongFixture.html);
   const expectedCanonicalHash = await hashContent(expectedCanonicalText);
 
   assert.ok(post);
