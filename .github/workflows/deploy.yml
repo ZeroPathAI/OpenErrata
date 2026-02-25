@@ -185,6 +185,7 @@ jobs:
         uses: pnpm/action-setup@v4
         with:
           version: 10.24.0
+          standalone: true
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -219,6 +220,7 @@ jobs:
         uses: pnpm/action-setup@v4
         with:
           version: 10.24.0
+          standalone: true
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -265,6 +267,7 @@ jobs:
         uses: pnpm/action-setup@v4
         with:
           version: 10.24.0
+          standalone: true
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -299,6 +302,7 @@ jobs:
         uses: pnpm/action-setup@v4
         with:
           version: 10.24.0
+          standalone: true
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -393,6 +397,7 @@ jobs:
         uses: pnpm/action-setup@v4
         with:
           version: 10.24.0
+          standalone: true
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
