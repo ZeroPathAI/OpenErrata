@@ -76,13 +76,13 @@ function validateLesswrongFixture(record: unknown): LesswrongFixture {
     throw new Error("Malformed LessWrong fixture: expected object.");
   }
 
-  const key = record.key;
-  const externalId = record.externalId;
-  const postUrl = record.postUrl;
-  const graphqlUrl = record.graphqlUrl;
-  const fetchedAt = record.fetchedAt;
-  const htmlSha256 = record.htmlSha256;
-  const html = record.html;
+  const key = record["key"];
+  const externalId = record["externalId"];
+  const postUrl = record["postUrl"];
+  const graphqlUrl = record["graphqlUrl"];
+  const fetchedAt = record["fetchedAt"];
+  const htmlSha256 = record["htmlSha256"];
+  const html = record["html"];
 
   if (typeof key !== "string" || key.length === 0) {
     throw new Error("Malformed LessWrong fixture: missing key.");
