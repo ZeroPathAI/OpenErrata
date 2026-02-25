@@ -222,11 +222,14 @@ function extractOutputItems(outputItems: unknown[]): InvestigatorOutputItemAudit
       continue;
     }
 
+    const providerItemId = readString(outputItem["id"]);
+    const itemStatus = readString(outputItem["status"]);
     extracted.push({
       outputIndex,
-      providerItemId: readString(outputItem["id"]),
+      providerItemId:
+        providerItemId === null || itemStatus === null ? null : providerItemId,
       itemType: readString(outputItem["type"]) ?? "unknown",
-      itemStatus: readString(outputItem["status"]),
+      itemStatus: providerItemId === null || itemStatus === null ? null : itemStatus,
     });
   }
 
@@ -267,13 +270,23 @@ function extractOutputTextArtifacts(outputItems: unknown[]): {
         for (const [annotationIndex, annotation] of partAnnotations.entries()) {
           if (!isRecord(annotation)) continue;
 
+          const startIndex = readOptionalInteger(annotation["start_index"]);
+          const endIndex = readOptionalInteger(annotation["end_index"]);
+
+          const characterPosition =
+            startIndex === null || endIndex === null
+              ? undefined
+              : {
+                  start: startIndex,
+                  end: endIndex,
+                };
+
           annotations.push({
             outputIndex,
             partIndex,
             annotationIndex,
             annotationType: readString(annotation["type"]) ?? "unknown",
-            startIndex: readOptionalInteger(annotation["start_index"]),
-            endIndex: readOptionalInteger(annotation["end_index"]),
+            characterPosition,
             url: readString(annotation["url"]),
             title: readString(annotation["title"]),
             fileId: readString(annotation["file_id"]),
@@ -360,12 +373,15 @@ function toToolCallAudit(
       "finishedat",
     ]),
   );
+  const providerToolCallId = readString(outputItem["id"]);
+  const status = readString(outputItem["status"]);
 
   return {
     outputIndex,
-    providerToolCallId: readString(outputItem["id"]),
+    providerToolCallId:
+      providerToolCallId === null || status === null ? null : providerToolCallId,
     toolType: type,
-    status: readString(outputItem["status"]),
+    status: providerToolCallId === null || status === null ? null : status,
     rawPayload: sanitizeJsonRecord(outputItem),
     capturedAt: new Date().toISOString(),
     providerStartedAt,

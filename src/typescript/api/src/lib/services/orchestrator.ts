@@ -19,7 +19,9 @@ import {
 } from "$lib/investigators/openai.js";
 import {
   parseInvestigatorAttemptAudit,
+  type InvestigatorAttemptFailedAudit,
   type InvestigatorAttemptAudit,
+  type InvestigatorAttemptSucceededAudit,
 } from "$lib/investigators/interface.js";
 import { toDate, toOptionalDate } from "$lib/date.js";
 import type {
@@ -364,6 +366,18 @@ function toDataUri(bytes: Uint8Array, mimeType: string): string {
   return `data:${mimeType};base64,${Buffer.from(bytes).toString("base64")}`;
 }
 
+function isFailedAttemptAudit(
+  attemptAudit: InvestigatorAttemptAudit,
+): attemptAudit is InvestigatorAttemptFailedAudit {
+  return attemptAudit.error !== null;
+}
+
+function isSucceededAttemptAudit(
+  attemptAudit: InvestigatorAttemptAudit,
+): attemptAudit is InvestigatorAttemptSucceededAudit {
+  return attemptAudit.error === null;
+}
+
 async function resolveStoredImageDataUris(
   investigationId: string,
   candidateImageUrls: string[] | undefined,
@@ -393,20 +407,29 @@ async function persistAttemptAudit(
   },
 ): Promise<void> {
   const attemptAudit = parseInvestigatorAttemptAudit(input.attemptAudit);
-  if (input.outcome === "SUCCEEDED") {
-    if (attemptAudit.error !== null) {
-      throw new Error(
-        `Attempt ${input.attemptNumber.toString()} is SUCCEEDED but contains error audit`,
-      );
-    }
-    if (attemptAudit.response === null) {
-      throw new Error(
-        `Attempt ${input.attemptNumber.toString()} is SUCCEEDED but has no response audit`,
-      );
-    }
-  } else if (attemptAudit.error === null) {
+  const failedAttemptAudit = isFailedAttemptAudit(attemptAudit)
+    ? attemptAudit
+    : null;
+  const succeededAttemptAudit = isSucceededAttemptAudit(attemptAudit)
+    ? attemptAudit
+    : null;
+  if (input.outcome === "SUCCEEDED" && failedAttemptAudit) {
+    throw new Error(
+      `Attempt ${input.attemptNumber.toString()} is SUCCEEDED but contains error audit`,
+    );
+  }
+  if (input.outcome === "FAILED" && succeededAttemptAudit) {
     throw new Error(
       `Attempt ${input.attemptNumber.toString()} is FAILED but has no error audit`,
+    );
+  }
+  if (
+    input.outcome === "SUCCEEDED" &&
+    succeededAttemptAudit === null &&
+    failedAttemptAudit === null
+  ) {
+    throw new Error(
+      `Attempt ${input.attemptNumber.toString()} has invalid outcome state`,
     );
   }
 
@@ -529,8 +552,8 @@ async function persistAttemptAudit(
         textPartId,
         annotationIndex: annotation.annotationIndex,
         annotationType: annotation.annotationType,
-        startIndex: annotation.startIndex,
-        endIndex: annotation.endIndex,
+        startIndex: annotation.characterPosition?.start ?? null,
+        endIndex: annotation.characterPosition?.end ?? null,
         url: annotation.url,
         title: annotation.title,
         fileId: annotation.fileId,
