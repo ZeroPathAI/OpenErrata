@@ -673,12 +673,55 @@ jobs:
         run: |
           set -euo pipefail
           pulumi stack select "$STACK" --create
-          pulumi up \
-            --stack "$STACK" \
-            --yes \
-            --non-interactive \
-            --skip-preview \
-            --refresh=true
+          TARGET_NAMESPACE="openerrata-${STACK}"
+          API_SERVICE_NAME="${TARGET_NAMESPACE}-api"
+          PULUMI_TIMEOUT_SECONDS=1200
+
+          set +e
+          timeout --signal=TERM --kill-after=30s "${PULUMI_TIMEOUT_SECONDS}s" \
+            pulumi up \
+              --stack "$STACK" \
+              --yes \
+              --non-interactive \
+              --skip-preview \
+              --refresh=true
+          pulumi_rc=$?
+          set -e
+
+          if [ "$pulumi_rc" -eq 0 ]; then
+            exit 0
+          fi
+
+          if [ "$pulumi_rc" -eq 124 ] || [ "$pulumi_rc" -eq 137 ]; then
+            echo "::error::Pulumi deploy timed out after ${PULUMI_TIMEOUT_SECONDS}s."
+          else
+            echo "::error::Pulumi deploy failed with exit code ${pulumi_rc}."
+          fi
+
+          echo "::group::Pulumi stack history"
+          pulumi stack history --stack "$STACK" --json | jq '.[0]' || true
+          echo "::endgroup::"
+
+          echo "::group::Kubernetes diagnostics (${TARGET_NAMESPACE})"
+          kubectl -n "$TARGET_NAMESPACE" get deploy,pods,svc,ep,endpointslice,job || true
+          kubectl -n "$TARGET_NAMESPACE" get service "$API_SERVICE_NAME" -o yaml || true
+          kubectl -n "$TARGET_NAMESPACE" get endpoints "$API_SERVICE_NAME" -o yaml || true
+          kubectl -n "$TARGET_NAMESPACE" get endpointslice -l "kubernetes.io/service-name=$API_SERVICE_NAME" -o yaml || true
+          kubectl -n "$TARGET_NAMESPACE" get events --sort-by=.lastTimestamp | tail -n 200 || true
+          echo "::endgroup::"
+
+          echo "::group::Cancel in-flight Pulumi update"
+          set +e
+          cancel_output="$(pulumi cancel --stack "$STACK" --yes 2>&1)"
+          cancel_rc=$?
+          set -e
+          echo "$cancel_output"
+          if [ "$cancel_rc" -ne 0 ] && ! echo "$cancel_output" | grep -qi "no update in progress"; then
+            echo "::warning::pulumi cancel returned exit code ${cancel_rc}"
+          fi
+          echo "::endgroup::"
+
+          exit "$pulumi_rc"
 
   promote-image-latest:
     needs: [resolve-target, decide-deploy, build-image, deploy]
