@@ -204,6 +204,7 @@ model InvestigationRun {
   investigation   Investigation                 @relation(fields: [investigationId], references: [id], onDelete: Cascade)
   leaseOwner      String?
   leaseExpiresAt  DateTime?
+  recoverAfterAt  DateTime?
   queuedAt        DateTime?
   startedAt       DateTime?
   heartbeatAt     DateTime?
@@ -212,6 +213,7 @@ model InvestigationRun {
   updatedAt       DateTime                      @updatedAt
 
   @@index([leaseExpiresAt])
+  @@index([recoverAfterAt])
 }
 
 model InvestigationOpenAiKeySource {
@@ -427,7 +429,7 @@ model Claim {
 model Source {
   id           String   @id @default(cuid())
   claimId      String
-  claim        Claim    @relation(fields: [claimId], references: [id])
+  claim        Claim    @relation(fields: [claimId], references: [id], onDelete: Cascade)
   url          String
   title        String
   snippet      String

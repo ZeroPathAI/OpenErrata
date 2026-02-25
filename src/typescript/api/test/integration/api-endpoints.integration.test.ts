@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { after, test } from "node:test";
+import { after, afterEach, test } from "node:test";
 import type { RequestEvent } from "@sveltejs/kit";
 import {
   hashContent,
@@ -26,6 +26,7 @@ process.env['BLOB_STORAGE_ACCESS_KEY_ID'] = "test-blob-access-key";
 process.env['BLOB_STORAGE_SECRET_ACCESS_KEY'] = "test-blob-secret";
 process.env['BLOB_STORAGE_PUBLIC_URL_PREFIX'] = "https://example.test/images";
 process.env['DATABASE_ENCRYPTION_KEY'] = "integration-test-database-encryption-key";
+process.env['OPENAI_API_KEY'] = "sk-test-openai-key";
 
 const INTEGRATION_TEST_RUN_ID = [
   Date.now().toString(36),
@@ -51,6 +52,8 @@ const [
   { ensureInvestigationQueued },
   { runSelector },
   { lesswrongHtmlToNormalizedText },
+  { orchestrateInvestigation },
+  { OpenAIInvestigator, InvestigatorExecutionError },
 ] =
   await Promise.all([
     import("../../src/lib/trpc/router.js"),
@@ -63,6 +66,8 @@ const [
     import("../../src/lib/services/investigation-lifecycle.js"),
     import("../../src/lib/services/selector.js"),
     import("../../src/lib/services/content-fetcher.js"),
+    import("../../src/lib/services/orchestrator.js"),
+    import("../../src/lib/investigators/openai.js"),
   ]);
 
 const prisma = getPrisma();
@@ -271,6 +276,60 @@ async function resetDatabase(): Promise<void> {
   });
 }
 
+async function assertIntegrationDatabaseInvariants(): Promise<void> {
+  const integrationExternalIdPrefix = `${INTEGRATION_DATA_PREFIX}%`;
+
+  const claimsOnNonCompleteInvestigations = await prisma.$queryRaw<
+    Array<{ investigationId: string; status: string }>
+  >`
+    SELECT DISTINCT i."id" AS "investigationId", i."status"::text AS "status"
+    FROM "Investigation" i
+    JOIN "Post" p ON p."id" = i."postId"
+    JOIN "Claim" c ON c."investigationId" = i."id"
+    WHERE p."externalId" LIKE ${integrationExternalIdPrefix}
+      AND i."status" <> 'COMPLETE'
+    LIMIT 10
+  `;
+  assert.equal(
+    claimsOnNonCompleteInvestigations.length,
+    0,
+    `invariant failed: only COMPLETE investigations may have claims: ${JSON.stringify(claimsOnNonCompleteInvestigations)}`,
+  );
+
+  const processingInvestigationsWithoutRun = await prisma.$queryRaw<
+    Array<{ investigationId: string }>
+  >`
+    SELECT i."id" AS "investigationId"
+    FROM "Investigation" i
+    JOIN "Post" p ON p."id" = i."postId"
+    LEFT JOIN "InvestigationRun" r ON r."investigationId" = i."id"
+    WHERE p."externalId" LIKE ${integrationExternalIdPrefix}
+      AND i."status" = 'PROCESSING'
+      AND r."id" IS NULL
+    LIMIT 10
+  `;
+  assert.equal(
+    processingInvestigationsWithoutRun.length,
+    0,
+    `invariant failed: PROCESSING investigations must have runs: ${JSON.stringify(processingInvestigationsWithoutRun)}`,
+  );
+
+  const orphanSources = await prisma.$queryRaw<
+    Array<{ sourceId: string; claimId: string }>
+  >`
+    SELECT s."id" AS "sourceId", s."claimId"
+    FROM "Source" s
+    LEFT JOIN "Claim" c ON c."id" = s."claimId"
+    WHERE c."id" IS NULL
+    LIMIT 10
+  `;
+  assert.equal(
+    orphanSources.length,
+    0,
+    `invariant failed: Source rows must reference existing Claim rows: ${JSON.stringify(orphanSources)}`,
+  );
+}
+
 async function seedPrompt(label: string): Promise<{ id: string }> {
   promptCounter += 1;
   const text = `integration prompt ${label} ${promptCounter.toString()}`;
@@ -430,6 +489,7 @@ async function seedInvestigationRun(input: {
   investigationId: string;
   leaseOwner?: string | null;
   leaseExpiresAt?: Date | null;
+  recoverAfterAt?: Date | null;
   queuedAt?: Date | null;
   startedAt?: Date | null;
   heartbeatAt?: Date | null;
@@ -439,6 +499,7 @@ async function seedInvestigationRun(input: {
       investigationId: input.investigationId,
       leaseOwner: input.leaseOwner ?? null,
       leaseExpiresAt: input.leaseExpiresAt ?? null,
+      recoverAfterAt: input.recoverAfterAt ?? null,
       queuedAt: input.queuedAt ?? null,
       startedAt: input.startedAt ?? null,
       heartbeatAt: input.heartbeatAt ?? null,
@@ -661,10 +722,61 @@ async function runConcurrentInvestigateNowScenario(input: {
   };
 }
 
+function buildSucceededAttemptAudit(label: string) {
+  const now = new Date().toISOString();
+  return {
+    startedAt: now,
+    completedAt: now,
+    requestModel: `test-model-${label}`,
+    requestInstructions: `instructions-${label}`,
+    requestInput: `input-${label}`,
+    requestReasoningEffort: null,
+    requestReasoningSummary: null,
+    requestedTools: [],
+    response: {
+      responseId: `response-${label}`,
+      responseStatus: "completed",
+      responseModelVersion: "test-model-version",
+      responseOutputText: "{\"claims\":[]}",
+      outputItems: [],
+      outputTextParts: [],
+      outputTextAnnotations: [],
+      reasoningSummaries: [],
+      toolCalls: [],
+      usage: null,
+    },
+    error: null,
+  };
+}
+
+function buildFailedAttemptAudit(label: string) {
+  const now = new Date().toISOString();
+  return {
+    startedAt: now,
+    completedAt: now,
+    requestModel: `test-model-${label}`,
+    requestInstructions: `instructions-${label}`,
+    requestInput: `input-${label}`,
+    requestReasoningEffort: null,
+    requestReasoningSummary: null,
+    requestedTools: [],
+    response: null,
+    error: {
+      errorName: "TransientTestFailure",
+      errorMessage: `transient-error-${label}`,
+      statusCode: null,
+    },
+  };
+}
+
 after(async () => {
   await resetDatabase();
   await closeQueueUtils();
   await prisma.$disconnect();
+});
+
+afterEach(async () => {
+  await assertIntegrationDatabaseInvariants();
 });
 
 void test("GET /health returns ok", async () => {
@@ -1216,6 +1328,188 @@ void test("post.investigateNow randomized concurrency fuzz preserves dedupe inva
   }
 });
 
+void test("orchestrateInvestigation skips work when lease is held by another worker", async () => {
+  const post = await seedPost({
+    platform: "X",
+    externalId: "orchestrator-lease-held-1",
+    url: "https://x.com/openerrata/status/orchestrator-lease-held-1",
+    contentText: "Active leases should short-circuit duplicate workers.",
+  });
+  const investigation = await seedInvestigation({
+    postId: post.id,
+    contentHash: post.contentHash,
+    contentText: post.contentText,
+    provenance: "CLIENT_FALLBACK",
+    status: "PROCESSING",
+    promptLabel: "orchestrator-lease-held",
+  });
+  const leaseExpiresAt = new Date(Date.now() + 10 * 60_000);
+  const run = await seedInvestigationRun({
+    investigationId: investigation.id,
+    leaseOwner: withIntegrationPrefix("lease-holder"),
+    leaseExpiresAt,
+    startedAt: new Date(Date.now() - 5_000),
+    heartbeatAt: new Date(),
+  });
+
+  let investigateCalled = false;
+  const originalInvestigateDescriptor = Object.getOwnPropertyDescriptor(
+    OpenAIInvestigator.prototype,
+    "investigate",
+  );
+  assert.ok(originalInvestigateDescriptor);
+  assert.equal(typeof originalInvestigateDescriptor.value, "function");
+  OpenAIInvestigator.prototype.investigate = async () => {
+    investigateCalled = true;
+    return {
+      result: { claims: [] },
+      attemptAudit: buildSucceededAttemptAudit("lease-held"),
+      modelVersion: "test-model-version",
+    };
+  };
+
+  try {
+    await orchestrateInvestigation(run.id, { info() {}, error() {} }, {
+      isLastAttempt: false,
+      attemptNumber: 1,
+      workerIdentity: withIntegrationPrefix("contending-worker"),
+    });
+  } finally {
+    Object.defineProperty(
+      OpenAIInvestigator.prototype,
+      "investigate",
+      originalInvestigateDescriptor,
+    );
+  }
+
+  assert.equal(investigateCalled, false);
+  const storedInvestigation = await prisma.investigation.findUnique({
+    where: { id: investigation.id },
+    select: { status: true },
+  });
+  assert.ok(storedInvestigation);
+  assert.equal(storedInvestigation.status, "PROCESSING");
+});
+
+void test("orchestrateInvestigation ignores stale transient failure after another worker completes", async () => {
+  const post = await seedPost({
+    platform: "X",
+    externalId: "orchestrator-race-guard-1",
+    url: "https://x.com/openerrata/status/orchestrator-race-guard-1",
+    contentText: "Duplicate workers must not overwrite successful attempt audit.",
+  });
+  const investigation = await seedInvestigation({
+    postId: post.id,
+    contentHash: post.contentHash,
+    contentText: post.contentText,
+    provenance: "CLIENT_FALLBACK",
+    status: "PENDING",
+    promptLabel: "orchestrator-race-guard",
+  });
+  const run = await seedInvestigationRun({
+    investigationId: investigation.id,
+  });
+
+  let callCount = 0;
+  let releaseFirstWorker: () => void = () => {};
+  let markFirstStarted: () => void = () => {};
+  const firstWorkerStarted = new Promise<void>((resolve) => {
+    markFirstStarted = () => {
+      resolve();
+    };
+  });
+  const firstWorkerContinue = new Promise<void>((resolve) => {
+    releaseFirstWorker = () => {
+      resolve();
+    };
+  });
+
+  const originalInvestigateDescriptor = Object.getOwnPropertyDescriptor(
+    OpenAIInvestigator.prototype,
+    "investigate",
+  );
+  assert.ok(originalInvestigateDescriptor);
+  assert.equal(typeof originalInvestigateDescriptor.value, "function");
+  OpenAIInvestigator.prototype.investigate = async () => {
+    callCount += 1;
+    if (callCount === 1) {
+      markFirstStarted();
+      await firstWorkerContinue;
+      throw new InvestigatorExecutionError(
+        "simulated transient failure from stale worker",
+        buildFailedAttemptAudit("stale"),
+        new Error("network timeout"),
+      );
+    }
+    return {
+      result: { claims: [] },
+      attemptAudit: buildSucceededAttemptAudit("winner"),
+      modelVersion: "test-model-version",
+    };
+  };
+
+  try {
+    const firstWorker = orchestrateInvestigation(
+      run.id,
+      { info() {}, error() {} },
+      {
+        isLastAttempt: false,
+        attemptNumber: 1,
+        workerIdentity: withIntegrationPrefix("worker-a"),
+      },
+    );
+    await firstWorkerStarted;
+
+    // Simulate a duplicate-job window where another worker can claim while the
+    // first worker is still in flight.
+    await prisma.investigationRun.update({
+      where: { id: run.id },
+      data: {
+        leaseOwner: null,
+        leaseExpiresAt: null,
+      },
+    });
+
+    await orchestrateInvestigation(
+      run.id,
+      { info() {}, error() {} },
+      {
+        isLastAttempt: false,
+        attemptNumber: 1,
+        workerIdentity: withIntegrationPrefix("worker-b"),
+      },
+    );
+
+    releaseFirstWorker();
+    await firstWorker;
+  } finally {
+    releaseFirstWorker();
+    Object.defineProperty(
+      OpenAIInvestigator.prototype,
+      "investigate",
+      originalInvestigateDescriptor,
+    );
+  }
+
+  assert.equal(callCount, 2);
+  const storedInvestigation = await prisma.investigation.findUnique({
+    where: { id: investigation.id },
+    select: { status: true },
+  });
+  assert.ok(storedInvestigation);
+  assert.equal(storedInvestigation.status, "COMPLETE");
+
+  const attempts = await prisma.investigationAttempt.findMany({
+    where: { investigationId: investigation.id },
+    select: { attemptNumber: true, outcome: true },
+  });
+  assert.equal(attempts.length, 1);
+  const firstAttempt = attempts[0];
+  assert.ok(firstAttempt);
+  assert.equal(firstAttempt.attemptNumber, 1);
+  assert.equal(firstAttempt.outcome, "SUCCEEDED");
+});
+
 void test("ensureInvestigationQueued randomized state model preserves lifecycle invariants", async () => {
   const random = createDeterministicRandom(0x94ab73d1);
   const rounds = 18;
@@ -1701,6 +1995,53 @@ void test("post.investigateNow recovers stale PROCESSING investigations to PENDI
   assert.equal(storedRun.leaseOwner, null);
   assert.equal(storedRun.leaseExpiresAt, null);
   assert.notEqual(storedRun.queuedAt, null);
+});
+
+void test("post.investigateNow does not recover PROCESSING runs during transient retry recovery window", async () => {
+  const caller = createCaller({ isAuthenticated: true });
+  const input = buildXViewInput({
+    externalId: "investigate-now-keeps-processing-recovery-window-1",
+    observedContentText: "Transient retry windows should not be externally recovered.",
+  });
+  const seeded = await seedInvestigationForXViewInput({
+    viewInput: input,
+    status: "PROCESSING",
+    provenance: "CLIENT_FALLBACK",
+  });
+  const recoverAfterAt = new Date(Date.now() + 5 * 60_000);
+  await seedInvestigationRun({
+    investigationId: seeded.investigationId,
+    leaseOwner: null,
+    leaseExpiresAt: null,
+    recoverAfterAt,
+    startedAt: new Date(Date.now() - 60_000),
+    heartbeatAt: new Date(),
+  });
+
+  const result = await caller.post.investigateNow(input);
+
+  assert.equal(result.investigationId, seeded.investigationId);
+  assert.equal(result.status, "PROCESSING");
+
+  const storedInvestigation = await prisma.investigation.findUnique({
+    where: { id: seeded.investigationId },
+    select: { status: true },
+  });
+  assert.ok(storedInvestigation);
+  assert.equal(storedInvestigation.status, "PROCESSING");
+
+  const storedRun = await prisma.investigationRun.findUnique({
+    where: { investigationId: seeded.investigationId },
+    select: {
+      leaseOwner: true,
+      leaseExpiresAt: true,
+      recoverAfterAt: true,
+    },
+  });
+  assert.ok(storedRun);
+  assert.equal(storedRun.leaseOwner, null);
+  assert.equal(storedRun.leaseExpiresAt, null);
+  assert.equal(storedRun.recoverAfterAt?.getTime(), recoverAfterAt.getTime());
 });
 
 void test("post.investigateNow leaves active PROCESSING investigations unchanged", async () => {

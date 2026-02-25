@@ -37,6 +37,7 @@ interface Logger {
 
 const RUN_LEASE_TTL_MS = 60_000;
 const RUN_HEARTBEAT_INTERVAL_MS = 15_000;
+const RUN_RECOVERY_GRACE_MS = 60_000;
 
 let serverInvestigator: OpenAIInvestigator | null = null;
 
@@ -230,15 +231,12 @@ function isNonRetryableProviderError(error: unknown): boolean {
   return isNonRetryableOpenAiStatusCode(status);
 }
 
-class ActiveRunLeaseError extends Error {
-  constructor(runId: string) {
-    super(`Investigation run ${runId} is actively leased by another worker`);
-    this.name = "ActiveRunLeaseError";
-  }
-}
-
 function nextLeaseExpiry(): Date {
   return new Date(Date.now() + RUN_LEASE_TTL_MS);
+}
+
+function nextRecoveryAfter(): Date {
+  return new Date(Date.now() + RUN_RECOVERY_GRACE_MS);
 }
 
 async function tryClaimRunLease(
@@ -257,6 +255,7 @@ async function tryClaimRunLease(
         {
           investigation: { is: { status: "PROCESSING" } },
           OR: [
+            { leaseOwner: null },
             { leaseExpiresAt: null },
             { leaseExpiresAt: { lte: now } },
           ],
@@ -266,6 +265,7 @@ async function tryClaimRunLease(
     data: {
       leaseOwner: workerIdentity,
       leaseExpiresAt: nextLeaseExpiry(),
+      recoverAfterAt: null,
       startedAt: now,
       heartbeatAt: now,
     },
@@ -313,6 +313,7 @@ function startRunHeartbeat(
         },
         data: {
           leaseExpiresAt: nextLeaseExpiry(),
+          recoverAfterAt: null,
           heartbeatAt: new Date(),
         },
       })
@@ -338,12 +339,16 @@ async function replaceInvestigationImages(
   investigationId: string,
   imageBlobs: ImageBlob[],
 ): Promise<void> {
+  const uniqueBlobs = [
+    ...new Map(imageBlobs.map((b) => [b.id, b])).values(),
+  ];
+
   await getPrisma().$transaction(async (tx) => {
     await tx.investigationImage.deleteMany({
       where: { investigationId },
     });
 
-    for (const [imageOrder, imageBlob] of imageBlobs.entries()) {
+    for (const [imageOrder, imageBlob] of uniqueBlobs.entries()) {
       await tx.investigationImage.create({
         data: {
           investigationId,
@@ -607,8 +612,19 @@ async function persistFailedAttemptAndMarkInvestigationFailed(
     attemptNumber: number;
     attemptAudit: InvestigatorAttemptAudit | null;
   },
-): Promise<void> {
-  await getPrisma().$transaction(async (tx) => {
+): Promise<boolean> {
+  return getPrisma().$transaction(async (tx) => {
+    // Guard: only mark FAILED if still PROCESSING. Another worker may have
+    // already moved this investigation to COMPLETE or FAILED.
+    const transitioned = await tx.investigation.updateMany({
+      where: { id: input.investigationId, status: "PROCESSING" },
+      data: { status: "FAILED" },
+    });
+
+    if (transitioned.count === 0) {
+      return false;
+    }
+
     if (input.attemptAudit) {
       await persistAttemptAudit(tx, {
         investigationId: input.investigationId,
@@ -618,33 +634,41 @@ async function persistFailedAttemptAndMarkInvestigationFailed(
       });
     }
 
-    await tx.investigation.update({
-      where: { id: input.investigationId },
-      data: { status: "FAILED" },
-    });
-
     await tx.investigationRun.update({
       where: { id: input.runId },
       data: {
         leaseOwner: null,
         leaseExpiresAt: null,
+        recoverAfterAt: null,
         heartbeatAt: new Date(),
       },
     });
 
     await consumeOpenAiKeySource(tx, input.runId);
+    return true;
   });
 }
 
-async function persistFailedAttemptAndResetInvestigationPending(
+async function persistFailedAttemptAndReleaseLease(
   input: {
     runId: string;
     investigationId: string;
     attemptNumber: number;
     attemptAudit: InvestigatorAttemptAudit | null;
   },
-): Promise<void> {
-  await getPrisma().$transaction(async (tx) => {
+): Promise<boolean> {
+  return getPrisma().$transaction(async (tx) => {
+    // Guard: only persist transient failure audit if the investigation is still
+    // PROCESSING. This UPDATE also takes a row lock so terminal transitions
+    // serialize cleanly with stale workers.
+    const active = await tx.investigation.updateMany({
+      where: { id: input.investigationId, status: "PROCESSING" },
+      data: { status: "PROCESSING" },
+    });
+    if (active.count === 0) {
+      return false;
+    }
+
     if (input.attemptAudit) {
       await persistAttemptAudit(tx, {
         investigationId: input.investigationId,
@@ -654,20 +678,22 @@ async function persistFailedAttemptAndResetInvestigationPending(
       });
     }
 
-    await tx.investigation.update({
-      where: { id: input.investigationId },
-      data: { status: "PENDING" },
-    });
-
+    // Keep investigation PROCESSING — don't reset to PENDING.
+    // Resetting to PENDING opened a window where the selector or
+    // investigateNow could re-enqueue, creating duplicate graphile-worker
+    // jobs via the jobKey replacement behavior.
+    //
+    // Release the lease for graphile-worker retry and set a recovery window:
+    // selector/investigateNow should not recover this run until recoverAfterAt.
     await tx.investigationRun.update({
       where: { id: input.runId },
       data: {
         leaseOwner: null,
         leaseExpiresAt: null,
-        heartbeatAt: null,
-        queuedAt: new Date(),
+        recoverAfterAt: nextRecoveryAfter(),
       },
     });
+    return true;
   });
 }
 
@@ -690,7 +716,8 @@ export async function orchestrateInvestigation(
     return;
   }
   if (claimResult === "LEASE_HELD") {
-    throw new ActiveRunLeaseError(runId);
+    logger.info(`Investigation run ${runId} already leased, skipping`);
+    return;
   }
 
   const run = await loadClaimedRun(runId);
@@ -728,16 +755,29 @@ export async function orchestrateInvestigation(
       ...(promptPostContext.hasVideo ? { hasVideo: true } : {}),
     });
 
-    await prisma.$transaction(async (tx) => {
+    // Guard-first: atomically transition PROCESSING → COMPLETE.
+    // If another worker already moved this investigation to a terminal
+    // state, the updateMany matches 0 rows and we bail without writing
+    // claims or audit — the transaction commits as a no-op.
+    const completed = await prisma.$transaction(async (tx) => {
+      const transitioned = await tx.investigation.updateMany({
+        where: { id: investigation.id, status: "PROCESSING" },
+        data: {
+          status: "COMPLETE",
+          checkedAt: new Date(),
+          modelVersion: output.modelVersion ?? null,
+        },
+      });
+
+      if (transitioned.count === 0) {
+        return false;
+      }
+
       await persistAttemptAudit(tx, {
         investigationId: investigation.id,
         attemptNumber: options.attemptNumber,
         outcome: "SUCCEEDED",
         attemptAudit: output.attemptAudit,
-      });
-
-      await tx.claim.deleteMany({
-        where: { investigationId: investigation.id },
       });
 
       for (const claim of output.result.claims) {
@@ -762,30 +802,29 @@ export async function orchestrateInvestigation(
         });
       }
 
-      await tx.investigation.update({
-        where: { id: investigation.id },
-        data: {
-          status: "COMPLETE",
-          checkedAt: new Date(),
-          modelVersion: output.modelVersion ?? null,
-        },
-      });
-
       await tx.investigationRun.update({
         where: { id: run.id },
         data: {
           leaseOwner: null,
           leaseExpiresAt: null,
+          recoverAfterAt: null,
           heartbeatAt: new Date(),
         },
       });
 
       await consumeOpenAiKeySource(tx, run.id);
+      return true;
     });
 
-    logger.info(
-      `Investigation ${investigation.id} completed with ${output.result.claims.length} claims`,
-    );
+    if (completed) {
+      logger.info(
+        `Investigation ${investigation.id} completed with ${output.result.claims.length} claims`,
+      );
+    } else {
+      logger.info(
+        `Investigation ${investigation.id} no longer PROCESSING; discarding duplicate result`,
+      );
+    }
   } catch (error) {
     if (isRecordNotFoundError(error)) {
       logger.info(
@@ -799,38 +838,57 @@ export async function orchestrateInvestigation(
 
     // NON_RETRYABLE: deterministic provider or parsing failures.
     if (isNonRetryableProviderError(error)) {
-      logger.error(
-        `Investigation ${investigation.id} failed non-retryable provider output: ${formatErrorForLog(error)}`,
-      );
-      await persistFailedAttemptAndMarkInvestigationFailed({
+      const marked = await persistFailedAttemptAndMarkInvestigationFailed({
         runId: run.id,
         investigationId: investigation.id,
         attemptNumber: options.attemptNumber,
         attemptAudit,
       });
+      if (marked) {
+        logger.error(
+          `Investigation ${investigation.id} failed non-retryable provider output: ${formatErrorForLog(error)}`,
+        );
+      } else {
+        logger.info(
+          `Investigation ${investigation.id} no longer PROCESSING; ignoring non-retryable error`,
+        );
+      }
       return;
     }
 
     // TRANSIENT: everything else — rethrow for graphile-worker retry with backoff.
     if (options.isLastAttempt) {
-      logger.error(
-        `Investigation ${investigation.id} exhausted retries and is marked FAILED: ${formatErrorForLog(error)}`,
-      );
-      await persistFailedAttemptAndMarkInvestigationFailed({
+      const marked = await persistFailedAttemptAndMarkInvestigationFailed({
         runId: run.id,
         investigationId: investigation.id,
         attemptNumber: options.attemptNumber,
         attemptAudit,
       });
+      if (marked) {
+        logger.error(
+          `Investigation ${investigation.id} exhausted retries and is marked FAILED: ${formatErrorForLog(error)}`,
+        );
+      } else {
+        logger.info(
+          `Investigation ${investigation.id} no longer PROCESSING; ignoring exhausted retries`,
+        );
+      }
       return;
     }
 
-    await persistFailedAttemptAndResetInvestigationPending({
+    const released = await persistFailedAttemptAndReleaseLease({
       runId: run.id,
       investigationId: investigation.id,
       attemptNumber: options.attemptNumber,
       attemptAudit,
     });
+
+    if (!released) {
+      logger.info(
+        `Investigation ${investigation.id} no longer PROCESSING; ignoring transient error`,
+      );
+      return;
+    }
 
     logger.error(
       `Investigation ${investigation.id} transient failure: ${formatErrorForLog(error)}`,

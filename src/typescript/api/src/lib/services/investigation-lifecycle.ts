@@ -118,6 +118,14 @@ async function createInvestigationRun(
   });
 }
 
+function isRecoverableProcessingRun(run: InvestigationRun): boolean {
+  const now = Date.now();
+  if (run.leaseOwner !== null) {
+    return run.leaseExpiresAt === null || run.leaseExpiresAt.getTime() <= now;
+  }
+  return run.recoverAfterAt === null || run.recoverAfterAt.getTime() <= now;
+}
+
 async function tryRecoverExpiredProcessingRun(
   prisma: PrismaClient,
   input: {
@@ -132,11 +140,21 @@ async function tryRecoverExpiredProcessingRun(
       where: {
         id: input.runId,
         investigation: { is: { status: "PROCESSING" } },
-        OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lte: now } }],
+        OR: [
+          {
+            leaseOwner: { not: null },
+            OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lte: now } }],
+          },
+          {
+            leaseOwner: null,
+            OR: [{ recoverAfterAt: null }, { recoverAfterAt: { lte: now } }],
+          },
+        ],
       },
       data: {
         leaseOwner: null,
         leaseExpiresAt: null,
+        recoverAfterAt: null,
         heartbeatAt: null,
         queuedAt: now,
       },
@@ -339,10 +357,7 @@ export async function ensureInvestigationQueued(
   let investigation = initialInvestigation;
   let run = initialRun;
 
-  if (
-    investigation.status === "PROCESSING" &&
-    (run.leaseExpiresAt === null || run.leaseExpiresAt.getTime() <= Date.now())
-  ) {
+  if (investigation.status === "PROCESSING" && isRecoverableProcessingRun(run)) {
     const recovered = await tryRecoverExpiredProcessingRun(input.prisma, {
       investigationId: investigation.id,
       runId: run.id,

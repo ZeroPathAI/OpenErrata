@@ -45,7 +45,17 @@ export async function runSelector(): Promise<number> {
         OR i."status" = 'PENDING'
         OR (
           i."status" = 'PROCESSING'
-          AND (r."id" IS NULL OR r."leaseExpiresAt" IS NULL OR r."leaseExpiresAt" <= NOW())
+          AND (
+            r."id" IS NULL
+            OR (
+              r."leaseOwner" IS NOT NULL
+              AND (r."leaseExpiresAt" IS NULL OR r."leaseExpiresAt" <= NOW())
+            )
+            OR (
+              r."leaseOwner" IS NULL
+              AND (r."recoverAfterAt" IS NULL OR r."recoverAfterAt" <= NOW())
+            )
+          )
         )
       )
     ORDER BY p."uniqueViewScore" DESC
