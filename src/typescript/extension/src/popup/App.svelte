@@ -238,12 +238,22 @@
         view = { kind: "error", message: "No active tab available" };
         return;
       }
+
+      const runtimeError = extensionRuntimeErrorResponseSchema.safeParse(response);
+      if (runtimeError.success) {
+        console.warn(`FOCUS_CLAIM runtime error: ${runtimeError.data.error}`);
+        await loadStatus();
+        return;
+      }
+
       const parsed = focusClaimResponseSchema.safeParse(response);
-      if (!parsed.success || !parsed.data.ok) {
-        view = {
-          kind: "error",
-          message: "The server returned errata, but we could not find their targets on the page.",
-        };
+      if (!parsed.success) {
+        console.warn("FOCUS_CLAIM returned an invalid payload.", response);
+        await loadStatus();
+        return;
+      }
+      if (!parsed.data.ok) {
+        await loadStatus();
         return;
       }
 
