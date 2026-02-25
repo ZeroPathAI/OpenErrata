@@ -504,8 +504,13 @@ jobs:
           pulumi config set releaseName "openerrata-${STACK}" --stack "$STACK"
           pulumi config set namespace "openerrata-${STACK}" --stack "$STACK"
 
-          if [ -n "${PULUMI_API_HOSTNAME:-}" ]; then
-            pulumi config set apiHostname "$PULUMI_API_HOSTNAME" --stack "$STACK"
+          api_hostname="${PULUMI_API_HOSTNAME:-}"
+          if [ -z "$api_hostname" ] && [ "$STACK" = "staging" ]; then
+            api_hostname="api.staging.branch.openerrata.com"
+          fi
+
+          if [ -n "$api_hostname" ]; then
+            pulumi config set apiHostname "$api_hostname" --stack "$STACK"
             pulumi config set ingressEnabled "true" --stack "$STACK"
           else
             pulumi config rm apiHostname --stack "$STACK" >/dev/null 2>&1 || true
@@ -531,7 +536,7 @@ jobs:
                 echo "PULUMI_CLOUDFLARE_ZONE_ID and CLOUDFLARE_API_TOKEN are required when PULUMI_DNS_PROVIDER=cloudflare."
                 exit 1
               fi
-              if [ -z "${PULUMI_API_HOSTNAME:-}" ]; then
+              if [ -z "$api_hostname" ]; then
                 echo "PULUMI_API_HOSTNAME is required when PULUMI_DNS_PROVIDER=cloudflare."
                 exit 1
               fi
