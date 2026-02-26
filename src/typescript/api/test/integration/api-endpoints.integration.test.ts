@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { after, afterEach, test } from "node:test";
 import type { RequestEvent } from "@sveltejs/kit";
+import type { InvestigatorInput } from "../../src/lib/investigators/interface.js";
 import {
   hashContent,
   normalizeContent,
@@ -1092,6 +1093,52 @@ void test("post.recordViewAndGetStatus does not reuse CLIENT_FALLBACK investigat
   assert.equal(result.priorInvestigationResult, null);
 });
 
+void test("post.recordViewAndGetStatus reuses latest complete SERVER_VERIFIED interim claims when canonical provenance is CLIENT_FALLBACK", async () => {
+  const caller = createCaller();
+  const externalId = "view-post-update-interim-client-fallback-canonical-1";
+  const previousInput = buildXViewInput({
+    externalId,
+    observedContentText: "Mercury has one moon.",
+  });
+  await caller.post.recordViewAndGetStatus(previousInput);
+
+  const post = await prisma.post.findUnique({
+    where: {
+      platform_externalId: {
+        platform: previousInput.platform,
+        externalId: previousInput.externalId,
+      },
+    },
+    select: { id: true },
+  });
+  assert.ok(post);
+
+  const previousCanonicalText = normalizeContent(previousInput.observedContentText);
+  const previousCanonicalHash = await hashContent(previousCanonicalText);
+  const sourceInvestigation = await seedCompleteInvestigation({
+    postId: post.id,
+    contentHash: previousCanonicalHash,
+    contentText: previousCanonicalText,
+    provenance: "SERVER_VERIFIED",
+  });
+  await seedClaimWithSource(sourceInvestigation.id, 41);
+
+  const currentInput = buildXViewInput({
+    externalId,
+    observedContentText: "Mercury has two moons.",
+  });
+  const result = await caller.post.recordViewAndGetStatus(currentInput);
+
+  assert.equal(result.investigationState, "NOT_INVESTIGATED");
+  assert.equal(result.claims, null);
+  const interimResult = result.priorInvestigationResult;
+  assert.notEqual(interimResult, null);
+  assert.ok(interimResult);
+  assert.equal(interimResult.sourceInvestigationId, sourceInvestigation.id);
+  assert.equal(interimResult.oldClaims.length, 1);
+  assert.equal(interimResult.oldClaims[0]?.text, "Claim 41");
+});
+
 void test("post.recordViewAndGetStatus uses newest complete SERVER_VERIFIED investigation as interim source", async () => {
   const caller = createCaller();
   const externalId = "view-post-update-interim-newest-source-1";
@@ -1410,6 +1457,74 @@ void test("post.investigateNow creates update lineage metadata for edited server
     where: {
       investigationId: result.investigationId,
     },
+  });
+  assert.equal(runCount, 1);
+});
+
+void test("post.investigateNow creates update lineage metadata using latest complete SERVER_VERIFIED source when canonical provenance is CLIENT_FALLBACK", async () => {
+  const caller = createCaller({ isAuthenticated: true });
+  const externalId = "investigate-now-update-lineage-client-fallback-canonical-1";
+  const previousInput = buildXViewInput({
+    externalId,
+    observedContentText: "Neptune has ten moons.",
+  });
+  await caller.post.recordViewAndGetStatus(previousInput);
+
+  const post = await prisma.post.findUnique({
+    where: {
+      platform_externalId: {
+        platform: previousInput.platform,
+        externalId: previousInput.externalId,
+      },
+    },
+    select: { id: true },
+  });
+  assert.ok(post);
+
+  const previousCanonicalText = normalizeContent(previousInput.observedContentText);
+  const previousCanonicalHash = await hashContent(previousCanonicalText);
+  const sourceInvestigation = await seedCompleteInvestigation({
+    postId: post.id,
+    contentHash: previousCanonicalHash,
+    contentText: previousCanonicalText,
+    provenance: "SERVER_VERIFIED",
+  });
+  await seedClaimWithSource(sourceInvestigation.id, 42);
+
+  const currentInput = buildXViewInput({
+    externalId,
+    observedContentText: "Neptune has fourteen moons.",
+  });
+  const result = await caller.post.investigateNow(currentInput);
+
+  assert.equal(result.status, "PENDING");
+  assert.equal(result.provenance, "CLIENT_FALLBACK");
+
+  const currentCanonicalText = normalizeContent(currentInput.observedContentText);
+  const currentCanonicalHash = await hashContent(currentCanonicalText);
+  const storedInvestigation = await prisma.investigation.findUnique({
+    where: { id: result.investigationId },
+    select: {
+      status: true,
+      contentHash: true,
+      contentProvenance: true,
+      parentInvestigationId: true,
+      contentDiff: true,
+    },
+  });
+  assert.ok(storedInvestigation);
+  assert.equal(storedInvestigation.status, "PENDING");
+  assert.equal(storedInvestigation.contentHash, currentCanonicalHash);
+  assert.equal(storedInvestigation.contentProvenance, "CLIENT_FALLBACK");
+  assert.equal(storedInvestigation.parentInvestigationId, sourceInvestigation.id);
+  assert.notEqual(storedInvestigation.contentDiff, null);
+  assert.equal(
+    storedInvestigation.contentDiff?.startsWith("Diff summary (line context):"),
+    true,
+  );
+
+  const runCount = await prisma.investigationRun.count({
+    where: { investigationId: result.investigationId },
   });
   assert.equal(runCount, 1);
 });
@@ -1910,6 +2025,99 @@ void test("orchestrateInvestigation skips work when lease is held by another wor
   });
   assert.ok(storedInvestigation);
   assert.equal(storedInvestigation.status, "PROCESSING");
+});
+
+void test("orchestrateInvestigation passes update context to investigator for update investigations", async () => {
+  const post = await seedPost({
+    platform: "X",
+    externalId: "orchestrator-update-context-1",
+    url: "https://x.com/openerrata/status/orchestrator-update-context-1",
+    contentText: "Original content before edit.",
+  });
+  const parentInvestigation = await seedCompleteInvestigation({
+    postId: post.id,
+    contentHash: post.contentHash,
+    contentText: post.contentText,
+    provenance: "SERVER_VERIFIED",
+  });
+  await seedClaimWithSource(parentInvestigation.id, 1);
+
+  const updatedContentText = normalizeContent(
+    "Original content before edit. Edited sentence added here.",
+  );
+  const updatedContentHash = await hashContent(updatedContentText);
+  const contentDiff =
+    "Diff summary (line context):\n- Removed lines:\nOriginal content before edit.\n+ Added lines:\nOriginal content before edit. Edited sentence added here.";
+  const updateInvestigation = await seedInvestigation({
+    postId: post.id,
+    contentHash: updatedContentHash,
+    contentText: updatedContentText,
+    provenance: "SERVER_VERIFIED",
+    status: "PENDING",
+    promptLabel: "orchestrator-update-context",
+    parentInvestigationId: parentInvestigation.id,
+    contentDiff,
+  });
+  const run = await seedInvestigationRun({
+    investigationId: updateInvestigation.id,
+  });
+
+  let capturedInput: InvestigatorInput | null = null;
+  const originalInvestigateDescriptor = Object.getOwnPropertyDescriptor(
+    OpenAIInvestigator.prototype,
+    "investigate",
+  );
+  assert.ok(originalInvestigateDescriptor);
+  assert.equal(typeof originalInvestigateDescriptor.value, "function");
+  OpenAIInvestigator.prototype.investigate = async (input) => {
+    capturedInput = input;
+    return {
+      result: { claims: [] },
+      attemptAudit: buildSucceededAttemptAudit("update-context"),
+      modelVersion: "test-model-version",
+    };
+  };
+
+  try {
+    await orchestrateInvestigation(run.id, { info() {}, error() {} }, {
+      isLastAttempt: false,
+      attemptNumber: 1,
+      workerIdentity: withIntegrationPrefix("worker-update-context"),
+    });
+  } finally {
+    Object.defineProperty(
+      OpenAIInvestigator.prototype,
+      "investigate",
+      originalInvestigateDescriptor,
+    );
+  }
+
+  assert.notEqual(capturedInput, null);
+  assert.ok(capturedInput);
+  assert.equal(capturedInput.isUpdate, true);
+  assert.equal(capturedInput.contentDiff, contentDiff);
+  assert.deepStrictEqual(capturedInput.oldClaims, [
+    {
+      text: "Claim 1",
+      context: "Context 1",
+      summary: "Summary 1",
+      reasoning: "Reasoning 1",
+      sources: [
+        {
+          url: "https://example.com/source-1",
+          title: "Source 1",
+          snippet: "Snippet 1",
+        },
+      ],
+    },
+  ]);
+
+  const storedInvestigation = await prisma.investigation.findUnique({
+    where: { id: updateInvestigation.id },
+    select: { status: true },
+  });
+  assert.ok(storedInvestigation);
+  assert.equal(storedInvestigation.status, "COMPLETE");
 });
 
 void test("orchestrateInvestigation ignores stale transient failure after another worker completes", async () => {
@@ -2755,6 +2963,60 @@ void test("post.batchStatus returns investigation state and incorrect claim coun
   assert.ok(notInvestigated);
   assert.equal(notInvestigated.investigationState, "NOT_INVESTIGATED");
   assert.equal(notInvestigated.incorrectClaimCount, 0);
+});
+
+void test("public.getInvestigation hides non-COMPLETE investigations", async () => {
+  const caller = createCaller();
+  const post = await seedPost({
+    platform: "LESSWRONG",
+    externalId: "public-investigation-non-complete-hidden-1",
+    url: "https://www.lesswrong.com/posts/public-investigation-non-complete-hidden-1",
+    contentText: "Public read-model should hide non-complete investigations.",
+  });
+
+  const pending = await seedPendingInvestigation({
+    postId: post.id,
+    contentHash: post.contentHash,
+    contentText: post.contentText,
+    provenance: "SERVER_VERIFIED",
+  });
+  const failedText = normalizeContent(
+    "Public read-model should hide non-complete investigations. Failed revision.",
+  );
+  const failedHash = await hashContent(failedText);
+  const failed = await seedFailedInvestigation({
+    postId: post.id,
+    contentHash: failedHash,
+    contentText: failedText,
+    provenance: "CLIENT_FALLBACK",
+  });
+
+  for (const investigationId of [pending.id, failed.id]) {
+    const trpcResult = await caller.public.getInvestigation({
+      investigationId,
+    });
+    assert.equal(trpcResult, null);
+
+    const graphqlResult = await queryPublicGraphql<{
+      publicInvestigation: {
+        investigation: {
+          id: string;
+        };
+      } | null;
+    }>(
+      `
+        query PublicInvestigation($investigationId: ID!) {
+          publicInvestigation(investigationId: $investigationId) {
+            investigation {
+              id
+            }
+          }
+        }
+      `,
+      { investigationId },
+    );
+    assert.equal(graphqlResult.publicInvestigation, null);
+  }
 });
 
 void test("public.getInvestigation returns complete investigation and trust signals", async () => {

@@ -651,13 +651,52 @@ async function findLatestServerVerifiedCompleteInvestigationForPost(
   });
 }
 
+type LatestServerVerifiedCompleteInvestigation = Awaited<
+  ReturnType<typeof findLatestServerVerifiedCompleteInvestigationForPost>
+>;
+
+function selectUpdateSourceInvestigation(input: {
+  complete: Awaited<ReturnType<typeof findCompletedInvestigationByPostAndHash>>;
+  latestServerVerifiedSource: LatestServerVerifiedCompleteInvestigation;
+  canonicalContentHash: string;
+}): LatestServerVerifiedCompleteInvestigation {
+  if (input.latestServerVerifiedSource === null) {
+    return null;
+  }
+
+  if (
+    input.complete !== null &&
+    input.latestServerVerifiedSource.contentHash === input.canonicalContentHash
+  ) {
+    return null;
+  }
+
+  return input.latestServerVerifiedSource;
+}
+
+function toPriorInvestigationResult(
+  sourceInvestigation: LatestServerVerifiedCompleteInvestigation,
+):
+  | {
+      oldClaims: InvestigationClaim[];
+      sourceInvestigationId: string;
+    }
+  | null {
+  if (sourceInvestigation === null) {
+    return null;
+  }
+
+  return {
+    oldClaims: formatClaims(sourceInvestigation.claims),
+    sourceInvestigationId: sourceInvestigation.id,
+  };
+}
+
 type PreparedPostForInvestigation = {
   post: Awaited<ReturnType<typeof upsertPostFromViewInput>>;
   canonical: CanonicalContentVersion;
   complete: Awaited<ReturnType<typeof findCompletedInvestigationByPostAndHash>>;
-  sourceInvestigation: Awaited<
-    ReturnType<typeof findLatestServerVerifiedCompleteInvestigationForPost>
-  >;
+  sourceInvestigation: LatestServerVerifiedCompleteInvestigation;
 };
 
 async function preparePostForInvestigation(
@@ -711,21 +750,18 @@ async function preparePostForInvestigation(
     canonical.contentHash,
   );
 
-  const sourceInvestigation =
-    canonical.provenance === "SERVER_VERIFIED"
-      ? await findLatestServerVerifiedCompleteInvestigationForPost(prisma, post.id)
-      : null;
+  const latestServerVerifiedSource =
+    await findLatestServerVerifiedCompleteInvestigationForPost(prisma, post.id);
 
   return {
     post,
     canonical,
     complete,
-    // Null out source when the current version already has a completed
-    // investigation and the source covers the same version (redundant).
-    sourceInvestigation:
-      complete !== null && sourceInvestigation?.contentHash === canonical.contentHash
-        ? null
-        : sourceInvestigation,
+    sourceInvestigation: selectUpdateSourceInvestigation({
+      complete,
+      latestServerVerifiedSource,
+      canonicalContentHash: canonical.contentHash,
+    }),
   };
 }
 
@@ -735,9 +771,7 @@ async function ensureInvestigationsWithUpdateMetadata(
     promptId: string;
     postId: string;
     canonical: CanonicalContentVersion;
-    sourceInvestigation: Awaited<
-      ReturnType<typeof findLatestServerVerifiedCompleteInvestigationForPost>
-    >;
+    sourceInvestigation: LatestServerVerifiedCompleteInvestigation;
     onPendingRun?: Parameters<typeof ensureInvestigationQueued>[0]["onPendingRun"];
   },
 ) {
@@ -813,24 +847,10 @@ export const postRouter = router({
         };
       }
 
-      if (
-        canonical.provenance === "SERVER_VERIFIED" &&
-        sourceInvestigation !== null
-      ) {
-        return {
-          investigationState: "NOT_INVESTIGATED" as const,
-          claims: null,
-          priorInvestigationResult: {
-            oldClaims: formatClaims(sourceInvestigation.claims),
-            sourceInvestigationId: sourceInvestigation.id,
-          },
-        };
-      }
-
       return {
         investigationState: "NOT_INVESTIGATED" as const,
         claims: null,
-        priorInvestigationResult: null,
+        priorInvestigationResult: toPriorInvestigationResult(sourceInvestigation),
       };
     }),
 
