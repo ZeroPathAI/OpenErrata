@@ -34,6 +34,7 @@ export { ApiClientError } from "./api-client-error.js";
 import { ApiClientError } from "./api-client-error.js";
 
 const BUNDLED_ATTESTATION_SECRET = "openerrata-attestation-v1";
+const TRPC_REQUEST_BODY_LIMIT_BYTES = 512 * 1024;
 
 let settings: ExtensionSettings = { ...DEFAULT_EXTENSION_SETTINGS };
 let initPromise: Promise<void> | null = null;
@@ -160,6 +161,13 @@ function getOrCreateTrpcClient(options: {
           }
 
           if (typeof init?.body === "string" && init.body.length > 0) {
+            const bodyBytes = utf8ByteLength(init.body);
+            if (bodyBytes > TRPC_REQUEST_BODY_LIMIT_BYTES) {
+              throw new ApiClientError(
+                `tRPC request body too large (${bodyBytes.toString()} bytes > ${TRPC_REQUEST_BODY_LIMIT_BYTES.toString()} bytes)`,
+                { errorCode: "PAYLOAD_TOO_LARGE" },
+              );
+            }
             const signature = await computeHmac(
               attestationSecretFor(settings),
               init.body,
@@ -193,6 +201,19 @@ function describeError(error: unknown): string {
   return String(error);
 }
 
+function utf8ByteLength(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
+
+function isPayloadTooLargeError(error: unknown): boolean {
+  const message = describeError(error);
+  return (
+    message.includes("Content-length of") &&
+    message.includes("exceeds limit of") &&
+    message.includes("bytes")
+  );
+}
+
 async function withTrpcClient<Output>(
   path: ExtensionApiProcedurePath,
   operation: (client: TrpcClient) => Promise<Output>,
@@ -206,7 +227,10 @@ async function withTrpcClient<Output>(
   try {
     return await operation(client);
   } catch (error) {
-    const errorCode = extractApiErrorCode(error);
+    const errorCode =
+      (error instanceof ApiClientError ? error.errorCode : undefined) ??
+      extractApiErrorCode(error) ??
+      (isPayloadTooLargeError(error) ? "PAYLOAD_TOO_LARGE" : undefined);
     throw new ApiClientError(
       `${describeError(error)} (apiBaseUrl=${settings.apiBaseUrl}, path=${path})`,
       {

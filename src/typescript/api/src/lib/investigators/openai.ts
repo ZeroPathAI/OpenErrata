@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import type { ResponseInput } from "openai/resources/responses/responses";
+import { zodTextFormat } from "openai/helpers/zod";
 import { z } from "zod";
 import {
   DEFAULT_INVESTIGATION_MODEL,
@@ -53,6 +54,55 @@ const claimValidationResultSchema = z
     approved: z.boolean(),
   })
   .strict();
+
+const investigationClaimPayloadSchema = z
+  .object({
+    text: z.string().min(1),
+    context: z.string().min(1),
+    summary: z.string().min(1),
+    reasoning: z.string().min(1),
+    sources: z.array(z.object({
+      url: z.url(),
+      title: z.string().min(1),
+      snippet: z.string().min(1),
+    }).strict()).min(1),
+  })
+  .strict();
+
+const updateNewActionSchema = z
+  .object({
+    type: z.literal("new"),
+    claim: investigationClaimPayloadSchema,
+  })
+  .strict();
+
+/**
+ * Build the update investigation result schema dynamically based on the set of
+ * old claim IDs. When old claims exist, the model may emit "carry" actions
+ * referencing exactly those IDs (enforced via z.enum) or "new" actions. When
+ * there are no old claims, only "new" actions are permitted — carry actions are
+ * structurally impossible.
+ */
+function buildUpdateInvestigationResultSchema(
+  oldClaimIds: [string, ...string[]] | [],
+) {
+  const actionSchema =
+    oldClaimIds.length > 0
+      ? z.union([
+          z
+            .object({
+              type: z.literal("carry"),
+              id: z.enum(oldClaimIds as [string, ...string[]]),
+            })
+            .strict(),
+          updateNewActionSchema,
+        ])
+      : updateNewActionSchema;
+
+  return z.object({ actions: z.array(actionSchema) }).strict();
+}
+
+type StageOneClaim = InvestigationResult["claims"][number];
 
 type PendingFunctionToolCall = {
   callId: string;
@@ -687,19 +737,10 @@ async function validateClaim(
     input: validationPrompt,
     reasoning: requestReasoning,
     text: {
-      format: {
-        type: "json_schema",
-        name: "claim_validation_result",
-        strict: true,
-        schema: {
-          type: "object",
-          properties: {
-            approved: { type: "boolean" },
-          },
-          required: ["approved"],
-          additionalProperties: false,
-        },
-      },
+      format: zodTextFormat(
+        claimValidationResultSchema,
+        "claim_validation_result",
+      ),
     },
   });
 
@@ -761,6 +802,16 @@ export class OpenAIInvestigator implements Investigator {
       effort: DEFAULT_REASONING_EFFORT as "low" | "medium" | "high",
       summary: DEFAULT_REASONING_SUMMARY as "auto" | "concise" | "detailed",
     };
+    const oldClaimIds = (input.oldClaims ?? []).map((c) => c.id) as
+      | [string, ...string[]]
+      | [];
+    const stageOneFormat =
+      input.isUpdate === true
+        ? zodTextFormat(
+            buildUpdateInvestigationResultSchema(oldClaimIds),
+            "investigation_update_result",
+          )
+        : zodTextFormat(investigationResultSchema, "investigation_result");
 
     const baseResponseRequest = {
       model: OPENAI_MODEL_ID,
@@ -769,51 +820,7 @@ export class OpenAIInvestigator implements Investigator {
       tools: requestedTools,
       reasoning: requestReasoning,
       text: {
-        format: {
-          type: "json_schema" as const,
-          name: "investigation_result",
-          strict: true,
-          schema: {
-            type: "object",
-            properties: {
-              claims: {
-                type: "array",
-                items: {
-                  type: "object",
-                  properties: {
-                    text: { type: "string" },
-                    context: { type: "string" },
-                    summary: { type: "string" },
-                    reasoning: { type: "string" },
-                    sources: {
-                      type: "array",
-                      items: {
-                        type: "object",
-                        properties: {
-                          url: { type: "string" },
-                          title: { type: "string" },
-                          snippet: { type: "string" },
-                        },
-                        required: ["url", "title", "snippet"],
-                        additionalProperties: false,
-                      },
-                    },
-                  },
-                  required: [
-                    "text",
-                    "context",
-                    "summary",
-                    "reasoning",
-                    "sources",
-                  ],
-                  additionalProperties: false,
-                },
-              },
-            },
-            required: ["claims"],
-            additionalProperties: false,
-          },
-        },
+        format: stageOneFormat,
       },
     };
 
@@ -996,48 +1003,107 @@ export class OpenAIInvestigator implements Investigator {
       );
     }
 
-    let factCheckResult: ReturnType<typeof investigationResultSchema.parse>;
-    try {
-      factCheckResult = investigationResultSchema.parse(parsed);
-    } catch (error) {
-      throw new InvestigatorExecutionError(
-        "Model returned structured output that failed schema validation",
-        parseInvestigatorAttemptAudit({
-          ...stageOneAttemptAudit,
-          error: buildErrorAudit(error),
-        }),
-        error,
+    const claimDispositions: Array<{
+      index: number;
+      claim: StageOneClaim;
+      needsValidation: boolean;
+      validationDescription: string;
+    }> = [];
+
+    if (input.isUpdate !== true) {
+      let factCheckResult: ReturnType<typeof investigationResultSchema.parse>;
+      try {
+        factCheckResult = investigationResultSchema.parse(parsed);
+      } catch (error) {
+        throw new InvestigatorExecutionError(
+          "Model returned structured output that failed schema validation",
+          parseInvestigatorAttemptAudit({
+            ...stageOneAttemptAudit,
+            error: buildErrorAudit(error),
+          }),
+          error,
+        );
+      }
+
+      for (const [index, claim] of factCheckResult.claims.entries()) {
+        claimDispositions.push({
+          index,
+          claim,
+          needsValidation: true,
+          validationDescription: `Claim ${index.toString()}: per-claim validation`,
+        });
+      }
+    } else {
+      const updateSchema = buildUpdateInvestigationResultSchema(oldClaimIds);
+      let updateResult: z.infer<typeof updateSchema>;
+      try {
+        updateResult = updateSchema.parse(parsed);
+      } catch (error) {
+        throw new InvestigatorExecutionError(
+          "Model returned structured output that failed update schema validation",
+          parseInvestigatorAttemptAudit({
+            ...stageOneAttemptAudit,
+            error: buildErrorAudit(error),
+          }),
+          error,
+        );
+      }
+
+      const oldClaims = input.oldClaims ?? [];
+      const oldClaimsById = new Map(
+        oldClaims.map((claim) => [claim.id as string, claim] as const),
       );
+      const carriedClaimIds = new Set<string>();
+
+      for (const [index, action] of updateResult.actions.entries()) {
+        if (action.type === "carry") {
+          if (carriedClaimIds.has(action.id)) {
+            const cause = new InvestigatorStructuredOutputError(
+              `Update output included duplicate carry id (${action.id})`,
+            );
+            throw new InvestigatorExecutionError(
+              cause.message,
+              parseInvestigatorAttemptAudit({
+                ...stageOneAttemptAudit,
+                error: buildErrorAudit(cause),
+              }),
+              cause,
+            );
+          }
+          // The schema's z.enum constraint guarantees action.id is one of the
+          // old claim IDs, so this lookup always succeeds.
+          const carriedClaim = oldClaimsById.get(action.id);
+          if (carriedClaim === undefined) {
+            throw new Error(
+              `Invariant violation: carry id ${action.id} passed schema enum but missing from oldClaimsById`,
+            );
+          }
+          carriedClaimIds.add(action.id);
+          const { id: _claimId, ...claimPayload } = carriedClaim;
+          claimDispositions.push({
+            index,
+            claim: claimPayload,
+            needsValidation: false,
+            validationDescription: `Action ${index.toString()}: carry ${action.id}`,
+          });
+          continue;
+        }
+
+        claimDispositions.push({
+          index,
+          claim: action.claim,
+          needsValidation: true,
+          validationDescription: `Action ${index.toString()}: new claim validation`,
+        });
+      }
     }
-
-    // ── Per-claim validation (Stage 2) ─────────────────────────────────
-    //
-    // Each candidate claim from Stage 1 is validated independently.
-    // During update investigations, claims whose text matches a claim from
-    // the parent investigation are auto-approved — they already passed
-    // validation in the original run and don't need re-checking.
-
-    const oldClaimTexts: ReadonlySet<string> =
-      input.isUpdate === true
-        ? new Set(input.oldClaims?.map((c) => c.text) ?? [])
-        : new Set();
-
-    const claimDispositions = factCheckResult.claims.map((claim, index) => ({
-      index,
-      claim,
-      needsValidation: !oldClaimTexts.has(claim.text),
-    }));
 
     const claimsToValidate = claimDispositions.filter(
       (d) => d.needsValidation,
     );
 
     const validationInputSummary = claimDispositions
-      .map((d) =>
-        d.needsValidation
-          ? `Claim ${d.index.toString()}: per-claim validation`
-          : `Claim ${d.index.toString()}: auto-approved (carried from previous investigation)`,
-      )
+      .map((d) => d.validationDescription)
       .join("\n");
 
     const stageTwoAttemptAuditBase: Omit<
@@ -1052,10 +1118,10 @@ export class OpenAIInvestigator implements Investigator {
       ),
     };
 
-    // Fast path: all claims are auto-approved (pure update, no new claims).
+    // Fast path: no new claims require validation (for example, pure carry actions).
     if (claimsToValidate.length === 0) {
       return {
-        result: factCheckResult,
+        result: { claims: claimDispositions.map((d) => d.claim) },
         attemptAudit: parseInvestigatorAttemptAudit({
           ...stageTwoAttemptAuditBase,
           completedAt: new Date().toISOString(),
@@ -1108,9 +1174,9 @@ export class OpenAIInvestigator implements Investigator {
       }
     }
 
-    const filteredClaims = factCheckResult.claims.filter((_, i) =>
-      approvedIndices.has(i),
-    );
+    const filteredClaims = claimDispositions
+      .filter((d) => approvedIndices.has(d.index))
+      .map((d) => d.claim);
 
     // Merge all response audits (fact-check + per-claim validations) with
     // sequential output-index offsets so the combined audit is coherent.

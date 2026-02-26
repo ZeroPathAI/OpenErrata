@@ -11,6 +11,15 @@ test("extractApiErrorCode reads openerrataCode from tRPC data", () => {
   );
 });
 
+test("extractApiErrorCode reads direct PAYLOAD_TOO_LARGE errorCode", () => {
+  assert.equal(
+    extractApiErrorCode({
+      errorCode: "PAYLOAD_TOO_LARGE",
+    }),
+    "PAYLOAD_TOO_LARGE",
+  );
+});
+
 test("extractApiErrorCode reads openerrataCode from nested shape data", () => {
   assert.equal(
     extractApiErrorCode({

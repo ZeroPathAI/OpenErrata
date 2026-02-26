@@ -17,6 +17,13 @@ export function isContentMismatchRuntimeError(error: unknown): boolean {
   );
 }
 
+export function isPayloadTooLargeRuntimeError(error: unknown): boolean {
+  return (
+    error instanceof ExtensionRuntimeError &&
+    error.errorCode === "PAYLOAD_TOO_LARGE"
+  );
+}
+
 const EXTENSION_CONTEXT_INVALIDATED_PATTERNS = [
   "Extension context invalidated",
   "Could not establish connection. Receiving end does not exist.",

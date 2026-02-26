@@ -7,6 +7,7 @@ import {
   EXTENSION_MESSAGE_PROTOCOL_VERSION,
   MAX_BATCH_STATUS_POSTS,
   MAX_OBSERVED_CONTENT_TEXT_CHARS,
+  MAX_OBSERVED_CONTENT_TEXT_UTF8_BYTES,
 } from "./constants.js";
 
 // ── Shared enum schemas ───────────────────────────────────────────────────
@@ -19,10 +20,23 @@ const postMediaStateSchema = z.enum([
   "video_only",
 ]);
 
+const utf8Encoder = new TextEncoder();
+
+function utf8ByteLength(input: string): number {
+  return utf8Encoder.encode(input).byteLength;
+}
+
 const observedContentTextSchema = z
   .string()
   .min(1)
-  .max(MAX_OBSERVED_CONTENT_TEXT_CHARS);
+  .max(MAX_OBSERVED_CONTENT_TEXT_CHARS)
+  .refine(
+    (value) => utf8ByteLength(value) <= MAX_OBSERVED_CONTENT_TEXT_UTF8_BYTES,
+    {
+      message:
+        `Observed content text must be at most ${MAX_OBSERVED_CONTENT_TEXT_UTF8_BYTES.toString()} UTF-8 bytes`,
+    },
+  );
 
 // ── Branded identifier schemas ────────────────────────────────────────────
 
@@ -514,6 +528,7 @@ export const annotationVisibilityResponseSchema = z
 
 export const extensionRuntimeErrorCodeSchema = z.enum([
   "CONTENT_MISMATCH",
+  "PAYLOAD_TOO_LARGE",
   "UNSUPPORTED_PROTOCOL_VERSION",
 ]);
 

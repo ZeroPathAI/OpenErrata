@@ -17,6 +17,7 @@ import { parseSupportedPageIdentity } from "../lib/post-identity";
 import {
   isContentMismatchRuntimeError,
   isExtensionContextInvalidatedError,
+  isPayloadTooLargeRuntimeError,
 } from "../lib/runtime-error";
 import { toViewPostInput } from "../lib/view-post-input";
 import { AnnotationController } from "./annotations";
@@ -622,6 +623,14 @@ export class PageSessionController {
         this.#resetSyncRetryState();
         console.warn(
           "Page content mismatch with server-verified canonical content; skipping retries.",
+          error,
+        );
+        return;
+      }
+      if (isPayloadTooLargeRuntimeError(error)) {
+        this.#resetSyncRetryState();
+        console.warn(
+          "Page content request exceeded API body size limit; skipping retries.",
           error,
         );
         return;
