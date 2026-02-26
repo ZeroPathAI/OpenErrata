@@ -55,24 +55,38 @@ const claimValidationResultSchema = z
   })
   .strict();
 
-const investigationClaimPayloadSchema = z
+// OpenAI structured outputs currently reject JSON Schema `format: "uri"`.
+// Keep provider-facing schema to plain strings/patterns, then enforce the
+// full shared schema (`investigationResultSchema`) before returning.
+const providerStructuredSourceUrlSchema = z
+  .string()
+  .min(1)
+  .regex(/^https?:\/\/\S+$/i, "Source URL must be an absolute http(s) URL");
+
+const providerStructuredInvestigationClaimPayloadSchema = z
   .object({
     text: z.string().min(1),
     context: z.string().min(1),
     summary: z.string().min(1),
     reasoning: z.string().min(1),
     sources: z.array(z.object({
-      url: z.url(),
+      url: providerStructuredSourceUrlSchema,
       title: z.string().min(1),
       snippet: z.string().min(1),
     }).strict()).min(1),
   })
   .strict();
 
+const providerStructuredInvestigationResultSchema = z
+  .object({
+    claims: z.array(providerStructuredInvestigationClaimPayloadSchema),
+  })
+  .strict();
+
 const updateNewActionSchema = z
   .object({
     type: z.literal("new"),
-    claim: investigationClaimPayloadSchema,
+    claim: providerStructuredInvestigationClaimPayloadSchema,
   })
   .strict();
 
@@ -811,7 +825,10 @@ export class OpenAIInvestigator implements Investigator {
             buildUpdateInvestigationResultSchema(oldClaimIds),
             "investigation_update_result",
           )
-        : zodTextFormat(investigationResultSchema, "investigation_result");
+        : zodTextFormat(
+            providerStructuredInvestigationResultSchema,
+            "investigation_result",
+          );
 
     const baseResponseRequest = {
       model: OPENAI_MODEL_ID,
@@ -1120,8 +1137,26 @@ export class OpenAIInvestigator implements Investigator {
 
     // Fast path: no new claims require validation (for example, pure carry actions).
     if (claimsToValidate.length === 0) {
+      let result: InvestigationResult;
+      try {
+        result = investigationResultSchema.parse({
+          claims: claimDispositions.map((d) => d.claim),
+        });
+      } catch (error) {
+        throw new InvestigatorExecutionError(
+          "Final investigation result failed schema validation",
+          parseInvestigatorAttemptAudit({
+            ...stageTwoAttemptAuditBase,
+            completedAt: new Date().toISOString(),
+            response: factCheckResponseAudit,
+            error: buildErrorAudit(error),
+          }),
+          error,
+        );
+      }
+
       return {
-        result: { claims: claimDispositions.map((d) => d.claim) },
+        result,
         attemptAudit: parseInvestigatorAttemptAudit({
           ...stageTwoAttemptAuditBase,
           completedAt: new Date().toISOString(),
@@ -1195,8 +1230,24 @@ export class OpenAIInvestigator implements Investigator {
       ...offsetValidationAudits,
     ]);
 
+    let result: InvestigationResult;
+    try {
+      result = investigationResultSchema.parse({ claims: filteredClaims });
+    } catch (error) {
+      throw new InvestigatorExecutionError(
+        "Final investigation result failed schema validation",
+        parseInvestigatorAttemptAudit({
+          ...stageTwoAttemptAuditBase,
+          completedAt: new Date().toISOString(),
+          response: fullAttemptResponseAudit,
+          error: buildErrorAudit(error),
+        }),
+        error,
+      );
+    }
+
     return {
-      result: { claims: filteredClaims },
+      result,
       attemptAudit: parseInvestigatorAttemptAudit({
         ...stageTwoAttemptAuditBase,
         completedAt: new Date().toISOString(),
