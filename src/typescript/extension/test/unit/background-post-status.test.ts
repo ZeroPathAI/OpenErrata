@@ -30,11 +30,13 @@ test("createPostStatusFromInvestigation maps pending status to INVESTIGATING", (
     status: "PENDING",
     provenance: "CLIENT_FALLBACK",
     claims: null,
+    priorInvestigationResult: null,
   });
 
   assert.equal(status.investigationState, "INVESTIGATING");
   assert.equal(status.status, "PENDING");
   assert.equal(status.claims, null);
+  assert.equal(status.priorInvestigationResult, null);
 });
 
 test("createPostStatusFromInvestigation maps completed investigation to INVESTIGATED", () => {
@@ -75,11 +77,13 @@ test("createPostStatusFromInvestigation maps undefined status to NOT_INVESTIGATE
     pageUrl: "https://x.com/example/status/555",
     investigationState: "NOT_INVESTIGATED",
     claims: null,
+    priorInvestigationResult: null,
   });
 
   assert.equal(status.investigationState, "NOT_INVESTIGATED");
   assert.equal("status" in status, false);
   assert.equal(status.claims, null);
+  assert.equal(status.priorInvestigationResult, null);
 });
 
 test("apiErrorToPostStatus maps CONTENT_MISMATCH ApiClientError to mismatch state", () => {

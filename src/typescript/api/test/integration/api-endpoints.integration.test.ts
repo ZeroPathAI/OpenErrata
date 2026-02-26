@@ -460,6 +460,8 @@ async function seedInvestigation(input: {
   status: "COMPLETE" | "FAILED" | "PENDING" | "PROCESSING";
   promptLabel: string;
   checkedAt?: Date;
+  parentInvestigationId?: string;
+  contentDiff?: string;
 }): Promise<{ id: string }> {
   const prompt = await seedPrompt(input.promptLabel);
   const checkedAt = input.status === "COMPLETE" ? (input.checkedAt ?? new Date()) : null;
@@ -482,6 +484,9 @@ async function seedInvestigation(input: {
       provider: "OPENAI",
       model: "OPENAI_GPT_5",
       checkedAt,
+      isUpdate: (input.parentInvestigationId ?? null) !== null,
+      parentInvestigationId: input.parentInvestigationId ?? null,
+      contentDiff: input.contentDiff ?? null,
     },
     select: { id: true },
   });
@@ -600,10 +605,17 @@ async function withMockLesswrongFetch<ResponseType>(
   fixtureKey: string,
   run: () => Promise<ResponseType>,
 ): Promise<ResponseType> {
+  const fixture = await readLesswrongFixture(fixtureKey);
+  return withMockLesswrongCanonicalHtml(fixture.html, run);
+}
+
+async function withMockLesswrongCanonicalHtml<ResponseType>(
+  html: string,
+  run: () => Promise<ResponseType>,
+): Promise<ResponseType> {
   const lesswrongGraphqlUrl = "https://www.lesswrong.com/graphql";
   let sawLesswrongRequest = false;
   const originalFetch = globalThis.fetch;
-  const fixture = await readLesswrongFixture(fixtureKey);
   const mockedFetch: typeof fetch = async (input, init) => {
     const url =
       typeof input === "string"
@@ -622,7 +634,7 @@ async function withMockLesswrongFetch<ResponseType>(
           post: {
             result: {
               contents: {
-                html: fixture.html,
+                html,
               },
             },
           },
@@ -791,7 +803,7 @@ void test("GET /health returns ok", async () => {
   assert.deepEqual(await response.json(), { status: "ok" });
 });
 
-void test("post.viewPost stores content and reports not investigated without matching investigation", async () => {
+void test("post.recordViewAndGetStatus stores content and reports not investigated without matching investigation", async () => {
   const caller = createCaller();
   const input = buildXViewInput({
     externalId: "view-post-1",
@@ -801,7 +813,7 @@ void test("post.viewPost stores content and reports not investigated without mat
     normalizeContent(input.observedContentText),
   );
 
-  const result = await caller.post.viewPost(input);
+  const result = await caller.post.recordViewAndGetStatus(input);
 
   assert.equal(result.investigationState, "NOT_INVESTIGATED");
   assert.equal(result.claims, null);
@@ -828,7 +840,7 @@ void test("post.viewPost stores content and reports not investigated without mat
   assert.equal(post.viewCount, 1);
 });
 
-void test("post.viewPost for LessWrong derives observed content from html metadata", async () => {
+void test("post.recordViewAndGetStatus for LessWrong derives observed content from html metadata", async () => {
   const caller = createCaller();
   const lesswrongFixture = await readLesswrongFixture(
     INTEGRATION_LESSWRONG_FIXTURE_KEYS.POST_VIEW_HTML,
@@ -841,7 +853,7 @@ void test("post.viewPost for LessWrong derives observed content from html metada
   const result = await withMockLesswrongFetch(
     INTEGRATION_LESSWRONG_FIXTURE_KEYS.POST_VIEW_HTML,
     () =>
-    caller.post.viewPost(input),
+    caller.post.recordViewAndGetStatus(input),
   );
 
   assert.equal(result.investigationState, "NOT_INVESTIGATED");
@@ -872,14 +884,14 @@ void test("post.viewPost for LessWrong derives observed content from html metada
   assert.equal(post.viewCount, 1);
 });
 
-void test("post.viewPost applies strict hash lookup and does not reuse stale investigations", async () => {
+void test("post.recordViewAndGetStatus applies strict hash lookup and does not reuse stale investigations", async () => {
   const caller = createCaller();
   const initialInput = buildXViewInput({
     externalId: "view-post-strict-hash-1",
     observedContentText: "Original canonical content.",
   });
 
-  await caller.post.viewPost(initialInput);
+  await caller.post.recordViewAndGetStatus(initialInput);
 
   const seededPost = await prisma.post.findUnique({
     where: {
@@ -905,13 +917,13 @@ void test("post.viewPost applies strict hash lookup and does not reuse stale inv
     observedContentText: "Edited post content with a different hash.",
   });
 
-  const result = await caller.post.viewPost(updatedInput);
+  const result = await caller.post.recordViewAndGetStatus(updatedInput);
 
   assert.equal(result.investigationState, "NOT_INVESTIGATED");
   assert.equal(result.claims, null);
 });
 
-void test("post.viewPost deduplicates unique-view credit for repeated views by same viewer", async () => {
+void test("post.recordViewAndGetStatus deduplicates unique-view credit for repeated views by same viewer", async () => {
   const caller = createCaller({
     viewerKey: "integration-viewer-repeat",
     ipRangeKey: "integration-ip-range-repeat",
@@ -921,8 +933,8 @@ void test("post.viewPost deduplicates unique-view credit for repeated views by s
     observedContentText: "Repeated view content.",
   });
 
-  await caller.post.viewPost(input);
-  await caller.post.viewPost(input);
+  await caller.post.recordViewAndGetStatus(input);
+  await caller.post.recordViewAndGetStatus(input);
 
   const post = await prisma.post.findUnique({
     where: {
@@ -946,6 +958,264 @@ void test("post.viewPost deduplicates unique-view credit for repeated views by s
     where: { postId: post.id },
   });
   assert.equal(creditCount, 1);
+});
+
+void test("post.recordViewAndGetStatus returns interim old claims from latest complete server-verified investigation without queueing", async () => {
+  const caller = createCaller();
+  const externalId = "view-post-update-interim-1";
+  const previousHtml = "<article><p>The moon is made of green cheese.</p></article>";
+  const currentHtml = "<article><p>The moon is made of cheddar cheese.</p></article>";
+  const previousInput = buildLesswrongViewInput({
+    externalId,
+    htmlContent: previousHtml,
+  });
+  await withMockLesswrongCanonicalHtml(
+    previousHtml,
+    () => caller.post.recordViewAndGetStatus(previousInput),
+  );
+
+  const post = await prisma.post.findUnique({
+    where: {
+      platform_externalId: {
+        platform: previousInput.platform,
+        externalId: previousInput.externalId,
+      },
+    },
+    select: { id: true },
+  });
+  assert.ok(post);
+
+  const previousCanonicalText = lesswrongHtmlToNormalizedText(previousHtml);
+  const previousCanonicalHash = await hashContent(previousCanonicalText);
+  const sourceInvestigation = await seedCompleteInvestigation({
+    postId: post.id,
+    contentHash: previousCanonicalHash,
+    contentText: previousCanonicalText,
+    provenance: "SERVER_VERIFIED",
+  });
+  await seedClaimWithSource(sourceInvestigation.id, 1);
+  await seedClaimWithSource(sourceInvestigation.id, 2);
+
+  const currentInput = buildLesswrongViewInput({
+    externalId,
+    htmlContent: currentHtml,
+  });
+  const result = await withMockLesswrongCanonicalHtml(
+    currentHtml,
+    () => caller.post.recordViewAndGetStatus(currentInput),
+  );
+
+  assert.equal(result.investigationState, "NOT_INVESTIGATED");
+  assert.equal(result.claims, null);
+  const interimResult = result.priorInvestigationResult;
+  assert.notEqual(interimResult, null);
+  assert.ok(interimResult);
+  assert.equal(
+    interimResult.sourceInvestigationId,
+    sourceInvestigation.id,
+  );
+  assert.equal(interimResult.oldClaims.length, 2);
+
+  const currentCanonicalText = lesswrongHtmlToNormalizedText(currentHtml);
+  const currentCanonicalHash = await hashContent(currentCanonicalText);
+  const currentVersionInvestigations = await prisma.investigation.findMany({
+    where: {
+      postId: post.id,
+      contentHash: currentCanonicalHash,
+    },
+    select: { id: true },
+  });
+  assert.equal(currentVersionInvestigations.length, 0);
+
+  const allInvestigations = await prisma.investigation.findMany({
+    where: {
+      postId: post.id,
+    },
+    select: { id: true },
+  });
+  const runCount = await prisma.investigationRun.count({
+    where: {
+      investigationId: {
+        in: allInvestigations.map((investigation) => investigation.id),
+      },
+    },
+  });
+  assert.equal(runCount, 0);
+});
+
+void test("post.recordViewAndGetStatus does not reuse CLIENT_FALLBACK investigations as interim update claims", async () => {
+  const caller = createCaller();
+  const externalId = "view-post-update-interim-fallback-source-1";
+  const previousHtml = "<article><p>Venus has one moon.</p></article>";
+  const currentHtml = "<article><p>Venus has two moons.</p></article>";
+  const previousInput = buildLesswrongViewInput({
+    externalId,
+    htmlContent: previousHtml,
+  });
+  await withMockLesswrongCanonicalHtml(
+    previousHtml,
+    () => caller.post.recordViewAndGetStatus(previousInput),
+  );
+
+  const post = await prisma.post.findUnique({
+    where: {
+      platform_externalId: {
+        platform: previousInput.platform,
+        externalId: previousInput.externalId,
+      },
+    },
+    select: { id: true },
+  });
+  assert.ok(post);
+
+  const previousCanonicalText = lesswrongHtmlToNormalizedText(previousHtml);
+  const previousCanonicalHash = await hashContent(previousCanonicalText);
+  const fallbackOnlySource = await seedCompleteInvestigation({
+    postId: post.id,
+    contentHash: previousCanonicalHash,
+    contentText: previousCanonicalText,
+    provenance: "CLIENT_FALLBACK",
+  });
+  await seedClaimWithSource(fallbackOnlySource.id, 11);
+
+  const currentInput = buildLesswrongViewInput({
+    externalId,
+    htmlContent: currentHtml,
+  });
+  const result = await withMockLesswrongCanonicalHtml(
+    currentHtml,
+    () => caller.post.recordViewAndGetStatus(currentInput),
+  );
+
+  assert.equal(result.investigationState, "NOT_INVESTIGATED");
+  assert.equal(result.claims, null);
+  assert.equal(result.priorInvestigationResult, null);
+});
+
+void test("post.recordViewAndGetStatus uses newest complete SERVER_VERIFIED investigation as interim source", async () => {
+  const caller = createCaller();
+  const externalId = "view-post-update-interim-newest-source-1";
+  const baselineHtml = "<article><p>Jupiter has 79 moons.</p></article>";
+  const currentHtml = "<article><p>Jupiter has 95 moons.</p></article>";
+  const baselineInput = buildLesswrongViewInput({
+    externalId,
+    htmlContent: baselineHtml,
+  });
+  await withMockLesswrongCanonicalHtml(
+    baselineHtml,
+    () => caller.post.recordViewAndGetStatus(baselineInput),
+  );
+
+  const post = await prisma.post.findUnique({
+    where: {
+      platform_externalId: {
+        platform: baselineInput.platform,
+        externalId: baselineInput.externalId,
+      },
+    },
+    select: { id: true },
+  });
+  assert.ok(post);
+
+  const baselineCanonicalText = lesswrongHtmlToNormalizedText(baselineHtml);
+  const baselineCanonicalHash = await hashContent(baselineCanonicalText);
+  const olderSource = await seedCompleteInvestigation({
+    postId: post.id,
+    contentHash: baselineCanonicalHash,
+    contentText: baselineCanonicalText,
+    provenance: "SERVER_VERIFIED",
+    checkedAt: new Date("2026-02-01T00:00:00.000Z"),
+  });
+  await seedClaimWithSource(olderSource.id, 21);
+
+  const newerSourceText = normalizeContent("Jupiter has exactly 92 moons.");
+  const newerSourceHash = await hashContent(newerSourceText);
+  const newerSource = await seedCompleteInvestigation({
+    postId: post.id,
+    contentHash: newerSourceHash,
+    contentText: newerSourceText,
+    provenance: "SERVER_VERIFIED",
+    checkedAt: new Date("2026-02-20T00:00:00.000Z"),
+  });
+  await seedClaimWithSource(newerSource.id, 22);
+
+  const currentInput = buildLesswrongViewInput({
+    externalId,
+    htmlContent: currentHtml,
+  });
+  const result = await withMockLesswrongCanonicalHtml(
+    currentHtml,
+    () => caller.post.recordViewAndGetStatus(currentInput),
+  );
+
+  assert.equal(result.investigationState, "NOT_INVESTIGATED");
+  assert.equal(result.claims, null);
+  const newestInterimResult = result.priorInvestigationResult;
+  assert.notEqual(newestInterimResult, null);
+  assert.ok(newestInterimResult);
+  assert.equal(
+    newestInterimResult.sourceInvestigationId,
+    newerSource.id,
+  );
+  assert.equal(newestInterimResult.oldClaims.length, 1);
+  assert.equal(newestInterimResult.oldClaims[0]?.text, "Claim 22");
+});
+
+void test("post.recordViewAndGetStatus returns INVESTIGATED for current-version complete result even when an older interim source exists", async () => {
+  const caller = createCaller();
+  const externalId = "view-post-update-current-complete-precedence-1";
+  const previousHtml = "<article><p>Saturn has 82 moons.</p></article>";
+  const currentHtml = "<article><p>Saturn has 145 moons.</p></article>";
+  const previousInput = buildLesswrongViewInput({
+    externalId,
+    htmlContent: previousHtml,
+  });
+  await withMockLesswrongCanonicalHtml(
+    previousHtml,
+    () => caller.post.recordViewAndGetStatus(previousInput),
+  );
+
+  const post = await prisma.post.findUnique({
+    where: {
+      platform_externalId: {
+        platform: previousInput.platform,
+        externalId: previousInput.externalId,
+      },
+    },
+    select: { id: true },
+  });
+  assert.ok(post);
+
+  const previousCanonicalText = lesswrongHtmlToNormalizedText(previousHtml);
+  const previousCanonicalHash = await hashContent(previousCanonicalText);
+  const olderSource = await seedCompleteInvestigation({
+    postId: post.id,
+    contentHash: previousCanonicalHash,
+    contentText: previousCanonicalText,
+    provenance: "SERVER_VERIFIED",
+  });
+  await seedClaimWithSource(olderSource.id, 31);
+
+  const currentCanonicalText = lesswrongHtmlToNormalizedText(currentHtml);
+  const currentCanonicalHash = await hashContent(currentCanonicalText);
+  const currentComplete = await seedCompleteInvestigation({
+    postId: post.id,
+    contentHash: currentCanonicalHash,
+    contentText: currentCanonicalText,
+    provenance: "SERVER_VERIFIED",
+  });
+  await seedClaimWithSource(currentComplete.id, 32);
+
+  const currentInput = buildLesswrongViewInput({
+    externalId,
+    htmlContent: currentHtml,
+  });
+  const result = await caller.post.recordViewAndGetStatus(currentInput);
+
+  assert.equal(result.investigationState, "INVESTIGATED");
+  assert.equal(result.provenance, "SERVER_VERIFIED");
+  assert.equal(result.claims.length, 1);
+  assert.equal(result.claims[0]?.text, "Claim 32");
 });
 
 void test("post.getInvestigation returns complete investigation with claims", async () => {
@@ -976,6 +1246,75 @@ void test("post.getInvestigation returns complete investigation with claims", as
   assert.equal(result.checkedAt, "2026-02-19T00:00:00.000Z");
 });
 
+void test("post.getInvestigation returns priorInvestigationResult for update investigations and null for non-updates", async () => {
+  const caller = createCaller();
+  const post = await seedPost({
+    platform: "X",
+    externalId: "get-investigation-update-projection-1",
+    url: "https://x.com/openerrata/status/get-investigation-update-projection-1",
+    contentText: "Initial content for update projection coverage.",
+  });
+  const parent = await seedCompleteInvestigation({
+    postId: post.id,
+    contentHash: post.contentHash,
+    contentText: post.contentText,
+    provenance: "SERVER_VERIFIED",
+  });
+  await seedClaimWithSource(parent.id, 1);
+
+  const updateContentText = normalizeContent(
+    "Initial content for update projection coverage. Edited sentence.",
+  );
+  const updateContentHash = await hashContent(updateContentText);
+  const updateInvestigation = await seedInvestigation({
+    postId: post.id,
+    contentHash: updateContentHash,
+    contentText: updateContentText,
+    provenance: "SERVER_VERIFIED",
+    status: "PENDING",
+    promptLabel: "get-investigation-update-projection-update",
+    parentInvestigationId: parent.id,
+    contentDiff: "Diff summary (line context):\n- Removed lines:\nOld\n+ Added lines:\nNew",
+  });
+
+  const nonUpdateContentText = normalizeContent(
+    "Fresh pending investigation that is not an update.",
+  );
+  const nonUpdateContentHash = await hashContent(nonUpdateContentText);
+  const nonUpdateInvestigation = await seedInvestigation({
+    postId: post.id,
+    contentHash: nonUpdateContentHash,
+    contentText: nonUpdateContentText,
+    provenance: "SERVER_VERIFIED",
+    status: "PENDING",
+    promptLabel: "get-investigation-update-projection-non-update",
+  });
+
+  const updateResult = await caller.post.getInvestigation({
+    investigationId: updateInvestigation.id,
+  });
+  assert.equal(updateResult.investigationState, "INVESTIGATING");
+  assert.equal(updateResult.status, "PENDING");
+  assert.equal(updateResult.provenance, "SERVER_VERIFIED");
+  const updatePrior = updateResult.priorInvestigationResult;
+  assert.notEqual(updatePrior, null);
+  assert.ok(updatePrior);
+  assert.equal(updatePrior.oldClaims.length, 1);
+  assert.equal(
+    updatePrior.sourceInvestigationId,
+    parent.id,
+  );
+
+  const nonUpdateResult = await caller.post.getInvestigation({
+    investigationId: nonUpdateInvestigation.id,
+  });
+  assert.equal(nonUpdateResult.investigationState, "INVESTIGATING");
+  assert.equal(nonUpdateResult.status, "PENDING");
+  assert.equal(nonUpdateResult.provenance, "SERVER_VERIFIED");
+  assert.equal(nonUpdateResult.claims, null);
+  assert.equal(nonUpdateResult.priorInvestigationResult, null);
+});
+
 void test("post.investigateNow returns existing investigation for authenticated callers", async () => {
   const caller = createCaller({ isAuthenticated: true });
   const input = buildXViewInput({
@@ -993,6 +1332,86 @@ void test("post.investigateNow returns existing investigation for authenticated 
   assert.equal(result.investigationId, seeded.investigationId);
   assert.equal(result.status, "COMPLETE");
   assert.equal(result.provenance, "CLIENT_FALLBACK");
+});
+
+void test("post.investigateNow creates update lineage metadata for edited server-verified content", async () => {
+  const caller = createCaller({ isAuthenticated: true });
+  const externalId = "investigate-now-update-lineage-1";
+  const previousHtml = "<article><p>Mars has two moons called Phobos and Deimos.</p></article>";
+  const currentHtml =
+    "<article><p>Mars has three moons called Phobos, Deimos, and Harmonia.</p></article>";
+  const previousInput = buildLesswrongViewInput({
+    externalId,
+    htmlContent: previousHtml,
+  });
+  await withMockLesswrongCanonicalHtml(
+    previousHtml,
+    () => caller.post.recordViewAndGetStatus(previousInput),
+  );
+
+  const post = await prisma.post.findUnique({
+    where: {
+      platform_externalId: {
+        platform: previousInput.platform,
+        externalId: previousInput.externalId,
+      },
+    },
+    select: { id: true },
+  });
+  assert.ok(post);
+
+  const previousCanonicalText = lesswrongHtmlToNormalizedText(previousHtml);
+  const previousCanonicalHash = await hashContent(previousCanonicalText);
+  const sourceInvestigation = await seedCompleteInvestigation({
+    postId: post.id,
+    contentHash: previousCanonicalHash,
+    contentText: previousCanonicalText,
+    provenance: "SERVER_VERIFIED",
+  });
+  await seedClaimWithSource(sourceInvestigation.id, 1);
+
+  const currentInput = buildLesswrongViewInput({
+    externalId,
+    htmlContent: currentHtml,
+  });
+  const result = await withMockLesswrongCanonicalHtml(
+    currentHtml,
+    () => caller.post.investigateNow(currentInput),
+  );
+
+  assert.equal(result.status, "PENDING");
+  assert.equal(result.provenance, "SERVER_VERIFIED");
+
+  const currentCanonicalText = lesswrongHtmlToNormalizedText(currentHtml);
+  const currentCanonicalHash = await hashContent(currentCanonicalText);
+  const storedInvestigation = await prisma.investigation.findUnique({
+    where: { id: result.investigationId },
+    select: {
+      status: true,
+      contentHash: true,
+      contentProvenance: true,
+      parentInvestigationId: true,
+      contentDiff: true,
+    },
+  });
+
+  assert.ok(storedInvestigation);
+  assert.equal(storedInvestigation.status, "PENDING");
+  assert.equal(storedInvestigation.contentHash, currentCanonicalHash);
+  assert.equal(storedInvestigation.contentProvenance, "SERVER_VERIFIED");
+  assert.equal(storedInvestigation.parentInvestigationId, sourceInvestigation.id);
+  assert.notEqual(storedInvestigation.contentDiff, null);
+  assert.equal(
+    storedInvestigation.contentDiff?.startsWith("Diff summary (line context):"),
+    true,
+  );
+
+  const runCount = await prisma.investigationRun.count({
+    where: {
+      investigationId: result.investigationId,
+    },
+  });
+  assert.equal(runCount, 1);
 });
 
 void test("post.investigateNow deduplicates concurrent callers to one pending investigation run", async () => {
@@ -1047,6 +1466,99 @@ void test("post.investigateNow deduplicates concurrent callers to one pending in
   const storedRun = storedRuns[0];
   assert.ok(storedRun);
   assert.notEqual(storedRun.queuedAt, null);
+});
+
+void test("post.investigateNow deduplicates concurrent edited-content requests to one pending update investigation", async () => {
+  const externalId = "investigate-now-update-concurrent-1";
+  const previousHtml = "<article><p>Earth has one moon.</p></article>";
+  const currentHtml = "<article><p>Earth has two moons.</p></article>";
+  const authSeedCaller = createCaller({ isAuthenticated: true });
+  const previousInput = buildLesswrongViewInput({
+    externalId,
+    htmlContent: previousHtml,
+  });
+  await withMockLesswrongCanonicalHtml(
+    previousHtml,
+    () => authSeedCaller.post.recordViewAndGetStatus(previousInput),
+  );
+
+  const post = await prisma.post.findUnique({
+    where: {
+      platform_externalId: {
+        platform: previousInput.platform,
+        externalId: previousInput.externalId,
+      },
+    },
+    select: { id: true },
+  });
+  assert.ok(post);
+
+  const previousCanonicalText = lesswrongHtmlToNormalizedText(previousHtml);
+  const previousCanonicalHash = await hashContent(previousCanonicalText);
+  const sourceInvestigation = await seedCompleteInvestigation({
+    postId: post.id,
+    contentHash: previousCanonicalHash,
+    contentText: previousCanonicalText,
+    provenance: "SERVER_VERIFIED",
+  });
+  await seedClaimWithSource(sourceInvestigation.id, 1);
+
+  const currentInput = buildLesswrongViewInput({
+    externalId,
+    htmlContent: currentHtml,
+  });
+  const callers = Array.from({ length: 10 }, (_, index) =>
+    createCaller({
+      isAuthenticated: true,
+      viewerKey: withIntegrationPrefix(`update-concurrent-viewer-${index.toString()}`),
+      ipRangeKey: withIntegrationPrefix(`update-concurrent-ip-${index.toString()}`),
+    }),
+  );
+  const results = await withMockLesswrongCanonicalHtml(
+    currentHtml,
+    () =>
+      Promise.all(
+        callers.map((caller) => caller.post.investigateNow(currentInput)),
+      ),
+  );
+
+  const uniqueIds = new Set(results.map((result) => result.investigationId));
+  assert.equal(uniqueIds.size, 1);
+  assert.equal(results.every((result) => result.status === "PENDING"), true);
+  const updateInvestigationId = [...uniqueIds][0];
+  if (updateInvestigationId === undefined) {
+    assert.fail("missing update investigation id from concurrent investigateNow");
+  }
+
+  const currentCanonicalText = lesswrongHtmlToNormalizedText(currentHtml);
+  const currentCanonicalHash = await hashContent(currentCanonicalText);
+  const storedUpdateInvestigations = await prisma.investigation.findMany({
+    where: {
+      postId: post.id,
+      contentHash: currentCanonicalHash,
+    },
+    select: {
+      id: true,
+      status: true,
+      parentInvestigationId: true,
+    },
+  });
+  assert.equal(storedUpdateInvestigations.length, 1);
+  const storedUpdateInvestigation = storedUpdateInvestigations[0];
+  assert.ok(storedUpdateInvestigation);
+  assert.equal(storedUpdateInvestigation.id, updateInvestigationId);
+  assert.equal(storedUpdateInvestigation.status, "PENDING");
+  assert.equal(
+    storedUpdateInvestigation.parentInvestigationId,
+    sourceInvestigation.id,
+  );
+
+  const updateRunCount = await prisma.investigationRun.count({
+    where: {
+      investigationId: updateInvestigationId,
+    },
+  });
+  assert.equal(updateRunCount, 1);
 });
 
 void test("post.investigateNow deduplicates concurrent user-key callers to one attached key source", async () => {

@@ -20,7 +20,7 @@ import browser, { type Runtime } from "webextension-polyfill";
 import {
   ApiClientError,
   init,
-  viewPost,
+  recordViewAndGetStatus,
   getInvestigation,
   investigateNow,
   hasUserOpenAiKey,
@@ -40,6 +40,10 @@ import {
   createPostStatusFromInvestigation,
   apiErrorToPostStatus,
 } from "./post-status.js";
+import {
+  snapshotFromInvestigateNowResult,
+  toInvestigationStatusForCaching,
+} from "./investigation-snapshot.js";
 import { unsupportedProtocolVersionResponse } from "../lib/protocol-version.js";
 
 // Initialize API client on worker start.
@@ -395,33 +399,6 @@ function toInvestigationStatusSnapshot(
   return snapshot;
 }
 
-function snapshotFromInvestigateNowResult(
-  result: InvestigateNowOutput,
-): InvestigationStatusOutput {
-  switch (result.status) {
-    case "COMPLETE":
-      return {
-        investigationState: "INVESTIGATED",
-        provenance: result.provenance,
-        claims: result.claims,
-      };
-    case "PENDING":
-    case "PROCESSING":
-      return {
-        investigationState: "INVESTIGATING",
-        status: result.status,
-        provenance: result.provenance,
-        claims: null,
-      };
-    case "FAILED":
-      return {
-        investigationState: "FAILED",
-        provenance: result.provenance,
-        claims: null,
-      };
-  }
-}
-
 async function startInvestigationPolling(input: {
   tabId: number;
   tabSessionId: number;
@@ -586,11 +563,15 @@ async function cacheInvestigateNowResult(
     tabSessionId: number;
     request: ViewPostInput;
     result: InvestigateNowOutput;
+    existingStatus?: InvestigationStatusOutput | null;
   },
 ): Promise<void> {
   const { tabId, tabSessionId, request, result } = input;
 
-  const initialSnapshot = snapshotFromInvestigateNowResult(result);
+  const initialSnapshot = snapshotFromInvestigateNowResult(
+    result,
+    input.existingStatus,
+  );
 
   await cachePostStatus(
     tabId,
@@ -637,6 +618,7 @@ async function maybeAutoInvestigate(
       tabSessionId: input.tabSessionId,
       request: input.request,
       result,
+      existingStatus: toInvestigationStatusForCaching(input.existingStatus),
     });
 
     if (isInvestigatingCheckStatus(result.status)) {
@@ -717,7 +699,7 @@ async function handlePageContent(
 
   let result: ViewPostOutput;
   try {
-    result = await viewPost(request);
+    result = await recordViewAndGetStatus(request);
   } catch (error) {
     if (sender.tab?.id !== undefined) {
       await cacheApiErrorStatus({
@@ -754,24 +736,42 @@ async function handlePageContent(
       stopInvestigationPolling(tabId);
     }
 
-    const snapshot =
-      result.investigationState === "INVESTIGATED"
-        ? result
-        : existingForSession?.investigationState === "INVESTIGATING"
-          ? {
-              investigationState: "INVESTIGATING" as const,
-              status: existingForSession.status,
-              provenance: existingForSession.provenance,
-              claims: null,
-            }
-          : existingForSession?.investigationState === "FAILED" &&
-              existingForSession.provenance !== undefined
-            ? {
-                investigationState: "FAILED" as const,
-                provenance: existingForSession.provenance,
-                claims: null,
-              }
-            : result;
+    const resultUpdateInterim = toInvestigationStatusForCaching(result);
+    const existingForSessionUpdateInterim =
+      existingForSession === null
+        ? null
+        : toInvestigationStatusForCaching(existingForSession);
+
+    let snapshot: InvestigationStatusOutput;
+    if (result.investigationState === "INVESTIGATED") {
+      snapshot = result;
+    } else if (resultUpdateInterim !== null) {
+      snapshot = resultUpdateInterim;
+    } else if (existingForSession?.investigationState === "INVESTIGATING") {
+      if (existingForSessionUpdateInterim !== null) {
+        snapshot = existingForSession;
+      } else {
+        snapshot = {
+          investigationState: "INVESTIGATING",
+          status: existingForSession.status,
+          provenance: existingForSession.provenance,
+          claims: null,
+          priorInvestigationResult: null,
+        };
+      }
+    } else if (
+      existingForSession?.investigationState === "FAILED" &&
+      existingForSession.provenance !== undefined
+    ) {
+      snapshot = {
+        investigationState: "FAILED",
+        provenance: existingForSession.provenance,
+        claims: null,
+      };
+    } else {
+      snapshot = result;
+    }
+
     const nextStatus = createPostStatusFromInvestigation({
       tabSessionId: payload.tabSessionId,
       platform: request.platform,
@@ -784,7 +784,10 @@ async function handlePageContent(
     });
     await cachePostStatus(tabId, nextStatus);
 
-    if (result.investigationState === "NOT_INVESTIGATED") {
+    if (
+      result.investigationState === "NOT_INVESTIGATED" ||
+      resultUpdateInterim !== null
+    ) {
       void maybeAutoInvestigate({
         tabId,
         tabSessionId: payload.tabSessionId,
@@ -920,11 +923,26 @@ async function handleInvestigateNow(
     if (isStaleTabSession(sender.tab.id, payload.tabSessionId)) {
       return result;
     }
+
+    const existingStatus = await getActivePostStatus(sender.tab.id);
+    const existingStatusForCaching = toInvestigationStatusForCaching(existingStatus);
+    const preservedExistingStatus =
+      existingStatusForCaching !== null &&
+      existingStatus !== null &&
+      existingStatus.tabSessionId === payload.tabSessionId &&
+      existingStatus.platform === request.platform &&
+      existingStatus.externalId === request.externalId
+        ? existingStatusForCaching
+        : null;
+
     await cacheInvestigateNowResult({
       tabId: sender.tab.id,
       tabSessionId: payload.tabSessionId,
       request,
       result,
+      ...(preservedExistingStatus !== null
+        ? { existingStatus: preservedExistingStatus }
+        : {}),
     });
 
     if (isInvestigatingCheckStatus(result.status)) {

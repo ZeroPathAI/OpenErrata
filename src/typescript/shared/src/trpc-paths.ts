@@ -2,7 +2,7 @@ import type { ExtensionApiProcedurePath } from "./types.js";
 
 // Stable procedure identifiers shared by extension and API call sites.
 export const EXTENSION_TRPC_PATH = {
-  VIEW_POST: "post.viewPost",
+  RECORD_VIEW_AND_GET_STATUS: "post.recordViewAndGetStatus",
   GET_INVESTIGATION: "post.getInvestigation",
   INVESTIGATE_NOW: "post.investigateNow",
   VALIDATE_SETTINGS: "post.validateSettings",

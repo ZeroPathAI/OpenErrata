@@ -142,3 +142,72 @@ test("Substack adapter returns ready when identity metadata is complete", () => 
   assert.equal(ready.content.metadata.slug, "test-post");
   assert.equal(ready.content.metadata.publicationSubdomain, "example");
 });
+
+test("Substack adapter prefers structured published date over unrelated document time", () => {
+  const postId = "123456";
+  const result = withWindow(
+    "https://example.substack.com/p/test-post",
+    `
+      <!doctype html>
+      <html>
+        <head>
+          <meta name="author" content="Example Author" />
+          <meta
+            name="twitter:image"
+            content="https://substackcdn.com/image/fetch/w_1456,c_limit,f_jpg,q_auto:good,fl_progressive:steep/https%3A%2F%2Fexample.substack.com%2Fpost_preview%2F${postId}%2Ftwitter.jpg"
+          />
+          <script type="application/ld+json">
+            {
+              "@type":"NewsArticle",
+              "datePublished":"2025-12-03T00:00:00.000Z"
+            }
+          </script>
+        </head>
+        <body>
+          <time datetime="2026-01-16T00:00:00.000Z">3h</time>
+          <h1 class="post-title">Test Post</h1>
+          <article>
+            <div class="body markup">Post body text.</div>
+          </article>
+        </body>
+      </html>
+    `,
+    (document) => substackAdapter.extract(document),
+  );
+
+  const ready = assertReady(result);
+  assert.equal(ready.content.platform, "SUBSTACK");
+  assert.equal(ready.content.metadata.publishedAt, "2025-12-03T00:00:00.000Z");
+});
+
+test("Substack adapter falls back to article-local time before document-global time", () => {
+  const postId = "123456";
+  const result = withWindow(
+    "https://example.substack.com/p/test-post",
+    `
+      <!doctype html>
+      <html>
+        <head>
+          <meta name="author" content="Example Author" />
+          <meta
+            name="twitter:image"
+            content="https://substackcdn.com/image/fetch/w_1456,c_limit,f_jpg,q_auto:good,fl_progressive:steep/https%3A%2F%2Fexample.substack.com%2Fpost_preview%2F${postId}%2Ftwitter.jpg"
+          />
+        </head>
+        <body>
+          <time datetime="2026-01-16T00:00:00.000Z">3h</time>
+          <h1 class="post-title">Test Post</h1>
+          <article>
+            <time datetime="2025-12-03T00:00:00.000Z">Dec 3</time>
+            <div class="body markup">Post body text.</div>
+          </article>
+        </body>
+      </html>
+    `,
+    (document) => substackAdapter.extract(document),
+  );
+
+  const ready = assertReady(result);
+  assert.equal(ready.content.platform, "SUBSTACK");
+  assert.equal(ready.content.metadata.publishedAt, "2025-12-03T00:00:00.000Z");
+});

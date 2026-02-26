@@ -9,6 +9,13 @@ import type {
 } from "@openerrata/shared";
 import { ApiClientError } from "./api-client-error.js";
 
+type PriorInvestigationResult = NonNullable<
+  Extract<
+    InvestigationStatusOutput,
+    { investigationState: "NOT_INVESTIGATED" | "INVESTIGATING" }
+  >["priorInvestigationResult"]
+>;
+
 type PostStatusIdentity = {
   tabSessionId: number;
   platform: ViewPostInput["platform"];
@@ -21,11 +28,13 @@ type PostStatusIdentity = {
 type PostStatusInput =
   | (PostStatusIdentity & {
       investigationState: "NOT_INVESTIGATED";
+      priorInvestigationResult: PriorInvestigationResult | null;
     })
   | (PostStatusIdentity & {
       investigationState: "INVESTIGATING";
       status: "PENDING" | "PROCESSING";
       provenance: ContentProvenance;
+      priorInvestigationResult: PriorInvestigationResult | null;
     })
   | (PostStatusIdentity & {
       investigationState: "FAILED";
@@ -86,13 +95,16 @@ export function createPostStatus(input: PostStatusInput): ExtensionPostStatus {
         ...base,
         investigationState: "NOT_INVESTIGATED",
         claims: null,
+        priorInvestigationResult: input.priorInvestigationResult,
       });
     case "INVESTIGATING":
       return extensionPostStatusSchema.parse({
         ...base,
         investigationState: "INVESTIGATING",
         status: input.status,
+        provenance: input.provenance,
         claims: null,
+        priorInvestigationResult: input.priorInvestigationResult,
       });
     case "FAILED":
       return extensionPostStatusSchema.parse({
@@ -145,6 +157,7 @@ export function createPostStatusFromInvestigation(
         investigationState: "INVESTIGATING",
         status: input.status,
         provenance: input.provenance,
+        priorInvestigationResult: input.priorInvestigationResult ?? null,
       });
     case "FAILED":
       return createPostStatus({
@@ -156,6 +169,7 @@ export function createPostStatusFromInvestigation(
       return createPostStatus({
         ...identity,
         investigationState: "NOT_INVESTIGATED",
+        priorInvestigationResult: input.priorInvestigationResult ?? null,
       });
   }
 }

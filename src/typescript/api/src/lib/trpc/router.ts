@@ -16,9 +16,9 @@ type IsExactly<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : neve
 type RouterInputs = inferRouterInputs<typeof appRouter>;
 type RouterOutputs = inferRouterOutputs<typeof appRouter>;
 
-const viewPostInputMatches: IsExactly<
-  RouterInputs["post"]["viewPost"],
-  ExtensionApiProcedureContract[typeof EXTENSION_TRPC_PATH.VIEW_POST]["input"]
+const recordViewAndGetStatusInputMatches: IsExactly<
+  RouterInputs["post"]["recordViewAndGetStatus"],
+  ExtensionApiProcedureContract[typeof EXTENSION_TRPC_PATH.RECORD_VIEW_AND_GET_STATUS]["input"]
 > = true;
 
 const getInvestigationInputMatches: IsExactly<
@@ -36,9 +36,9 @@ const validateSettingsInputMatches: IsExactly<
   ExtensionApiProcedureContract[typeof EXTENSION_TRPC_PATH.VALIDATE_SETTINGS]["input"]
 > = true;
 
-const viewPostOutputMatches: IsExactly<
-  RouterOutputs["post"]["viewPost"],
-  ExtensionApiProcedureContract[typeof EXTENSION_TRPC_PATH.VIEW_POST]["output"]
+const recordViewAndGetStatusOutputMatches: IsExactly<
+  RouterOutputs["post"]["recordViewAndGetStatus"],
+  ExtensionApiProcedureContract[typeof EXTENSION_TRPC_PATH.RECORD_VIEW_AND_GET_STATUS]["output"]
 > = true;
 
 const investigateNowOutputMatches: IsExactly<
@@ -51,10 +51,10 @@ const validateSettingsOutputMatches: IsExactly<
   ExtensionApiProcedureContract[typeof EXTENSION_TRPC_PATH.VALIDATE_SETTINGS]["output"]
 > = true;
 
-void viewPostInputMatches;
+void recordViewAndGetStatusInputMatches;
 void getInvestigationInputMatches;
 void investigateNowInputMatches;
 void validateSettingsInputMatches;
-void viewPostOutputMatches;
+void recordViewAndGetStatusOutputMatches;
 void investigateNowOutputMatches;
 void validateSettingsOutputMatches;

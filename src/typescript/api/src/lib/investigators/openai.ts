@@ -1,9 +1,11 @@
 import OpenAI from "openai";
 import type { ResponseInput } from "openai/resources/responses/responses";
+import { z } from "zod";
 import {
   DEFAULT_INVESTIGATION_MODEL,
   DEFAULT_INVESTIGATION_PROVIDER,
   investigationResultSchema,
+  type InvestigationResult,
 } from "@openerrata/shared";
 import { getEnv } from "$lib/config/env.js";
 import {
@@ -30,6 +32,8 @@ import {
 } from "./interface.js";
 import {
   INVESTIGATION_SYSTEM_PROMPT,
+  INVESTIGATION_VALIDATION_SYSTEM_PROMPT,
+  buildValidationPrompt,
   buildUserPrompt,
 } from "./prompt.js";
 import { readOpenAiStatusCode } from "$lib/openai/errors.js";
@@ -38,6 +42,17 @@ const OPENAI_MODEL_ID = getEnv().OPENAI_MODEL_ID;
 const DEFAULT_REASONING_EFFORT = "medium";
 const DEFAULT_REASONING_SUMMARY = "detailed";
 const MAX_RESPONSE_TOOL_ROUNDS = getEnv().OPENAI_MAX_RESPONSE_TOOL_ROUNDS;
+const TWO_STEP_REQUEST_INSTRUCTIONS = `=== Stage 1: Fact-check instructions ===
+${INVESTIGATION_SYSTEM_PROMPT}
+
+=== Stage 2: Validation instructions ===
+${INVESTIGATION_VALIDATION_SYSTEM_PROMPT}`;
+
+const claimValidationResultSchema = z
+  .object({
+    approved: z.boolean(),
+  })
+  .strict();
 
 type PendingFunctionToolCall = {
   callId: string;
@@ -50,6 +65,17 @@ type FunctionCallOutput = {
   call_id: string;
   output: string;
 };
+
+function buildTwoStepRequestInputAudit(
+  userPrompt: string,
+  validationPrompt: string,
+): string {
+  return `=== Stage 1: Fact-check input ===
+${userPrompt}
+
+=== Stage 2: Validation input ===
+${validationPrompt}`;
+}
 
 function buildInitialInput(
   userPrompt: string,
@@ -633,6 +659,75 @@ export class InvestigatorExecutionError extends Error {
   }
 }
 
+type PerClaimValidationResult = {
+  claimIndex: number;
+  approved: boolean;
+  responseAudit: InvestigatorResponseAudit;
+};
+
+async function validateClaim(
+  client: OpenAI,
+  claimIndex: number,
+  claim: InvestigationResult["claims"][number],
+  contentText: string,
+  requestReasoning: {
+    effort: "low" | "medium" | "high";
+    summary: "auto" | "concise" | "detailed";
+  },
+): Promise<PerClaimValidationResult> {
+  const validationPrompt = buildValidationPrompt({
+    currentPostText: contentText,
+    candidateClaim: claim,
+  });
+
+  const response = await client.responses.create({
+    model: OPENAI_MODEL_ID,
+    stream: false,
+    instructions: INVESTIGATION_VALIDATION_SYSTEM_PROMPT,
+    input: validationPrompt,
+    reasoning: requestReasoning,
+    text: {
+      format: {
+        type: "json_schema",
+        name: "claim_validation_result",
+        strict: true,
+        schema: {
+          type: "object",
+          properties: {
+            approved: { type: "boolean" },
+          },
+          required: ["approved"],
+          additionalProperties: false,
+        },
+      },
+    },
+  });
+
+  const responseRecord = isRecord(response) ? response : {};
+  const responseAudit = extractResponseAudit(responseRecord);
+
+  if (responseAudit.responseStatus !== "completed") {
+    throw new InvestigatorIncompleteResponseError({
+      responseStatus: responseAudit.responseStatus,
+      responseId: responseAudit.responseId,
+      incompleteReason: readIncompleteReason(responseRecord),
+      outputTextLength: responseAudit.responseOutputText?.length ?? 0,
+    });
+  }
+
+  const outputText = responseAudit.responseOutputText ?? "";
+  if (outputText.trim().length === 0) {
+    throw new InvestigatorStructuredOutputError(
+      "Claim validation returned empty structured output",
+    );
+  }
+
+  const parsed: unknown = JSON.parse(outputText);
+  const { approved } = claimValidationResultSchema.parse(parsed);
+
+  return { claimIndex, approved, responseAudit };
+}
+
 export class OpenAIInvestigator implements Investigator {
   readonly provider = DEFAULT_INVESTIGATION_PROVIDER;
   readonly model = DEFAULT_INVESTIGATION_MODEL;
@@ -651,6 +746,9 @@ export class OpenAIInvestigator implements Investigator {
       ...(input.authorName !== undefined && { authorName: input.authorName }),
       ...(input.postPublishedAt !== undefined && { postPublishedAt: input.postPublishedAt }),
       ...(input.hasVideo !== undefined && { hasVideo: input.hasVideo }),
+      ...(input.isUpdate !== undefined && { isUpdate: input.isUpdate }),
+      ...(input.oldClaims !== undefined && { oldClaims: input.oldClaims }),
+      ...(input.contentDiff !== undefined && { contentDiff: input.contentDiff }),
     });
     const initialInput = buildInitialInput(userPrompt, input.imageUrls);
     const client = this.client;
@@ -720,7 +818,10 @@ export class OpenAIInvestigator implements Investigator {
     };
 
     const startedAt = new Date().toISOString();
-    const baseAttemptAudit: Omit<InvestigatorAttemptAudit, "response" | "error"> = {
+    const stageOneAttemptAuditBase: Omit<
+      InvestigatorAttemptAudit,
+      "response" | "error"
+    > = {
       startedAt,
       completedAt: null,
       requestModel: OPENAI_MODEL_ID,
@@ -756,7 +857,7 @@ export class OpenAIInvestigator implements Investigator {
         response = await client.responses.create(responseRequest);
       } catch (error) {
         const failedAttemptAudit = parseInvestigatorAttemptAudit({
-          ...baseAttemptAudit,
+          ...stageOneAttemptAuditBase,
           completedAt: new Date().toISOString(),
           response: responseAudits.length > 0 ? mergeResponseAudits(responseAudits) : null,
           error: buildErrorAudit(error),
@@ -788,7 +889,7 @@ export class OpenAIInvestigator implements Investigator {
         throw new InvestigatorExecutionError(
           cause.message,
           parseInvestigatorAttemptAudit({
-            ...baseAttemptAudit,
+            ...stageOneAttemptAuditBase,
             completedAt: new Date().toISOString(),
             response: mergeResponseAudits(responseAudits),
             error: buildErrorAudit(cause),
@@ -811,7 +912,7 @@ export class OpenAIInvestigator implements Investigator {
       throw new InvestigatorExecutionError(
         cause.message,
         parseInvestigatorAttemptAudit({
-          ...baseAttemptAudit,
+          ...stageOneAttemptAuditBase,
           completedAt: new Date().toISOString(),
           error: buildErrorAudit(cause),
         }),
@@ -829,7 +930,7 @@ export class OpenAIInvestigator implements Investigator {
       throw new InvestigatorExecutionError(
         cause.message,
         parseInvestigatorAttemptAudit({
-          ...baseAttemptAudit,
+          ...stageOneAttemptAuditBase,
           completedAt: new Date().toISOString(),
           response: mergeResponseAudits(responseAudits),
           error: buildErrorAudit(cause),
@@ -838,37 +939,35 @@ export class OpenAIInvestigator implements Investigator {
       );
     }
 
-    const responseAudit = mergeResponseAudits(responseAudits);
-    const completedAt = new Date().toISOString();
-
-    const attemptAudit = parseInvestigatorAttemptAudit({
-      ...baseAttemptAudit,
-      completedAt,
-      response: responseAudit,
+    const factCheckResponseAudit = mergeResponseAudits(responseAudits);
+    const stageOneAttemptAudit = parseInvestigatorAttemptAudit({
+      ...stageOneAttemptAuditBase,
+      completedAt: new Date().toISOString(),
+      response: factCheckResponseAudit,
       error: null,
     });
 
-    if (responseAudit.responseStatus !== "completed") {
+    if (factCheckResponseAudit.responseStatus !== "completed") {
       const incompleteReason = readIncompleteReason(latestResponseRecord);
       const cause = new InvestigatorIncompleteResponseError(
         {
-          responseStatus: responseAudit.responseStatus,
-          responseId: responseAudit.responseId,
+          responseStatus: factCheckResponseAudit.responseStatus,
+          responseId: factCheckResponseAudit.responseId,
           incompleteReason,
-          outputTextLength: responseAudit.responseOutputText?.length ?? 0,
+          outputTextLength: factCheckResponseAudit.responseOutputText?.length ?? 0,
         },
       );
       throw new InvestigatorExecutionError(
         "OpenAI response was incomplete before structured output parsing",
         parseInvestigatorAttemptAudit({
-          ...attemptAudit,
+          ...stageOneAttemptAudit,
           error: buildErrorAudit(cause),
         }),
         cause,
       );
     }
 
-    const outputText = responseAudit.responseOutputText ?? "";
+    const outputText = factCheckResponseAudit.responseOutputText ?? "";
     if (outputText.trim().length === 0) {
       const cause = new InvestigatorStructuredOutputError(
         "Model returned empty structured output",
@@ -876,7 +975,7 @@ export class OpenAIInvestigator implements Investigator {
       throw new InvestigatorExecutionError(
         cause.message,
         parseInvestigatorAttemptAudit({
-          ...attemptAudit,
+          ...stageOneAttemptAudit,
           error: buildErrorAudit(cause),
         }),
         cause,
@@ -890,30 +989,157 @@ export class OpenAIInvestigator implements Investigator {
       throw new InvestigatorExecutionError(
         "Model returned invalid JSON structured output",
         parseInvestigatorAttemptAudit({
-          ...attemptAudit,
+          ...stageOneAttemptAudit,
           error: buildErrorAudit(error),
         }),
         error,
       );
     }
 
+    let factCheckResult: ReturnType<typeof investigationResultSchema.parse>;
     try {
-      const result = investigationResultSchema.parse(parsed);
-
-      return {
-        result,
-        attemptAudit,
-        ...(responseAudit.responseModelVersion != null && { modelVersion: responseAudit.responseModelVersion }),
-      };
+      factCheckResult = investigationResultSchema.parse(parsed);
     } catch (error) {
       throw new InvestigatorExecutionError(
         "Model returned structured output that failed schema validation",
         parseInvestigatorAttemptAudit({
-          ...attemptAudit,
+          ...stageOneAttemptAudit,
           error: buildErrorAudit(error),
         }),
         error,
       );
     }
+
+    // ── Per-claim validation (Stage 2) ─────────────────────────────────
+    //
+    // Each candidate claim from Stage 1 is validated independently.
+    // During update investigations, claims whose text matches a claim from
+    // the parent investigation are auto-approved — they already passed
+    // validation in the original run and don't need re-checking.
+
+    const oldClaimTexts: ReadonlySet<string> =
+      input.isUpdate === true
+        ? new Set(input.oldClaims?.map((c) => c.text) ?? [])
+        : new Set();
+
+    const claimDispositions = factCheckResult.claims.map((claim, index) => ({
+      index,
+      claim,
+      needsValidation: !oldClaimTexts.has(claim.text),
+    }));
+
+    const claimsToValidate = claimDispositions.filter(
+      (d) => d.needsValidation,
+    );
+
+    const validationInputSummary = claimDispositions
+      .map((d) =>
+        d.needsValidation
+          ? `Claim ${d.index.toString()}: per-claim validation`
+          : `Claim ${d.index.toString()}: auto-approved (carried from previous investigation)`,
+      )
+      .join("\n");
+
+    const stageTwoAttemptAuditBase: Omit<
+      InvestigatorAttemptAudit,
+      "response" | "error"
+    > = {
+      ...stageOneAttemptAuditBase,
+      requestInstructions: TWO_STEP_REQUEST_INSTRUCTIONS,
+      requestInput: buildTwoStepRequestInputAudit(
+        userPrompt,
+        validationInputSummary,
+      ),
+    };
+
+    // Fast path: all claims are auto-approved (pure update, no new claims).
+    if (claimsToValidate.length === 0) {
+      return {
+        result: factCheckResult,
+        attemptAudit: parseInvestigatorAttemptAudit({
+          ...stageTwoAttemptAuditBase,
+          completedAt: new Date().toISOString(),
+          response: factCheckResponseAudit,
+          error: null,
+        }),
+        ...(factCheckResponseAudit.responseModelVersion != null && {
+          modelVersion: factCheckResponseAudit.responseModelVersion,
+        }),
+      };
+    }
+
+    // Run per-claim validations in parallel.
+    let validationResults: PerClaimValidationResult[];
+    try {
+      validationResults = await Promise.all(
+        claimsToValidate.map(({ index, claim }) =>
+          validateClaim(
+            client,
+            index,
+            claim,
+            input.contentText,
+            requestReasoning,
+          ),
+        ),
+      );
+    } catch (error) {
+      throw new InvestigatorExecutionError(
+        "Per-claim validation failed",
+        parseInvestigatorAttemptAudit({
+          ...stageTwoAttemptAuditBase,
+          completedAt: new Date().toISOString(),
+          response: factCheckResponseAudit,
+          error: buildErrorAudit(error),
+        }),
+        error,
+      );
+    }
+
+    // Build the approved set: auto-approved old claims + validation-approved new claims.
+    const approvedIndices = new Set<number>();
+    for (const d of claimDispositions) {
+      if (!d.needsValidation) {
+        approvedIndices.add(d.index);
+      }
+    }
+    for (const r of validationResults) {
+      if (r.approved) {
+        approvedIndices.add(r.claimIndex);
+      }
+    }
+
+    const filteredClaims = factCheckResult.claims.filter((_, i) =>
+      approvedIndices.has(i),
+    );
+
+    // Merge all response audits (fact-check + per-claim validations) with
+    // sequential output-index offsets so the combined audit is coherent.
+    let validationOutputOffset = factCheckResponseAudit.outputItems.length;
+    const offsetValidationAudits = validationResults.map((r) => {
+      const offset = offsetResponseAuditIndices(
+        r.responseAudit,
+        validationOutputOffset,
+      );
+      validationOutputOffset += r.responseAudit.outputItems.length;
+      return offset;
+    });
+
+    const fullAttemptResponseAudit = mergeResponseAudits([
+      factCheckResponseAudit,
+      ...offsetValidationAudits,
+    ]);
+
+    return {
+      result: { claims: filteredClaims },
+      attemptAudit: parseInvestigatorAttemptAudit({
+        ...stageTwoAttemptAuditBase,
+        completedAt: new Date().toISOString(),
+        response: fullAttemptResponseAudit,
+        error: null,
+      }),
+      ...(fullAttemptResponseAudit.responseModelVersion != null && {
+        modelVersion: fullAttemptResponseAudit.responseModelVersion,
+      }),
+    };
   }
 }

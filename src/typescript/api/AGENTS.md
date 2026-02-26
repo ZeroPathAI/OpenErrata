@@ -13,7 +13,7 @@ tRPC handler → `postRouter` or `publicRouter` → Prisma → PostgreSQL.
 
 ### tRPC Routers
 
-- `src/lib/trpc/routes/post.ts` — Extension-facing API: `viewPost` (mutation),
+- `src/lib/trpc/routes/post.ts` — Extension-facing API: `recordViewAndGetStatus` (mutation),
   `getInvestigation` (query), `investigateNow` (mutation),
   `validateSettings` (query), `batchStatus` (query).
 - `src/lib/trpc/routes/public.ts` — Legacy public tRPC API: investigation
@@ -22,7 +22,7 @@ tRPC handler → `postRouter` or `publicRouter` → Prisma → PostgreSQL.
 
 ### Key Handlers
 
-**`viewPost`** is the highest-traffic handler. It:
+**`recordViewAndGetStatus`** is the highest-traffic handler. It:
 1. Normalizes client-submitted content
 2. Fast-checks for a completed investigation using the observed content version
 3. For misses, attempts server-side canonical fetch (LessWrong GraphQL API; X/Substack stub to CLIENT_FALLBACK)
@@ -39,8 +39,10 @@ tRPC handler → `postRouter` or `publicRouter` → Prisma → PostgreSQL.
 2. graphile-worker (`src/lib/services/queue.ts`) picks up jobs.
 3. Orchestrator (`src/lib/services/orchestrator.ts`) calls the investigator,
    stores claims + sources, marks COMPLETE or FAILED.
-4. The investigator (`src/lib/investigators/openai.ts`) uses the OpenAI Responses
-   API with `web_search_preview` tool and structured JSON output.
+4. The investigator (`src/lib/investigators/openai.ts`) runs a two-step OpenAI
+   Responses workflow: (a) tool-enabled fact-check generation, then (b) a
+   second model validation pass that filters claims against OpenErrata
+   principles before structured output is accepted.
 
 ### Failure Classification (spec §3.7)
 

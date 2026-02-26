@@ -284,3 +284,40 @@ test("LessWrong adapter reports hydrating while single canonical root is hidden"
 
   assertNotReady(result, "hydrating");
 });
+
+test("LessWrong adapter prefers post JSON-LD published date over unrelated document time", () => {
+  const result = withWindow(
+    "https://www.lesswrong.com/posts/newPost123/current-post",
+    `
+      <!doctype html>
+      <html>
+        <body>
+          <time datetime="2026-01-16T00:00:00.000Z">3h</time>
+          <div id="postBody">
+            <script type="application/ld+json">
+              {
+                "url":"https://www.lesswrong.com/posts/newPost123/current-post",
+                "datePublished":"2025-12-03T00:00:00.000Z"
+              }
+            </script>
+            <div class="LWPostsPageHeader-authorInfo">
+              <span class="PostsAuthors-authorName">
+                <a href="/users/new_author">New Author</a>
+              </span>
+            </div>
+            <div class="PostsPage-postContent">
+              <div id="postContent">
+                <p>New post body text.</p>
+              </div>
+            </div>
+          </div>
+        </body>
+      </html>
+    `,
+    (document) => lesswrongAdapter.extract(document),
+  );
+
+  const extracted = assertReady(result).content;
+  assert.equal(extracted.platform, "LESSWRONG");
+  assert.equal(extracted.metadata.publishedAt, "2025-12-03T00:00:00.000Z");
+});

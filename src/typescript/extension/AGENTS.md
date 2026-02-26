@@ -22,7 +22,7 @@ Content Script (runs on LessWrong/X pages)
   → extract content via platform adapter
   → chrome.runtime.sendMessage({ type: "PAGE_CONTENT", payload })
   → Background Service Worker
-      → api-client.ts: HTTP POST to /trpc/post.viewPost
+      → api-client.ts: HTTP POST to /trpc/post.recordViewAndGetStatus
       → OpenErrata API
   ← response with investigationState + claims
   → Content Script renders annotations (or records "skipped")
@@ -99,7 +99,7 @@ If all tiers fail, the claim appears in the popup but is not annotated inline.
 
 The options page (`options/App.svelte`) stores settings in `chrome.storage.local`:
 - `openaiApiKey` — user-provided OpenAI key for request-scoped investigations
-- `autoInvestigate` — auto-trigger investigate-now after `viewPost` misses
+- `autoInvestigate` — auto-trigger investigate-now after `recordViewAndGetStatus` misses
 - `apiBaseUrl` — API server URL (default: `https://api.openerrata.com`)
 - `hmacSecret` — optional override for request attestation secret
 - `apiKey` — optional instance API key

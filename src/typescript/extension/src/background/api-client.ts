@@ -235,7 +235,7 @@ async function mutateApi<Path extends ExtensionApiMutationPath>(
   ) as Promise<ExtensionApiOutput<Path>>;
 }
 
-function normalizeViewPostOutput(
+function normalizeRecordViewAndGetStatusOutput(
   value: ParsedViewPostOutput,
 ): ViewPostOutput {
   return value;
@@ -266,13 +266,13 @@ async function assertApiHostPermissionGranted(apiBaseUrl: string): Promise<void>
   );
 }
 
-export async function viewPost(
+export async function recordViewAndGetStatus(
   input: ViewPostInput,
 ): Promise<ViewPostOutput> {
   const output = viewPostOutputSchema.parse(
-    await mutateApi(EXTENSION_TRPC_PATH.VIEW_POST, input),
+    await mutateApi(EXTENSION_TRPC_PATH.RECORD_VIEW_AND_GET_STATUS, input),
   );
-  return normalizeViewPostOutput(output);
+  return normalizeRecordViewAndGetStatusOutput(output);
 }
 
 export async function getInvestigation(

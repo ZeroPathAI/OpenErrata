@@ -63,10 +63,10 @@ function findDateInJsonLd(
 }
 
 export function readPublishedDateFromJsonLd(
-  document: Document,
+  root: ParentNode,
   candidateKeys: ReadonlySet<string>,
 ): string | null {
-  for (const script of document.querySelectorAll<HTMLScriptElement>(JSON_LD_SELECTOR)) {
+  for (const script of root.querySelectorAll<HTMLScriptElement>(JSON_LD_SELECTOR)) {
     const text = script.textContent.trim();
     if (!text) continue;
 

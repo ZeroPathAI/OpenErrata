@@ -60,6 +60,7 @@ model Post {
   lastViewedAt      DateTime?
   latestContentHash String?
   latestContentText String?
+  latestServerVerifiedContentHash String?
   wordCount         Int              @default(0)
   investigations    Investigation[]
   viewCredits       PostViewCredit[]
@@ -174,9 +175,14 @@ model Investigation {
   post                 Post                  @relation(fields: [postId], references: [id])
   contentHash          String
   contentText          String
+  // Denormalized copy of (parentInvestigationId != null). Use parentInvestigationId as source-of-truth.
+  isUpdate             Boolean               @default(false)
+  parentInvestigationId String?
+  parentInvestigation   Investigation?         @relation("InvestigationUpdateLineage", fields: [parentInvestigationId], references: [id])
   contentProvenance    ContentProvenance
   // Required and non-empty for CLIENT_FALLBACK, null for SERVER_VERIFIED.
   fetchFailureReason   String?
+  contentDiff          String?
   serverVerifiedAt     DateTime?
   status               CheckStatus
   promptId             String
@@ -188,6 +194,7 @@ model Investigation {
   checkedAt            DateTime?
   run                  InvestigationRun?
   attempts             InvestigationAttempt[]
+  updates              Investigation[]        @relation("InvestigationUpdateLineage")
   claims               Claim[]
   images               InvestigationImage[]
   corroborationCredits CorroborationCredit[]

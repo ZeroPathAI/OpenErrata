@@ -141,11 +141,12 @@ function extractMetaImageCandidates(document: Document): string[] {
   return candidates;
 }
 
-function extractPublishedAt(document: Document): string | null {
+function extractPublishedAt(document: Document, contentRoot: Element): string | null {
+  const articleScope = contentRoot.closest("article") ?? contentRoot;
   return (
-    readFirstTimeDateAsIso([document]) ??
     readFirstMetaDateAsIso(document, META_DATE_SELECTORS) ??
-    readPublishedDateFromJsonLd(document, JSON_LD_DATE_KEYS)
+    readPublishedDateFromJsonLd(document, JSON_LD_DATE_KEYS) ??
+    readFirstTimeDateAsIso([articleScope, document])
   );
 }
 
@@ -416,7 +417,7 @@ export const substackAdapter: PlatformAdapter = {
     const subtitle = normalizeContent(
       document.querySelector(SUBTITLE_SELECTOR)?.textContent ?? "",
     );
-    const publishedAt = extractPublishedAt(document);
+    const publishedAt = extractPublishedAt(document, root);
     const interactionCounts = extractInteractionCounts(document);
     const authorSubstackHandle = extractAuthorHandle(document);
 

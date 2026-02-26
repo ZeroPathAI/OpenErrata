@@ -26,14 +26,14 @@ const observedContentTextSchema = z
 
 // ── Branded identifier schemas ────────────────────────────────────────────
 
-export const postIdSchema = z.string().min(1).brand<"PostId">();
-export const sessionIdSchema = z.number().int().nonnegative().brand<"SessionId">();
+const postIdSchema = z.string().min(1).brand<"PostId">();
+const sessionIdSchema = z.number().int().nonnegative().brand<"SessionId">();
 export const investigationIdSchema = z
   .string()
   .min(1)
   .brand<"InvestigationId">();
 export const claimIdSchema = z.string().min(1).brand<"ClaimId">();
-export const extensionMessageProtocolVersionSchema = z.literal(
+const extensionMessageProtocolVersionSchema = z.literal(
   EXTENSION_MESSAGE_PROTOCOL_VERSION,
 );
 
@@ -57,7 +57,7 @@ const investigationClaimPayloadSchema = z
   })
   .strict();
 
-export const investigationClaimSchema = investigationClaimPayloadSchema
+const investigationClaimSchema = investigationClaimPayloadSchema
   .extend({
     id: claimIdSchema,
   })
@@ -150,10 +150,18 @@ export const viewPostInputSchema = z.discriminatedUnion("platform", [
   substackViewPostInputSchema,
 ]);
 
+const priorInvestigationResultSchema = z
+  .object({
+    oldClaims: z.array(investigationClaimSchema),
+    sourceInvestigationId: investigationIdSchema,
+  })
+  .strict();
+
 const investigationStatusNotInvestigatedSchema = z
   .object({
     investigationState: z.literal("NOT_INVESTIGATED"),
     claims: z.null(),
+    priorInvestigationResult: priorInvestigationResultSchema.nullable(),
   })
   .strict();
 
@@ -163,6 +171,7 @@ const investigationStatusInvestigatingSchema = z
     status: z.union([z.literal("PENDING"), z.literal("PROCESSING")]),
     provenance: contentProvenanceSchema,
     claims: z.null(),
+    priorInvestigationResult: priorInvestigationResultSchema.nullable(),
   })
   .strict();
 
@@ -184,18 +193,16 @@ const investigationStatusInvestigatedSchema = z
 
 export const viewPostOutputSchema = z.discriminatedUnion("investigationState", [
   investigationStatusNotInvestigatedSchema,
+  investigationStatusInvestigatingSchema,
   investigationStatusInvestigatedSchema,
 ]);
 
-export const investigationStatusOutputSchema = z.discriminatedUnion(
-  "investigationState",
-  [
-    investigationStatusNotInvestigatedSchema,
-    investigationStatusInvestigatingSchema,
-    investigationStatusFailedSchema,
-    investigationStatusInvestigatedSchema,
-  ],
-);
+export const investigationStatusOutputSchema = z.union([
+  investigationStatusNotInvestigatedSchema,
+  investigationStatusInvestigatingSchema,
+  investigationStatusFailedSchema,
+  investigationStatusInvestigatedSchema,
+]);
 
 export const getInvestigationInputSchema = z
   .object({
@@ -203,31 +210,28 @@ export const getInvestigationInputSchema = z
   })
   .strict();
 
-export const getInvestigationOutputSchema = z.discriminatedUnion(
-  "investigationState",
-  [
-    investigationStatusNotInvestigatedSchema
-      .extend({
-        checkedAt: z.iso.datetime().optional(),
-      })
-      .strict(),
-    investigationStatusInvestigatingSchema
-      .extend({
-        checkedAt: z.iso.datetime().optional(),
-      })
-      .strict(),
-    investigationStatusFailedSchema
-      .extend({
-        checkedAt: z.iso.datetime().optional(),
-      })
-      .strict(),
-    investigationStatusInvestigatedSchema
-      .extend({
-        checkedAt: z.iso.datetime(),
-      })
-      .strict(),
-  ],
-);
+export const getInvestigationOutputSchema = z.union([
+  investigationStatusNotInvestigatedSchema
+    .extend({
+      checkedAt: z.iso.datetime().optional(),
+    })
+    .strict(),
+  investigationStatusInvestigatingSchema
+    .extend({
+      checkedAt: z.iso.datetime().optional(),
+    })
+    .strict(),
+  investigationStatusFailedSchema
+    .extend({
+      checkedAt: z.iso.datetime().optional(),
+    })
+    .strict(),
+  investigationStatusInvestigatedSchema
+    .extend({
+      checkedAt: z.iso.datetime(),
+    })
+    .strict(),
+]);
 
 const investigateNowOutputPendingSchema = z
   .object({
@@ -398,7 +402,7 @@ const substackPlatformContentSchema = platformContentBaseSchema
   })
   .strict();
 
-export const platformContentSchema = z.discriminatedUnion("platform", [
+const platformContentSchema = z.discriminatedUnion("platform", [
   lesswrongPlatformContentSchema,
   xPlatformContentSchema,
   substackPlatformContentSchema,
@@ -420,6 +424,7 @@ const extensionPostNotInvestigatedSchema = extensionPostStatusBaseSchema
     investigationState: z.literal("NOT_INVESTIGATED"),
     status: z.undefined().optional(),
     claims: z.null(),
+    priorInvestigationResult: priorInvestigationResultSchema.nullable(),
   })
   .strict();
 
@@ -429,6 +434,7 @@ const extensionPostInvestigatingSchema = extensionPostStatusBaseSchema
     status: z.union([z.literal("PENDING"), z.literal("PROCESSING")]),
     provenance: contentProvenanceSchema,
     claims: z.null(),
+    priorInvestigationResult: priorInvestigationResultSchema.nullable(),
   })
   .strict();
 
@@ -456,7 +462,7 @@ const extensionPostInvestigatedSchema = extensionPostStatusBaseSchema
   })
   .strict();
 
-export const extensionPostStatusSchema = z.discriminatedUnion("investigationState", [
+export const extensionPostStatusSchema = z.union([
   extensionPostNotInvestigatedSchema,
   extensionPostInvestigatingSchema,
   extensionPostFailedSchema,

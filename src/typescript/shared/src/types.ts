@@ -2,18 +2,17 @@ import type { z } from "zod";
 
 // ── Claim/result structure (spec §3.2) ───────────────────────────────────
 
-export type InvestigationClaim = z.infer<
-  typeof import("./schemas.js").investigationClaimSchema
+type InvestigatedViewPostOutput = Extract<
+  z.infer<typeof import("./schemas.js").viewPostOutputSchema>,
+  { investigationState: "INVESTIGATED" }
 >;
+
+export type InvestigationClaim = InvestigatedViewPostOutput["claims"][number];
 
 export type InvestigationResult = z.infer<
   typeof import("./schemas.js").investigationResultSchema
 >;
 
-// ── Branded identifiers ───────────────────────────────────────────────────
-
-export type PostId = z.infer<typeof import("./schemas.js").postIdSchema>;
-export type SessionId = z.infer<typeof import("./schemas.js").sessionIdSchema>;
 export type InvestigationId = z.infer<
   typeof import("./schemas.js").investigationIdSchema
 >;
@@ -37,7 +36,10 @@ export interface PlatformMetadataByPlatform {
 
 // ── Platform adapter (spec §3.8) ──────────────────────────────────────────
 
-export type PlatformContent = z.infer<typeof import("./schemas.js").platformContentSchema>;
+export type PlatformContent = Extract<
+  z.infer<typeof import("./schemas.js").extensionMessageSchema>,
+  { type: "PAGE_CONTENT" }
+>["payload"]["content"];
 
 // ── tRPC input/output shapes ──────────────────────────────────────────────
 
@@ -74,7 +76,7 @@ export type SettingsValidationOutput = z.infer<
 // ── Extension/API tRPC contract ───────────────────────────────────────────
 
 export interface ExtensionApiProcedureContract {
-  "post.viewPost": {
+  "post.recordViewAndGetStatus": {
     kind: "mutation";
     input: ViewPostInputWire;
     output: ViewPostOutput;
@@ -136,10 +138,6 @@ export type ExtensionPageStatus = z.infer<
 
 export type ExtensionRuntimeErrorCode = z.infer<
   typeof import("./schemas.js").extensionRuntimeErrorCodeSchema
->;
-
-export type ExtensionMessageProtocolVersion = z.infer<
-  typeof import("./schemas.js").extensionMessageProtocolVersionSchema
 >;
 
 // ── Extension message protocol ────────────────────────────────────────────

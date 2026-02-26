@@ -1,7 +1,7 @@
 import { getPrisma } from "$lib/db/client";
 import { isUniqueConstraintError } from "$lib/db/errors.js";
 import {
-  INVESTIGATION_SYSTEM_PROMPT,
+  buildInvestigationPromptBundleText,
   INVESTIGATION_PROMPT_VERSION,
 } from "$lib/investigators/prompt.js";
 import { hashContent } from "@openerrata/shared";
@@ -32,7 +32,7 @@ export function getOrCreateCurrentPrompt(): Promise<{ id: string }> {
  */
 async function resolveCurrentPrompt(): Promise<{ id: string }> {
   const prisma = getPrisma();
-  const text = INVESTIGATION_SYSTEM_PROMPT;
+  const text = buildInvestigationPromptBundleText();
   const hash = await hashContent(text);
   const version = INVESTIGATION_PROMPT_VERSION;
 

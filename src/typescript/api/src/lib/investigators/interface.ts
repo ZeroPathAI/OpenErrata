@@ -3,6 +3,7 @@ import type {
   InvestigationModel,
   InvestigationProvider,
   InvestigationResult,
+  InvestigationClaim,
   Platform,
 } from "@openerrata/shared";
 
@@ -38,6 +39,9 @@ export interface InvestigatorInput {
   postPublishedAt?: string;
   imageUrls?: string[];
   hasVideo?: boolean;
+  isUpdate?: boolean;
+  oldClaims?: InvestigationClaim[];
+  contentDiff?: string;
 }
 
 export const investigatorRequestedToolAuditSchema = z.object({

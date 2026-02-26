@@ -70,6 +70,8 @@ async function createInvestigation(
     postId: string;
     promptId: string;
     canonical: CanonicalInvestigationContent;
+    parentInvestigationId?: string;
+    contentDiff?: string;
   },
 ): Promise<Investigation> {
   return prisma.investigation.create({
@@ -84,6 +86,10 @@ async function createInvestigation(
           : null,
       serverVerifiedAt: serverVerifiedAtFor(input.canonical.provenance),
       status: "PENDING",
+      // parentInvestigationId is the source of truth for update lineage.
+      isUpdate: (input.parentInvestigationId ?? null) !== null,
+      parentInvestigationId: input.parentInvestigationId ?? null,
+      contentDiff: input.contentDiff ?? null,
       promptId: input.promptId,
       provider: DEFAULT_INVESTIGATION_PROVIDER,
       model: DEFAULT_INVESTIGATION_MODEL,
@@ -241,6 +247,8 @@ type EnsureInvestigationInput = {
   postId: string;
   promptId: string;
   canonical: CanonicalInvestigationContent;
+  parentInvestigationId?: string;
+  contentDiff?: string;
   rejectOverWordLimitOnCreate?: boolean;
   allowRequeueFailed?: boolean;
   enqueue?: boolean;
@@ -287,11 +295,18 @@ async function ensureInvestigationRecord(
     }
 
     try {
-      investigation = await createInvestigation(input.prisma, {
+      const createInput: Parameters<typeof createInvestigation>[1] = {
         postId: input.postId,
         promptId: input.promptId,
         canonical: input.canonical,
-      });
+      };
+      if (input.parentInvestigationId !== undefined) {
+        createInput.parentInvestigationId = input.parentInvestigationId;
+      }
+      if (input.contentDiff !== undefined) {
+        createInput.contentDiff = input.contentDiff;
+      }
+      investigation = await createInvestigation(input.prisma, createInput);
       created = true;
     } catch (error) {
       if (!isUniqueConstraintError(error)) throw error;
@@ -330,6 +345,10 @@ async function ensureInvestigationRecord(
     investigation = await input.prisma.investigation.update({
       where: { id: investigation.id },
       data: {
+        // Keep denormalized isUpdate aligned with parentInvestigationId.
+        isUpdate: (input.parentInvestigationId ?? null) !== null,
+        parentInvestigationId: input.parentInvestigationId ?? null,
+        contentDiff: input.contentDiff ?? null,
         status: "PENDING",
         checkedAt: null,
       },

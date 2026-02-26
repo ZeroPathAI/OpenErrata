@@ -182,6 +182,21 @@ Four key design decisions:
    available, we include image URLs in the model input (`input_image`)
    alongside text. Video is not analyzed in v1, and posts with video are
    visibly skipped.
+5. **Edited posts use incremental updates.** If a post is edited and a prior
+   complete `SERVER_VERIFIED` investigation exists, we run an "update investigation"
+   that uses the previous claims plus a content diff to avoid unnecessary churn.
+
+### 2.4.3 Update-Aware Prompting
+
+For update investigations only, the prompt includes:
+
+- `oldClaims`: claims from the latest complete `SERVER_VERIFIED` investigation for the same post
+- `currentArticle`: normalized text of the new version
+- `contentDiff`: a deterministic line-oriented diff from the previous version
+
+The model is instructed to keep unchanged claims stable and only modify, remove, or add claims
+that materially change due to the diff. The default full-investigation path remains unchanged when no
+prior complete `SERVER_VERIFIED` investigation exists.
 
 ### Why Single-Pass
 
@@ -317,8 +332,13 @@ User visits post
   → API checks whether the selected content version has a completed investigation:
       HIT  → return { investigationState: "INVESTIGATED", claims: [...] }
              (already investigated for this content version; client is done)
-      MISS → return { investigationState: "NOT_INVESTIGATED", claims: null }
-             (no completed investigation yet for this content version)
+      MISS + latest complete SERVER_VERIFIED exists →
+         return { investigationState: "NOT_INVESTIGATED", claims: null,
+                  priorInvestigationResult: { oldClaims: claims, sourceInvestigationId } }
+         (reuse prior verified claims as interim context; no run is queued on viewPost)
+      MISS + only CLIENT_FALLBACK/none latest exists →
+         return { investigationState: "NOT_INVESTIGATED", claims: null }
+         (no completed investigation yet for this content version)
   → Client renders current state; viewPost alone does not enqueue a new investigation
   → Investigation begins only via investigateNow(...) or selector queueing
 ```
@@ -348,7 +368,8 @@ User clicks "Investigate Now" (or auto-investigate triggers)
 **Auto-investigate (extension-side):**
 
 ```
-After viewPost returns { investigationState: "NOT_INVESTIGATED", claims: null }
+After viewPost returns { investigationState: "NOT_INVESTIGATED", claims: null,
+                         priorInvestigationResult: { oldClaims, sourceInvestigationId } | null }
   → If user OpenAI key exists and auto-investigate is enabled:
       background worker calls investigateNow(...) and then polls for completion
   → Result is cached locally when returned
@@ -392,10 +413,16 @@ completed investigation matching the current version.
 - **Client input simplification**: the extension sends platform-observed content; the API computes
   the version key internally.
 - **Hit**: Return claims. The view still increments the counter.
-- **Miss**: Return `{ investigationState: "NOT_INVESTIGATED", claims: null }`. The view is recorded; the selector may pick this post
-  up later.
+- **Miss**: Return `{ investigationState: "NOT_INVESTIGATED", claims: null }` (optionally with
+  `priorInvestigationResult` when a prior complete `SERVER_VERIFIED` investigation exists).
+  The view is recorded; the selector may pick this post up later.
 - **Strict version rule**: Never return or render an investigation for a different content version
   of the same post. No fallback to older versions.
+- **Interim update rule**: For a version miss with no complete result on the requested
+  version, the API may return a prior complete `SERVER_VERIFIED` investigation as
+  interim via `priorInvestigationResult = { oldClaims, sourceInvestigationId }`.
+  This is a temporary UI state only, does not count as a final cache hit, and does
+  not by itself queue a new investigation run.
 - **Version key semantics**: In v1 the version key is derived from normalized text only. For
   LessWrong, normalized text is derived server-side from `metadata.htmlContent`; for X/Substack it
   is derived from `observedContentText`. Attached images are investigation context but are not part
@@ -453,6 +480,9 @@ consumers can apply their own trust policy.
   version matches the investigation's version**, `contentProvenance` is updated to
   `SERVER_VERIFIED` and `serverVerifiedAt` is set. If the versions differ, the existing
   investigation is left unchanged — it was run against different content.
+- **Interim display policy:** Interim reuse is only enabled when the prior completed investigation has
+  `contentProvenance = "SERVER_VERIFIED"`. `CLIENT_FALLBACK` investigations are never reused as
+  interim results on a new version.
 
 ## 2.10 Investigation Prioritization
 
@@ -532,6 +562,8 @@ For every completed investigation, persist audit artifacts:
 - Normalized per-attempt request/response records:
   requested tools, output items, output text parts + citations, reasoning summaries,
   tool calls (with raw provider payloads), token usage, and provider/parsing errors
+- Input lineage for update runs: `oldClaims`, current article text, and computed
+  content diff included in request/input records so we can reconstruct why only parts changed
 - Source snapshots or immutable excerpts used for claims, with hash and retrieval timestamp
 
 Stored artifacts are the canonical audit record. Re-running the same
@@ -604,6 +636,7 @@ model Post {
   lastViewedAt    DateTime?
   latestContentHash String?       // Best-available content hash (server-verified preferred; fallback client-observed)
   latestContentText String?       // Best-available content text used for selection/investigation
+  latestServerVerifiedContentHash String? // Most recent content hash with SERVER_VERIFIED provenance
   wordCount       Int             @default(0) // Computed on upsert from latestContentText. Posts >10000 words skipped by selector.
   investigations  Investigation[]
   viewCredits     PostViewCredit[]
@@ -733,11 +766,16 @@ model Investigation {
   fetchFailureReason String?    // Populated when provenance is CLIENT_FALLBACK
   serverVerifiedAt DateTime?    // Set when server-side fetch succeeds (null until then)
   status          CheckStatus
+  isUpdate        Boolean       @default(false) // True when this run updates an existing claim set after content edits
+  parentInvestigationId String?  // Prior completed investigation used as interim source
+  contentDiff     String?       // Line-oriented diff used for update-mode prompting
   promptId        String
   prompt          Prompt        @relation(fields: [promptId], references: [id])
   provider        InvestigationProvider
   model           InvestigationModel
   modelVersion    String?       // Provider-reported model revision/version when available
+  parentInvestigation    Investigation?  @relation("InvestigationUpdateLineage", fields: [parentInvestigationId], references: [id])
+  updates                Investigation[] @relation("InvestigationUpdateLineage")
   checkedAt       DateTime?
   attempts        InvestigationAttempt[]
   claims          Claim[]
@@ -1028,16 +1066,21 @@ postRouter.viewPost
             observedContentText?, // required for X/Substack; omitted for LessWrong
             metadata: { title?, authorName?, ... } }
   Output:
-    | { investigationState: "NOT_INVESTIGATED", claims: null }
+    | { investigationState: "NOT_INVESTIGATED", claims: null,
+        priorInvestigationResult: { oldClaims: Claim[], sourceInvestigationId: string } | null }
     | { investigationState: "INVESTIGATED", provenance: ContentProvenance, claims: Claim[] }
 
 // Fetch results for a specific investigation (used for polling)
 postRouter.getInvestigation
   Input:  { investigationId }
   Output:
-    | { investigationState: "NOT_INVESTIGATED", claims: null, checkedAt?: DateTime }
+    | { investigationState: "NOT_INVESTIGATED", claims: null,
+        priorInvestigationResult: { oldClaims: Claim[], sourceInvestigationId: string } | null,
+        checkedAt?: DateTime }
     | { investigationState: "INVESTIGATING", status: "PENDING" | "PROCESSING",
-        provenance: ContentProvenance, claims: null, checkedAt?: DateTime }
+        provenance: ContentProvenance, claims: null,
+        priorInvestigationResult: { oldClaims: Claim[], sourceInvestigationId: string } | null,
+        checkedAt?: DateTime }
     | { investigationState: "FAILED", provenance: ContentProvenance,
         claims: null, checkedAt?: DateTime }
     | { investigationState: "INVESTIGATED", provenance: ContentProvenance,
@@ -1221,6 +1264,18 @@ Cache lookup query:
 SELECT *
 FROM "Investigation"
 WHERE "postId" = $1 AND "contentHash" = $2 AND "status" = 'COMPLETE'
+LIMIT 1;
+```
+
+Interim update candidate query:
+
+```sql
+SELECT *
+FROM "Investigation"
+WHERE "postId" = $1
+  AND "status" = 'COMPLETE'
+  AND "contentProvenance" = 'SERVER_VERIFIED'
+ORDER BY "checkedAt" DESC
 LIMIT 1;
 ```
 

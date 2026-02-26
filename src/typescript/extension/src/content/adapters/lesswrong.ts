@@ -47,11 +47,12 @@ function parseAuthorSlug(href: string | null): string | null {
   return match?.[1] ?? null;
 }
 
-function extractPublishedAt(document: Document): string | null {
+function extractPublishedAt(document: Document, postScope: ParentNode): string | null {
   return (
     readFirstMetaDateAsIso(document, META_DATE_SELECTORS) ??
-    readFirstTimeDateAsIso([document]) ??
-    readPublishedDateFromJsonLd(document, JSON_LD_DATE_KEYS)
+    readPublishedDateFromJsonLd(postScope, JSON_LD_DATE_KEYS) ??
+    readPublishedDateFromJsonLd(document, JSON_LD_DATE_KEYS) ??
+    readFirstTimeDateAsIso([postScope, document])
   );
 }
 
@@ -335,7 +336,7 @@ export const lesswrongAdapter: PlatformAdapter = {
       .filter(Boolean);
     const slugToken = match[2];
     const slug = (slugToken === undefined ? "" : normalizeContent(slugToken)) || externalId;
-    const publishedAt = extractPublishedAt(document);
+    const publishedAt = extractPublishedAt(document, postScope);
 
     const imageUrls = extractImageUrlsFromRoot(canonicalRoot, url);
     const hasVideoOnlyMedia = canonicalRoot.querySelector("video, iframe") !== null;

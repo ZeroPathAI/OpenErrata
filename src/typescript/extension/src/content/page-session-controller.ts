@@ -9,6 +9,7 @@ import {
   type Platform,
   type PlatformContent,
   type ViewPostInput,
+  type ViewPostOutput,
 } from "@openerrata/shared";
 import type { PlatformAdapter } from "./adapters/index";
 import { getAdapter } from "./adapters/index";
@@ -206,6 +207,35 @@ function areClaimsEqual(
   }
 
   return true;
+}
+
+function extractDisplayClaimsFromViewPost(
+  viewPost: ViewPostOutput,
+): InvestigationClaim[] {
+  if (viewPost.investigationState === "INVESTIGATED") {
+    return viewPost.claims;
+  }
+  if (viewPost.priorInvestigationResult !== null) {
+    return viewPost.priorInvestigationResult.oldClaims;
+  }
+  return [];
+}
+
+function extractDisplayClaimsFromStatus(
+  status: ParsedExtensionPageStatus,
+): InvestigationClaim[] | null {
+  if (status.kind !== "POST") return null;
+  if (status.investigationState === "INVESTIGATED") {
+    return status.claims;
+  }
+  if (
+    (status.investigationState === "INVESTIGATING" ||
+      status.investigationState === "NOT_INVESTIGATED") &&
+    status.priorInvestigationResult !== null
+  ) {
+    return status.priorInvestigationResult.oldClaims;
+  }
+  return null;
 }
 
 export class PageSessionController {
@@ -606,7 +636,7 @@ export class PageSessionController {
     }
 
     this.#resetSyncRetryState();
-    this.#annotations.setClaims(viewPost.claims ?? []);
+    this.#annotations.setClaims(extractDisplayClaimsFromViewPost(viewPost));
     const applied = this.#annotations.render(snapshot.adapter);
     if (!applied) {
       this.scheduleRefresh();
@@ -682,10 +712,12 @@ export class PageSessionController {
     }
     const state = this.#state;
 
-    if (status.investigationState === "INVESTIGATED") {
+    const displayClaims = extractDisplayClaimsFromStatus(status);
+
+    if (displayClaims !== null) {
       const currentClaims = this.#annotations.getClaims();
-      if (!areClaimsEqual(currentClaims, status.claims)) {
-        this.#annotations.setClaims(status.claims);
+      if (!areClaimsEqual(currentClaims, displayClaims)) {
+        this.#annotations.setClaims(displayClaims);
         const applied = this.#annotations.render(state.adapter);
         if (!applied) {
           this.scheduleRefresh();

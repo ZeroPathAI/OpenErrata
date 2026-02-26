@@ -53,6 +53,7 @@ type UpsertPostInput = {
     url: string;
     contentText: string;
     contentHash: string;
+    latestServerVerifiedContentHash?: string;
     observedImageUrls?: string[];
     metadata: PlatformMetadataByPlatform[P];
   };
@@ -254,7 +255,7 @@ async function linkAuthorAndMetadata(
       postedAt: toOptionalDate(input.metadata.postedAt),
     };
     await prisma.xMeta.upsert({
-      where: { postId: input.postId },
+      where: { tweetId: input.externalId },
       create: {
         postId: input.postId,
         tweetId: input.externalId,
@@ -320,6 +321,9 @@ async function upsertPost(
       url: input.url,
       latestContentHash: input.contentHash,
       latestContentText: input.contentText,
+      ...(input.latestServerVerifiedContentHash === undefined
+        ? {}
+        : { latestServerVerifiedContentHash: input.latestServerVerifiedContentHash }),
       wordCount: wordCount(input.contentText),
       viewCount: options.countAsView ? 1 : 0,
       lastViewedAt: options.countAsView ? now : null,
@@ -334,6 +338,9 @@ async function upsertPost(
         : {}),
       latestContentText: input.contentText,
       latestContentHash: input.contentHash,
+      ...(input.latestServerVerifiedContentHash === undefined
+        ? {}
+        : { latestServerVerifiedContentHash: input.latestServerVerifiedContentHash }),
       wordCount: wordCount(input.contentText),
     },
   });
@@ -378,6 +385,9 @@ async function upsertPostFromViewInput(
     url: input.url,
     contentText: canonical.contentText,
     contentHash: canonical.contentHash,
+    ...(canonical.provenance === "SERVER_VERIFIED"
+      ? { latestServerVerifiedContentHash: canonical.contentHash }
+      : {}),
     ...(input.observedImageUrls !== undefined && { observedImageUrls: input.observedImageUrls }),
   };
 
@@ -507,6 +517,15 @@ async function loadInvestigationWithClaims(
           sources: true,
         },
       },
+      parentInvestigation: {
+        include: {
+          claims: {
+            include: {
+              sources: true,
+            },
+          },
+        },
+      },
     },
   });
 }
@@ -541,10 +560,104 @@ function toCanonicalFromObserved(observed: ContentVersion): CanonicalContentVers
   };
 }
 
+function toCanonicalInvestigationInput(
+  canonical: CanonicalContentVersion,
+): {
+  contentHash: string;
+  contentText: string;
+  provenance: "SERVER_VERIFIED";
+  fetchFailureReason?: string;
+} | {
+  contentHash: string;
+  contentText: string;
+  provenance: "CLIENT_FALLBACK";
+  fetchFailureReason: string;
+} {
+  if (canonical.provenance === "SERVER_VERIFIED") {
+    return {
+      contentHash: canonical.contentHash,
+      contentText: canonical.contentText,
+      provenance: "SERVER_VERIFIED",
+    };
+  }
+
+  return {
+    contentHash: canonical.contentHash,
+    contentText: canonical.contentText,
+    provenance: "CLIENT_FALLBACK",
+    fetchFailureReason: canonical.fetchFailureReason,
+  };
+}
+
+function buildLineDiff(previous: string, current: string): string {
+  if (previous === current) {
+    return "No changes detected.";
+  }
+
+  const previousLines = previous.split("\n");
+  const currentLines = current.split("\n");
+  const maxStart = Math.min(previousLines.length, currentLines.length);
+  let start = 0;
+  while (
+    start < maxStart &&
+    previousLines[start] === currentLines[start]
+  ) {
+    start += 1;
+  }
+
+  let previousEnd = previousLines.length;
+  let currentEnd = currentLines.length;
+  while (
+    previousEnd > start &&
+    currentEnd > start &&
+    previousLines[previousEnd - 1] === currentLines[currentEnd - 1]
+  ) {
+    previousEnd -= 1;
+    currentEnd -= 1;
+  }
+
+  const removed = previousLines.slice(start, previousEnd);
+  const added = currentLines.slice(start, currentEnd);
+
+  return [
+    "Diff summary (line context):",
+    "- Removed lines:",
+    removed.length > 0 ? removed.join("\n") : "(none)",
+    "+ Added lines:",
+    added.length > 0 ? added.join("\n") : "(none)",
+  ].join("\n");
+}
+
+async function findLatestServerVerifiedCompleteInvestigationForPost(
+  prisma: PrismaClient,
+  postId: string,
+) {
+  return prisma.investigation.findFirst({
+    where: {
+      postId,
+      status: "COMPLETE",
+      contentProvenance: "SERVER_VERIFIED",
+    },
+    orderBy: {
+      checkedAt: "desc",
+    },
+    include: {
+      claims: {
+        include: {
+          sources: true,
+        },
+      },
+    },
+  });
+}
+
 type PreparedPostForInvestigation = {
   post: Awaited<ReturnType<typeof upsertPostFromViewInput>>;
   canonical: CanonicalContentVersion;
   complete: Awaited<ReturnType<typeof findCompletedInvestigationByPostAndHash>>;
+  sourceInvestigation: Awaited<
+    ReturnType<typeof findLatestServerVerifiedCompleteInvestigationForPost>
+  >;
 };
 
 async function preparePostForInvestigation(
@@ -572,6 +685,7 @@ async function preparePostForInvestigation(
         post,
         canonical,
         complete: completeFromObserved,
+        sourceInvestigation: null,
       };
     }
   }
@@ -597,24 +711,82 @@ async function preparePostForInvestigation(
     canonical.contentHash,
   );
 
+  const sourceInvestigation =
+    canonical.provenance === "SERVER_VERIFIED"
+      ? await findLatestServerVerifiedCompleteInvestigationForPost(prisma, post.id)
+      : null;
+
   return {
     post,
     canonical,
     complete,
+    sourceInvestigation:
+      complete === null || sourceInvestigation?.contentHash !== canonical.contentHash
+        ? sourceInvestigation
+        : null,
   };
 }
 
+async function ensureInvestigationsWithUpdateMetadata(
+  input: {
+    prisma: PrismaClient;
+    promptId: string;
+    postId: string;
+    canonical: CanonicalContentVersion;
+    sourceInvestigation: Awaited<
+      ReturnType<typeof findLatestServerVerifiedCompleteInvestigationForPost>
+    >;
+    onPendingRun?: Parameters<typeof ensureInvestigationQueued>[0]["onPendingRun"];
+  },
+) {
+  if (input.sourceInvestigation === null) {
+    const investigationContent = toCanonicalInvestigationInput(input.canonical);
+    return ensureInvestigationQueued({
+      prisma: input.prisma,
+      postId: input.postId,
+      promptId: input.promptId,
+      canonical: investigationContent,
+      rejectOverWordLimitOnCreate: true,
+      allowRequeueFailed: true,
+      ...(input.onPendingRun === undefined
+        ? {}
+        : { onPendingRun: input.onPendingRun }),
+    });
+  }
+
+  const contentDiff = buildLineDiff(
+    input.sourceInvestigation.contentText,
+    input.canonical.contentText,
+  );
+  const investigationContent = toCanonicalInvestigationInput(input.canonical);
+  return ensureInvestigationQueued({
+    prisma: input.prisma,
+    postId: input.postId,
+    promptId: input.promptId,
+    canonical: investigationContent,
+    parentInvestigationId: input.sourceInvestigation.id,
+    contentDiff,
+    rejectOverWordLimitOnCreate: true,
+    allowRequeueFailed: true,
+    ...(input.onPendingRun === undefined
+      ? {}
+      : { onPendingRun: input.onPendingRun }),
+  });
+}
+
 export const postRouter = router({
-  viewPost: publicProcedure
+  recordViewAndGetStatus: publicProcedure
     .input(viewPostInputSchema)
     .output(viewPostOutputSchema)
     .mutation(async ({ input, ctx }) => {
-      const { post, canonical, complete } = await preparePostForInvestigation(
+      const { post, canonical, complete, sourceInvestigation } =
+        await preparePostForInvestigation(
         ctx.prisma,
         input,
         {
-        countAsView: true,
-      });
+          countAsView: true,
+        },
+      );
 
       await maybeIncrementUniqueViewScore(
         ctx.prisma,
@@ -639,9 +811,24 @@ export const postRouter = router({
         };
       }
 
+      if (
+        canonical.provenance === "SERVER_VERIFIED" &&
+        sourceInvestigation !== null
+      ) {
+        return {
+          investigationState: "NOT_INVESTIGATED" as const,
+          claims: null,
+          priorInvestigationResult: {
+            oldClaims: formatClaims(sourceInvestigation.claims),
+            sourceInvestigationId: sourceInvestigation.id,
+          },
+        };
+      }
+
       return {
         investigationState: "NOT_INVESTIGATED" as const,
         claims: null,
+        priorInvestigationResult: null,
       };
     }),
 
@@ -658,6 +845,7 @@ export const postRouter = router({
         return {
           investigationState: "NOT_INVESTIGATED" as const,
           claims: null,
+          priorInvestigationResult: null,
         };
       }
 
@@ -679,6 +867,14 @@ export const postRouter = router({
             status: investigation.status,
             provenance: investigation.contentProvenance,
             claims: null,
+            priorInvestigationResult:
+              investigation.parentInvestigation !== null &&
+              investigation.parentInvestigation.status === "COMPLETE"
+                ? {
+                    oldClaims: formatClaims(investigation.parentInvestigation.claims),
+                    sourceInvestigationId: investigation.parentInvestigation.id,
+                  }
+                : null,
             checkedAt: investigation.checkedAt?.toISOString(),
           };
         case "FAILED":
@@ -704,12 +900,14 @@ export const postRouter = router({
         });
       }
 
-      const { post, canonical, complete } = await preparePostForInvestigation(
+      const { post, canonical, complete, sourceInvestigation } =
+        await preparePostForInvestigation(
         ctx.prisma,
         input,
         {
-        countAsView: false,
-      });
+          countAsView: false,
+        },
+      );
 
       if (complete) {
         return {
@@ -722,27 +920,12 @@ export const postRouter = router({
 
       const prompt = await getOrCreateCurrentPrompt();
       try {
-        const canonicalInvestigationContent =
-          canonical.provenance === "SERVER_VERIFIED"
-            ? {
-                contentHash: canonical.contentHash,
-                contentText: canonical.contentText,
-                provenance: "SERVER_VERIFIED" as const,
-              }
-            : {
-                contentHash: canonical.contentHash,
-                contentText: canonical.contentText,
-                provenance: "CLIENT_FALLBACK" as const,
-                fetchFailureReason: canonical.fetchFailureReason,
-              };
-
-        const { investigation } = await ensureInvestigationQueued({
+        const { investigation } = await ensureInvestigationsWithUpdateMetadata({
           prisma: ctx.prisma,
           postId: post.id,
           promptId: prompt.id,
-          canonical: canonicalInvestigationContent,
-          rejectOverWordLimitOnCreate: true,
-          allowRequeueFailed: true,
+          canonical,
+          sourceInvestigation,
           onPendingRun: async ({ prisma, run }) => {
             if (ctx.userOpenAiApiKey === null) return;
             await attachOpenAiKeySourceIfPendingRun(prisma, {

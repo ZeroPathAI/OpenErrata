@@ -30,7 +30,7 @@ import type {
 } from "$lib/generated/prisma/client";
 import { createHash } from "node:crypto";
 import { ZodError } from "zod";
-import { MAX_IMAGES_PER_INVESTIGATION } from "@openerrata/shared";
+import { claimIdSchema, MAX_IMAGES_PER_INVESTIGATION } from "@openerrata/shared";
 
 interface Logger {
   info(msg: string): void;
@@ -69,7 +69,18 @@ type InvestigationWithContext = Prisma.InvestigationGetPayload<{
 type InvestigationPostContext = InvestigationWithContext["post"];
 const runContextInclude = {
   investigation: {
-    include: investigationContextInclude,
+    include: {
+      ...investigationContextInclude,
+      parentInvestigation: {
+        include: {
+          claims: {
+            include: {
+              sources: true,
+            },
+          },
+        },
+      },
+    },
   },
 } satisfies Prisma.InvestigationRunInclude;
 type InvestigationRunWithContext = Prisma.InvestigationRunGetPayload<{
@@ -771,11 +782,39 @@ export async function orchestrateInvestigation(
       investigation.id,
       promptPostContext.imageUrls,
     );
+
+    if (
+      investigation.parentInvestigationId !== null &&
+      investigation.parentInvestigation === null
+    ) {
+      throw new Error(
+        `Update investigation ${investigation.id} is missing parent investigation`,
+      );
+    }
+
     const output = await investigator.investigate({
       contentText: investigation.contentText,
       ...promptPostContext,
       imageUrls: imageDataUris,
       ...(promptPostContext.hasVideo ? { hasVideo: true } : {}),
+      ...(investigation.parentInvestigation !== null && {
+        isUpdate: true,
+        ...(investigation.contentDiff === null
+          ? {}
+          : { contentDiff: investigation.contentDiff }),
+        oldClaims: investigation.parentInvestigation.claims.map((claim) => ({
+          id: claimIdSchema.parse(claim.id),
+          text: claim.text,
+          context: claim.context,
+          summary: claim.summary,
+          reasoning: claim.reasoning,
+          sources: claim.sources.map((source) => ({
+            url: source.url,
+            title: source.title,
+            snippet: source.snippet,
+          })),
+        })),
+      }),
     });
 
     // Guard-first: atomically transition PROCESSING → COMPLETE.
