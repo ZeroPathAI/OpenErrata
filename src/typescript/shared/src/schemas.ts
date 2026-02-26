@@ -17,7 +17,7 @@ export const contentProvenanceSchema = z.enum(CONTENT_PROVENANCE_VALUES);
 const postMediaStateSchema = z.enum([
   "text_only",
   "has_images",
-  "video_only",
+  "has_video",
 ]);
 
 const utf8Encoder = new TextEncoder();
@@ -494,7 +494,7 @@ export const extensionPostStatusSchema = z.discriminatedUnion(
 );
 
 const extensionSkippedReasonSchema = z.enum([
-  "video_only",
+  "has_video",
   "word_count",
   "no_text",
   "private_or_gated",

@@ -60,8 +60,8 @@ misleading.
 ## 2.1 Scope
 
 v1 ships fact-checking for posts on LessWrong, X, and Substack. Investigations
-use post text plus attached images when available. Posts with videos are
-skipped.
+use post text plus attached images when available. Posts classified as
+`has_video` (video/iframe detected and no extracted images) are skipped.
 
 Users can trigger investigations in two ways (both async queued):
 
@@ -83,7 +83,7 @@ The following are explicitly out of scope:
 - Fact-checking comments or threads, in addition to top-level isolated posts.
 - Mobile support.
 - Analysis of:
-  - Content with video
+  - Video content itself (video/iframe frames are not analyzed in v1)
   - Comments
   - Quote Tweets
 - End-user appeals — users can flag errors or omissions in an investigation, and
@@ -180,8 +180,9 @@ Four key design decisions:
    history it needs.
 4. **Investigations are multimodal for images.** When image attachments are
    available, we include image URLs in the model input (`input_image`)
-   alongside text. Video is not analyzed in v1, and posts with video are
-   visibly skipped.
+   alongside text. Video is not analyzed in v1; posts classified as
+   `has_video` (video/iframe detected and no extracted images) are visibly
+   skipped.
 5. **Edited posts use incremental updates.** If a post is edited and a prior
    complete `SERVER_VERIFIED` investigation exists, we run an "update investigation"
    that uses the previous claims plus a content diff to avoid unnecessary churn.
@@ -209,7 +210,7 @@ prior complete `SERVER_VERIFIED` investigation exists.
 
 **Word count limit:** v1 only investigates posts up to ~10,000 words. Posts
 exceeding this limit are skipped with an indication in the extension (just like
-video posts). This keeps the single-pass model simple and avoids chunking
+`has_video` posts). This keeps the single-pass model simple and avoids chunking
 complexity. The limit covers the vast majority of tweets and mid-length
 LessWrong/SubStack posts.
 
@@ -260,9 +261,9 @@ The prompt principles (exact wording TBD):
   system and will be selectively highlighted.
 - **Claims must remain text-grounded.** Even when images are provided to the investigator, flagged
   claims must still be exact verbatim quotes from the post text so DOM matching remains reliable.
-- **Video is non-analyzable in v1.** Video-only posts are skipped. Posts containing text/images plus
-  video are investigated using text + images, and the model is expected to note that video was
-  present but unanalyzed.
+- **Video is non-analyzable in v1.** Posts classified as `has_video` (video/iframe detected and no
+  extracted images) are skipped even when text is present. When extracted images are present, the
+  post is investigated using text + images, and video remains unanalyzed.
 
 ## 2.5 User Interface
 
@@ -704,8 +705,8 @@ model LesswrongMeta {
   title           String
   htmlContent     String
   imageUrls       String[]
-  wordCount       Int?
-  karma           Int?
+  wordCount       Int?      // Reserved in schema; v1 ingestion path does not currently populate this.
+  karma           Int?      // Reserved in schema; v1 ingestion path does not currently populate this.
   authorName      String
   authorSlug      String?
   tags            String[]
@@ -818,7 +819,7 @@ model InvestigationAttempt {
   investigationId         String
   investigation           Investigation @relation(fields: [investigationId], references: [id])
   attemptNumber           Int
-  outcome                 InvestigationAttemptOutcome?
+  outcome                 InvestigationAttemptOutcome
   requestModel            String   // Provider request model id (e.g. gpt-5-*)
   requestInstructions     String   // Exact instructions/system prompt sent
   requestInput            String   // Exact user input sent
@@ -1381,7 +1382,7 @@ interface PlatformContent {
   externalId: string;
   url: string;
   contentText: string; // Client-observed normalized plain text; must be non-empty
-  mediaState: "text_only" | "has_images" | "video_only";
+  mediaState: "text_only" | "has_images" | "has_video"; // "has_video" means video/iframe detected and imageUrls is empty; text may still be present.
   imageUrls: string[];
   metadata: Record<string, unknown>;
 }
@@ -1428,8 +1429,8 @@ DOM manipulation is reliable.
 6. Send `{ platform: "LESSWRONG", externalId, url, metadata.htmlContent, observedImageUrls? }` to background worker.
 
 **Media behavior:** Posts with images are investigated. Posts detected as private/gated are
-skipped (`reason: "private_or_gated"`). Among public posts, only `video_only` posts
-(video/iframe without images) are skipped.
+skipped (`reason: "private_or_gated"`). Among public posts, only `has_video` posts
+(video/iframe without images, even when text is present) are skipped.
 
 **React reconciliation:** LessWrong uses React 16+. Use `MutationObserver` to detect re-renders and
 re-apply annotations. Store annotations in extension state, not DOM.
@@ -1445,7 +1446,7 @@ X uses a React SPA with aggressive DOM recycling.
 
 **Media behavior:** Extract image URLs separately from video detection. Investigate image posts.
 Skip private/protected tweets (`reason: "private_or_gated"`). Among accessible tweets, skip
-only `video_only` tweets (video present, no extracted images).
+only `has_video` tweets (video present, no extracted images, even when tweet text exists).
 
 ## 3.11 Substack Content Script
 

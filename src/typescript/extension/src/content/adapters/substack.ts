@@ -427,7 +427,7 @@ export const substackAdapter: PlatformAdapter = {
       imageUrls.length > 0
         ? "has_images"
         : hasVideo
-          ? "video_only"
+          ? "has_video"
           : "text_only";
 
     return {

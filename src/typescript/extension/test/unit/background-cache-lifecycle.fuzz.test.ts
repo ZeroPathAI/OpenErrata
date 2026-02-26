@@ -128,7 +128,7 @@ test("randomized tab-cache lifecycle preserves cache and badge invariants", asyn
   const knownSkipReasons: ExtensionSkippedReason[] = [
     "word_count",
     "unsupported_content",
-    "video_only",
+    "has_video",
     "no_text",
     "private_or_gated",
   ];

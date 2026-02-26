@@ -176,7 +176,7 @@ test("LessWrong post URL without slug still reaches a terminal skipped status", 
     await expectSkippedStatus(harness.serviceWorker, {
       platform: "LESSWRONG",
       externalId: postId,
-      reason: "video_only",
+      reason: "has_video",
     });
   } finally {
     await closeExtensionHarness(harness);
@@ -220,7 +220,7 @@ test("X i/status URL still reaches a terminal skipped status", async () => {
     await expectSkippedStatus(harness.serviceWorker, {
       platform: "X",
       externalId: tweetId,
-      reason: "video_only",
+      reason: "has_video",
     });
   } finally {
     await closeExtensionHarness(harness);
@@ -309,7 +309,7 @@ test("X i/web/status permalink anchors are accepted for target tweet extraction"
     await expectSkippedStatus(harness.serviceWorker, {
       platform: "X",
       externalId: tweetId,
-      reason: "video_only",
+      reason: "has_video",
     });
   } finally {
     await closeExtensionHarness(harness);
@@ -354,7 +354,7 @@ test("X single-article fallback is allowed when canonical identity proves target
     await expectSkippedStatus(harness.serviceWorker, {
       platform: "X",
       externalId: tweetId,
-      reason: "video_only",
+      reason: "has_video",
     });
   } finally {
     await closeExtensionHarness(harness);

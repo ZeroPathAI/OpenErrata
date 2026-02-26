@@ -587,14 +587,14 @@ export class PageSessionController {
       };
     }
 
-    if (content.mediaState === "video_only") {
+    if (content.mediaState === "has_video") {
       return {
         kind: "SKIPPED",
         sessionKey: pageKeyFor(content),
         platform: content.platform,
         externalId: content.externalId,
         pageUrl: content.url,
-        reason: "video_only",
+        reason: "has_video",
       };
     }
 
