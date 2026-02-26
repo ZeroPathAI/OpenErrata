@@ -70,10 +70,16 @@ rules:
       - configmaps
       - secrets
       - services
+      # Pulumi's Service await path reads Endpoints to confirm ready backends.
+      - endpoints
       - pods
       - persistentvolumeclaims
       - serviceaccounts
       - events
+    verbs: ["*"]
+  # Discovery resources used by modern Service endpoint publishing.
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
     verbs: ["*"]
   # Workload controllers
   - apiGroups: ["apps"]
