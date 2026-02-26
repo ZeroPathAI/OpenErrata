@@ -523,7 +523,7 @@ async function seedInvestigationRun(input: {
 async function seedClaimWithSource(
   investigationId: string,
   index: number,
-): Promise<void> {
+): Promise<{ id: string }> {
   const claim = await prisma.claim.create({
     data: {
       investigationId,
@@ -544,6 +544,8 @@ async function seedClaimWithSource(
       retrievedAt: new Date("2026-02-19T00:00:00.000Z"),
     },
   });
+
+  return { id: claim.id };
 }
 
 async function seedCorroborationCredits(
@@ -2040,7 +2042,7 @@ void test("orchestrateInvestigation passes update context to investigator for up
     contentText: post.contentText,
     provenance: "SERVER_VERIFIED",
   });
-  await seedClaimWithSource(parentInvestigation.id, 1);
+  const parentClaim = await seedClaimWithSource(parentInvestigation.id, 1);
 
   const updatedContentText = normalizeContent(
     "Original content before edit. Edited sentence added here.",
@@ -2098,6 +2100,7 @@ void test("orchestrateInvestigation passes update context to investigator for up
   assert.equal(capturedInput.contentDiff, contentDiff);
   assert.deepStrictEqual(capturedInput.oldClaims, [
     {
+      id: parentClaim.id,
       text: "Claim 1",
       context: "Context 1",
       summary: "Summary 1",
