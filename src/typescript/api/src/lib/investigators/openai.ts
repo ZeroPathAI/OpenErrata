@@ -43,6 +43,7 @@ const OPENAI_MODEL_ID = getEnv().OPENAI_MODEL_ID;
 const DEFAULT_REASONING_EFFORT = "medium";
 const DEFAULT_REASONING_SUMMARY = "detailed";
 const MAX_RESPONSE_TOOL_ROUNDS = getEnv().OPENAI_MAX_RESPONSE_TOOL_ROUNDS;
+const MAX_PER_CLAIM_VALIDATION_CONCURRENCY = 4;
 const TWO_STEP_REQUEST_INSTRUCTIONS = `=== Stage 1: Fact-check instructions ===
 ${INVESTIGATION_SYSTEM_PROMPT}
 
@@ -726,7 +727,8 @@ export class InvestigatorExecutionError extends Error {
 type PerClaimValidationResult = {
   claimIndex: number;
   approved: boolean;
-  responseAudit: InvestigatorResponseAudit;
+  responseAudit: InvestigatorResponseAudit | null;
+  error: Error | null;
 };
 
 async function validateClaim(
@@ -744,43 +746,60 @@ async function validateClaim(
     candidateClaim: claim,
   });
 
-  const response = await client.responses.create({
-    model: OPENAI_MODEL_ID,
-    stream: false,
-    instructions: INVESTIGATION_VALIDATION_SYSTEM_PROMPT,
-    input: validationPrompt,
-    reasoning: requestReasoning,
-    text: {
-      format: zodTextFormat(
-        claimValidationResultSchema,
-        "claim_validation_result",
-      ),
-    },
-  });
+  let response: unknown;
+  try {
+    response = await client.responses.create({
+      model: OPENAI_MODEL_ID,
+      stream: false,
+      instructions: INVESTIGATION_VALIDATION_SYSTEM_PROMPT,
+      input: validationPrompt,
+      reasoning: requestReasoning,
+      text: {
+        format: zodTextFormat(
+          claimValidationResultSchema,
+          "claim_validation_result",
+        ),
+      },
+    });
+  } catch (caught) {
+    return {
+      claimIndex,
+      approved: false,
+      responseAudit: null,
+      error: caught instanceof Error ? caught : new Error(String(caught)),
+    };
+  }
 
   const responseRecord = isRecord(response) ? response : {};
   const responseAudit = extractResponseAudit(responseRecord);
+  try {
+    if (responseAudit.responseStatus !== "completed") {
+      throw new InvestigatorIncompleteResponseError({
+        responseStatus: responseAudit.responseStatus,
+        responseId: responseAudit.responseId,
+        incompleteReason: readIncompleteReason(responseRecord),
+        outputTextLength: responseAudit.responseOutputText?.length ?? 0,
+      });
+    }
 
-  if (responseAudit.responseStatus !== "completed") {
-    throw new InvestigatorIncompleteResponseError({
-      responseStatus: responseAudit.responseStatus,
-      responseId: responseAudit.responseId,
-      incompleteReason: readIncompleteReason(responseRecord),
-      outputTextLength: responseAudit.responseOutputText?.length ?? 0,
-    });
+    const outputText = responseAudit.responseOutputText ?? "";
+    if (outputText.trim().length === 0) {
+      throw new InvestigatorStructuredOutputError(
+        "Claim validation returned empty structured output",
+      );
+    }
+
+    const parsed: unknown = JSON.parse(outputText);
+    const { approved } = claimValidationResultSchema.parse(parsed);
+    return { claimIndex, approved, responseAudit, error: null };
+  } catch (caught) {
+    return {
+      claimIndex,
+      approved: false,
+      responseAudit,
+      error: caught instanceof Error ? caught : new Error(String(caught)),
+    };
   }
-
-  const outputText = responseAudit.responseOutputText ?? "";
-  if (outputText.trim().length === 0) {
-    throw new InvestigatorStructuredOutputError(
-      "Claim validation returned empty structured output",
-    );
-  }
-
-  const parsed: unknown = JSON.parse(outputText);
-  const { approved } = claimValidationResultSchema.parse(parsed);
-
-  return { claimIndex, approved, responseAudit };
 }
 
 export class OpenAIInvestigator implements Investigator {
@@ -1169,11 +1188,19 @@ export class OpenAIInvestigator implements Investigator {
       };
     }
 
-    // Run per-claim validations in parallel.
-    let validationResults: PerClaimValidationResult[];
-    try {
-      validationResults = await Promise.all(
-        claimsToValidate.map(({ index, claim }) =>
+    const validationResults: PerClaimValidationResult[] = [];
+
+    for (
+      let batchStart = 0;
+      batchStart < claimsToValidate.length;
+      batchStart += MAX_PER_CLAIM_VALIDATION_CONCURRENCY
+    ) {
+      const batch = claimsToValidate.slice(
+        batchStart,
+        batchStart + MAX_PER_CLAIM_VALIDATION_CONCURRENCY,
+      );
+      const outcomes = await Promise.all(
+        batch.map(({ index, claim }) =>
           validateClaim(
             client,
             index,
@@ -1183,16 +1210,63 @@ export class OpenAIInvestigator implements Investigator {
           ),
         ),
       );
-    } catch (error) {
+
+      validationResults.push(...outcomes);
+
+      if (outcomes.some((outcome) => outcome.error !== null)) {
+        break;
+      }
+    }
+
+    const failedValidations = validationResults.filter(
+      (result) => result.error !== null,
+    );
+    const validationFailureResponseAudits = failedValidations.flatMap((result) =>
+      result.responseAudit === null ? [] : [result.responseAudit],
+    );
+    const successfulValidations = validationResults.filter(
+      (result) => result.error === null,
+    );
+
+    let validationOutputOffset = factCheckResponseAudit.outputItems.length;
+    const orderedValidationResponseAudits = [
+      ...successfulValidations.flatMap((result) =>
+        result.responseAudit === null ? [] : [result.responseAudit],
+      ),
+      ...validationFailureResponseAudits,
+    ].map((responseAudit) => {
+      const offsetAudit = offsetResponseAuditIndices(
+        responseAudit,
+        validationOutputOffset,
+      );
+      validationOutputOffset += responseAudit.outputItems.length;
+      return offsetAudit;
+    });
+
+    const fullAttemptResponseAudit = mergeResponseAudits([
+      factCheckResponseAudit,
+      ...orderedValidationResponseAudits,
+    ]);
+
+    if (failedValidations.length > 0) {
+      const firstFailure = failedValidations[0];
+      if (!firstFailure?.error) {
+        throw new Error("Invariant violation: failed validations must include an error");
+      }
+
+      const failedClaimIndicesLabel = failedValidations
+        .map((failure) => failure.claimIndex.toString())
+        .join(", ");
+
       throw new InvestigatorExecutionError(
-        "Per-claim validation failed",
+        `Per-claim validation failed for claim indices: ${failedClaimIndicesLabel}`,
         parseInvestigatorAttemptAudit({
           ...stageTwoAttemptAuditBase,
           completedAt: new Date().toISOString(),
-          response: factCheckResponseAudit,
-          error: buildErrorAudit(error),
+          response: fullAttemptResponseAudit,
+          error: buildErrorAudit(firstFailure.error),
         }),
-        error,
+        firstFailure.error,
       );
     }
 
@@ -1203,7 +1277,7 @@ export class OpenAIInvestigator implements Investigator {
         approvedIndices.add(d.index);
       }
     }
-    for (const r of validationResults) {
+    for (const r of successfulValidations) {
       if (r.approved) {
         approvedIndices.add(r.claimIndex);
       }
@@ -1212,23 +1286,6 @@ export class OpenAIInvestigator implements Investigator {
     const filteredClaims = claimDispositions
       .filter((d) => approvedIndices.has(d.index))
       .map((d) => d.claim);
-
-    // Merge all response audits (fact-check + per-claim validations) with
-    // sequential output-index offsets so the combined audit is coherent.
-    let validationOutputOffset = factCheckResponseAudit.outputItems.length;
-    const offsetValidationAudits = validationResults.map((r) => {
-      const offset = offsetResponseAuditIndices(
-        r.responseAudit,
-        validationOutputOffset,
-      );
-      validationOutputOffset += r.responseAudit.outputItems.length;
-      return offset;
-    });
-
-    const fullAttemptResponseAudit = mergeResponseAudits([
-      factCheckResponseAudit,
-      ...offsetValidationAudits,
-    ]);
 
     let result: InvestigationResult;
     try {
