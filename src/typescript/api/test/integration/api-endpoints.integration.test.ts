@@ -2064,15 +2064,33 @@ void test("orchestrateInvestigation passes update context to investigator for up
     investigationId: updateInvestigation.id,
   });
 
-  let capturedInput: InvestigatorInput | null = null;
+  let sawExpectedUpdateContext = false;
   const originalInvestigateDescriptor = Object.getOwnPropertyDescriptor(
     OpenAIInvestigator.prototype,
     "investigate",
   );
   assert.ok(originalInvestigateDescriptor);
   assert.equal(typeof originalInvestigateDescriptor.value, "function");
-  OpenAIInvestigator.prototype.investigate = async (input) => {
-    capturedInput = input;
+  OpenAIInvestigator.prototype.investigate = async (input: InvestigatorInput) => {
+    assert.equal(input.isUpdate, true);
+    assert.equal(input.contentDiff, contentDiff);
+    assert.deepStrictEqual(input.oldClaims, [
+      {
+        id: parentClaim.id,
+        text: "Claim 1",
+        context: "Context 1",
+        summary: "Summary 1",
+        reasoning: "Reasoning 1",
+        sources: [
+          {
+            url: "https://example.com/source-1",
+            title: "Source 1",
+            snippet: "Snippet 1",
+          },
+        ],
+      },
+    ]);
+    sawExpectedUpdateContext = true;
     return {
       result: { claims: [] },
       attemptAudit: buildSucceededAttemptAudit("update-context"),
@@ -2094,26 +2112,7 @@ void test("orchestrateInvestigation passes update context to investigator for up
     );
   }
 
-  assert.notEqual(capturedInput, null);
-  assert.ok(capturedInput);
-  assert.equal(capturedInput.isUpdate, true);
-  assert.equal(capturedInput.contentDiff, contentDiff);
-  assert.deepStrictEqual(capturedInput.oldClaims, [
-    {
-      id: parentClaim.id,
-      text: "Claim 1",
-      context: "Context 1",
-      summary: "Summary 1",
-      reasoning: "Reasoning 1",
-      sources: [
-        {
-          url: "https://example.com/source-1",
-          title: "Source 1",
-          snippet: "Snippet 1",
-        },
-      ],
-    },
-  ]);
+  assert.equal(sawExpectedUpdateContext, true);
 
   const storedInvestigation = await prisma.investigation.findUnique({
     where: { id: updateInvestigation.id },
