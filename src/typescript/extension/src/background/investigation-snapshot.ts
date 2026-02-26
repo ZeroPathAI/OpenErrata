@@ -1,16 +1,17 @@
-import type {
-  ExtensionPostStatus,
-  InvestigationClaim,
-  InvestigationId,
-  InvestigationStatusOutput,
-  InvestigateNowOutput,
-  ViewPostOutput,
+import {
+  priorInvestigationResultSchema,
+  type ExtensionPostStatus,
+  type InvestigationStatusOutput,
+  type InvestigateNowOutput,
+  type ViewPostOutput,
 } from "@openerrata/shared";
 
-type UpdateInterimClaims = {
-  oldClaims: InvestigationClaim[];
-  sourceInvestigationId: InvestigationId;
-};
+type UpdateInterimClaims = NonNullable<
+  Extract<
+    InvestigationStatusOutput,
+    { investigationState: "NOT_INVESTIGATED" }
+  >["priorInvestigationResult"]
+>;
 
 export function snapshotFromInvestigateNowResult(
   result: InvestigateNowOutput,
@@ -51,22 +52,13 @@ export function snapshotFromInvestigateNowResult(
   }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
 function readPriorInvestigationResult(snapshot: unknown): UpdateInterimClaims | null {
-  if (!isRecord(snapshot)) return null;
+  if (typeof snapshot !== "object" || snapshot === null) return null;
   if (!("priorInvestigationResult" in snapshot)) return null;
-  const priorInvestigationResult = snapshot["priorInvestigationResult"];
-  if (!isRecord(priorInvestigationResult)) return null;
-  if (!("oldClaims" in priorInvestigationResult)) return null;
-  if (!("sourceInvestigationId" in priorInvestigationResult)) return null;
-  return {
-    oldClaims: priorInvestigationResult["oldClaims"] as InvestigationClaim[],
-    sourceInvestigationId:
-      priorInvestigationResult["sourceInvestigationId"] as InvestigationId,
-  };
+  const result = priorInvestigationResultSchema.safeParse(
+    (snapshot as Record<string, unknown>)["priorInvestigationResult"],
+  );
+  return result.success ? result.data : null;
 }
 
 export function toInvestigationStatusForCaching(

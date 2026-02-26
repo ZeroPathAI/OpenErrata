@@ -13,9 +13,6 @@ export type InvestigationResult = z.infer<
   typeof import("./schemas.js").investigationResultSchema
 >;
 
-export type InvestigationId = z.infer<
-  typeof import("./schemas.js").investigationIdSchema
->;
 export type ClaimId = z.infer<typeof import("./schemas.js").claimIdSchema>;
 
 // ── Platform metadata contracts ───────────────────────────────────────────

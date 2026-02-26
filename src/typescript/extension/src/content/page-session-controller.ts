@@ -426,6 +426,15 @@ export class PageSessionController {
     this.#nextSyncRetryDelayMs = SYNC_RETRY_INITIAL_MS;
   }
 
+  #syncCachedFailureStatus(): void {
+    void this.#syncStatusFromBackgroundCache().catch((error: unknown) => {
+      if (isExtensionContextInvalidatedError(error)) {
+        return;
+      }
+      console.error("Failed to sync cached failure status:", error);
+    });
+  }
+
   #scheduleSyncRetry(sessionKey: string): void {
     this.#pendingSyncRetrySessionKey = sessionKey;
     const retryDelayMs = this.#nextSyncRetryDelayMs;
@@ -621,6 +630,8 @@ export class PageSessionController {
     } catch (error) {
       if (isContentMismatchRuntimeError(error)) {
         this.#resetSyncRetryState();
+        this.#annotations.clearAll();
+        this.#syncCachedFailureStatus();
         console.warn(
           "Page content mismatch with server-verified canonical content; skipping retries.",
           error,
@@ -629,6 +640,8 @@ export class PageSessionController {
       }
       if (isPayloadTooLargeRuntimeError(error)) {
         this.#resetSyncRetryState();
+        this.#annotations.clearAll();
+        this.#syncCachedFailureStatus();
         console.warn(
           "Page content request exceeded API body size limit; skipping retries.",
           error,

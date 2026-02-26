@@ -8,6 +8,7 @@ import {
   snapshotFromInvestigateNowResult,
   toInvestigationStatusForCaching,
 } from "../../src/background/investigation-snapshot.js";
+import { createPostStatusFromInvestigation } from "../../src/background/post-status.js";
 
 test("snapshotFromInvestigateNowResult preserves interim oldClaims while pending", () => {
   const oldClaims = [
@@ -82,4 +83,64 @@ test("snapshotFromInvestigateNowResult falls back to empty pending state without
   if ("claims" in snapshot) {
     assert.equal(snapshot.claims, null);
   }
+});
+
+test("status transition preserves interim oldClaims from NOT_INVESTIGATED to INVESTIGATING", () => {
+  const oldClaims = [
+    {
+      id: claimIdSchema.parse("claim-update-2"),
+      text: "Old claim text 2",
+      context: "Context around old claim text 2",
+      summary: "Old summary 2",
+      reasoning: "Old reasoning 2",
+      sources: [
+        {
+          url: "https://example.com/source-2",
+          title: "Source 2",
+          snippet: "Snippet 2",
+        },
+      ],
+    },
+  ];
+  const initialStatus = createPostStatusFromInvestigation({
+    tabSessionId: 11,
+    platform: "LESSWRONG",
+    externalId: "post-update-2",
+    pageUrl: "https://www.lesswrong.com/posts/post-update-2/example",
+    investigationState: "NOT_INVESTIGATED",
+    claims: null,
+    priorInvestigationResult: {
+      oldClaims,
+      sourceInvestigationId: investigationIdSchema.parse("inv-old-2"),
+    },
+  });
+
+  const cachedInitial = toInvestigationStatusForCaching(initialStatus);
+  assert.ok(cachedInitial);
+  const pendingSnapshot = snapshotFromInvestigateNowResult(
+    {
+      investigationId: investigationIdSchema.parse("inv-new-2"),
+      status: "PENDING",
+      provenance: "SERVER_VERIFIED",
+      claims: null,
+    },
+    cachedInitial,
+  );
+  const pendingStatus = createPostStatusFromInvestigation({
+    tabSessionId: 11,
+    platform: "LESSWRONG",
+    externalId: "post-update-2",
+    pageUrl: "https://www.lesswrong.com/posts/post-update-2/example",
+    investigationId: investigationIdSchema.parse("inv-new-2"),
+    ...pendingSnapshot,
+  });
+
+  assert.equal(pendingStatus.investigationState, "INVESTIGATING");
+  assert.equal(pendingStatus.status, "PENDING");
+  assert.notEqual(pendingStatus.priorInvestigationResult, null);
+  assert.deepEqual(pendingStatus.priorInvestigationResult?.oldClaims, oldClaims);
+  assert.equal(
+    pendingStatus.priorInvestigationResult?.sourceInvestigationId,
+    investigationIdSchema.parse("inv-old-2"),
+  );
 });

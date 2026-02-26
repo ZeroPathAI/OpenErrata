@@ -720,10 +720,12 @@ async function preparePostForInvestigation(
     post,
     canonical,
     complete,
+    // Null out source when the current version already has a completed
+    // investigation and the source covers the same version (redundant).
     sourceInvestigation:
-      complete === null || sourceInvestigation?.contentHash !== canonical.contentHash
-        ? sourceInvestigation
-        : null,
+      complete !== null && sourceInvestigation?.contentHash === canonical.contentHash
+        ? null
+        : sourceInvestigation,
   };
 }
 

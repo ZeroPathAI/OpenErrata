@@ -29,10 +29,9 @@ networkPolicy:
 service:
   type: ClusterIP
   port: 3000
-  # Pulumi can hang indefinitely while awaiting Service create events even when
-  # the Service exists and endpoints are healthy. Skip await for this Service
-  # to prevent deploy deadlocks while Deployments/Jobs continue to be awaited.
-  skipAwait: true
+  # Keep await enabled by default so service creation failures are surfaced
+  # during deploys. Set true only when diagnosing Pulumi await deadlocks.
+  skipAwait: false
 
 ingress:
   enabled: false
