@@ -89,7 +89,8 @@ async function launchExtensionHarness(): Promise<ExtensionHarness> {
   const extensionPath = resolve(process.cwd(), "dist");
   const userDataDir = mkdtempSync(join(tmpdir(), "openerrata-extension-e2e-"));
   const context = await chromium.launchPersistentContext(userDataDir, {
-    headless: process.env["CI"] === "true",
+    // Chromium does not reliably load extension service workers in headless mode.
+    headless: false,
     args: [`--disable-extensions-except=${extensionPath}`, `--load-extension=${extensionPath}`],
   });
 
