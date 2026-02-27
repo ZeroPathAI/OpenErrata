@@ -10,4 +10,27 @@ const yoga = createYoga<PublicGraphqlContext>({
   context: () => ({ prisma: getPrisma() }),
 });
 
-export const POST: RequestHandler = async ({ request }) => yoga.fetch(request);
+type ResponseLike = {
+  body: BodyInit | null;
+  status: number;
+  statusText: string;
+  headers: HeadersInit;
+};
+
+function toNativeResponse(response: ResponseLike): Response {
+  if (response instanceof Response) {
+    return response;
+  }
+
+  // SvelteKit route handlers must return a native Response instance.
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}
+
+export const POST: RequestHandler = async ({ request }) => {
+  const response = (await yoga.fetch(request)) as ResponseLike;
+  return toNativeResponse(response);
+};

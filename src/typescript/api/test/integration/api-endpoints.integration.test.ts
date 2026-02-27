@@ -182,6 +182,7 @@ async function queryPublicGraphql<TData>(
     }),
   } as unknown as GraphqlRequestEvent);
 
+  assert.equal(response instanceof Response, true);
   assert.equal(response.status, 200);
   const payload = (await response.json()) as GraphqlEnvelope<TData>;
   if (payload.errors !== undefined && payload.errors.length > 0) {
