@@ -41,16 +41,22 @@ import {
 } from "./prompt.js";
 import { readOpenAiStatusCode } from "$lib/openai/errors.js";
 
-const OPENAI_MODEL_ID = getEnv().OPENAI_MODEL_ID;
 const DEFAULT_REASONING_EFFORT = "medium";
 const DEFAULT_REASONING_SUMMARY = "detailed";
-const MAX_RESPONSE_TOOL_ROUNDS = getEnv().OPENAI_MAX_RESPONSE_TOOL_ROUNDS;
 const MAX_PER_CLAIM_VALIDATION_CONCURRENCY = 4;
 const TWO_STEP_REQUEST_INSTRUCTIONS = `=== Stage 1: Fact-check instructions ===
 ${INVESTIGATION_SYSTEM_PROMPT}
 
 === Stage 2: Validation instructions ===
 ${INVESTIGATION_VALIDATION_SYSTEM_PROMPT}`;
+
+function getOpenAiModelId(): string {
+  return getEnv().OPENAI_MODEL_ID;
+}
+
+function getMaxResponseToolRounds(): number {
+  return getEnv().OPENAI_MAX_RESPONSE_TOOL_ROUNDS;
+}
 
 const claimValidationResultSchema = z
   .object({
@@ -854,6 +860,7 @@ type PerClaimValidationResult = {
 
 async function validateClaim(
   client: OpenAI,
+  modelId: string,
   claimIndex: number,
   claim: InvestigationResult["claims"][number],
   contentText: string,
@@ -872,7 +879,7 @@ async function validateClaim(
   let response: unknown;
   try {
     response = await client.responses.create({
-      model: OPENAI_MODEL_ID,
+      model: modelId,
       stream: false,
       instructions: INVESTIGATION_VALIDATION_SYSTEM_PROMPT,
       input: validationPrompt,
@@ -933,6 +940,8 @@ export class OpenAIInvestigator implements Investigator {
   }
 
   async investigate(input: InvestigatorInput): Promise<InvestigatorOutput> {
+    const openAiModelId = getOpenAiModelId();
+    const maxResponseToolRounds = getMaxResponseToolRounds();
     const userPrompt = buildUserPrompt({
       contentText: input.contentText,
       platform: input.platform,
@@ -963,7 +972,7 @@ export class OpenAIInvestigator implements Investigator {
         : zodTextFormat(providerStructuredInvestigationResultSchema, "investigation_result");
 
     const baseResponseRequest = {
-      model: OPENAI_MODEL_ID,
+      model: openAiModelId,
       stream: false as const,
       instructions: INVESTIGATION_SYSTEM_PROMPT,
       tools: requestedTools,
@@ -977,7 +986,7 @@ export class OpenAIInvestigator implements Investigator {
     const stageOneAttemptAuditBase: Omit<InvestigatorAttemptAudit, "response" | "error"> = {
       startedAt,
       completedAt: null,
-      requestModel: OPENAI_MODEL_ID,
+      requestModel: openAiModelId,
       requestInstructions: INVESTIGATION_SYSTEM_PROMPT,
       requestInput: userPrompt,
       requestReasoningEffort: requestReasoning.effort,
@@ -992,7 +1001,7 @@ export class OpenAIInvestigator implements Investigator {
     const responseAudits: InvestigatorResponseAudit[] = [];
 
     let round = 0;
-    while (round < MAX_RESPONSE_TOOL_ROUNDS) {
+    while (round < maxResponseToolRounds) {
       const responseRequest =
         round === 0
           ? {
@@ -1076,7 +1085,7 @@ export class OpenAIInvestigator implements Investigator {
     );
     if (unfinishedToolCalls.length > 0) {
       const cause = new InvestigatorStructuredOutputError(
-        `Model exceeded tool call round limit (${MAX_RESPONSE_TOOL_ROUNDS.toString()})`,
+        `Model exceeded tool call round limit (${maxResponseToolRounds.toString()})`,
       );
       throw new InvestigatorExecutionError(
         cause.message,
@@ -1299,6 +1308,7 @@ export class OpenAIInvestigator implements Investigator {
         batch.map(({ index, claim }) =>
           validateClaim(
             client,
+            openAiModelId,
             index,
             claim,
             input.contentText,
