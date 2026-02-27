@@ -8,10 +8,7 @@ type ResolvedAddress = {
   family: IpFamily;
 };
 
-const PRIVATE_IPV4_SUBNETS: Record<
-  string,
-  [ipaddr.IPv4, number] | [ipaddr.IPv4, number][]
-> = {
+const PRIVATE_IPV4_SUBNETS: Record<string, [ipaddr.IPv4, number] | [ipaddr.IPv4, number][]> = {
   unspecified: [[ipaddr.IPv4.parse("0.0.0.0"), 8]],
   private: [
     [ipaddr.IPv4.parse("10.0.0.0"), 8],
@@ -29,9 +26,7 @@ const PRIVATE_IPV4_SUBNETS: Record<
 function normalizeIpLiteralCandidate(input: string): string {
   const trimmed = input.trim().toLowerCase();
   const withoutBrackets =
-    trimmed.startsWith("[") && trimmed.endsWith("]")
-      ? trimmed.slice(1, -1)
-      : trimmed;
+    trimmed.startsWith("[") && trimmed.endsWith("]") ? trimmed.slice(1, -1) : trimmed;
   const zoneSeparatorIndex = withoutBrackets.indexOf("%");
   if (zoneSeparatorIndex === -1) {
     return withoutBrackets;
@@ -121,9 +116,7 @@ function isLocallyScopedHostname(normalizedHost: string): boolean {
   );
 }
 
-export async function resolvePublicHostAddresses(
-  hostname: string,
-): Promise<string[] | null> {
+export async function resolvePublicHostAddresses(hostname: string): Promise<string[] | null> {
   const normalizedHost = hostname.trim().toLowerCase();
   if (normalizedHost.length === 0 || isLocallyScopedHostname(normalizedHost)) {
     return null;

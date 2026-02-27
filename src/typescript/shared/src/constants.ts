@@ -1,7 +1,4 @@
-import type {
-  InvestigationModel,
-  InvestigationProvider,
-} from "./enums.js";
+import type { InvestigationModel, InvestigationProvider } from "./enums.js";
 
 export const WORD_COUNT_LIMIT = 10000;
 export const POLL_INTERVAL_MS = 5000;
@@ -9,6 +6,7 @@ export const EXTENSION_MESSAGE_PROTOCOL_VERSION = 1;
 export const MAX_BATCH_STATUS_POSTS = 100;
 export const MAX_IMAGES_PER_INVESTIGATION = 10;
 export const MAX_IMAGE_BYTES = 20_000_000;
+export const MAX_OBSERVED_IMAGE_OCCURRENCES = 256;
 export const MAX_OBSERVED_CONTENT_TEXT_CHARS = 500_000;
 // Keep observed content comfortably below transport-level request size limits.
 export const MAX_OBSERVED_CONTENT_TEXT_UTF8_BYTES = 500_000;

@@ -17,7 +17,7 @@ export function renderClaimReasoningHtml(markdown: string): string {
 
   for (const link of Array.from(template.content.querySelectorAll("a"))) {
     const safeUrl = toSafeSourceUrl(link.getAttribute("href") ?? "");
-    if (!safeUrl) {
+    if (safeUrl === null) {
       link.replaceWith(document.createTextNode(link.textContent));
       continue;
     }

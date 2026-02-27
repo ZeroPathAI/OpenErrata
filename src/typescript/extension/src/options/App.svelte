@@ -9,10 +9,7 @@
     normalizeOpenaiApiKey,
     saveExtensionSettings,
   } from "../lib/settings.js";
-  import {
-    getOpenaiApiKeyFormatError,
-    probeSettingsConfiguration,
-  } from "./settings-validation.js";
+  import { getOpenaiApiKeyFormatError, probeSettingsConfiguration } from "./settings-validation.js";
 
   const LIVE_VALIDATION_DEBOUNCE_MS = 500;
 
@@ -43,9 +40,7 @@
     loaded = true;
   }
 
-  function toOpenaiFeedback(
-    validation: SettingsValidationOutput,
-  ): Feedback | null {
+  function toOpenaiFeedback(validation: SettingsValidationOutput): Feedback | null {
     switch (validation.openaiApiKeyStatus) {
       case "missing":
         return null;
@@ -76,17 +71,12 @@
         };
       default: {
         const neverStatus: never = validation.openaiApiKeyStatus;
-        throw new Error(
-          `Unhandled OpenAI validation status: ${neverStatus}`,
-        );
+        throw new Error(`Unhandled OpenAI validation status: ${neverStatus}`);
       }
     }
   }
 
-  function toInstanceFeedback(
-    apiKey: string,
-    validation: SettingsValidationOutput,
-  ): Feedback {
+  function toInstanceFeedback(apiKey: string, validation: SettingsValidationOutput): Feedback {
     if (apiKey.trim().length === 0) {
       return {
         tone: "success",
@@ -128,8 +118,7 @@
       if (input.shouldValidateOpenaiApiKey) {
         openaiFeedback = {
           tone: "error",
-          text:
-            "Could not validate OpenAI API key because API instance validation failed.",
+          text: "Could not validate OpenAI API key because API instance validation failed.",
         };
       }
 
@@ -174,7 +163,9 @@
     apiUrl = normalizedApiUrl;
     openaiApiKey = normalizedOpenaiApiKey;
     saved = true;
-    setTimeout(() => { saved = false; }, 2000);
+    setTimeout(() => {
+      saved = false;
+    }, 2000);
   }
 
   $effect(() => {
@@ -224,8 +215,7 @@
       if (openaiFormatError === null && normalizedOpenaiApiKey.length > 0) {
         openaiFeedback = {
           tone: "error",
-          text:
-            "Cannot validate OpenAI API key until API Server URL is valid.",
+          text: "Cannot validate OpenAI API key until API Server URL is valid.",
         };
       }
       return;
@@ -280,7 +270,9 @@
       placeholder="sk-..."
       autocomplete="off"
     />
-    <p class="hint">Used only per request. The API does not store this key beyond request lifecycles.</p>
+    <p class="hint">
+      Used only per request. The API does not store this key beyond request lifecycles.
+    </p>
     {#if openaiFeedback}
       <p class={`validation ${openaiFeedback.tone}`} aria-live="polite">
         {openaiFeedback.text}
@@ -299,12 +291,7 @@
 
   <div class="field">
     <label for="api-url">API Server URL</label>
-    <input
-      id="api-url"
-      type="url"
-      bind:value={apiUrl}
-      placeholder="https://api.openerrata.com"
-    />
+    <input id="api-url" type="url" bind:value={apiUrl} placeholder="https://api.openerrata.com" />
   </div>
 
   <div class="field">

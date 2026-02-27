@@ -99,7 +99,7 @@ function truncateUtf8(value: string, maxBytes: number): { value: string; truncat
 }
 
 function parseContentType(contentTypeHeader: string | null): string {
-  if (!contentTypeHeader) return "";
+  if (contentTypeHeader === null) return "";
   return contentTypeHeader.split(";")[0]?.trim().toLowerCase() ?? "";
 }
 
@@ -107,7 +107,10 @@ function hasEmbeddedCredentials(url: URL): boolean {
   return url.username.length > 0 || url.password.length > 0;
 }
 
-function extractContentText(contentType: string, rawBody: string): {
+function extractContentText(
+  contentType: string,
+  rawBody: string,
+): {
   contentText: string;
   title: string | null;
 } {
@@ -211,7 +214,7 @@ export async function executeFetchUrlTool(rawArguments: string): Promise<FetchUr
 
       if (isRedirectStatus(currentResponse.status)) {
         const location = currentResponse.headers.get("location");
-        if (!location) {
+        if (location === null || location.length === 0) {
           return {
             ok: false,
             errorKind: "FETCH_FAILED",
@@ -258,7 +261,7 @@ export async function executeFetchUrlTool(rawArguments: string): Promise<FetchUr
     }
 
     const contentLengthHeader = response.headers.get("content-length");
-    if (contentLengthHeader) {
+    if (contentLengthHeader !== null && contentLengthHeader.length > 0) {
       const contentLength = Number.parseInt(contentLengthHeader, 10);
       if (Number.isFinite(contentLength) && contentLength > MAX_FETCH_URL_BYTES) {
         return {

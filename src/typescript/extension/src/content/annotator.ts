@@ -78,10 +78,7 @@ export function clearAnnotations(): void {
  * Show a slide-in detail panel with the full explanation and source links
  * for a single claim.
  */
-function showDetailPanel(
-  claim: InvestigationClaim,
-  anchor: HTMLElement | null = null,
-): void {
+function showDetailPanel(claim: InvestigationClaim, anchor: HTMLElement | null = null): void {
   dismissDetailPanel();
 
   const backdrop = document.createElement("div");
@@ -124,7 +121,7 @@ function showDetailPanel(
       const div = document.createElement("div");
       div.className = "source";
       const safeUrl = toSafeSourceUrl(source.url);
-      if (safeUrl) {
+      if (safeUrl !== null) {
         const link = document.createElement("a");
         link.href = safeUrl;
         link.target = "_blank";
@@ -137,7 +134,7 @@ function showDetailPanel(
         div.appendChild(title);
       }
 
-      if (source.snippet) {
+      if (source.snippet.length > 0) {
         const snippet = document.createElement("p");
         snippet.textContent = source.snippet;
         snippet.style.fontSize = "12px";
@@ -209,10 +206,7 @@ function createMarkElement(claim: InvestigationClaim): HTMLElement {
   return mark;
 }
 
-function attachInteractions(
-  mark: HTMLElement,
-  claim: InvestigationClaim,
-): void {
+function attachInteractions(mark: HTMLElement, claim: InvestigationClaim): void {
   let tooltip: HTMLDivElement | null = null;
 
   mark.addEventListener("mouseenter", () => {
@@ -231,10 +225,7 @@ function attachInteractions(
   });
 }
 
-function createTooltip(
-  claim: InvestigationClaim,
-  anchor: HTMLElement,
-): HTMLDivElement {
+function createTooltip(claim: InvestigationClaim, anchor: HTMLElement): HTMLDivElement {
   // Remove any stale tooltips
   document.querySelectorAll(".openerrata-tooltip").forEach((el) => el.remove());
 
@@ -276,12 +267,7 @@ function parseCssColor(value: string): [number, number, number, number] | null {
   const blue = Number.parseInt(rgbaMatch[3] ?? "", 10);
   const alpha = rgbaMatch[4] === undefined ? 1 : Number.parseFloat(rgbaMatch[4]);
 
-  if (
-    Number.isNaN(red) ||
-    Number.isNaN(green) ||
-    Number.isNaN(blue) ||
-    Number.isNaN(alpha)
-  ) {
+  if (Number.isNaN(red) || Number.isNaN(green) || Number.isNaN(blue) || Number.isNaN(alpha)) {
     return null;
   }
 
@@ -301,9 +287,7 @@ function relativeLuminance(red: number, green: number, blue: number): number {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
 
-function findNearestOpaqueBackgroundLuminance(
-  anchor: HTMLElement | null,
-): number | null {
+function findNearestOpaqueBackgroundLuminance(anchor: HTMLElement | null): number | null {
   let element: HTMLElement | null = anchor;
   while (element) {
     const parsed = parseCssColor(getComputedStyle(element).backgroundColor);
@@ -332,9 +316,7 @@ function detectThemeFromAnchor(anchor: HTMLElement | null): ThemeMode {
     return luminance < 0.4 ? "dark" : "light";
   }
 
-  return window.matchMedia("(prefers-color-scheme: dark)").matches
-    ? "dark"
-    : "light";
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -390,15 +372,9 @@ function positionTooltip(tip: HTMLDivElement, anchor: HTMLElement): void {
  * Fallback for cross-element ranges: extract the text nodes covered by
  * the range and wrap each individually.
  */
-function highlightFragments(
-  range: Range,
-  claim: InvestigationClaim,
-): void {
+function highlightFragments(range: Range, claim: InvestigationClaim): void {
   const textNodes: Text[] = [];
-  const walker = document.createTreeWalker(
-    range.commonAncestorContainer,
-    NodeFilter.SHOW_TEXT,
-  );
+  const walker = document.createTreeWalker(range.commonAncestorContainer, NodeFilter.SHOW_TEXT);
 
   while (walker.nextNode()) {
     const node = walker.currentNode as Text;

@@ -6,8 +6,8 @@ import "dotenv/config";
 import { Client } from "pg";
 
 function ensureDatabaseUrl(): string {
-  const value = process.env['DATABASE_URL'];
-  if (!value || value.trim().length === 0) {
+  const value = process.env["DATABASE_URL"];
+  if (value === undefined || value.trim().length === 0) {
     throw new Error("DATABASE_URL is required to run integration tests");
   }
   return value;
@@ -39,10 +39,7 @@ function databaseUrlForAdminConnection(databaseUrl: string): string {
   return parsed.toString();
 }
 
-function databaseUrlWithDatabaseName(
-  databaseUrl: string,
-  databaseName: string,
-): string {
+function databaseUrlWithDatabaseName(databaseUrl: string, databaseName: string): string {
   const parsed = new URL(databaseUrl);
   parsed.pathname = `/${databaseName}`;
   parsed.searchParams.delete("schema");
@@ -63,9 +60,11 @@ async function createDatabase(
   const client = new Client({ connectionString: databaseUrl });
   await client.connect();
   try {
-    const templateClause = options?.templateDatabaseName
-      ? ` TEMPLATE ${quoteIdentifier(options.templateDatabaseName)}`
-      : "";
+    const templateDatabaseName = options?.templateDatabaseName;
+    const templateClause =
+      templateDatabaseName === undefined
+        ? ""
+        : ` TEMPLATE ${quoteIdentifier(templateDatabaseName)}`;
     await client.query(`CREATE DATABASE ${quoteIdentifier(databaseName)}${templateClause}`);
   } finally {
     await client.end();
@@ -91,10 +90,7 @@ async function dropDatabase(databaseUrl: string, databaseName: string): Promise<
   }
 }
 
-async function databaseExists(
-  databaseUrl: string,
-  databaseName: string,
-): Promise<boolean> {
+async function databaseExists(databaseUrl: string, databaseName: string): Promise<boolean> {
   const client = new Client({ connectionString: databaseUrl });
   await client.connect();
   try {
@@ -133,10 +129,7 @@ async function readMigrationsFingerprint(): Promise<string> {
   const hasher = createHash("sha256");
   for (const migrationDirectoryName of migrationDirectoryNames) {
     hasher.update(`${migrationDirectoryName}\n`);
-    const migrationFile = new URL(
-      `${migrationDirectoryName}/migration.sql`,
-      migrationsDirectory,
-    );
+    const migrationFile = new URL(`${migrationDirectoryName}/migration.sql`, migrationsDirectory);
     const migrationSql = await readFile(migrationFile, "utf8");
     hasher.update(migrationSql);
     hasher.update("\n--next-migration--\n");
@@ -159,10 +152,7 @@ async function ensureTemplateDatabase(
   templateDatabaseName: string,
   env: NodeJS.ProcessEnv,
 ): Promise<void> {
-  const templateAlreadyExists = await databaseExists(
-    adminDatabaseUrl,
-    templateDatabaseName,
-  );
+  const templateAlreadyExists = await databaseExists(adminDatabaseUrl, templateDatabaseName);
   if (templateAlreadyExists) {
     return;
   }
@@ -178,10 +168,7 @@ async function ensureTemplateDatabase(
     }
   }
 
-  const templateDatabaseUrl = databaseUrlWithDatabaseName(
-    baseDatabaseUrl,
-    templateDatabaseName,
-  );
+  const templateDatabaseUrl = databaseUrlWithDatabaseName(baseDatabaseUrl, templateDatabaseName);
   const templateEnv: NodeJS.ProcessEnv = {
     ...env,
     DATABASE_URL: templateDatabaseUrl,
@@ -197,11 +184,7 @@ async function ensureTemplateDatabase(
   }
 }
 
-async function runCommand(
-  command: string,
-  args: string[],
-  env: NodeJS.ProcessEnv,
-): Promise<void> {
+async function runCommand(command: string, args: string[], env: NodeJS.ProcessEnv): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const child = spawn(command, args, {
       stdio: "inherit",
@@ -213,7 +196,7 @@ async function runCommand(
     });
 
     child.on("exit", (code, signal) => {
-      if (signal) {
+      if (signal !== null) {
         reject(new Error(`${command} exited from signal ${signal}`));
         return;
       }
@@ -249,10 +232,7 @@ async function main(): Promise<void> {
   assertValidDatabaseName(testDatabaseName);
 
   const adminDatabaseUrl = databaseUrlForAdminConnection(baseDatabaseUrl);
-  const isolatedDatabaseUrl = databaseUrlWithDatabaseName(
-    baseDatabaseUrl,
-    testDatabaseName,
-  );
+  const isolatedDatabaseUrl = databaseUrlWithDatabaseName(baseDatabaseUrl, testDatabaseName);
   const childEnv: NodeJS.ProcessEnv = {
     ...process.env,
     NODE_ENV: "test",
@@ -270,12 +250,7 @@ async function main(): Promise<void> {
 
   let primaryError: Error | null = null;
   let cleanupError: Error | null = null;
-  await ensureTemplateDatabase(
-    adminDatabaseUrl,
-    baseDatabaseUrl,
-    templateDatabaseName,
-    childEnv,
-  );
+  await ensureTemplateDatabase(adminDatabaseUrl, baseDatabaseUrl, templateDatabaseName, childEnv);
   await createDatabase(adminDatabaseUrl, testDatabaseName, {
     templateDatabaseName,
   });

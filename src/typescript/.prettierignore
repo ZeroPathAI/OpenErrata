@@ -1,0 +1,9 @@
+node_modules
+dist
+build
+.svelte-kit
+coverage
+**/coverage/**
+pnpm-lock.yaml
+**/prisma/migrations/**
+api/src/lib/generated/**

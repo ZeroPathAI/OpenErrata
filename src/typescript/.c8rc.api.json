@@ -1,0 +1,35 @@
+{
+  "all": true,
+  "src": ["src"],
+  "include": [
+    "src/lib/config/env.ts",
+    "src/lib/db/connection-string.ts",
+    "src/lib/graphql/public-schema.ts",
+    "src/lib/investigators/**",
+    "src/lib/network/host-safety.ts",
+    "src/lib/network/http-status.ts",
+    "src/lib/openai/errors.ts",
+    "src/lib/services/canonical-resolution.ts",
+    "src/lib/services/content-fetcher.ts",
+    "src/lib/services/investigation-state.ts",
+    "src/lib/services/openai-key-validation-core.ts",
+    "src/lib/services/queue-lifecycle.ts",
+    "src/lib/services/request-identity.ts",
+    "src/routes/+server.ts"
+  ],
+  "exclude": [
+    "**/*.test.ts",
+    "**/test/**",
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/build/**",
+    "**/.svelte-kit/**",
+    "**/prisma/migrations/**",
+    "src/lib/generated/**"
+  ],
+  "check-coverage": true,
+  "lines": 50,
+  "branches": 50,
+  "functions": 50,
+  "statements": 50
+}

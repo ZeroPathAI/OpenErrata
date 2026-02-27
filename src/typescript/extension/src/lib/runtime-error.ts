@@ -11,17 +11,11 @@ export class ExtensionRuntimeError extends Error {
 }
 
 export function isContentMismatchRuntimeError(error: unknown): boolean {
-  return (
-    error instanceof ExtensionRuntimeError &&
-    error.errorCode === "CONTENT_MISMATCH"
-  );
+  return error instanceof ExtensionRuntimeError && error.errorCode === "CONTENT_MISMATCH";
 }
 
 export function isPayloadTooLargeRuntimeError(error: unknown): boolean {
-  return (
-    error instanceof ExtensionRuntimeError &&
-    error.errorCode === "PAYLOAD_TOO_LARGE"
-  );
+  return error instanceof ExtensionRuntimeError && error.errorCode === "PAYLOAD_TOO_LARGE";
 }
 
 const EXTENSION_CONTEXT_INVALIDATED_PATTERNS = [
@@ -39,7 +33,5 @@ function errorMessage(error: unknown): string {
 
 export function isExtensionContextInvalidatedError(error: unknown): boolean {
   const message = errorMessage(error);
-  return EXTENSION_CONTEXT_INVALIDATED_PATTERNS.some((pattern) =>
-    message.includes(pattern),
-  );
+  return EXTENSION_CONTEXT_INVALIDATED_PATTERNS.some((pattern) => message.includes(pattern));
 }

@@ -2,7 +2,6 @@
   "$schema": "./node_modules/knip/schema.json",
   "sveltekit": false,
   "svelte": false,
-  "ignoreDependencies": ["prettier"],
   "ignoreUnresolved": ["^\\./\\$types$"],
   "ignoreIssues": {
     "api/src/lib/generated/prisma/**": [

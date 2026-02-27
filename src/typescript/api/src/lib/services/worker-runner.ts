@@ -3,9 +3,7 @@ import { getEnv } from "$lib/config/env.js";
 import { normalizePgConnectionStringForNode } from "$lib/db/connection-string.js";
 import { orchestrateInvestigation } from "./orchestrator.js";
 
-function isInvestigatePayload(
-  payload: unknown,
-): payload is { runId: string } {
+function isInvestigatePayload(payload: unknown): payload is { runId: string } {
   if (typeof payload !== "object" || payload === null) return false;
   if (!("runId" in payload)) return false;
   return typeof payload.runId === "string" && payload.runId.length > 0;

@@ -9,6 +9,7 @@ src/typescript/api/src/lib/generated/prisma/
 
 # Build artifacts
 *.tsbuildinfo
+**/coverage/
 src/typescript/extension/test-results/
 src/typescript/extension/playwright-report/
 

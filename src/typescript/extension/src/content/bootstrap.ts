@@ -8,9 +8,7 @@ export type OpenErrataBootstrapTarget<TController extends OpenErrataControllerLi
   __openerrata_controller?: TController;
 };
 
-export function bootOpenErrataController<
-  TController extends OpenErrataControllerLifecycle,
->(
+export function bootOpenErrataController<TController extends OpenErrataControllerLifecycle>(
   target: OpenErrataBootstrapTarget<TController>,
   createController: () => TController,
 ): TController {
@@ -18,10 +16,7 @@ export function bootOpenErrataController<
     try {
       target.__openerrata_controller.dispose();
     } catch (error: unknown) {
-      console.debug(
-        "Failed to dispose previous OpenErrata controller before boot",
-        error,
-      );
+      console.debug("Failed to dispose previous OpenErrata controller before boot", error);
     }
   }
 

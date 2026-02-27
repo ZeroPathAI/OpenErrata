@@ -1,7 +1,4 @@
-import {
-  extensionPostStatusSchema,
-  extensionSkippedStatusSchema,
-} from "@openerrata/shared";
+import { extensionPostStatusSchema, extensionSkippedStatusSchema } from "@openerrata/shared";
 import type {
   ExtensionPageStatus,
   ExtensionPostStatus,
@@ -40,10 +37,7 @@ type TabStatusCacheStore = {
     status: ExtensionPostStatus,
     options?: { setActive?: boolean },
   ) => Promise<void>;
-  cacheSkippedStatus: (
-    tabId: number | undefined,
-    status: ExtensionSkippedStatus,
-  ) => Promise<void>;
+  cacheSkippedStatus: (tabId: number | undefined, status: ExtensionSkippedStatus) => Promise<void>;
   clearActiveStatus: (tabId: number | undefined) => Promise<void>;
   getActiveStatus: (tabId: number) => Promise<ExtensionPageStatus | null>;
   getActivePostStatus: (tabId: number) => Promise<ExtensionPostStatus | null>;
@@ -69,16 +63,12 @@ function emptyRecord(): TabCacheRecord {
 function parseStoredRecord(stored: unknown): TabCacheRecord | null {
   if (!isRecord(stored)) return null;
 
-  const skippedStatusParsed = extensionSkippedStatusSchema.safeParse(
-    stored["skippedStatus"],
-  );
+  const skippedStatusParsed = extensionSkippedStatusSchema.safeParse(stored["skippedStatus"]);
   const skippedStatus: ExtensionSkippedStatus | null = skippedStatusParsed.success
     ? skippedStatusParsed.data
     : null;
 
-  const activePostStatusParsed = extensionPostStatusSchema.safeParse(
-    stored["activePostStatus"],
-  );
+  const activePostStatusParsed = extensionPostStatusSchema.safeParse(stored["activePostStatus"]);
   const activePostStatus: ExtensionPostStatus | null = activePostStatusParsed.success
     ? activePostStatusParsed.data
     : null;
@@ -105,10 +95,7 @@ function matchesActiveStatus(
     return false;
   }
 
-  if (
-    activeStatus.investigationId !== undefined &&
-    incomingStatus.investigationId !== undefined
-  ) {
+  if (activeStatus.investigationId !== undefined && incomingStatus.investigationId !== undefined) {
     return activeStatus.investigationId === incomingStatus.investigationId;
   }
 
@@ -210,9 +197,7 @@ export function createTabStatusCacheStore(deps: CacheStoreDeps): TabStatusCacheS
     return record.activePostStatus;
   }
 
-  async function getActivePostStatus(
-    tabId: number,
-  ): Promise<ExtensionPostStatus | null> {
+  async function getActivePostStatus(tabId: number): Promise<ExtensionPostStatus | null> {
     const record = await loadRecord(tabId);
     return record.activePostStatus;
   }

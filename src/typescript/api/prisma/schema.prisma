@@ -15,6 +15,7 @@ enum Platform {
   LESSWRONG
   X
   SUBSTACK
+  WIKIPEDIA
 }
 
 enum CheckStatus {
@@ -49,26 +50,23 @@ enum InvestigationAttemptOutcome {
 // ─── Models ──────────────────────────────────────────────────────────
 
 model Post {
-  id                String           @id @default(cuid())
-  platform          Platform
-  externalId        String
-  url               String
-  authorId          String?
-  author            Author?          @relation(fields: [authorId], references: [id])
-  viewCount         Int              @default(0)
-  uniqueViewScore   Int              @default(0)
-  lastViewedAt      DateTime?
-  latestContentHash String?
-  latestContentText String?
-  latestServerVerifiedContentHash String?
-  wordCount         Int              @default(0)
-  investigations    Investigation[]
-  viewCredits       PostViewCredit[]
-  lesswrongMeta     LesswrongMeta?
-  xMeta             XMeta?
-  substackMeta      SubstackMeta?
-  createdAt         DateTime         @default(now())
-  updatedAt         DateTime         @updatedAt
+  id              String   @id @default(cuid())
+  platform        Platform
+  externalId      String
+  url             String
+  authorId        String?
+  author          Author?  @relation(fields: [authorId], references: [id])
+  viewCount       Int      @default(0)
+  uniqueViewScore Int      @default(0)
+  lastViewedAt    DateTime?
+  versions        PostVersion[]
+  viewCredits     PostViewCredit[]
+  lesswrongMeta   LesswrongMeta?
+  xMeta           XMeta?
+  substackMeta    SubstackMeta?
+  wikipediaMeta   WikipediaMeta?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   @@unique([platform, externalId])
   @@index([viewCount])
@@ -160,6 +158,92 @@ model SubstackMeta {
   @@unique([publicationSubdomain, slug])
 }
 
+model WikipediaMeta {
+  postId         String    @id
+  post           Post      @relation(fields: [postId], references: [id])
+  pageId         String
+  language       String
+  title          String
+  displayTitle   String?
+  revisionId     String
+  lastModifiedAt DateTime?
+  imageUrls      String[]
+
+  @@unique([language, pageId])
+}
+
+model ContentBlob {
+  id          String   @id @default(cuid())
+  contentHash String   @unique
+  contentText String
+  wordCount   Int
+  createdAt   DateTime @default(now())
+
+  postVersions PostVersion[]
+}
+
+model ImageOccurrenceSet {
+  id              String   @id @default(cuid())
+  occurrencesHash String   @unique
+  createdAt       DateTime @default(now())
+
+  occurrences  ImageOccurrence[]
+  postVersions PostVersion[]
+}
+
+model ImageOccurrence {
+  id                   String             @id @default(cuid())
+  occurrenceSetId      String
+  occurrenceSet        ImageOccurrenceSet @relation(fields: [occurrenceSetId], references: [id], onDelete: Cascade)
+  originalIndex        Int
+  normalizedTextOffset Int
+  sourceUrl            String
+  captionText          String?
+  createdAt            DateTime           @default(now())
+
+  @@unique([occurrenceSetId, originalIndex])
+  @@index([occurrenceSetId, normalizedTextOffset, originalIndex])
+}
+
+model PostVersion {
+  id                   String             @id @default(cuid())
+  postId               String
+  post                 Post               @relation(fields: [postId], references: [id], onDelete: Cascade)
+  versionHash          String
+  contentBlobId        String
+  contentBlob          ContentBlob        @relation(fields: [contentBlobId], references: [id])
+  imageOccurrenceSetId String
+  imageOccurrenceSet   ImageOccurrenceSet @relation(fields: [imageOccurrenceSetId], references: [id])
+  contentProvenance    ContentProvenance
+  fetchFailureReason   String?
+  serverVerifiedAt     DateTime?
+  firstSeenAt          DateTime           @default(now())
+  lastSeenAt           DateTime           @default(now())
+  seenCount            Int                @default(1)
+
+  investigation      Investigation?
+  versionViewCredits PostVersionViewCredit[]
+
+  @@unique([postId, versionHash])
+  @@unique([postId, contentBlobId, imageOccurrenceSetId])
+  @@index([postId, lastSeenAt])
+  @@index([postId, contentProvenance, lastSeenAt])
+}
+
+model PostVersionViewCredit {
+  id            String      @id @default(cuid())
+  postVersionId String
+  postVersion   PostVersion @relation(fields: [postVersionId], references: [id], onDelete: Cascade)
+  viewerKey     String
+  ipRangeKey    String
+  bucketDay     DateTime
+  createdAt     DateTime    @default(now())
+
+  @@unique([postVersionId, viewerKey, bucketDay])
+  @@index([postVersionId, bucketDay])
+  @@index([postVersionId, ipRangeKey, bucketDay])
+}
+
 model Prompt {
   id              String          @id @default(cuid())
   version         String          @unique
@@ -170,39 +254,31 @@ model Prompt {
 }
 
 model Investigation {
-  id                   String                @id @default(cuid())
-  postId               String
-  post                 Post                  @relation(fields: [postId], references: [id])
-  contentHash          String
-  contentText          String
-  // Denormalized copy of (parentInvestigationId != null). Use parentInvestigationId as source-of-truth.
-  isUpdate             Boolean               @default(false)
+  id                    String                @id @default(cuid())
+  postVersionId         String
+  postVersion           PostVersion           @relation(fields: [postVersionId], references: [id])
   parentInvestigationId String?
-  parentInvestigation   Investigation?         @relation("InvestigationUpdateLineage", fields: [parentInvestigationId], references: [id])
-  contentProvenance    ContentProvenance
-  // Required and non-empty for CLIENT_FALLBACK, null for SERVER_VERIFIED.
-  fetchFailureReason   String?
-  contentDiff          String?
-  serverVerifiedAt     DateTime?
-  status               CheckStatus
-  promptId             String
-  prompt               Prompt                @relation(fields: [promptId], references: [id])
-  provider             InvestigationProvider
-  model                InvestigationModel
-  modelVersion         String?
+  parentInvestigation   Investigation?        @relation("InvestigationUpdateLineage", fields: [parentInvestigationId], references: [id])
+  contentDiff           String?
+  status                CheckStatus
+  promptId              String
+  prompt                Prompt                @relation(fields: [promptId], references: [id])
+  provider              InvestigationProvider
+  model                 InvestigationModel
+  modelVersion          String?
   // Null until completion; enforced by DB check constraint with `status`.
-  checkedAt            DateTime?
-  run                  InvestigationRun?
-  attempts             InvestigationAttempt[]
-  updates              Investigation[]        @relation("InvestigationUpdateLineage")
-  claims               Claim[]
-  images               InvestigationImage[]
-  corroborationCredits CorroborationCredit[]
-  createdAt            DateTime              @default(now())
-  updatedAt            DateTime              @updatedAt
+  checkedAt             DateTime?
+  run                   InvestigationRun?
+  attempts              InvestigationAttempt[]
+  updates               Investigation[]       @relation("InvestigationUpdateLineage")
+  claims                Claim[]
+  images                InvestigationImage[]
+  corroborationCredits  CorroborationCredit[]
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
 
-  @@unique([postId, contentHash])
-  @@index([postId, status])
+  @@unique([postVersionId])
+  @@index([status])
 }
 
 model InvestigationRun {

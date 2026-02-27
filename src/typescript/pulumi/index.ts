@@ -4,15 +4,13 @@ import * as k8s from "@pulumi/kubernetes";
 import * as pulumi from "@pulumi/pulumi";
 import * as random from "@pulumi/random";
 
-
 const config = new pulumi.Config();
 const defaultImageRepository = "ghcr.io/zeropathai/openerrata-api";
 const defaultBlobStorageAccessKeyId = "openerrata";
 const chartName = "openerrata";
 const releaseName = config.get("releaseName") ?? chartName;
 const namespaceName =
-  config.get("namespace") ??
-  `openerrata-${normalizeDnsCompatibleComponent(pulumi.getStack())}`;
+  config.get("namespace") ?? `openerrata-${normalizeDnsCompatibleComponent(pulumi.getStack())}`;
 const nameOverride = config.get("nameOverride") ?? undefined;
 const fullnameOverride = config.get("fullnameOverride") ?? undefined;
 
@@ -76,7 +74,7 @@ type DnsConfig =
 
 function getNonEmptyEnv(name: string): string | undefined {
   const value = process.env[name];
-  if (!value) {
+  if (value === undefined || value.length === 0) {
     return undefined;
   }
 
@@ -95,7 +93,8 @@ function getNonEmptyConfig(input: pulumi.Config, key: string): string | undefine
 }
 
 function resolveImageConfig(input: pulumi.Config): ImageConfig {
-  const configuredRepository = getNonEmptyConfig(input, "imageRepository") ?? defaultImageRepository;
+  const configuredRepository =
+    getNonEmptyConfig(input, "imageRepository") ?? defaultImageRepository;
   const configuredTag = getNonEmptyConfig(input, "imageTag") ?? "latest";
   const configuredDigest = getNonEmptyConfig(input, "imageDigest");
 
@@ -167,10 +166,7 @@ function isCloudflareR2Endpoint(endpoint: string): boolean {
 }
 
 function createManagedAwsBlobStorage(input: pulumi.Config): BlobStorageConfig {
-  const configuredManagedBucketName = getNonEmptyConfig(
-    input,
-    "managedBlobStorageBucketName",
-  );
+  const configuredManagedBucketName = getNonEmptyConfig(input, "managedBlobStorageBucketName");
   const managedBlobStorageForceDestroy =
     input.getBoolean("managedBlobStorageForceDestroy") ?? false;
 
@@ -265,7 +261,7 @@ function createManagedAwsBlobStorage(input: pulumi.Config): BlobStorageConfig {
   });
 
   const awsRegion = aws.config.region;
-  if (!awsRegion) {
+  if (awsRegion === undefined || awsRegion.length === 0) {
     throw new Error(
       "AWS region must be configured for managed blob storage (e.g. `pulumi config set aws:region us-west-2`).",
     );
@@ -285,10 +281,7 @@ function createManagedAwsBlobStorage(input: pulumi.Config): BlobStorageConfig {
 
 function resolveBlobStorage(input: pulumi.Config): BlobStorageConfig {
   const configuredBucket = getNonEmptyConfig(input, "blobStorageBucket");
-  const configuredPublicUrlPrefix = getNonEmptyConfig(
-    input,
-    "blobStoragePublicUrlPrefix",
-  );
+  const configuredPublicUrlPrefix = getNonEmptyConfig(input, "blobStoragePublicUrlPrefix");
   const configuredSecretAccessKey = input.getSecret("blobStorageSecretAccessKey");
 
   const hasConfiguredBucket = configuredBucket !== undefined;
@@ -319,42 +312,31 @@ function resolveBlobStorage(input: pulumi.Config): BlobStorageConfig {
     configuredPublicUrlPrefix === undefined ||
     configuredSecretAccessKey === undefined
   ) {
-    throw new Error(
-      "Manual blob storage configuration was expected but could not be resolved.",
-    );
+    throw new Error("Manual blob storage configuration was expected but could not be resolved.");
   }
 
   let resolvedProvider: BlobStorageProvider;
   if (configuredProvider === undefined) {
     resolvedProvider = configuredEndpoint === undefined ? "aws" : "s3_compatible";
-  } else if (
-    configuredProvider === "aws" ||
-    configuredProvider === "s3_compatible"
-  ) {
+  } else if (configuredProvider === "aws" || configuredProvider === "s3_compatible") {
     resolvedProvider = configuredProvider;
   } else {
-    throw new Error(
-      "blobStorageProvider must be either 'aws' or 's3_compatible' when provided.",
-    );
+    throw new Error("blobStorageProvider must be either 'aws' or 's3_compatible' when provided.");
   }
 
   if (resolvedProvider === "aws") {
     if (configuredEndpoint !== undefined) {
-      throw new Error(
-        "blobStorageEndpoint must be unset when blobStorageProvider is 'aws'.",
-      );
+      throw new Error("blobStorageEndpoint must be unset when blobStorageProvider is 'aws'.");
     }
 
     const resolvedRegion = configuredRegion ?? aws.config.region;
-    if (!resolvedRegion) {
+    if (resolvedRegion === undefined || resolvedRegion.length === 0) {
       throw new Error(
         "blobStorageRegion is required when blobStorageProvider is 'aws' and no aws:region is configured.",
       );
     }
     if (resolvedRegion.toLowerCase() === "auto") {
-      throw new Error(
-        "blobStorageRegion cannot be 'auto' when blobStorageProvider is 'aws'.",
-      );
+      throw new Error("blobStorageRegion cannot be 'auto' when blobStorageProvider is 'aws'.");
     }
 
     return {
@@ -365,22 +347,18 @@ function resolveBlobStorage(input: pulumi.Config): BlobStorageConfig {
       bucket: configuredBucket,
       publicUrlPrefix: configuredPublicUrlPrefix,
       accessKeyId:
-        getNonEmptyConfig(input, "blobStorageAccessKeyId") ??
-        defaultBlobStorageAccessKeyId,
+        getNonEmptyConfig(input, "blobStorageAccessKeyId") ?? defaultBlobStorageAccessKeyId,
       secretAccessKey: configuredSecretAccessKey,
     };
   }
 
   if (configuredEndpoint === undefined) {
-    throw new Error(
-      "blobStorageEndpoint is required when blobStorageProvider is 's3_compatible'.",
-    );
+    throw new Error("blobStorageEndpoint is required when blobStorageProvider is 's3_compatible'.");
   }
 
   const resolvedS3CompatibleRegion =
-    configuredRegion ??
-    (isCloudflareR2Endpoint(configuredEndpoint) ? "auto" : undefined);
-  if (!resolvedS3CompatibleRegion) {
+    configuredRegion ?? (isCloudflareR2Endpoint(configuredEndpoint) ? "auto" : undefined);
+  if (resolvedS3CompatibleRegion === undefined || resolvedS3CompatibleRegion.length === 0) {
     throw new Error(
       "blobStorageRegion is required when blobStorageProvider is 's3_compatible' unless blobStorageEndpoint targets Cloudflare R2.",
     );
@@ -394,48 +372,35 @@ function resolveBlobStorage(input: pulumi.Config): BlobStorageConfig {
     bucket: configuredBucket,
     publicUrlPrefix: configuredPublicUrlPrefix,
     accessKeyId:
-      getNonEmptyConfig(input, "blobStorageAccessKeyId") ??
-      defaultBlobStorageAccessKeyId,
+      getNonEmptyConfig(input, "blobStorageAccessKeyId") ?? defaultBlobStorageAccessKeyId,
     secretAccessKey: configuredSecretAccessKey,
   };
 }
 
 function createManagedAwsDatabase(input: pulumi.Config): DatabaseConfig {
   const configuredVpcId = getNonEmptyConfig(input, "managedDatabaseVpcId");
-  const configuredSubnetIds = parseCsvList(
-    getNonEmptyConfig(input, "managedDatabaseSubnetIds"),
-  );
+  const configuredSubnetIds = parseCsvList(getNonEmptyConfig(input, "managedDatabaseSubnetIds"));
   const configuredIngressCidrs = parseCsvList(
     getNonEmptyConfig(input, "managedDatabaseIngressCidrs"),
   );
   const configuredIdentifier = getNonEmptyConfig(input, "managedDatabaseIdentifier");
 
   const databaseName = getNonEmptyConfig(input, "managedDatabaseName") ?? "openerrata";
-  const databaseUsername =
-    getNonEmptyConfig(input, "managedDatabaseUsername") ?? "openerrata";
+  const databaseUsername = getNonEmptyConfig(input, "managedDatabaseUsername") ?? "openerrata";
   const databaseInstanceClass =
     getNonEmptyConfig(input, "managedDatabaseInstanceClass") ?? "db.t3.micro";
-  const databaseAllocatedStorage =
-    input.getNumber("managedDatabaseAllocatedStorage") ?? 20;
-  const databaseMaxAllocatedStorage =
-    input.getNumber("managedDatabaseMaxAllocatedStorage") ?? 100;
-  const databasePubliclyAccessible =
-    input.getBoolean("managedDatabasePubliclyAccessible") ?? true;
+  const databaseAllocatedStorage = input.getNumber("managedDatabaseAllocatedStorage") ?? 20;
+  const databaseMaxAllocatedStorage = input.getNumber("managedDatabaseMaxAllocatedStorage") ?? 100;
+  const databasePubliclyAccessible = input.getBoolean("managedDatabasePubliclyAccessible") ?? true;
   const databaseMultiAz = input.getBoolean("managedDatabaseMultiAz") ?? false;
   const databaseBackupRetentionPeriod =
     input.getNumber("managedDatabaseBackupRetentionPeriod") ?? 7;
   const databaseDeletionProtection =
-    input.getBoolean("managedDatabaseDeletionProtection") ??
-    (pulumi.getStack() === "main");
+    input.getBoolean("managedDatabaseDeletionProtection") ?? pulumi.getStack() === "main";
   const databaseSkipFinalSnapshot =
-    input.getBoolean("managedDatabaseSkipFinalSnapshot") ??
-    !databaseDeletionProtection;
-  const databaseApplyImmediately =
-    input.getBoolean("managedDatabaseApplyImmediately") ?? true;
-  const databaseEngineVersion = getNonEmptyConfig(
-    input,
-    "managedDatabaseEngineVersion",
-  );
+    input.getBoolean("managedDatabaseSkipFinalSnapshot") ?? !databaseDeletionProtection;
+  const databaseApplyImmediately = input.getBoolean("managedDatabaseApplyImmediately") ?? true;
+  const databaseEngineVersion = getNonEmptyConfig(input, "managedDatabaseEngineVersion");
 
   const projectComponent = normalizeDnsCompatibleComponent(pulumi.getProject());
   const stackComponent = normalizeDnsCompatibleComponent(pulumi.getStack());
@@ -444,21 +409,18 @@ function createManagedAwsDatabase(input: pulumi.Config): DatabaseConfig {
   const derivedIdentifier = pulumi.interpolate`${identifierPrefix}-${accountIdentity.accountId}-db`;
   const databaseIdentifier = configuredIdentifier ?? derivedIdentifier;
 
-  const vpcId: pulumi.Input<string> =
-    configuredVpcId ?? aws.ec2.getVpcOutput({ default: true }).id;
+  const vpcId: pulumi.Input<string> = configuredVpcId ?? aws.ec2.getVpcOutput({ default: true }).id;
 
   const subnetIds: pulumi.Input<string[]> =
     configuredSubnetIds ??
-    aws.ec2
-      .getSubnetsOutput({
-        filters: [
-          {
-            name: "vpc-id",
-            values: [vpcId],
-          },
-        ],
-      })
-      .ids;
+    aws.ec2.getSubnetsOutput({
+      filters: [
+        {
+          name: "vpc-id",
+          values: [vpcId],
+        },
+      ],
+    }).ids;
 
   const ingressCidrs = configuredIngressCidrs ?? ["0.0.0.0/0"];
 
@@ -503,7 +465,9 @@ function createManagedAwsDatabase(input: pulumi.Config): DatabaseConfig {
   const database = new aws.rds.Instance("database", {
     identifier: databaseIdentifier,
     engine: "postgres",
-    ...(databaseEngineVersion ? { engineVersion: databaseEngineVersion } : {}),
+    ...(databaseEngineVersion !== undefined && databaseEngineVersion.length > 0
+      ? { engineVersion: databaseEngineVersion }
+      : {}),
     instanceClass: databaseInstanceClass,
     allocatedStorage: databaseAllocatedStorage,
     maxAllocatedStorage: databaseMaxAllocatedStorage,
@@ -672,11 +636,7 @@ const database = resolveDatabase(config);
 const apiIngress = resolveApiIngress(config);
 const dns = resolveDns(config);
 const configuredOpenaiApiKey = config.getSecret("openaiApiKey") ?? pulumi.secret("");
-const resolvedHmacSecret = resolveSecretWithRandom(
-  config,
-  "hmacSecret",
-  "generated-hmac-secret",
-);
+const resolvedHmacSecret = resolveSecretWithRandom(config, "hmacSecret", "generated-hmac-secret");
 const resolvedDatabaseEncryptionKey = resolveSecretWithRandom(
   config,
   "databaseEncryptionKey",
@@ -691,9 +651,13 @@ if (dns.provider === "cloudflare" && apiIngress.mode !== "enabled") {
 // src/kubernetes/ci-rbac/setup.sh) so the CI ServiceAccount's RBAC can be
 // scoped to it.  `import: true` tells Pulumi to adopt an existing namespace
 // rather than failing with a conflict.
-const namespace = new k8s.core.v1.Namespace("namespace", {
-  metadata: { name: namespaceName },
-}, { import: namespaceName });
+const namespace = new k8s.core.v1.Namespace(
+  "namespace",
+  {
+    metadata: { name: namespaceName },
+  },
+  { import: namespaceName },
+);
 
 function truncateK8sName(value: string): string {
   return value.slice(0, 63).replace(/-+$/, "");
@@ -705,7 +669,7 @@ function resolveHelmFullname(input: {
   nameOverride: string | undefined;
   fullnameOverride: string | undefined;
 }): string {
-  if (input.fullnameOverride) {
+  if (input.fullnameOverride !== undefined && input.fullnameOverride.length > 0) {
     return truncateK8sName(input.fullnameOverride);
   }
 
@@ -723,58 +687,64 @@ const fullname = resolveHelmFullname({
   fullnameOverride,
 });
 
-const chart = new k8s.helm.v3.Chart(releaseName, {
-  path: "../../helm/openerrata",
-  namespace: namespaceName,
-  values: {
-    ...(nameOverride ? { nameOverride } : {}),
-    ...(fullnameOverride ? { fullnameOverride } : {}),
-    replicaCount: {
-      api: config.getNumber("apiReplicas") ?? 2,
-      worker: config.getNumber("workerReplicas") ?? 2,
-    },
-    image: {
-      repository: image.repository,
-      tag: image.tag,
-      digest: image.digest ?? "",
-    },
-    selector: {
-      budget: config.get("selectorBudget") ?? "100",
-    },
-    ...(apiIngress.mode === "enabled"
-      ? {
-          ingress: {
-            enabled: true,
-            className: apiIngress.className,
-            host: apiIngress.host,
-            path: apiIngress.path,
-          },
-        }
-      : {
-          ingress: {
-            enabled: false,
-          },
-        }),
-    config: {
-      ipRangeCreditCap: config.get("ipRangeCreditCap") ?? "10",
-      workerConcurrency: config.get("workerConcurrency") ?? "250",
-      databaseEncryptionKeyId: config.get("databaseEncryptionKeyId") ?? "primary",
-      blobStorageProvider: blobStorage.provider,
-      blobStorageRegion: blobStorage.region,
-      blobStorageEndpoint: blobStorage.endpoint ?? "",
-      blobStorageBucket: blobStorage.bucket,
-      blobStoragePublicUrlPrefix: blobStorage.publicUrlPrefix,
-    },
-    secrets: {
-      databaseUrl: database.databaseUrl,
-      openaiApiKey: configuredOpenaiApiKey,
-      hmacSecret: resolvedHmacSecret,
-      databaseEncryptionKey: resolvedDatabaseEncryptionKey,
-      blobStorageAccessKeyId: blobStorage.accessKeyId,
-      blobStorageSecretAccessKey: blobStorage.secretAccessKey,
+const chart = new k8s.helm.v3.Chart(
+  releaseName,
+  {
+    path: "../../helm/openerrata",
+    namespace: namespaceName,
+    values: {
+      ...(nameOverride !== undefined && nameOverride.length > 0 ? { nameOverride } : {}),
+      ...(fullnameOverride !== undefined && fullnameOverride.length > 0
+        ? { fullnameOverride }
+        : {}),
+      replicaCount: {
+        api: config.getNumber("apiReplicas") ?? 2,
+        worker: config.getNumber("workerReplicas") ?? 2,
+      },
+      image: {
+        repository: image.repository,
+        tag: image.tag,
+        digest: image.digest ?? "",
+      },
+      selector: {
+        budget: config.get("selectorBudget") ?? "100",
+      },
+      ...(apiIngress.mode === "enabled"
+        ? {
+            ingress: {
+              enabled: true,
+              className: apiIngress.className,
+              host: apiIngress.host,
+              path: apiIngress.path,
+            },
+          }
+        : {
+            ingress: {
+              enabled: false,
+            },
+          }),
+      config: {
+        ipRangeCreditCap: config.get("ipRangeCreditCap") ?? "10",
+        workerConcurrency: config.get("workerConcurrency") ?? "250",
+        databaseEncryptionKeyId: config.get("databaseEncryptionKeyId") ?? "primary",
+        blobStorageProvider: blobStorage.provider,
+        blobStorageRegion: blobStorage.region,
+        blobStorageEndpoint: blobStorage.endpoint ?? "",
+        blobStorageBucket: blobStorage.bucket,
+        blobStoragePublicUrlPrefix: blobStorage.publicUrlPrefix,
+      },
+      secrets: {
+        databaseUrl: database.databaseUrl,
+        openaiApiKey: configuredOpenaiApiKey,
+        hmacSecret: resolvedHmacSecret,
+        databaseEncryptionKey: resolvedDatabaseEncryptionKey,
+        blobStorageAccessKeyId: blobStorage.accessKeyId,
+        blobStorageSecretAccessKey: blobStorage.secretAccessKey,
+      },
     },
   },
-}, { dependsOn: [namespace] });
+  { dependsOn: [namespace] },
+);
 
 if (dns.provider === "cloudflare" && apiIngress.mode === "enabled") {
   const cloudflareRecordSpec: pulumi.Output<{ type: "A" | "CNAME"; content: string }> =

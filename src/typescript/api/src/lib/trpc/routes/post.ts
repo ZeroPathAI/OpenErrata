@@ -1,9 +1,12 @@
 import { router, publicProcedure } from "../init.js";
 import {
-  viewPostInputSchema,
+  registerObservedVersionInputSchema,
+  registerObservedVersionOutputSchema,
+  recordViewAndGetStatusInputSchema,
   viewPostOutputSchema,
   getInvestigationInputSchema,
   getInvestigationOutputSchema,
+  investigateNowInputSchema,
   investigateNowOutputSchema,
   batchStatusInputSchema,
   batchStatusOutputSchema,
@@ -11,6 +14,7 @@ import {
   settingsValidationOutputSchema,
   normalizeContent,
   hashContent,
+  validateAndSortImageOccurrences,
   type Platform,
   type InvestigationClaim,
   type ExtensionRuntimeErrorCode,
@@ -21,11 +25,15 @@ import {
   fetchCanonicalContent,
   lesswrongHtmlToNormalizedText,
 } from "$lib/services/content-fetcher.js";
+import {
+  resolveCanonicalContentVersion,
+  type CanonicalContentVersion,
+  type ObservedContentVersion,
+} from "$lib/services/canonical-resolution.js";
 import { getOrCreateCurrentPrompt } from "$lib/services/prompt.js";
 import {
   ensureInvestigationQueued,
   InvestigationWordLimitError,
-  maybeUpgradeInvestigationProvenance,
   wordCount,
 } from "$lib/services/investigation-lifecycle.js";
 import { maybeIncrementUniqueViewScore } from "$lib/services/view-credit.js";
@@ -35,6 +43,7 @@ import { validateOpenAiApiKeyForSettings } from "$lib/services/openai-key-valida
 import { toOptionalDate } from "$lib/date.js";
 import type { PrismaClient } from "$lib/generated/prisma/client";
 import { TRPCError } from "@trpc/server";
+import { createHash } from "node:crypto";
 
 type PostMetadataInput = {
   [P in Platform]: {
@@ -51,27 +60,28 @@ type UpsertPostInput = {
     platform: P;
     externalId: string;
     url: string;
-    contentText: string;
-    contentHash: string;
-    latestServerVerifiedContentHash?: string;
     observedImageUrls?: string[];
     metadata: PlatformMetadataByPlatform[P];
   };
 }[Platform];
 
-type ContentVersion = {
-  contentText: string;
-  contentHash: string;
+type ResolvedPostVersion = {
+  id: string;
+  postId: string;
+  versionHash: string;
+  contentProvenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK";
+  contentBlob: {
+    contentHash: string;
+    contentText: string;
+    wordCount: number;
+  };
+  post: {
+    id: string;
+    platform: Platform;
+    externalId: string;
+    url: string;
+  };
 };
-
-type CanonicalContentVersion =
-  | (ContentVersion & {
-      provenance: "SERVER_VERIFIED";
-    })
-  | (ContentVersion & {
-      provenance: "CLIENT_FALLBACK";
-      fetchFailureReason: string;
-    });
 
 const CONTENT_MISMATCH_ERROR_CODE: ExtensionRuntimeErrorCode = "CONTENT_MISMATCH";
 
@@ -82,10 +92,7 @@ function unreachableInvestigationStatus(status: never): never {
   });
 }
 
-function requireCompleteCheckedAtIso(
-  investigationId: string,
-  checkedAt: Date | null,
-): string {
+function requireCompleteCheckedAtIso(investigationId: string, checkedAt: Date | null): string {
   if (checkedAt === null) {
     throw new TRPCError({
       code: "INTERNAL_SERVER_ERROR",
@@ -105,7 +112,60 @@ function contentMismatchError(): TRPCError {
 
 function trimToOptionalNonEmpty(value: string | null | undefined): string | undefined {
   const trimmed = value?.trim();
-  return trimmed && trimmed.length > 0 ? trimmed : undefined;
+  return trimmed !== undefined && trimmed.length > 0 ? trimmed : undefined;
+}
+
+function sha256(input: string): string {
+  return createHash("sha256").update(input).digest("hex");
+}
+
+function validateAndNormalizeImageOccurrences(
+  occurrences: ViewPostInput["observedImageOccurrences"],
+  contentText: string,
+): NonNullable<ViewPostInput["observedImageOccurrences"]> {
+  const sorted = validateAndSortImageOccurrences(occurrences, {
+    contentTextLength: contentText.length,
+    onValidationIssue: (issue): never => {
+      switch (issue.code) {
+        case "NON_CONTIGUOUS_ORIGINAL_INDEX":
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+              "Observed image occurrences must use contiguous originalIndex values starting at 0",
+          });
+        case "OFFSET_EXCEEDS_CONTENT_LENGTH":
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Observed image occurrence offset exceeds content length",
+          });
+        case "DECREASING_NORMALIZED_TEXT_OFFSET":
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Observed image occurrences must be non-decreasing by normalizedTextOffset",
+          });
+      }
+    },
+  });
+
+  return sorted.map((occurrence) => {
+    const captionText = occurrence.captionText?.trim();
+    return {
+      originalIndex: occurrence.originalIndex,
+      normalizedTextOffset: occurrence.normalizedTextOffset,
+      sourceUrl: occurrence.sourceUrl,
+      ...(captionText === undefined || captionText.length === 0 ? {} : { captionText }),
+    };
+  });
+}
+
+function imageOccurrencesHash(
+  normalizedOccurrences: NonNullable<ViewPostInput["observedImageOccurrences"]>,
+): string {
+  return sha256(JSON.stringify(normalizedOccurrences));
+}
+
+function versionHashFromContentAndImages(contentHash: string, occurrencesHash: string): string {
+  return sha256(`${contentHash}\n${occurrencesHash}`);
 }
 
 async function upsertAuthorAndAttachToPost(
@@ -141,9 +201,7 @@ async function upsertAuthorAndAttachToPost(
   });
 }
 
-async function toObservedContentVersion(input: ViewPostInput): Promise<ContentVersion> {
-  // LessWrong versioning is anchored on HTML-derived text so the observed and
-  // server-verified paths use one canonicalization pipeline.
+async function toObservedContentVersion(input: ViewPostInput): Promise<ObservedContentVersion> {
   const contentText =
     input.platform === "LESSWRONG"
       ? lesswrongHtmlToNormalizedText(input.metadata.htmlContent)
@@ -152,162 +210,149 @@ async function toObservedContentVersion(input: ViewPostInput): Promise<ContentVe
   return { contentText, contentHash };
 }
 
-async function resolveCanonicalContentVersionForMiss(
-  input: {
-    platform: Platform;
-    externalId: string;
-    url: string;
-  },
-  observed: ContentVersion,
-): Promise<CanonicalContentVersion> {
-  const serverResult = await fetchCanonicalContent(
-    input.platform,
-    input.url,
-    input.externalId,
-  );
-
-  if (serverResult.provenance === "SERVER_VERIFIED") {
-    if (serverResult.contentHash !== observed.contentHash) {
-      throw contentMismatchError();
-    }
-
-    return {
-      contentText: serverResult.contentText,
-      contentHash: serverResult.contentHash,
-      provenance: "SERVER_VERIFIED",
-    };
-  }
-
-  return {
-    contentText: observed.contentText,
-    contentHash: observed.contentHash,
-    provenance: "CLIENT_FALLBACK",
-    fetchFailureReason: serverResult.fetchFailureReason,
-  };
-}
-
 async function linkAuthorAndMetadata(
   prisma: PrismaClient,
   input: PostMetadataInput,
 ): Promise<void> {
-  if (input.platform === "LESSWRONG") {
-    const authorName = trimToOptionalNonEmpty(input.metadata.authorName);
-    const authorSlug = trimToOptionalNonEmpty(input.metadata.authorSlug);
-    const authorDisplayName = authorName ?? authorSlug;
+  switch (input.platform) {
+    case "LESSWRONG": {
+      const authorName = trimToOptionalNonEmpty(input.metadata.authorName);
+      const authorSlug = trimToOptionalNonEmpty(input.metadata.authorSlug);
+      const authorDisplayName = authorName ?? authorSlug;
 
-    if (authorDisplayName) {
-      const platformUserId =
-        authorSlug ?? `name:${authorDisplayName.toLowerCase()}`;
+      if (authorDisplayName !== undefined && authorDisplayName.length > 0) {
+        const platformUserId = authorSlug ?? `name:${authorDisplayName.toLowerCase()}`;
+        await upsertAuthorAndAttachToPost(prisma, {
+          postId: input.postId,
+          platform: "LESSWRONG",
+          platformUserId,
+          displayName: authorDisplayName,
+        });
+      }
+
+      const title = input.metadata.title?.trim();
+      const htmlContent = input.metadata.htmlContent;
+      const metadataAuthorName = authorName ?? authorSlug;
+
+      if (
+        title !== undefined &&
+        title.length > 0 &&
+        metadataAuthorName !== undefined &&
+        metadataAuthorName.length > 0
+      ) {
+        const lesswrongMetaData = {
+          slug: input.metadata.slug,
+          title,
+          htmlContent,
+          imageUrls: input.observedImageUrls ?? [],
+          authorName: metadataAuthorName,
+          authorSlug: authorSlug ?? null,
+          tags: input.metadata.tags,
+          publishedAt: toOptionalDate(input.metadata.publishedAt),
+        };
+        await prisma.lesswrongMeta.upsert({
+          where: { postId: input.postId },
+          create: {
+            postId: input.postId,
+            ...lesswrongMetaData,
+          },
+          update: lesswrongMetaData,
+        });
+      }
+      return;
+    }
+    case "X": {
+      const authorHandle = input.metadata.authorHandle;
+      const authorDisplayName = trimToOptionalNonEmpty(input.metadata.authorDisplayName);
+
       await upsertAuthorAndAttachToPost(prisma, {
         postId: input.postId,
-        platform: "LESSWRONG",
-        platformUserId,
-        displayName: authorDisplayName,
+        platform: "X",
+        platformUserId: authorHandle,
+        displayName: authorDisplayName ?? authorHandle,
       });
-    }
 
-    const title = input.metadata.title?.trim();
-    const htmlContent = input.metadata.htmlContent;
-    const metadataAuthorName = authorName ?? authorSlug;
-
-    if (title && metadataAuthorName) {
-      const lesswrongMetaData = {
-        slug: input.metadata.slug,
-        title,
-        htmlContent,
-        imageUrls: input.observedImageUrls ?? [],
-        authorName: metadataAuthorName,
-        authorSlug: authorSlug ?? null,
-        tags: input.metadata.tags,
-        publishedAt: toOptionalDate(input.metadata.publishedAt),
+      const xMetaData = {
+        text: input.metadata.text,
+        authorHandle,
+        authorDisplayName: authorDisplayName ?? null,
+        mediaUrls: input.metadata.mediaUrls,
+        likeCount: input.metadata.likeCount ?? null,
+        retweetCount: input.metadata.retweetCount ?? null,
+        postedAt: toOptionalDate(input.metadata.postedAt),
       };
-      await prisma.lesswrongMeta.upsert({
+      await prisma.xMeta.upsert({
+        where: { tweetId: input.externalId },
+        create: {
+          postId: input.postId,
+          tweetId: input.externalId,
+          ...xMetaData,
+        },
+        update: xMetaData,
+      });
+      return;
+    }
+    case "SUBSTACK": {
+      const authorName = input.metadata.authorName.trim();
+      const authorSubstackHandle = trimToOptionalNonEmpty(input.metadata.authorSubstackHandle);
+      const platformUserId =
+        authorSubstackHandle ??
+        `publication:${input.metadata.publicationSubdomain}:name:${authorName.toLowerCase()}`;
+
+      await upsertAuthorAndAttachToPost(prisma, {
+        postId: input.postId,
+        platform: "SUBSTACK",
+        platformUserId,
+        displayName: authorName,
+      });
+
+      const substackMetaData = {
+        substackPostId: input.metadata.substackPostId,
+        publicationSubdomain: input.metadata.publicationSubdomain,
+        slug: input.metadata.slug,
+        title: input.metadata.title,
+        subtitle: input.metadata.subtitle ?? null,
+        imageUrls: input.observedImageUrls ?? [],
+        authorName,
+        authorSubstackHandle: authorSubstackHandle ?? null,
+        publishedAt: toOptionalDate(input.metadata.publishedAt),
+        likeCount: input.metadata.likeCount ?? null,
+        commentCount: input.metadata.commentCount ?? null,
+      };
+      await prisma.substackMeta.upsert({
         where: { postId: input.postId },
         create: {
           postId: input.postId,
-          ...lesswrongMetaData,
+          ...substackMetaData,
         },
-        update: lesswrongMetaData,
+        update: substackMetaData,
       });
+      return;
     }
-
-    return;
+    case "WIKIPEDIA": {
+      const wikipediaMetaData = {
+        pageId: input.metadata.pageId,
+        language: input.metadata.language,
+        title: input.metadata.title,
+        displayTitle: input.metadata.displayTitle ?? null,
+        revisionId: input.metadata.revisionId,
+        lastModifiedAt: toOptionalDate(input.metadata.lastModifiedAt),
+        imageUrls: input.observedImageUrls ?? [],
+      };
+      await prisma.wikipediaMeta.upsert({
+        where: { postId: input.postId },
+        create: {
+          postId: input.postId,
+          ...wikipediaMetaData,
+        },
+        update: wikipediaMetaData,
+      });
+      return;
+    }
   }
-
-  if (input.platform === "X") {
-    const authorHandle = input.metadata.authorHandle;
-    const authorDisplayName = trimToOptionalNonEmpty(input.metadata.authorDisplayName);
-
-    await upsertAuthorAndAttachToPost(prisma, {
-      postId: input.postId,
-      platform: "X",
-      platformUserId: authorHandle,
-      displayName: authorDisplayName ?? authorHandle,
-    });
-
-    const xMetaData = {
-      text: input.metadata.text,
-      authorHandle,
-      authorDisplayName: authorDisplayName ?? null,
-      mediaUrls: input.metadata.mediaUrls,
-      likeCount: input.metadata.likeCount ?? null,
-      retweetCount: input.metadata.retweetCount ?? null,
-      postedAt: toOptionalDate(input.metadata.postedAt),
-    };
-    await prisma.xMeta.upsert({
-      where: { tweetId: input.externalId },
-      create: {
-        postId: input.postId,
-        tweetId: input.externalId,
-        ...xMetaData,
-      },
-      update: xMetaData,
-    });
-    return;
-  }
-
-  const authorName = input.metadata.authorName.trim();
-  const authorSubstackHandle = trimToOptionalNonEmpty(input.metadata.authorSubstackHandle);
-  const platformUserId =
-    authorSubstackHandle ??
-    `publication:${input.metadata.publicationSubdomain}:name:${authorName.toLowerCase()}`;
-
-  await upsertAuthorAndAttachToPost(prisma, {
-    postId: input.postId,
-    platform: "SUBSTACK",
-    platformUserId,
-    displayName: authorName,
-  });
-
-  const substackMetaData = {
-    substackPostId: input.metadata.substackPostId,
-    publicationSubdomain: input.metadata.publicationSubdomain,
-    slug: input.metadata.slug,
-    title: input.metadata.title,
-    subtitle: input.metadata.subtitle ?? null,
-    imageUrls: input.observedImageUrls ?? [],
-    authorName,
-    authorSubstackHandle: authorSubstackHandle ?? null,
-    publishedAt: toOptionalDate(input.metadata.publishedAt),
-    likeCount: input.metadata.likeCount ?? null,
-    commentCount: input.metadata.commentCount ?? null,
-  };
-  await prisma.substackMeta.upsert({
-    where: { postId: input.postId },
-    create: {
-      postId: input.postId,
-      ...substackMetaData,
-    },
-    update: substackMetaData,
-  });
 }
 
-async function upsertPost(
-  prisma: PrismaClient,
-  input: UpsertPostInput,
-  options: { countAsView: boolean },
-) {
-  const now = new Date();
+async function upsertPost(prisma: PrismaClient, input: UpsertPostInput) {
   const post = await prisma.post.upsert({
     where: {
       platform_externalId: {
@@ -319,149 +364,502 @@ async function upsertPost(
       platform: input.platform,
       externalId: input.externalId,
       url: input.url,
-      latestContentHash: input.contentHash,
-      latestContentText: input.contentText,
-      ...(input.latestServerVerifiedContentHash === undefined
-        ? {}
-        : { latestServerVerifiedContentHash: input.latestServerVerifiedContentHash }),
-      wordCount: wordCount(input.contentText),
-      viewCount: options.countAsView ? 1 : 0,
-      lastViewedAt: options.countAsView ? now : null,
     },
     update: {
       url: input.url,
-      ...(options.countAsView
-        ? {
-            viewCount: { increment: 1 },
-            lastViewedAt: now,
-          }
-        : {}),
-      latestContentText: input.contentText,
-      latestContentHash: input.contentHash,
-      ...(input.latestServerVerifiedContentHash === undefined
-        ? {}
-        : { latestServerVerifiedContentHash: input.latestServerVerifiedContentHash }),
-      wordCount: wordCount(input.contentText),
     },
   });
 
-  if (input.platform === "LESSWRONG") {
-    await linkAuthorAndMetadata(prisma, {
-      postId: post.id,
-      platform: "LESSWRONG",
-      externalId: input.externalId,
-      metadata: input.metadata,
-      ...(input.observedImageUrls !== undefined && { observedImageUrls: input.observedImageUrls }),
-    });
-  } else if (input.platform === "X") {
-    await linkAuthorAndMetadata(prisma, {
-      postId: post.id,
-      platform: "X",
-      externalId: input.externalId,
-      metadata: input.metadata,
-      ...(input.observedImageUrls !== undefined && { observedImageUrls: input.observedImageUrls }),
-    });
-  } else {
-    await linkAuthorAndMetadata(prisma, {
-      postId: post.id,
-      platform: "SUBSTACK",
-      externalId: input.externalId,
-      metadata: input.metadata,
-      ...(input.observedImageUrls !== undefined && { observedImageUrls: input.observedImageUrls }),
-    });
-  }
+  await linkAuthorAndMetadata(prisma, {
+    postId: post.id,
+    ...input,
+  });
 
   return post;
 }
 
-async function upsertPostFromViewInput(
-  prisma: PrismaClient,
-  input: ViewPostInput,
-  canonical: CanonicalContentVersion,
-  options: { countAsView: boolean },
-) {
+async function upsertPostFromViewInput(prisma: PrismaClient, input: ViewPostInput) {
   const commonInput = {
     externalId: input.externalId,
     url: input.url,
-    contentText: canonical.contentText,
-    contentHash: canonical.contentHash,
-    ...(canonical.provenance === "SERVER_VERIFIED"
-      ? { latestServerVerifiedContentHash: canonical.contentHash }
-      : {}),
     ...(input.observedImageUrls !== undefined && { observedImageUrls: input.observedImageUrls }),
   };
 
   if (input.platform === "LESSWRONG") {
-    return upsertPost(
-      prisma,
-      {
-        ...commonInput,
-        platform: "LESSWRONG",
-        metadata: input.metadata,
-      },
-      options,
-    );
+    return upsertPost(prisma, {
+      ...commonInput,
+      platform: "LESSWRONG",
+      metadata: input.metadata,
+    });
   }
 
   if (input.platform === "X") {
-    return upsertPost(
-      prisma,
-      {
-        ...commonInput,
-        platform: "X",
-        metadata: input.metadata,
-      },
-      options,
-    );
+    return upsertPost(prisma, {
+      ...commonInput,
+      platform: "X",
+      metadata: input.metadata,
+    });
   }
 
-  return upsertPost(
-    prisma,
-    {
+  if (input.platform === "WIKIPEDIA") {
+    return upsertPost(prisma, {
       ...commonInput,
-      platform: "SUBSTACK",
+      platform: "WIKIPEDIA",
       metadata: input.metadata,
-    },
-    options,
-  );
+    });
+  }
+
+  return upsertPost(prisma, {
+    ...commonInput,
+    platform: "SUBSTACK",
+    metadata: input.metadata,
+  });
 }
 
-/**
- * If an authenticated viewer submits a hash matching a CLIENT_FALLBACK
- * investigation, record a corroboration credit. The unique constraint
- * on (investigationId, reporterKey) silently deduplicates. (spec §2.10)
- */
-async function maybeRecordCorroboration(
+function normalizedOccurrenceToData(
+  normalizedOccurrences: NonNullable<ViewPostInput["observedImageOccurrences"]>,
+) {
+  return normalizedOccurrences.map((occurrence) => ({
+    originalIndex: occurrence.originalIndex,
+    normalizedTextOffset: occurrence.normalizedTextOffset,
+    sourceUrl: occurrence.sourceUrl,
+    captionText: occurrence.captionText ?? null,
+  }));
+}
+
+function hasSameNormalizedOccurrences(
+  stored: Array<{
+    originalIndex: number;
+    normalizedTextOffset: number;
+    sourceUrl: string;
+    captionText: string | null;
+  }>,
+  normalized: NonNullable<ViewPostInput["observedImageOccurrences"]>,
+): boolean {
+  if (stored.length !== normalized.length) {
+    return false;
+  }
+
+  for (let index = 0; index < stored.length; index += 1) {
+    const a = stored[index];
+    const b = normalized[index];
+    if (a === undefined || b === undefined) {
+      return false;
+    }
+    if (
+      a.originalIndex !== b.originalIndex ||
+      a.normalizedTextOffset !== b.normalizedTextOffset ||
+      a.sourceUrl !== b.sourceUrl ||
+      a.captionText !== (b.captionText ?? null)
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+async function getOrCreateContentBlob(
   prisma: PrismaClient,
-  postId: string,
-  contentHash: string,
-  viewerKey: string,
-  isAuthenticated: boolean,
-): Promise<void> {
-  if (!isAuthenticated) return;
-
-  const investigation = await prisma.investigation.findFirst({
-    where: {
-      postId,
-      contentHash,
-      contentProvenance: "CLIENT_FALLBACK",
-    },
-    select: { id: true },
+  input: {
+    contentHash: string;
+    contentText: string;
+  },
+) {
+  const existing = await prisma.contentBlob.findUnique({
+    where: { contentHash: input.contentHash },
   });
-
-  if (!investigation) return;
+  if (existing !== null) {
+    if (existing.contentText !== input.contentText) {
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: `contentHash collision for ${input.contentHash}`,
+      });
+    }
+    return existing;
+  }
 
   try {
-    await prisma.corroborationCredit.create({
+    return await prisma.contentBlob.create({
       data: {
-        investigationId: investigation.id,
-        reporterKey: viewerKey,
+        contentHash: input.contentHash,
+        contentText: input.contentText,
+        wordCount: wordCount(input.contentText),
       },
     });
   } catch (error) {
-    if (isUniqueConstraintError(error)) return; // Already recorded
-    throw error;
+    if (!isUniqueConstraintError(error)) {
+      throw error;
+    }
+
+    const raced = await prisma.contentBlob.findUnique({
+      where: { contentHash: input.contentHash },
+    });
+    if (raced === null) {
+      throw error;
+    }
+    if (raced.contentText !== input.contentText) {
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: `contentHash collision for ${input.contentHash}`,
+      });
+    }
+    return raced;
   }
+}
+
+async function getOrCreateImageOccurrenceSet(
+  prisma: PrismaClient,
+  normalizedOccurrences: NonNullable<ViewPostInput["observedImageOccurrences"]>,
+) {
+  const occurrencesHash = imageOccurrencesHash(normalizedOccurrences);
+
+  const existing = await prisma.imageOccurrenceSet.findUnique({
+    where: { occurrencesHash },
+    include: {
+      occurrences: {
+        orderBy: [{ originalIndex: "asc" }],
+      },
+    },
+  });
+  if (existing !== null) {
+    if (!hasSameNormalizedOccurrences(existing.occurrences, normalizedOccurrences)) {
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: `image occurrence hash collision for ${occurrencesHash}`,
+      });
+    }
+    return existing;
+  }
+
+  try {
+    return await prisma.imageOccurrenceSet.create({
+      data: {
+        occurrencesHash,
+        ...(normalizedOccurrences.length === 0
+          ? {}
+          : {
+              occurrences: {
+                create: normalizedOccurrenceToData(normalizedOccurrences),
+              },
+            }),
+      },
+      include: {
+        occurrences: {
+          orderBy: [{ originalIndex: "asc" }],
+        },
+      },
+    });
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) {
+      throw error;
+    }
+
+    const raced = await prisma.imageOccurrenceSet.findUnique({
+      where: { occurrencesHash },
+      include: {
+        occurrences: {
+          orderBy: [{ originalIndex: "asc" }],
+        },
+      },
+    });
+    if (raced === null) {
+      throw error;
+    }
+    if (!hasSameNormalizedOccurrences(raced.occurrences, normalizedOccurrences)) {
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: `image occurrence hash collision for ${occurrencesHash}`,
+      });
+    }
+    return raced;
+  }
+}
+
+async function upsertPostVersion(
+  prisma: PrismaClient,
+  input: {
+    postId: string;
+    canonical: CanonicalContentVersion;
+    observedImageOccurrences?: ViewPostInput["observedImageOccurrences"];
+  },
+): Promise<ResolvedPostVersion> {
+  const normalizedOccurrences = validateAndNormalizeImageOccurrences(
+    input.observedImageOccurrences,
+    input.canonical.contentText,
+  );
+
+  const contentBlob = await getOrCreateContentBlob(prisma, {
+    contentHash: input.canonical.contentHash,
+    contentText: input.canonical.contentText,
+  });
+
+  const occurrenceSet = await getOrCreateImageOccurrenceSet(prisma, normalizedOccurrences);
+
+  const versionHash = versionHashFromContentAndImages(
+    contentBlob.contentHash,
+    occurrenceSet.occurrencesHash,
+  );
+
+  const now = new Date();
+  const postVersionSelect = {
+    id: true,
+    postId: true,
+    versionHash: true,
+    contentProvenance: true,
+    contentBlob: {
+      select: {
+        contentHash: true,
+        contentText: true,
+        wordCount: true,
+      },
+    },
+    post: {
+      select: {
+        id: true,
+        platform: true,
+        externalId: true,
+        url: true,
+      },
+    },
+  } as const;
+  const updateLastSeenData = {
+    lastSeenAt: now,
+    seenCount: {
+      increment: 1,
+    },
+  };
+
+  let postVersion: ResolvedPostVersion;
+  try {
+    postVersion = await prisma.postVersion.upsert({
+      where: {
+        postId_versionHash: {
+          postId: input.postId,
+          versionHash,
+        },
+      },
+      create: {
+        postId: input.postId,
+        versionHash,
+        contentBlobId: contentBlob.id,
+        imageOccurrenceSetId: occurrenceSet.id,
+        contentProvenance: input.canonical.provenance,
+        fetchFailureReason:
+          input.canonical.provenance === "CLIENT_FALLBACK"
+            ? input.canonical.fetchFailureReason
+            : null,
+        serverVerifiedAt: input.canonical.provenance === "SERVER_VERIFIED" ? now : null,
+        firstSeenAt: now,
+        lastSeenAt: now,
+        seenCount: 1,
+      },
+      update: updateLastSeenData,
+      select: postVersionSelect,
+    });
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) {
+      throw error;
+    }
+    postVersion = await prisma.postVersion.update({
+      where: {
+        postId_versionHash: {
+          postId: input.postId,
+          versionHash,
+        },
+      },
+      data: updateLastSeenData,
+      select: postVersionSelect,
+    });
+  }
+
+  if (
+    input.canonical.provenance === "SERVER_VERIFIED" &&
+    postVersion.contentProvenance === "CLIENT_FALLBACK"
+  ) {
+    postVersion = await prisma.postVersion.update({
+      where: { id: postVersion.id },
+      data: {
+        contentProvenance: "SERVER_VERIFIED",
+        fetchFailureReason: null,
+        serverVerifiedAt: now,
+      },
+      select: postVersionSelect,
+    });
+  }
+
+  return postVersion;
+}
+
+async function findPostVersionById(
+  prisma: PrismaClient,
+  postVersionId: string,
+): Promise<ResolvedPostVersion | null> {
+  return prisma.postVersion.findUnique({
+    where: { id: postVersionId },
+    select: {
+      id: true,
+      postId: true,
+      versionHash: true,
+      contentProvenance: true,
+      contentBlob: {
+        select: {
+          contentHash: true,
+          contentText: true,
+          wordCount: true,
+        },
+      },
+      post: {
+        select: {
+          id: true,
+          platform: true,
+          externalId: true,
+          url: true,
+        },
+      },
+    },
+  });
+}
+
+async function loadInvestigationWithClaims(prisma: PrismaClient, investigationId: string) {
+  return prisma.investigation.findUnique({
+    where: { id: investigationId },
+    include: {
+      postVersion: {
+        select: {
+          contentProvenance: true,
+          contentBlob: {
+            select: {
+              contentText: true,
+              contentHash: true,
+            },
+          },
+        },
+      },
+      claims: {
+        include: {
+          sources: true,
+        },
+      },
+      parentInvestigation: {
+        include: {
+          claims: {
+            include: {
+              sources: true,
+            },
+          },
+          postVersion: {
+            select: {
+              contentBlob: {
+                select: {
+                  contentText: true,
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+}
+
+async function findCompletedInvestigationByPostVersionId(
+  prisma: PrismaClient,
+  postVersionId: string,
+) {
+  return prisma.investigation.findFirst({
+    where: {
+      postVersionId,
+      status: "COMPLETE",
+    },
+    include: {
+      postVersion: {
+        select: {
+          id: true,
+          contentProvenance: true,
+          contentBlob: {
+            select: {
+              contentText: true,
+              contentHash: true,
+            },
+          },
+        },
+      },
+      claims: {
+        include: {
+          sources: true,
+        },
+      },
+    },
+  });
+}
+
+async function findLatestServerVerifiedCompleteInvestigationForPost(
+  prisma: PrismaClient,
+  postId: string,
+) {
+  return prisma.investigation.findFirst({
+    where: {
+      status: "COMPLETE",
+      postVersion: {
+        postId,
+        contentProvenance: "SERVER_VERIFIED",
+      },
+    },
+    orderBy: {
+      checkedAt: "desc",
+    },
+    include: {
+      postVersion: {
+        select: {
+          id: true,
+          contentBlob: {
+            select: {
+              contentText: true,
+            },
+          },
+        },
+      },
+      claims: {
+        include: {
+          sources: true,
+        },
+      },
+    },
+  });
+}
+
+type LatestServerVerifiedCompleteInvestigation = Awaited<
+  ReturnType<typeof findLatestServerVerifiedCompleteInvestigationForPost>
+>;
+
+function selectSourceInvestigationForUpdate(
+  latestServerVerifiedSource: LatestServerVerifiedCompleteInvestigation,
+  currentPostVersionId: string,
+): LatestServerVerifiedCompleteInvestigation {
+  if (latestServerVerifiedSource === null) {
+    return null;
+  }
+
+  return latestServerVerifiedSource.postVersion.id === currentPostVersionId
+    ? null
+    : latestServerVerifiedSource;
+}
+
+function toPriorInvestigationResult(
+  sourceInvestigation: LatestServerVerifiedCompleteInvestigation,
+): {
+  oldClaims: InvestigationClaim[];
+  sourceInvestigationId: string;
+} | null {
+  if (sourceInvestigation === null) {
+    return null;
+  }
+
+  return {
+    oldClaims: formatClaims(sourceInvestigation.claims),
+    sourceInvestigationId: sourceInvestigation.id,
+  };
 }
 
 function formatClaims(
@@ -488,107 +886,6 @@ function formatClaims(
   }));
 }
 
-async function findPostId(
-  prisma: PrismaClient,
-  input: { platform: Platform; externalId: string },
-): Promise<string | null> {
-  const post = await prisma.post.findUnique({
-    where: {
-      platform_externalId: {
-        platform: input.platform,
-        externalId: input.externalId,
-      },
-    },
-    select: { id: true },
-  });
-
-  return post?.id ?? null;
-}
-
-async function loadInvestigationWithClaims(
-  prisma: PrismaClient,
-  investigationId: string,
-) {
-  return prisma.investigation.findUnique({
-    where: { id: investigationId },
-    include: {
-      claims: {
-        include: {
-          sources: true,
-        },
-      },
-      parentInvestigation: {
-        include: {
-          claims: {
-            include: {
-              sources: true,
-            },
-          },
-        },
-      },
-    },
-  });
-}
-
-async function findCompletedInvestigationByPostAndHash(
-  prisma: PrismaClient,
-  postId: string,
-  contentHash: string,
-) {
-  return prisma.investigation.findFirst({
-    where: {
-      postId,
-      contentHash,
-      status: "COMPLETE",
-    },
-    include: {
-      claims: {
-        include: {
-          sources: true,
-        },
-      },
-    },
-  });
-}
-
-function toCanonicalFromObserved(observed: ContentVersion): CanonicalContentVersion {
-  return {
-    contentText: observed.contentText,
-    contentHash: observed.contentHash,
-    provenance: "CLIENT_FALLBACK",
-    fetchFailureReason: "Canonical server fetch unavailable",
-  };
-}
-
-function toCanonicalInvestigationInput(
-  canonical: CanonicalContentVersion,
-): {
-  contentHash: string;
-  contentText: string;
-  provenance: "SERVER_VERIFIED";
-  fetchFailureReason?: string;
-} | {
-  contentHash: string;
-  contentText: string;
-  provenance: "CLIENT_FALLBACK";
-  fetchFailureReason: string;
-} {
-  if (canonical.provenance === "SERVER_VERIFIED") {
-    return {
-      contentHash: canonical.contentHash,
-      contentText: canonical.contentText,
-      provenance: "SERVER_VERIFIED",
-    };
-  }
-
-  return {
-    contentHash: canonical.contentHash,
-    contentText: canonical.contentText,
-    provenance: "CLIENT_FALLBACK",
-    fetchFailureReason: canonical.fetchFailureReason,
-  };
-}
-
 function buildLineDiff(previous: string, current: string): string {
   if (previous === current) {
     return "No changes detected.";
@@ -598,10 +895,7 @@ function buildLineDiff(previous: string, current: string): string {
   const currentLines = current.split("\n");
   const maxStart = Math.min(previousLines.length, currentLines.length);
   let start = 0;
-  while (
-    start < maxStart &&
-    previousLines[start] === currentLines[start]
-  ) {
+  while (start < maxStart && previousLines[start] === currentLines[start]) {
     start += 1;
   }
 
@@ -628,224 +922,169 @@ function buildLineDiff(previous: string, current: string): string {
   ].join("\n");
 }
 
-async function findLatestServerVerifiedCompleteInvestigationForPost(
+async function maybeRecordCorroboration(
   prisma: PrismaClient,
-  postId: string,
-) {
-  return prisma.investigation.findFirst({
+  postVersionId: string,
+  viewerKey: string,
+  isAuthenticated: boolean,
+): Promise<void> {
+  if (!isAuthenticated) return;
+
+  const investigation = await prisma.investigation.findFirst({
     where: {
-      postId,
-      status: "COMPLETE",
-      contentProvenance: "SERVER_VERIFIED",
-    },
-    orderBy: {
-      checkedAt: "desc",
-    },
-    include: {
-      claims: {
-        include: {
-          sources: true,
-        },
+      postVersionId,
+      postVersion: {
+        contentProvenance: "CLIENT_FALLBACK",
       },
     },
+    select: { id: true },
   });
+
+  if (!investigation) return;
+
+  try {
+    await prisma.corroborationCredit.create({
+      data: {
+        investigationId: investigation.id,
+        reporterKey: viewerKey,
+      },
+    });
+  } catch (error) {
+    if (isUniqueConstraintError(error)) return;
+    throw error;
+  }
 }
 
-type LatestServerVerifiedCompleteInvestigation = Awaited<
-  ReturnType<typeof findLatestServerVerifiedCompleteInvestigationForPost>
->;
-
-function selectUpdateSourceInvestigation(input: {
-  complete: Awaited<ReturnType<typeof findCompletedInvestigationByPostAndHash>>;
-  latestServerVerifiedSource: LatestServerVerifiedCompleteInvestigation;
-  canonicalContentHash: string;
-}): LatestServerVerifiedCompleteInvestigation {
-  if (input.latestServerVerifiedSource === null) {
-    return null;
-  }
-
-  if (
-    input.complete !== null &&
-    input.latestServerVerifiedSource.contentHash === input.canonicalContentHash
-  ) {
-    return null;
-  }
-
-  return input.latestServerVerifiedSource;
-}
-
-function toPriorInvestigationResult(
-  sourceInvestigation: LatestServerVerifiedCompleteInvestigation,
-):
-  | {
-      oldClaims: InvestigationClaim[];
-      sourceInvestigationId: string;
-    }
-  | null {
-  if (sourceInvestigation === null) {
-    return null;
-  }
-
-  return {
-    oldClaims: formatClaims(sourceInvestigation.claims),
-    sourceInvestigationId: sourceInvestigation.id,
-  };
-}
-
-type PreparedPostForInvestigation = {
-  post: Awaited<ReturnType<typeof upsertPostFromViewInput>>;
-  canonical: CanonicalContentVersion;
-  complete: Awaited<ReturnType<typeof findCompletedInvestigationByPostAndHash>>;
+async function ensureInvestigationsWithUpdateMetadata(input: {
+  prisma: PrismaClient;
+  promptId: string;
+  postVersion: ResolvedPostVersion;
   sourceInvestigation: LatestServerVerifiedCompleteInvestigation;
-};
-
-async function preparePostForInvestigation(
-  prisma: PrismaClient,
-  input: ViewPostInput,
-  options: { countAsView: boolean },
-): Promise<PreparedPostForInvestigation> {
-  const observed = await toObservedContentVersion(input);
-
-  const existingPostId = await findPostId(prisma, {
-    platform: input.platform,
-    externalId: input.externalId,
-  });
-
-  if (existingPostId) {
-    const completeFromObserved = await findCompletedInvestigationByPostAndHash(
-      prisma,
-      existingPostId,
-      observed.contentHash,
-    );
-    if (completeFromObserved) {
-      const canonical = toCanonicalFromObserved(observed);
-      const post = await upsertPostFromViewInput(prisma, input, canonical, options);
-      return {
-        post,
-        canonical,
-        complete: completeFromObserved,
-        sourceInvestigation: null,
-      };
-    }
-  }
-
-  const canonical = await resolveCanonicalContentVersionForMiss(
-    {
-      platform: input.platform,
-      externalId: input.externalId,
-      url: input.url,
-    },
-    observed,
-  );
-
-  const post = await upsertPostFromViewInput(prisma, input, canonical, options);
-
-  if (canonical.provenance === "SERVER_VERIFIED") {
-    await maybeUpgradeInvestigationProvenance(prisma, post.id, canonical.contentHash);
-  }
-
-  const complete = await findCompletedInvestigationByPostAndHash(
-    prisma,
-    post.id,
-    canonical.contentHash,
-  );
-
-  const latestServerVerifiedSource =
-    await findLatestServerVerifiedCompleteInvestigationForPost(prisma, post.id);
-
-  return {
-    post,
-    canonical,
-    complete,
-    sourceInvestigation: selectUpdateSourceInvestigation({
-      complete,
-      latestServerVerifiedSource,
-      canonicalContentHash: canonical.contentHash,
-    }),
-  };
-}
-
-async function ensureInvestigationsWithUpdateMetadata(
-  input: {
-    prisma: PrismaClient;
-    promptId: string;
-    postId: string;
-    canonical: CanonicalContentVersion;
-    sourceInvestigation: LatestServerVerifiedCompleteInvestigation;
-    onPendingRun?: Parameters<typeof ensureInvestigationQueued>[0]["onPendingRun"];
-  },
-) {
+  onPendingRun?: Parameters<typeof ensureInvestigationQueued>[0]["onPendingRun"];
+}) {
   if (input.sourceInvestigation === null) {
-    const investigationContent = toCanonicalInvestigationInput(input.canonical);
     return ensureInvestigationQueued({
       prisma: input.prisma,
-      postId: input.postId,
+      postVersionId: input.postVersion.id,
       promptId: input.promptId,
-      canonical: investigationContent,
       rejectOverWordLimitOnCreate: true,
       allowRequeueFailed: true,
-      ...(input.onPendingRun === undefined
-        ? {}
-        : { onPendingRun: input.onPendingRun }),
+      ...(input.onPendingRun === undefined ? {} : { onPendingRun: input.onPendingRun }),
     });
   }
 
   const contentDiff = buildLineDiff(
-    input.sourceInvestigation.contentText,
-    input.canonical.contentText,
+    input.sourceInvestigation.postVersion.contentBlob.contentText,
+    input.postVersion.contentBlob.contentText,
   );
-  const investigationContent = toCanonicalInvestigationInput(input.canonical);
   return ensureInvestigationQueued({
     prisma: input.prisma,
-    postId: input.postId,
+    postVersionId: input.postVersion.id,
     promptId: input.promptId,
-    canonical: investigationContent,
     parentInvestigationId: input.sourceInvestigation.id,
     contentDiff,
     rejectOverWordLimitOnCreate: true,
     allowRequeueFailed: true,
-    ...(input.onPendingRun === undefined
+    ...(input.onPendingRun === undefined ? {} : { onPendingRun: input.onPendingRun }),
+  });
+}
+
+async function registerObservedVersion(
+  prisma: PrismaClient,
+  input: ViewPostInput,
+): Promise<ResolvedPostVersion> {
+  const observed = await toObservedContentVersion(input);
+
+  const canonicalResolution = await resolveCanonicalContentVersion({
+    viewInput: input,
+    observed,
+    fetchCanonicalContent,
+  });
+  if (canonicalResolution.state === "CONTENT_MISMATCH") {
+    throw contentMismatchError();
+  }
+
+  const post = await upsertPostFromViewInput(prisma, input);
+
+  return upsertPostVersion(prisma, {
+    postId: post.id,
+    canonical: canonicalResolution.canonical,
+    ...(input.observedImageOccurrences === undefined
       ? {}
-      : { onPendingRun: input.onPendingRun }),
+      : { observedImageOccurrences: input.observedImageOccurrences }),
   });
 }
 
 export const postRouter = router({
+  registerObservedVersion: publicProcedure
+    .input(registerObservedVersionInputSchema)
+    .output(registerObservedVersionOutputSchema)
+    .mutation(async ({ input, ctx }) => {
+      const postVersion = await registerObservedVersion(ctx.prisma, input);
+
+      return {
+        platform: postVersion.post.platform,
+        externalId: postVersion.post.externalId,
+        versionHash: postVersion.versionHash,
+        postVersionId: postVersion.id,
+        provenance: postVersion.contentProvenance,
+      };
+    }),
+
   recordViewAndGetStatus: publicProcedure
-    .input(viewPostInputSchema)
+    .input(recordViewAndGetStatusInputSchema)
     .output(viewPostOutputSchema)
     .mutation(async ({ input, ctx }) => {
-      const { post, canonical, complete, sourceInvestigation } =
-        await preparePostForInvestigation(
-        ctx.prisma,
-        input,
-        {
-          countAsView: true,
+      const postVersion = await findPostVersionById(ctx.prisma, input.postVersionId);
+      if (postVersion === null) {
+        return {
+          investigationState: "NOT_INVESTIGATED" as const,
+          claims: null,
+          priorInvestigationResult: null,
+        };
+      }
+
+      await ctx.prisma.post.update({
+        where: { id: postVersion.post.id },
+        data: {
+          viewCount: { increment: 1 },
+          lastViewedAt: new Date(),
         },
-      );
+      });
 
       await maybeIncrementUniqueViewScore(
         ctx.prisma,
-        post.id,
+        postVersion.post.id,
         ctx.viewerKey,
         ctx.ipRangeKey,
       );
 
       await maybeRecordCorroboration(
         ctx.prisma,
-        post.id,
-        canonical.contentHash,
+        postVersion.id,
         ctx.viewerKey,
         ctx.isAuthenticated,
       );
 
+      const complete = await findCompletedInvestigationByPostVersionId(ctx.prisma, postVersion.id);
+
       if (complete) {
         return {
           investigationState: "INVESTIGATED" as const,
-          provenance: complete.contentProvenance,
+          provenance: complete.postVersion.contentProvenance,
           claims: formatClaims(complete.claims),
         };
       }
+
+      const latestServerVerifiedSource = await findLatestServerVerifiedCompleteInvestigationForPost(
+        ctx.prisma,
+        postVersion.post.id,
+      );
+
+      const sourceInvestigation = selectSourceInvestigationForUpdate(
+        latestServerVerifiedSource,
+        postVersion.id,
+      );
 
       return {
         investigationState: "NOT_INVESTIGATED" as const,
@@ -858,10 +1097,7 @@ export const postRouter = router({
     .input(getInvestigationInputSchema)
     .output(getInvestigationOutputSchema)
     .query(async ({ input, ctx }) => {
-      const investigation = await loadInvestigationWithClaims(
-        ctx.prisma,
-        input.investigationId,
-      );
+      const investigation = await loadInvestigationWithClaims(ctx.prisma, input.investigationId);
 
       if (!investigation) {
         return {
@@ -871,23 +1107,22 @@ export const postRouter = router({
         };
       }
 
+      const provenance = investigation.postVersion.contentProvenance;
+
       switch (investigation.status) {
         case "COMPLETE":
           return {
             investigationState: "INVESTIGATED" as const,
-            provenance: investigation.contentProvenance,
+            provenance,
             claims: formatClaims(investigation.claims),
-            checkedAt: requireCompleteCheckedAtIso(
-              investigation.id,
-              investigation.checkedAt,
-            ),
+            checkedAt: requireCompleteCheckedAtIso(investigation.id, investigation.checkedAt),
           };
         case "PENDING":
         case "PROCESSING":
           return {
             investigationState: "INVESTIGATING" as const,
             status: investigation.status,
-            provenance: investigation.contentProvenance,
+            provenance,
             claims: null,
             priorInvestigationResult:
               investigation.parentInvestigation !== null &&
@@ -902,7 +1137,7 @@ export const postRouter = router({
         case "FAILED":
           return {
             investigationState: "FAILED" as const,
-            provenance: investigation.contentProvenance,
+            provenance,
             claims: null,
             checkedAt: investigation.checkedAt?.toISOString(),
           };
@@ -912,7 +1147,7 @@ export const postRouter = router({
     }),
 
   investigateNow: publicProcedure
-    .input(viewPostInputSchema)
+    .input(investigateNowInputSchema)
     .output(investigateNowOutputSchema)
     .mutation(async ({ input, ctx }) => {
       if (!ctx.canInvestigate) {
@@ -922,31 +1157,40 @@ export const postRouter = router({
         });
       }
 
-      const { post, canonical, complete, sourceInvestigation } =
-        await preparePostForInvestigation(
-        ctx.prisma,
-        input,
-        {
-          countAsView: false,
-        },
-      );
+      const postVersion = await findPostVersionById(ctx.prisma, input.postVersionId);
+      if (postVersion === null) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Unknown post version",
+        });
+      }
 
+      const complete = await findCompletedInvestigationByPostVersionId(ctx.prisma, postVersion.id);
       if (complete) {
         return {
           investigationId: complete.id,
           status: complete.status,
-          provenance: complete.contentProvenance,
+          provenance: complete.postVersion.contentProvenance,
           claims: formatClaims(complete.claims),
         };
       }
+
+      const latestServerVerifiedSource = await findLatestServerVerifiedCompleteInvestigationForPost(
+        ctx.prisma,
+        postVersion.post.id,
+      );
+
+      const sourceInvestigation = selectSourceInvestigationForUpdate(
+        latestServerVerifiedSource,
+        postVersion.id,
+      );
 
       const prompt = await getOrCreateCurrentPrompt();
       try {
         const { investigation } = await ensureInvestigationsWithUpdateMetadata({
           prisma: ctx.prisma,
-          postId: post.id,
+          postVersion,
           promptId: prompt.id,
-          canonical,
           sourceInvestigation,
           onPendingRun: async ({ prisma, run }) => {
             if (ctx.userOpenAiApiKey === null) return;
@@ -959,10 +1203,7 @@ export const postRouter = router({
 
         switch (investigation.status) {
           case "COMPLETE": {
-            const completed = await loadInvestigationWithClaims(
-              ctx.prisma,
-              investigation.id,
-            );
+            const completed = await loadInvestigationWithClaims(ctx.prisma, investigation.id);
             if (!completed) {
               throw new TRPCError({
                 code: "INTERNAL_SERVER_ERROR",
@@ -973,7 +1214,7 @@ export const postRouter = router({
             return {
               investigationId: completed.id,
               status: completed.status,
-              provenance: completed.contentProvenance,
+              provenance: completed.postVersion.contentProvenance,
               claims: formatClaims(completed.claims),
             };
           }
@@ -983,7 +1224,7 @@ export const postRouter = router({
             return {
               investigationId: investigation.id,
               status: investigation.status,
-              provenance: investigation.contentProvenance,
+              provenance: postVersion.contentProvenance,
             };
           default:
             return unreachableInvestigationStatus(investigation.status);
@@ -1002,9 +1243,7 @@ export const postRouter = router({
   validateSettings: publicProcedure
     .output(settingsValidationOutputSchema)
     .query(async ({ ctx }) => {
-      const openaiValidation = await validateOpenAiApiKeyForSettings(
-        ctx.userOpenAiApiKey,
-      );
+      const openaiValidation = await validateOpenAiApiKeyForSettings(ctx.userOpenAiApiKey);
 
       return settingsValidationOutputSchema.parse({
         instanceApiKeyAccepted: ctx.isAuthenticated,
@@ -1016,89 +1255,57 @@ export const postRouter = router({
     .input(batchStatusInputSchema)
     .output(batchStatusOutputSchema)
     .query(async ({ input, ctx }) => {
-      const postLookupKey = (platform: Platform, externalId: string): string =>
-        `${platform}:${externalId}`;
+      const lookupKey = (platform: Platform, externalId: string, versionHash: string): string =>
+        `${platform}:${externalId}:${versionHash}`;
 
-      const requestedPostKeys = new Map<
-        string,
-        { platform: Platform; externalId: string }
-      >();
-      for (const post of input.posts) {
-        const key = postLookupKey(post.platform, post.externalId);
-        if (!requestedPostKeys.has(key)) {
-          requestedPostKeys.set(key, {
-            platform: post.platform,
-            externalId: post.externalId,
-          });
-        }
-      }
-
-      const posts = await ctx.prisma.post.findMany({
-        where: {
-          OR: Array.from(requestedPostKeys.values()).map((post) => ({
-            platform: post.platform,
-            externalId: post.externalId,
-          })),
-        },
-        select: {
-          id: true,
-          platform: true,
-          externalId: true,
-          latestContentHash: true,
-        },
-      });
-
-      const postByLookupKey = new Map<string, (typeof posts)[number]>();
-      for (const post of posts) {
-        postByLookupKey.set(postLookupKey(post.platform, post.externalId), post);
-      }
-
-      const completePairs = posts.flatMap((post) => {
-        if (post.latestContentHash === null) return [];
-
-        return [
-          {
-            postId: post.id,
-            contentHash: post.latestContentHash,
-            status: "COMPLETE" as const,
-          },
-        ];
-      });
-
-      const completeInvestigations =
-        completePairs.length === 0
+      const versions =
+        input.posts.length === 0
           ? []
-          : await ctx.prisma.investigation.findMany({
-              where: { OR: completePairs },
+          : await ctx.prisma.postVersion.findMany({
+              where: {
+                OR: input.posts.map((post) => ({
+                  versionHash: post.versionHash,
+                  post: {
+                    platform: post.platform,
+                    externalId: post.externalId,
+                  },
+                })),
+              },
               select: {
-                postId: true,
-                _count: { select: { claims: true } },
+                versionHash: true,
+                post: {
+                  select: {
+                    platform: true,
+                    externalId: true,
+                  },
+                },
+                investigation: {
+                  select: {
+                    status: true,
+                    _count: {
+                      select: {
+                        claims: true,
+                      },
+                    },
+                  },
+                },
               },
             });
 
-      const incorrectClaimCountByPostId = new Map<string, number>();
-      for (const investigation of completeInvestigations) {
-        incorrectClaimCountByPostId.set(
-          investigation.postId,
-          investigation._count.claims,
+      const byLookupKey = new Map<string, (typeof versions)[number]>();
+      for (const version of versions) {
+        byLookupKey.set(
+          lookupKey(version.post.platform, version.post.externalId, version.versionHash),
+          version,
         );
       }
 
       const statuses = input.posts.map((post) => {
-        const matchedPost = postByLookupKey.get(
-          postLookupKey(post.platform, post.externalId),
+        const matched = byLookupKey.get(
+          lookupKey(post.platform, post.externalId, post.versionHash),
         );
-        if (!matchedPost?.latestContentHash) {
-          return {
-            platform: post.platform,
-            externalId: post.externalId,
-            investigationState: "NOT_INVESTIGATED" as const,
-            incorrectClaimCount: 0 as const,
-          };
-        }
 
-        const claimCount = incorrectClaimCountByPostId.get(matchedPost.id);
-        if (claimCount === undefined) {
+        if (matched?.investigation?.status !== "COMPLETE") {
           return {
             platform: post.platform,
             externalId: post.externalId,
@@ -1111,7 +1318,7 @@ export const postRouter = router({
           platform: post.platform,
           externalId: post.externalId,
           investigationState: "INVESTIGATED" as const,
-          incorrectClaimCount: claimCount,
+          incorrectClaimCount: matched.investigation._count.claims,
         };
       });
 

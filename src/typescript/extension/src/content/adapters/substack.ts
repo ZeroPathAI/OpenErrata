@@ -1,7 +1,7 @@
 import { normalizeContent } from "@openerrata/shared";
 import type { AdapterExtractionResult, PlatformAdapter } from "./model";
 import {
-  extractImageUrlsFromRoot,
+  extractContentWithImageOccurrencesFromRoot,
   readFirstMetaDateAsIso,
   readFirstTimeDateAsIso,
   readPublishedDateFromJsonLd,
@@ -60,15 +60,12 @@ function hasAccessControlMarker(element: Element): boolean {
   const id = element.getAttribute("id")?.toLowerCase() ?? "";
   const testId = element.getAttribute("data-testid")?.toLowerCase() ?? "";
   return ACCESS_CONTROL_TERMS.some(
-    (token) =>
-      className.includes(token) || id.includes(token) || testId.includes(token),
+    (token) => className.includes(token) || id.includes(token) || testId.includes(token),
   );
 }
 
 function hasSubscribeCta(element: Element): boolean {
-  if (
-    element.querySelector('a[href*="/subscribe"], a[href*="subscribe"]') !== null
-  ) {
+  if (element.querySelector('a[href*="/subscribe"], a[href*="subscribe"]') !== null) {
     return true;
   }
 
@@ -103,7 +100,7 @@ function decodeCandidates(raw: string): string[] {
 function extractSubstackPostId(value: string): string | null {
   for (const candidate of decodeCandidates(value)) {
     const match = candidate.match(SUBSTACK_POST_PREVIEW_ID_REGEX);
-    if (match?.[1]) {
+    if (match?.[1] !== undefined && match[1].length > 0) {
       return match[1];
     }
   }
@@ -114,7 +111,7 @@ function extractSubstackPostId(value: string): string | null {
 function extractPublicationSubdomainFromValue(value: string): string | null {
   for (const candidate of decodeCandidates(value)) {
     const match = candidate.match(SUBSTACK_PUBLICATION_REGEX);
-    if (match?.[1]) {
+    if (match?.[1] !== undefined && match[1].length > 0) {
       return match[1].toLowerCase();
     }
   }
@@ -133,7 +130,7 @@ function extractMetaImageCandidates(document: Document): string[] {
   const candidates: string[] = [];
   for (const selector of selectors) {
     const value = document.querySelector(selector)?.getAttribute("content")?.trim();
-    if (value) {
+    if (value !== undefined && value.length > 0) {
       candidates.push(value);
     }
   }
@@ -186,8 +183,7 @@ function extractInteractionCounts(document: Document): {
           : typeof interactionType === "object" &&
               interactionType !== null &&
               "@type" in interactionType &&
-              typeof (interactionType as { "@type": unknown })["@type"] ===
-                "string"
+              typeof (interactionType as { "@type": unknown })["@type"] === "string"
             ? String((interactionType as { "@type": unknown })["@type"])
             : "";
 
@@ -206,7 +202,7 @@ function extractInteractionCounts(document: Document): {
 
   for (const script of document.querySelectorAll<HTMLScriptElement>(JSON_LD_SELECTOR)) {
     const text = script.textContent.trim();
-    if (!text) continue;
+    if (text.length === 0) continue;
 
     try {
       visit(JSON.parse(text) as unknown);
@@ -220,17 +216,14 @@ function extractInteractionCounts(document: Document): {
 
 function extractAuthorHandle(document: Document): string | undefined {
   const raw =
-    document
-      .querySelector('meta[name="twitter:site"]')
-      ?.getAttribute("content")
-      ?.trim() ?? "";
+    document.querySelector('meta[name="twitter:site"]')?.getAttribute("content")?.trim() ?? "";
   const normalized = raw.replace(/^@/, "").trim();
   return normalized.length > 0 ? normalized : undefined;
 }
 
 function parseSlug(url: URL): string | null {
   const match = url.pathname.match(SUBSTACK_POST_PATH_REGEX);
-  if (!match?.[1]) return null;
+  if (match?.[1] === undefined || match[1].length === 0) return null;
   const slug = normalizeContent(match[1]);
   return slug.length > 0 ? slug : null;
 }
@@ -238,15 +231,19 @@ function parseSlug(url: URL): string | null {
 function parsePublicationSubdomain(url: URL, imageCandidates: string[]): string | null {
   if (SUBSTACK_HOST_REGEX.test(url.hostname) && url.hostname.includes(".")) {
     const parts = url.hostname.toLowerCase().split(".");
-    const publicationSubdomain = parts.length >= 3 ? parts[parts.length - 3] : null;
-    if (publicationSubdomain && publicationSubdomain !== "www") {
-      return publicationSubdomain;
-    }
+    const publicationSubdomainCandidate = parts.length >= 3 ? parts[parts.length - 3] : undefined;
+    if (
+      publicationSubdomainCandidate !== undefined &&
+      publicationSubdomainCandidate.length > 0 &&
+      publicationSubdomainCandidate !== "www"
+    )
+      return publicationSubdomainCandidate;
   }
 
   for (const candidate of imageCandidates) {
     const publicationSubdomain = extractPublicationSubdomainFromValue(candidate);
-    if (publicationSubdomain) return publicationSubdomain;
+    if (publicationSubdomain !== null && publicationSubdomain.length > 0)
+      return publicationSubdomain;
   }
 
   return null;
@@ -255,7 +252,7 @@ function parsePublicationSubdomain(url: URL, imageCandidates: string[]): string 
 function parseSubstackPostId(imageCandidates: string[]): string | null {
   for (const candidate of imageCandidates) {
     const postId = extractSubstackPostId(candidate);
-    if (postId) return postId;
+    if (postId !== null && postId.length > 0) return postId;
   }
 
   return null;
@@ -361,7 +358,7 @@ export const substackAdapter: PlatformAdapter = {
     }
 
     const slug = parseSlug(parsedUrl);
-    if (!slug) {
+    if (slug === null || slug.length === 0) {
       return {
         kind: "not_ready",
         reason: "missing_identity",
@@ -397,7 +394,7 @@ export const substackAdapter: PlatformAdapter = {
 
     const imageCandidates = extractMetaImageCandidates(document);
     const substackPostId = parseSubstackPostId(imageCandidates);
-    if (!substackPostId) {
+    if (substackPostId === null || substackPostId.length === 0) {
       return {
         kind: "not_ready",
         reason: "missing_identity",
@@ -405,30 +402,24 @@ export const substackAdapter: PlatformAdapter = {
     }
 
     const publicationSubdomain = parsePublicationSubdomain(parsedUrl, imageCandidates);
-    if (!publicationSubdomain) {
+    if (publicationSubdomain === null || publicationSubdomain.length === 0) {
       return {
         kind: "not_ready",
         reason: "missing_identity",
       };
     }
 
-    const contentText = normalizeContent(root.textContent);
+    const extractedContent = extractContentWithImageOccurrencesFromRoot(root, url);
+    const contentText = extractedContent.contentText;
 
-    const subtitle = normalizeContent(
-      document.querySelector(SUBTITLE_SELECTOR)?.textContent ?? "",
-    );
+    const subtitle = normalizeContent(document.querySelector(SUBTITLE_SELECTOR)?.textContent ?? "");
     const publishedAt = extractPublishedAt(document, root);
     const interactionCounts = extractInteractionCounts(document);
     const authorSubstackHandle = extractAuthorHandle(document);
 
-    const imageUrls = extractImageUrlsFromRoot(root, url);
+    const imageUrls = extractedContent.imageUrls;
     const hasVideo = root.querySelector("video, iframe") !== null;
-    const mediaState =
-      imageUrls.length > 0
-        ? "has_images"
-        : hasVideo
-          ? "has_video"
-          : "text_only";
+    const mediaState = imageUrls.length > 0 ? "has_images" : hasVideo ? "has_video" : "text_only";
 
     return {
       kind: "ready",
@@ -439,6 +430,7 @@ export const substackAdapter: PlatformAdapter = {
         contentText,
         mediaState,
         imageUrls,
+        imageOccurrences: extractedContent.imageOccurrences,
         metadata: {
           substackPostId,
           publicationSubdomain,
@@ -446,9 +438,7 @@ export const substackAdapter: PlatformAdapter = {
           title,
           authorName,
           ...(subtitle.length === 0 ? {} : { subtitle }),
-          ...(authorSubstackHandle === undefined
-            ? {}
-            : { authorSubstackHandle }),
+          ...(authorSubstackHandle === undefined ? {} : { authorSubstackHandle }),
           ...(publishedAt === null ? {} : { publishedAt }),
           ...(interactionCounts.likeCount === undefined
             ? {}

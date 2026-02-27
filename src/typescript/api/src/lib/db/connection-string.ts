@@ -1,8 +1,6 @@
 const libpqCompatSslModes = new Set(["allow", "prefer", "require"]);
 
-export function normalizePgConnectionStringForNode(
-  databaseUrl: string,
-): string {
+export function normalizePgConnectionStringForNode(databaseUrl: string): string {
   const parsed = new URL(databaseUrl);
   const sslMode = parsed.searchParams.get("sslmode");
   if (sslMode === null) {

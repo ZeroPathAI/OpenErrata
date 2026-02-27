@@ -23,15 +23,11 @@ export {
 };
 
 export async function loadExtensionSettings(): Promise<ExtensionSettings> {
-  const stored = (await browser.storage.local.get([
-    ...SETTINGS_KEYS,
-  ])) as StoredSettings;
+  const stored = (await browser.storage.local.get([...SETTINGS_KEYS])) as StoredSettings;
   return normalizeExtensionSettings(stored);
 }
 
-export async function saveExtensionSettings(
-  settings: ExtensionSettings,
-): Promise<void> {
+export async function saveExtensionSettings(settings: ExtensionSettings): Promise<void> {
   const normalized = normalizeExtensionSettings(settings);
   await browser.storage.local.set({
     apiBaseUrl: normalized.apiBaseUrl,
@@ -42,9 +38,7 @@ export async function saveExtensionSettings(
   });
 }
 
-export async function ensureApiHostPermission(
-  apiBaseUrl: string,
-): Promise<boolean> {
+export async function ensureApiHostPermission(apiBaseUrl: string): Promise<boolean> {
   const originPermission = apiHostPermissionFor(apiBaseUrl);
   const origins = [originPermission];
 

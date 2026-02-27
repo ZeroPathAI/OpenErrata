@@ -1,7 +1,7 @@
 import { normalizeContent } from "@openerrata/shared";
 import type { AdapterExtractionResult, PlatformAdapter } from "./model";
 import {
-  extractImageUrlsFromRoot,
+  extractContentWithImageOccurrencesFromRoot,
   readFirstMetaDateAsIso,
   readFirstTimeDateAsIso,
 } from "./utils";
@@ -42,9 +42,7 @@ const X_STATUS_HOSTS = ["x.com", "twitter.com"] as const;
 
 function isSupportedXHost(hostname: string): boolean {
   const normalized = hostname.toLowerCase();
-  return X_STATUS_HOSTS.some(
-    (host) => normalized === host || normalized.endsWith(`.${host}`),
-  );
+  return X_STATUS_HOSTS.some((host) => normalized === host || normalized.endsWith(`.${host}`));
 }
 
 function parseStatusFromPath(pathname: string): {
@@ -52,7 +50,7 @@ function parseStatusFromPath(pathname: string): {
   authorHandle: string | null;
 } | null {
   const webMatch = pathname.match(WEB_STATUS_PATH_REGEX);
-  if (webMatch?.[1]) {
+  if (webMatch?.[1] !== undefined && webMatch[1].length > 0) {
     return {
       tweetId: webMatch[1],
       authorHandle: null,
@@ -60,7 +58,7 @@ function parseStatusFromPath(pathname: string): {
   }
 
   const iStatusMatch = pathname.match(I_STATUS_PATH_REGEX);
-  if (iStatusMatch?.[1]) {
+  if (iStatusMatch?.[1] !== undefined && iStatusMatch[1].length > 0) {
     return {
       tweetId: iStatusMatch[1],
       authorHandle: null,
@@ -68,7 +66,7 @@ function parseStatusFromPath(pathname: string): {
   }
 
   const handleMatch = pathname.match(HANDLE_STATUS_PATH_REGEX);
-  if (handleMatch?.[2]) {
+  if (handleMatch?.[2] !== undefined && handleMatch[2].length > 0) {
     return {
       tweetId: handleMatch[2],
       authorHandle: normalizeAuthorHandle(handleMatch[1]),
@@ -82,7 +80,7 @@ function parseStatusFromHref(href: string | null | undefined): {
   tweetId: string;
   authorHandle: string | null;
 } | null {
-  if (!href) return null;
+  if (href === null || href === undefined || href.length === 0) return null;
   try {
     const parsed = new URL(href, window.location.origin);
     return parseStatusFromPath(parsed.pathname);
@@ -91,10 +89,7 @@ function parseStatusFromHref(href: string | null | undefined): {
   }
 }
 
-function isStatusHrefForTweetId(
-  href: string | null | undefined,
-  tweetId: string,
-): boolean {
+function isStatusHrefForTweetId(href: string | null | undefined, tweetId: string): boolean {
   return parseStatusFromHref(href)?.tweetId === tweetId;
 }
 
@@ -116,10 +111,7 @@ type TweetContainerSelection =
       reason: "hydrating" | "ambiguous_dom" | "missing_identity";
     };
 
-function pickTargetTweetContainer(
-  document: Document,
-  tweetId: string,
-): TweetContainerSelection {
+function pickTargetTweetContainer(document: Document, tweetId: string): TweetContainerSelection {
   const permalinkCandidates = document.querySelectorAll<HTMLAnchorElement>(
     `${TWEET_CONTAINER_SELECTOR} a[href*="/status/${tweetId}"]`,
   );
@@ -192,7 +184,7 @@ function pickTargetTweetContainer(
 }
 
 function normalizeAuthorHandle(raw: string | null | undefined): string | null {
-  if (!raw) return null;
+  if (raw === null || raw === undefined || raw.length === 0) return null;
   const normalized = raw.trim().replace(/^@/, "");
   if (normalized.length === 0) return null;
   if (RESERVED_HANDLE_SEGMENTS.has(normalized.toLowerCase())) return null;
@@ -206,9 +198,7 @@ function extractPostedAt(document: Document, tweetContainer: Element): string | 
   );
 }
 
-function parseStatusFromUrl(
-  url: string,
-): { tweetId: string; authorHandle: string | null } | null {
+function parseStatusFromUrl(url: string): { tweetId: string; authorHandle: string | null } | null {
   try {
     const parsed = new URL(url);
     if (!isSupportedXHost(parsed.hostname)) return null;
@@ -233,14 +223,10 @@ function inferAuthorHandle(
   tweetId: string,
 ): string | null {
   const hrefCandidates = [
-    document
-      .querySelector('meta[property="og:url"]')
-      ?.getAttribute("content"),
+    document.querySelector('meta[property="og:url"]')?.getAttribute("content"),
     document.querySelector('link[rel="canonical"]')?.getAttribute("href"),
     ...Array.from(
-      tweetContainer.querySelectorAll<HTMLAnchorElement>(
-        `a[href*="/status/${tweetId}"]`,
-      ),
+      tweetContainer.querySelectorAll<HTMLAnchorElement>(`a[href*="/status/${tweetId}"]`),
     ).map((a) => a.getAttribute("href")),
     ...Array.from(
       document.querySelectorAll<HTMLAnchorElement>(`a[href*="/status/${tweetId}"]`),
@@ -249,7 +235,7 @@ function inferAuthorHandle(
 
   for (const href of hrefCandidates) {
     const handle = extractAuthorHandleFromHref(href, tweetId);
-    if (handle) return handle;
+    if (handle !== null && handle.length > 0) return handle;
   }
 
   const profileHref =
@@ -260,12 +246,12 @@ function inferAuthorHandle(
       .querySelector<HTMLAnchorElement>('[data-testid="User-Name"] a[href^="/"]')
       ?.getAttribute("href");
 
-  if (profileHref) {
+  if (profileHref !== undefined && profileHref !== null && profileHref.length > 0) {
     try {
       const parsed = new URL(profileHref, window.location.origin);
       const segment = parsed.pathname.split("/").find(Boolean);
       const handleFromProfile = normalizeAuthorHandle(segment);
-      if (handleFromProfile) return handleFromProfile;
+      if (handleFromProfile !== null && handleFromProfile.length > 0) return handleFromProfile;
     } catch {
       // Ignore and continue with text fallback.
     }
@@ -278,9 +264,9 @@ function inferAuthorHandle(
   for (const candidate of handleTextCandidates) {
     const normalized = normalizeContent(candidate.textContent);
     const match = normalized.match(HANDLE_TEXT_REGEX);
-    if (!match?.[1]) continue;
+    if (match?.[1] === undefined || match[1].length === 0) continue;
     const handleFromText = normalizeAuthorHandle(match[1]);
-    if (handleFromText) return handleFromText;
+    if (handleFromText !== null && handleFromText.length > 0) return handleFromText;
   }
 
   return null;
@@ -295,8 +281,7 @@ function hasPrivateOrGatedMessage(document: Document, tweetId: string): boolean 
     return false;
   }
 
-  const primaryColumn =
-    document.querySelector('[data-testid="primaryColumn"]') ?? document.body;
+  const primaryColumn = document.querySelector('[data-testid="primaryColumn"]') ?? document.body;
   const text = normalizeContent(primaryColumn.textContent);
   if (text.length === 0) {
     return false;
@@ -347,34 +332,35 @@ export const xAdapter: PlatformAdapter = {
       };
     }
 
-    const rawText = tweetTextEl.textContent;
-    const contentText = normalizeContent(rawText);
+    const contentText = normalizeContent(tweetTextEl.textContent);
+    const extractedContent = extractContentWithImageOccurrencesFromRoot(
+      tweetContainer,
+      window.location.origin,
+      '[data-testid="tweetPhoto"] img, [data-testid="card.wrapper"] img, img[src*="twimg.com/media"]',
+    );
+    // Tweet media attachments live outside tweetText on X; keep text scoped to
+    // tweetText and attach images at the end of that text stream.
+    const imageOccurrences = extractedContent.imageOccurrences.map((occurrence, originalIndex) => ({
+      ...occurrence,
+      originalIndex,
+      normalizedTextOffset: contentText.length,
+    }));
     const authorDisplayName = normalizeContent(
       tweetContainer.querySelector('[data-testid="User-Name"]')?.textContent ?? "",
     );
 
     // Extract images separately from video detection so image posts are investigated.
-    const imageUrls = extractImageUrlsFromRoot(
-      tweetContainer,
-      window.location.origin,
-      '[data-testid="tweetPhoto"] img, [data-testid="card.wrapper"] img, img[src*="twimg.com/media"]',
-    );
+    const imageUrls = extractedContent.imageUrls;
 
     const hasVideo =
       tweetContainer.querySelector(
         '[data-testid="videoPlayer"], [data-testid="videoPlayer"] video, [data-testid="card.wrapper"] video',
       ) !== null;
-    const mediaState =
-      imageUrls.length > 0
-        ? "has_images"
-        : hasVideo
-          ? "has_video"
-          : "text_only";
+    const mediaState = imageUrls.length > 0 ? "has_images" : hasVideo ? "has_video" : "text_only";
 
     const authorHandle =
-      statusFromUrl.authorHandle ??
-      inferAuthorHandle(document, tweetContainer, tweetId);
-    if (!authorHandle) {
+      statusFromUrl.authorHandle ?? inferAuthorHandle(document, tweetContainer, tweetId);
+    if (authorHandle === null || authorHandle.length === 0) {
       return {
         kind: "not_ready",
         reason: "missing_identity",
@@ -391,9 +377,10 @@ export const xAdapter: PlatformAdapter = {
         contentText,
         mediaState,
         imageUrls,
+        imageOccurrences,
         metadata: {
           authorHandle,
-          authorDisplayName: authorDisplayName || null,
+          authorDisplayName: authorDisplayName.length > 0 ? authorDisplayName : null,
           text: contentText,
           mediaUrls: imageUrls,
           ...(postedAt === null ? {} : { postedAt }),

@@ -6,13 +6,19 @@
     "dev:api": "pnpm --filter @openerrata/api dev",
     "dev:ext": "pnpm --filter @openerrata/extension dev",
     "prepare": "cd ../.. && husky .husky",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "lint-staged": "lint-staged",
     "test:unit:shared": "pnpm --filter @openerrata/shared test:unit",
+    "test:unit:shared:coverage": "pnpm --filter @openerrata/shared test:unit:coverage",
     "test:unit:extension": "pnpm --filter @openerrata/extension test:unit",
+    "test:unit:extension:coverage": "pnpm --filter @openerrata/extension test:unit:coverage",
     "test:e2e:extension": "pnpm --filter @openerrata/extension test:e2e",
     "test:unit:api": "pnpm --filter @openerrata/api test:unit",
+    "test:unit:api:coverage": "pnpm --filter @openerrata/api test:unit:coverage",
     "test:integration:api": "pnpm --filter @openerrata/api test:integration",
-    "test": "pnpm run test:unit:shared && pnpm run test:unit:extension && pnpm run test:unit:api && pnpm run test:integration:api",
+    "test": "pnpm run test:unit:shared && pnpm run test:unit:extension && pnpm run test:unit:api && pnpm run test:integration:api && pnpm run test:e2e:extension",
+    "test:coverage": "pnpm run test:unit:shared:coverage && pnpm run test:unit:extension:coverage && pnpm run test:unit:api:coverage",
     "build": "pnpm -r build",
     "worker": "pnpm --filter @openerrata/api worker",
     "selector": "pnpm --filter @openerrata/api selector",
@@ -28,6 +34,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "c8": "^10.1.3",
     "eslint": "^10.0.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-svelte": "^3.15.0",
@@ -36,10 +43,12 @@
     "knip": "^5.84.1",
     "lint-staged": "^15.5.2",
     "prettier": "^3.8.1",
+    "prettier-plugin-svelte": "^3.4.0",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.56.0"
   },
   "lint-staged": {
-    "*.{ts,js,svelte}": "eslint --fix --max-warnings 0"
+    "*.{ts,js,svelte}": "eslint --fix --max-warnings 0",
+    "*.{ts,js,svelte,json,md,css,html,yaml,yml}": "prettier --write"
   }
 }

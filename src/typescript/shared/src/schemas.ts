@@ -1,24 +1,18 @@
 import { z } from "zod";
-import {
-  CONTENT_PROVENANCE_VALUES,
-  PLATFORM_VALUES,
-} from "./enums.js";
+import { CONTENT_PROVENANCE_VALUES, PLATFORM_VALUES } from "./enums.js";
 import {
   EXTENSION_MESSAGE_PROTOCOL_VERSION,
   MAX_BATCH_STATUS_POSTS,
   MAX_OBSERVED_CONTENT_TEXT_CHARS,
   MAX_OBSERVED_CONTENT_TEXT_UTF8_BYTES,
+  MAX_OBSERVED_IMAGE_OCCURRENCES,
 } from "./constants.js";
 
 // ── Shared enum schemas ───────────────────────────────────────────────────
 
 export const platformSchema = z.enum(PLATFORM_VALUES);
 export const contentProvenanceSchema = z.enum(CONTENT_PROVENANCE_VALUES);
-const postMediaStateSchema = z.enum([
-  "text_only",
-  "has_images",
-  "has_video",
-]);
+const postMediaStateSchema = z.enum(["text_only", "has_images", "has_video"]);
 
 const utf8Encoder = new TextEncoder();
 
@@ -30,26 +24,32 @@ const observedContentTextSchema = z
   .string()
   .min(1)
   .max(MAX_OBSERVED_CONTENT_TEXT_CHARS)
-  .refine(
-    (value) => utf8ByteLength(value) <= MAX_OBSERVED_CONTENT_TEXT_UTF8_BYTES,
-    {
-      message:
-        `Observed content text must be at most ${MAX_OBSERVED_CONTENT_TEXT_UTF8_BYTES.toString()} UTF-8 bytes`,
-    },
-  );
+  .refine((value) => utf8ByteLength(value) <= MAX_OBSERVED_CONTENT_TEXT_UTF8_BYTES, {
+    message: `Observed content text must be at most ${MAX_OBSERVED_CONTENT_TEXT_UTF8_BYTES.toString()} UTF-8 bytes`,
+  });
+
+const observedImageOccurrenceSchema = z
+  .object({
+    originalIndex: z.number().int().nonnegative(),
+    normalizedTextOffset: z.number().int().nonnegative(),
+    sourceUrl: z.url(),
+    captionText: z.string().min(1).optional(),
+  })
+  .strict();
+
+const observedImageOccurrencesSchema = z
+  .array(observedImageOccurrenceSchema)
+  .max(MAX_OBSERVED_IMAGE_OCCURRENCES);
 
 // ── Branded identifier schemas ────────────────────────────────────────────
 
 const postIdSchema = z.string().min(1).brand<"PostId">();
+const postVersionIdSchema = z.string().min(1).brand<"PostVersionId">();
 const sessionIdSchema = z.number().int().nonnegative().brand<"SessionId">();
-export const investigationIdSchema = z
-  .string()
-  .min(1)
-  .brand<"InvestigationId">();
+export const investigationIdSchema = z.string().min(1).brand<"InvestigationId">();
 export const claimIdSchema = z.string().min(1).brand<"ClaimId">();
-const extensionMessageProtocolVersionSchema = z.literal(
-  EXTENSION_MESSAGE_PROTOCOL_VERSION,
-);
+const versionHashSchema = z.string().regex(/^[a-f0-9]{64}$/i);
+const extensionMessageProtocolVersionSchema = z.literal(EXTENSION_MESSAGE_PROTOCOL_VERSION);
 
 // ── Claim validation ──────────────────────────────────────────────────────
 
@@ -84,6 +84,8 @@ export const investigationResultSchema = z
   .strict();
 
 // ── Platform metadata schemas ─────────────────────────────────────────────
+
+export const WIKIPEDIA_LANGUAGE_CODE_REGEX = /^[a-z][a-z0-9-]*$/i;
 
 const lesswrongMetadataSchema = z
   .object({
@@ -124,6 +126,17 @@ const substackMetadataSchema = z
   })
   .strict();
 
+const wikipediaMetadataSchema = z
+  .object({
+    language: z.string().regex(WIKIPEDIA_LANGUAGE_CODE_REGEX),
+    title: z.string().min(1),
+    pageId: z.string().regex(/^\d+$/),
+    revisionId: z.string().regex(/^\d+$/),
+    displayTitle: z.string().min(1).optional(),
+    lastModifiedAt: z.iso.datetime().optional(),
+  })
+  .strict();
+
 // ── Core request/response schemas ─────────────────────────────────────────
 
 const viewPostInputSharedSchema = z
@@ -131,6 +144,7 @@ const viewPostInputSharedSchema = z
     externalId: postIdSchema,
     url: z.url(),
     observedImageUrls: z.array(z.url()).optional(),
+    observedImageOccurrences: observedImageOccurrencesSchema.optional(),
   })
   .strict();
 
@@ -158,11 +172,45 @@ const substackViewPostInputSchema = viewPostInputSharedSchema
   })
   .strict();
 
-export const viewPostInputSchema = z.discriminatedUnion("platform", [
+const wikipediaViewPostInputSchema = viewPostInputSharedSchema
+  .extend({
+    platform: z.literal("WIKIPEDIA"),
+    observedContentText: observedContentTextSchema,
+    metadata: wikipediaMetadataSchema,
+  })
+  .strict();
+
+const viewPostInputSchemas = [
   lesswrongViewPostInputSchema,
   xViewPostInputSchema,
   substackViewPostInputSchema,
-]);
+  wikipediaViewPostInputSchema,
+] as const;
+
+export const viewPostInputSchema = z.discriminatedUnion("platform", viewPostInputSchemas);
+
+export const registerObservedVersionInputSchema = z.discriminatedUnion(
+  "platform",
+  viewPostInputSchemas,
+);
+
+export const registerObservedVersionOutputSchema = z
+  .object({
+    platform: platformSchema,
+    externalId: postIdSchema,
+    versionHash: versionHashSchema,
+    postVersionId: postVersionIdSchema,
+    provenance: contentProvenanceSchema,
+  })
+  .strict();
+
+function createVersionedPostInputSchema() {
+  return z
+    .object({
+      postVersionId: postVersionIdSchema,
+    })
+    .strict();
+}
 
 export const priorInvestigationResultSchema = z
   .object({
@@ -211,15 +259,12 @@ export const viewPostOutputSchema = z.discriminatedUnion("investigationState", [
   investigationStatusInvestigatedSchema,
 ]);
 
-export const investigationStatusOutputSchema = z.discriminatedUnion(
-  "investigationState",
-  [
-    investigationStatusNotInvestigatedSchema,
-    investigationStatusInvestigatingSchema,
-    investigationStatusFailedSchema,
-    investigationStatusInvestigatedSchema,
-  ],
-);
+export const investigationStatusOutputSchema = z.discriminatedUnion("investigationState", [
+  investigationStatusNotInvestigatedSchema,
+  investigationStatusInvestigatingSchema,
+  investigationStatusFailedSchema,
+  investigationStatusInvestigatedSchema,
+]);
 
 export const getInvestigationInputSchema = z
   .object({
@@ -227,31 +272,32 @@ export const getInvestigationInputSchema = z
   })
   .strict();
 
-export const getInvestigationOutputSchema = z.discriminatedUnion(
-  "investigationState",
-  [
-    investigationStatusNotInvestigatedSchema
-      .extend({
-        checkedAt: z.iso.datetime().optional(),
-      })
-      .strict(),
-    investigationStatusInvestigatingSchema
-      .extend({
-        checkedAt: z.iso.datetime().optional(),
-      })
-      .strict(),
-    investigationStatusFailedSchema
-      .extend({
-        checkedAt: z.iso.datetime().optional(),
-      })
-      .strict(),
-    investigationStatusInvestigatedSchema
-      .extend({
-        checkedAt: z.iso.datetime(),
-      })
-      .strict(),
-  ],
-);
+export const getInvestigationOutputSchema = z.discriminatedUnion("investigationState", [
+  investigationStatusNotInvestigatedSchema
+    .extend({
+      checkedAt: z.iso.datetime().optional(),
+    })
+    .strict(),
+  investigationStatusInvestigatingSchema
+    .extend({
+      checkedAt: z.iso.datetime().optional(),
+    })
+    .strict(),
+  investigationStatusFailedSchema
+    .extend({
+      checkedAt: z.iso.datetime().optional(),
+    })
+    .strict(),
+  investigationStatusInvestigatedSchema
+    .extend({
+      checkedAt: z.iso.datetime(),
+    })
+    .strict(),
+]);
+
+export const recordViewAndGetStatusInputSchema = createVersionedPostInputSchema();
+
+export const investigateNowInputSchema = createVersionedPostInputSchema();
 
 const investigateNowOutputPendingSchema = z
   .object({
@@ -334,17 +380,14 @@ const settingsValidationErrorSchema = z
   })
   .strict();
 
-export const settingsValidationOutputSchema = z.discriminatedUnion(
-  "openaiApiKeyStatus",
-  [
-    settingsValidationMissingSchema,
-    settingsValidationValidSchema,
-    settingsValidationFormatInvalidSchema,
-    settingsValidationAuthenticatedRestrictedSchema,
-    settingsValidationInvalidSchema,
-    settingsValidationErrorSchema,
-  ],
-);
+export const settingsValidationOutputSchema = z.discriminatedUnion("openaiApiKeyStatus", [
+  settingsValidationMissingSchema,
+  settingsValidationValidSchema,
+  settingsValidationFormatInvalidSchema,
+  settingsValidationAuthenticatedRestrictedSchema,
+  settingsValidationInvalidSchema,
+  settingsValidationErrorSchema,
+]);
 
 export const batchStatusInputSchema = z
   .object({
@@ -354,6 +397,7 @@ export const batchStatusInputSchema = z
           .object({
             platform: platformSchema,
             externalId: postIdSchema,
+            versionHash: versionHashSchema,
           })
           .strict(),
       )
@@ -398,6 +442,7 @@ const platformContentBaseSchema = z
     contentText: observedContentTextSchema,
     mediaState: postMediaStateSchema,
     imageUrls: z.array(z.url()),
+    imageOccurrences: observedImageOccurrencesSchema.optional(),
   })
   .strict();
 
@@ -422,10 +467,18 @@ const substackPlatformContentSchema = platformContentBaseSchema
   })
   .strict();
 
+const wikipediaPlatformContentSchema = platformContentBaseSchema
+  .extend({
+    platform: z.literal("WIKIPEDIA"),
+    metadata: wikipediaMetadataSchema,
+  })
+  .strict();
+
 const platformContentSchema = z.discriminatedUnion("platform", [
   lesswrongPlatformContentSchema,
   xPlatformContentSchema,
   substackPlatformContentSchema,
+  wikipediaPlatformContentSchema,
 ]);
 
 const extensionPostStatusBaseSchema = z
@@ -482,16 +535,13 @@ const extensionPostInvestigatedSchema = extensionPostStatusBaseSchema
   })
   .strict();
 
-export const extensionPostStatusSchema = z.discriminatedUnion(
-  "investigationState",
-  [
-    extensionPostNotInvestigatedSchema,
-    extensionPostInvestigatingSchema,
-    extensionPostFailedSchema,
-    extensionPostContentMismatchSchema,
-    extensionPostInvestigatedSchema,
-  ],
-);
+export const extensionPostStatusSchema = z.discriminatedUnion("investigationState", [
+  extensionPostNotInvestigatedSchema,
+  extensionPostInvestigatingSchema,
+  extensionPostFailedSchema,
+  extensionPostContentMismatchSchema,
+  extensionPostInvestigatedSchema,
+]);
 
 const extensionSkippedReasonSchema = z.enum([
   "has_video",
@@ -549,10 +599,7 @@ export const extensionRuntimeErrorResponseSchema = z
   })
   .strict();
 
-function extensionMessageWithPayload<
-  TType extends string,
-  TPayload extends z.ZodType,
->(
+function extensionMessageWithPayload<TType extends string, TPayload extends z.ZodType>(
   type: TType,
   payload: TPayload,
 ) {
@@ -574,17 +621,11 @@ function extensionMessageWithoutPayload<TType extends string>(type: TType) {
     .strict();
 }
 
-const requestInvestigateMessageSchema = extensionMessageWithoutPayload(
-  "REQUEST_INVESTIGATE",
-);
+const requestInvestigateMessageSchema = extensionMessageWithoutPayload("REQUEST_INVESTIGATE");
 
-const showAnnotationsMessageSchema = extensionMessageWithoutPayload(
-  "SHOW_ANNOTATIONS",
-);
+const showAnnotationsMessageSchema = extensionMessageWithoutPayload("SHOW_ANNOTATIONS");
 
-const hideAnnotationsMessageSchema = extensionMessageWithoutPayload(
-  "HIDE_ANNOTATIONS",
-);
+const hideAnnotationsMessageSchema = extensionMessageWithoutPayload("HIDE_ANNOTATIONS");
 
 const getAnnotationVisibilityMessageSchema = extensionMessageWithoutPayload(
   "GET_ANNOTATION_VISIBILITY",
@@ -596,10 +637,7 @@ const focusClaimPayloadSchema = z
   })
   .strict();
 
-const focusClaimMessageSchema = extensionMessageWithPayload(
-  "FOCUS_CLAIM",
-  focusClaimPayloadSchema,
-);
+const focusClaimMessageSchema = extensionMessageWithPayload("FOCUS_CLAIM", focusClaimPayloadSchema);
 
 const contentControlMessageSchemas = [
   requestInvestigateMessageSchema,
@@ -660,15 +698,10 @@ export const extensionMessageSchema = z.discriminatedUnion("type", [
   ),
   ...contentControlMessageSchemas,
   extensionMessageWithoutPayload("GET_CACHED"),
-  extensionMessageWithPayload(
-    "STATUS_RESPONSE",
-    investigationStatusOutputSchema,
-  ),
+  extensionMessageWithPayload("STATUS_RESPONSE", investigationStatusOutputSchema),
   extensionMessageWithPayload(
     "ANNOTATIONS",
-    z
-      .object({ claims: z.array(investigationClaimSchema) })
-      .strict(),
+    z.object({ claims: z.array(investigationClaimSchema) }).strict(),
   ),
 ]);
 

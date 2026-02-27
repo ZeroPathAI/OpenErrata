@@ -7,11 +7,7 @@
     focusClaimResponseSchema,
     requestInvestigateResponseSchema,
   } from "@openerrata/shared";
-  import type {
-    ClaimId,
-    ExtensionMessage,
-    ExtensionSkippedReason,
-  } from "@openerrata/shared";
+  import type { ClaimId, ExtensionMessage, ExtensionSkippedReason } from "@openerrata/shared";
   import browser from "webextension-polyfill";
   import { isSupportedPostUrl, parseSupportedPageIdentity } from "../lib/post-identity";
   import { computePostView, type PopupClaim, type PostPopupView } from "./post-view";
@@ -103,10 +99,10 @@
 
   const showFooter = $derived(
     view.kind === "found_claims" ||
-    view.kind === "clean" ||
-    view.kind === "failed" ||
-    view.kind === "investigating" ||
-    view.kind === "not_investigated",
+      view.kind === "clean" ||
+      view.kind === "failed" ||
+      view.kind === "investigating" ||
+      view.kind === "not_investigated",
   );
 
   // ── Async operations ──────────────────────────────────────────────────────
@@ -115,8 +111,7 @@
     try {
       const settings = await loadExtensionSettings();
       const canRequest =
-        settings.apiKey.trim().length > 0 ||
-        settings.openaiApiKey.trim().length > 0;
+        settings.apiKey.trim().length > 0 || settings.openaiApiKey.trim().length > 0;
 
       const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
       const tabUrl = tab?.url ?? "";
@@ -135,15 +130,11 @@
       }
       const parsed = extensionPageStatusSchema.safeParse(response);
       const status = parsed.success ? parsed.data : null;
-      const matched = statusMatchesIdentity(status, supportedIdentity, tabUrl)
-        ? status
-        : null;
+      const matched = statusMatchesIdentity(status, supportedIdentity, tabUrl) ? status : null;
 
       let newView: PopupView;
       if (matched === null) {
-        newView = onSupportedPage
-          ? { kind: "awaiting_status" }
-          : { kind: "unsupported" };
+        newView = onSupportedPage ? { kind: "awaiting_status" } : { kind: "unsupported" };
       } else if (matched.kind === "SKIPPED") {
         newView = { kind: "skipped", message: skippedReasonMessage(matched.reason) };
       } else {
@@ -198,14 +189,15 @@
         return;
       }
       if (!parsedResponse.data.ok) {
-        view = { kind: "error", message: "This post is not ready yet. Wait a moment and try again." };
+        view = {
+          kind: "error",
+          message: "This post is not ready yet. Wait a moment and try again.",
+        };
         return;
       }
       await loadStatus();
     } catch (requestError) {
-      console.error(
-        `Could not reach content script: ${describeError(requestError)}`,
-      );
+      console.error(`Could not reach content script: ${describeError(requestError)}`);
       view = { kind: "error", message: "Could not reach content script" };
     }
   }
@@ -221,9 +213,7 @@
       if (response === null) return;
       showHighlights = nextVisibility;
     } catch (toggleError) {
-      console.error(
-        `Could not update highlights: ${describeError(toggleError)}`,
-      );
+      console.error(`Could not update highlights: ${describeError(toggleError)}`);
       view = { kind: "error", message: "Could not update highlights" };
     }
   }
@@ -260,9 +250,7 @@
 
       window.close();
     } catch (focusError) {
-      console.error(
-        `Could not focus claim: ${describeError(focusError)}`,
-      );
+      console.error(`Could not focus claim: ${describeError(focusError)}`);
       view = { kind: "error", message: "Could not reach content script" };
     }
   }
@@ -282,11 +270,12 @@
     ) => {
       if (areaName !== "local") return;
       if (
-        !Object.keys(changes).some((key) =>
-          key.startsWith("tab:") ||
-          key === "apiKey" ||
-          key === "openaiApiKey" ||
-          key === "autoInvestigate",
+        !Object.keys(changes).some(
+          (key) =>
+            key.startsWith("tab:") ||
+            key === "apiKey" ||
+            key === "openaiApiKey" ||
+            key === "autoInvestigate",
         )
       ) {
         return;
@@ -309,8 +298,12 @@
       </div>
       <button class="settings-btn" onclick={openSettings} title="Settings">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-          <path d="M8 4.754a3.246 3.246 0 1 0 0 6.492 3.246 3.246 0 0 0 0-6.492zM5.754 8a2.246 2.246 0 1 1 4.492 0 2.246 2.246 0 0 1-4.492 0z"/>
-          <path d="M9.796 1.343c-.527-1.79-3.065-1.79-3.592 0l-.094.319a.873.873 0 0 1-1.255.52l-.292-.16c-1.64-.892-3.433.902-2.54 2.541l.159.292a.873.873 0 0 1-.52 1.255l-.319.094c-1.79.527-1.79 3.065 0 3.592l.319.094a.873.873 0 0 1 .52 1.255l-.16.292c-.892 1.64.902 3.434 2.541 2.54l.292-.159a.873.873 0 0 1 1.255.52l.094.319c.527 1.79 3.065 1.79 3.592 0l.094-.319a.873.873 0 0 1 1.255-.52l.292.16c1.64.893 3.434-.902 2.54-2.541l-.159-.292a.873.873 0 0 1 .52-1.255l.319-.094c1.79-.527 1.79-3.065 0-3.592l-.319-.094a.873.873 0 0 1-.52-1.255l.16-.292c.893-1.64-.902-3.433-2.541-2.54l-.292.159a.873.873 0 0 1-1.255-.52l-.094-.319zm-2.633.283c.246-.835 1.428-.835 1.674 0l.094.319a1.873 1.873 0 0 0 2.693 1.115l.291-.16c.764-.415 1.6.42 1.184 1.185l-.159.292a1.873 1.873 0 0 0 1.116 2.692l.318.094c.835.246.835 1.428 0 1.674l-.319.094a1.873 1.873 0 0 0-1.115 2.693l.16.291c.415.764-.421 1.6-1.185 1.184l-.291-.159a1.873 1.873 0 0 0-2.693 1.116l-.094.318c-.246.835-1.428.835-1.674 0l-.094-.319a1.873 1.873 0 0 0-2.692-1.115l-.292.16c-.764.415-1.6-.421-1.184-1.185l.159-.291A1.873 1.873 0 0 0 1.945 8.93l-.319-.094c-.835-.246-.835-1.428 0-1.674l.319-.094A1.873 1.873 0 0 0 3.06 4.377l-.16-.292c-.415-.764.42-1.6 1.185-1.184l.292.159a1.873 1.873 0 0 0 2.692-1.116l.094-.318z"/>
+          <path
+            d="M8 4.754a3.246 3.246 0 1 0 0 6.492 3.246 3.246 0 0 0 0-6.492zM5.754 8a2.246 2.246 0 1 1 4.492 0 2.246 2.246 0 0 1-4.492 0z"
+          />
+          <path
+            d="M9.796 1.343c-.527-1.79-3.065-1.79-3.592 0l-.094.319a.873.873 0 0 1-1.255.52l-.292-.16c-1.64-.892-3.433.902-2.54 2.541l.159.292a.873.873 0 0 1-.52 1.255l-.319.094c-1.79.527-1.79 3.065 0 3.592l.319.094a.873.873 0 0 1 .52 1.255l-.16.292c-.892 1.64.902 3.434 2.541 2.54l.292-.159a.873.873 0 0 1 1.255.52l.094.319c.527 1.79 3.065 1.79 3.592 0l.094-.319a.873.873 0 0 1 1.255-.52l.292.16c1.64.893 3.434-.902 2.54-2.541l-.159-.292a.873.873 0 0 1 .52-1.255l.319-.094c1.79-.527 1.79-3.065 0-3.592l-.319-.094a.873.873 0 0 1-.52-1.255l.16-.292c.893-1.64-.902-3.433-2.541-2.54l-.292.159a.873.873 0 0 1-1.255-.52l-.094-.319zm-2.633.283c.246-.835 1.428-.835 1.674 0l.094.319a1.873 1.873 0 0 0 2.693 1.115l.291-.16c.764-.415 1.6.42 1.184 1.185l-.159.292a1.873 1.873 0 0 0 1.116 2.692l.318.094c.835.246.835 1.428 0 1.674l-.319.094a1.873 1.873 0 0 0-1.115 2.693l.16.291c.415.764-.421 1.6-1.185 1.184l-.291-.159a1.873 1.873 0 0 0-2.693 1.116l-.094.318c-.246.835-1.428.835-1.674 0l-.094-.319a1.873 1.873 0 0 0-2.692-1.115l-.292.16c-.764.415-1.6-.421-1.184-1.185l.159-.291A1.873 1.873 0 0 0 1.945 8.93l-.319-.094c-.835-.246-.835-1.428 0-1.674l.319-.094A1.873 1.873 0 0 0 3.06 4.377l-.16-.292c-.415-.764.42-1.6 1.185-1.184l.292.159a1.873 1.873 0 0 0 2.692-1.116l.094-.318z"
+          />
         </svg>
       </button>
     </header>
@@ -349,15 +342,16 @@
       {:else if view.kind === "found_claims"}
         <div class="result-badge found">
           <span class="badge-dot found-dot"></span>
-          <span><strong>{view.claims.length}</strong> incorrect claim{view.claims.length !== 1 ? "s" : ""} found</span>
+          <span
+            ><strong>{view.claims.length}</strong> incorrect claim{view.claims.length !== 1
+              ? "s"
+              : ""} found</span
+          >
         </div>
         <ul class="claims">
           {#each view.claims as claim (claim.id)}
             <li>
-              <button
-                class="claim-focus-btn"
-                onclick={() => void focusClaim(claim.id)}
-              >
+              <button class="claim-focus-btn" onclick={() => void focusClaim(claim.id)}>
                 {claim.summary}
               </button>
             </li>
@@ -377,8 +371,8 @@
         <section class="state-panel">
           <p class="state-title">Content Mismatch</p>
           <p class="state-subtitle">
-            This page's extracted content does not match the server-verified canonical
-            post content. Reload the page or open the canonical post URL.
+            This page's extracted content does not match the server-verified canonical post content.
+            Reload the page or open the canonical post URL.
           </p>
         </section>
       {:else if view.kind === "investigating"}
@@ -499,7 +493,10 @@
     border-radius: 8px;
     cursor: pointer;
     color: #475569;
-    transition: color 0.15s, border-color 0.15s, background-color 0.15s;
+    transition:
+      color 0.15s,
+      border-color 0.15s,
+      background-color 0.15s;
   }
   .settings-btn:hover {
     color: #1e293b;
@@ -587,8 +584,12 @@
     line-height: 1.5;
     margin: 0;
   }
-  .status-text.error { color: var(--ui-danger); }
-  .status-text.investigating { color: var(--ui-primary); }
+  .status-text.error {
+    color: var(--ui-danger);
+  }
+  .status-text.investigating {
+    color: var(--ui-primary);
+  }
 
   .spinner {
     display: inline-block;
@@ -602,7 +603,9 @@
   }
 
   @keyframes spin {
-    to { transform: rotate(360deg); }
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   .result-badge {
@@ -632,8 +635,12 @@
     border-radius: 50%;
     flex-shrink: 0;
   }
-  .found-dot { background: #ef4444; }
-  .clean-dot { background: #22c55e; }
+  .found-dot {
+    background: #ef4444;
+  }
+  .clean-dot {
+    background: #22c55e;
+  }
 
   .claims {
     list-style: none;

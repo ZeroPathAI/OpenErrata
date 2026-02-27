@@ -13,7 +13,8 @@ tRPC handler → `postRouter` or `publicRouter` → Prisma → PostgreSQL.
 
 ### tRPC Routers
 
-- `src/lib/trpc/routes/post.ts` — Extension-facing API: `recordViewAndGetStatus` (mutation),
+- `src/lib/trpc/routes/post.ts` — Extension-facing API:
+  `registerObservedVersion` (mutation), `recordViewAndGetStatus` (mutation),
   `getInvestigation` (query), `investigateNow` (mutation),
   `validateSettings` (query), `batchStatus` (query).
 - `src/lib/trpc/routes/public.ts` — Legacy public tRPC API: investigation
@@ -22,15 +23,20 @@ tRPC handler → `postRouter` or `publicRouter` → Prisma → PostgreSQL.
 
 ### Key Handlers
 
-**`recordViewAndGetStatus`** is the highest-traffic handler. It:
-1. Normalizes client-submitted content
-2. Fast-checks for a completed investigation using the observed content version
-3. For misses, attempts server-side canonical fetch (LessWrong GraphQL API; X/Substack stub to CLIENT_FALLBACK)
-4. Rejects mismatches (`CONTENT_MISMATCH`) when server-verified content conflicts
-5. Upserts the Post + increments viewCount and unique-view credits
-6. Upgrades provenance on existing CLIENT_FALLBACK investigations if server hash matches
-7. Records corroboration credits for authenticated viewers
-8. Returns cached investigation results if available
+**`registerObservedVersion`** is the canonicalization/versioning entrypoint. It:
+
+1. Normalizes client-observed content and image-occurrence payloads
+2. Resolves canonical content version (server-verified when available; client-fallback otherwise)
+3. Rejects mismatches (`CONTENT_MISMATCH`) when server-verified content conflicts with observed content
+4. Upserts PostVersion-backed storage (`ContentBlob`, `ImageOccurrenceSet`, `PostVersion`)
+5. Returns `{ platform, externalId, versionHash, postVersionId, provenance }`
+
+**`recordViewAndGetStatus`** is the view-credit/read-status entrypoint. It:
+
+1. Takes `postVersionId` from `registerObservedVersion` (no canonical fetch in this handler)
+2. Increments Post view counters and unique-view credits
+3. Records corroboration credits for authenticated viewers on fallback-provenance investigations
+4. Returns completed claims if present, otherwise `NOT_INVESTIGATED` plus optional `priorInvestigationResult`
 
 ### Investigation Pipeline
 
@@ -51,7 +57,7 @@ tRPC handler → `postRouter` or `publicRouter` → Prisma → PostgreSQL.
   before rethrow so only one worker run is active at a time.
 - **NON_RETRYABLE**: Zod validation failure, content-policy refusal, auth errors
   → mark FAILED immediately, don't rethrow.
-- **FAILED is terminal** for a given (postId, contentHash). No automatic
+- **FAILED is terminal** for a given `postVersionId`. No automatic
   re-selection by the selector.
 
 ### Prisma Schema

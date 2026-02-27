@@ -8,7 +8,8 @@
     "verify:dist": "node ./scripts/assert-build-artifacts.mjs",
     "typecheck": "tsc --noEmit",
     "test:unit": "tsx --test \"test/unit/**/*.test.ts\"",
-    "test:e2e": "pnpm build && playwright test -c playwright.config.ts"
+    "test:e2e": "pnpm build && playwright test -c playwright.config.ts",
+    "test:unit:coverage": "c8 --config ../.c8rc.extension.json tsx --test \"test/unit/**/*.test.ts\""
   },
   "dependencies": {
     "@openerrata/shared": "workspace:*",
@@ -23,7 +24,9 @@
     "@playwright/test": "^1.56.1",
     "@sveltejs/vite-plugin-svelte": "^6.2.4",
     "@types/chrome": "^0.1.36",
+    "@types/jsdom": "^27.0.0",
     "@types/markdown-it": "^14.1.2",
+    "@types/node": "^25.3.0",
     "@types/webextension-polyfill": "^0.12.5",
     "jsdom": "^28.1.0",
     "svelte": "^5.53.0",

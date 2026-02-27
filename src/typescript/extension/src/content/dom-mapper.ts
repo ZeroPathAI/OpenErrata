@@ -29,10 +29,7 @@ interface CodePointWithRawIndex {
  * 3. **Fuzzy (Levenshtein)** — sliding-window search for the best
  *    approximate match.
  */
-export function mapClaimsToDom(
-  claims: InvestigationClaim[],
-  root: Element,
-): DomAnnotation[] {
+export function mapClaimsToDom(claims: InvestigationClaim[], root: Element): DomAnnotation[] {
   const fullText = root.textContent;
   const fullTextIndex = buildNormalizedTextIndex(fullText);
   const normalizedFullText = fullTextIndex.normalized;
@@ -53,11 +50,7 @@ export function mapClaimsToDom(
         normalizedClaimText.length,
       );
       if (mappedSpan) {
-        const range = createRangeFromTextOffset(
-          root,
-          mappedSpan.offset,
-          mappedSpan.length,
-        );
+        const range = createRangeFromTextOffset(root, mappedSpan.offset, mappedSpan.length);
         if (range) return { claim, range, matched: true };
       }
     }
@@ -74,11 +67,7 @@ export function mapClaimsToDom(
             normalizedClaimText.length,
           );
           if (mappedSpan) {
-            const range = createRangeFromTextOffset(
-              root,
-              mappedSpan.offset,
-              mappedSpan.length,
-            );
+            const range = createRangeFromTextOffset(root, mappedSpan.offset, mappedSpan.length);
             if (range) return { claim, range, matched: true };
           }
         }
@@ -94,11 +83,7 @@ export function mapClaimsToDom(
         fuzzyResult.length,
       );
       if (mappedSpan) {
-        const range = createRangeFromTextOffset(
-          root,
-          mappedSpan.offset,
-          mappedSpan.length,
-        );
+        const range = createRangeFromTextOffset(root, mappedSpan.offset, mappedSpan.length);
         if (range) return { claim, range, matched: true };
       }
     }
@@ -186,7 +171,7 @@ function buildNormalizedTextIndex(rawText: string): NormalizedTextIndex {
     segmentCodePoints = [];
   };
 
-  for (let rawIndex = 0; rawIndex < rawText.length;) {
+  for (let rawIndex = 0; rawIndex < rawText.length; ) {
     const codePoint = rawText.codePointAt(rawIndex);
     if (codePoint === undefined) break;
     const char = String.fromCodePoint(codePoint);
@@ -250,11 +235,7 @@ function findUniqueExactMatch(haystack: string, needle: string): number | null {
  * the given character `offset` (relative to `root.textContent`) and spans
  * `length` characters.
  */
-function createRangeFromTextOffset(
-  root: Element,
-  offset: number,
-  length: number,
-): Range | null {
+function createRangeFromTextOffset(root: Element, offset: number, length: number): Range | null {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   let charsSeen = 0;
   let startNode: Text | null = null;
@@ -299,11 +280,8 @@ function createRangeFromTextOffset(
  * Returns the best-matching substring's offset and length, or null if the
  * best match exceeds a distance threshold (40 % of needle length).
  */
-function fuzzyFind(
-  haystack: string,
-  needle: string,
-): { offset: number; length: number } | null {
-  if (!needle || !haystack) return null;
+function fuzzyFind(haystack: string, needle: string): { offset: number; length: number } | null {
+  if (needle.length === 0 || haystack.length === 0) return null;
 
   const maxDist = Math.ceil(needle.length * 0.4);
   let bestDist = Infinity;
@@ -355,11 +333,7 @@ function levenshtein(a: string, b: string): number {
       const prevAtJ = prev[j];
       const currAtJMinus1 = curr[j - 1];
       const prevAtJMinus1 = prev[j - 1];
-      if (
-        prevAtJ === undefined ||
-        currAtJMinus1 === undefined ||
-        prevAtJMinus1 === undefined
-      ) {
+      if (prevAtJ === undefined || currAtJMinus1 === undefined || prevAtJMinus1 === undefined) {
         throw new Error("Levenshtein matrix index is out of bounds");
       }
 

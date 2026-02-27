@@ -13,6 +13,7 @@ import type {
   GetInvestigationOutput,
   InvestigateNowOutput,
   InvestigationStatusOutput,
+  RegisterObservedVersionOutput,
   ViewPostInput,
   ViewPostOutput,
 } from "@openerrata/shared";
@@ -20,6 +21,7 @@ import browser, { type Runtime } from "webextension-polyfill";
 import {
   ApiClientError,
   init,
+  registerObservedVersion,
   recordViewAndGetStatus,
   getInvestigation,
   investigateNow,
@@ -36,15 +38,21 @@ import {
   syncToolbarBadgesForOpenTabs,
 } from "./cache.js";
 import { toViewPostInput } from "../lib/view-post-input.js";
-import {
-  createPostStatusFromInvestigation,
-  apiErrorToPostStatus,
-} from "./post-status.js";
+import { createPostStatusFromInvestigation, apiErrorToPostStatus } from "./post-status.js";
+import { BackgroundInvestigationState, type InvestigationPoller } from "./investigation-state.js";
 import {
   snapshotFromInvestigateNowResult,
   toInvestigationStatusForCaching,
 } from "./investigation-snapshot.js";
+import { decidePageContentSnapshot } from "./page-content-decision.js";
+import { decidePageContentPostCacheAction } from "./page-content-action.js";
 import { unsupportedProtocolVersionResponse } from "../lib/protocol-version.js";
+import {
+  addDomContentLoadedListener,
+  addHistoryStateUpdatedListener,
+  executeTabFunction,
+  injectTabAssets,
+} from "./browser-compat.js";
 
 // Initialize API client on worker start.
 void init();
@@ -61,14 +69,8 @@ type ParsedPageSkippedPayload = Extract<
   ParsedExtensionMessage,
   { type: "PAGE_SKIPPED" }
 >["payload"];
-type ParsedGetStatusPayload = Extract<
-  ParsedExtensionMessage,
-  { type: "GET_STATUS" }
->["payload"];
-type ParsedPageResetPayload = Extract<
-  ParsedExtensionMessage,
-  { type: "PAGE_RESET" }
->["payload"];
+type ParsedGetStatusPayload = Extract<ParsedExtensionMessage, { type: "GET_STATUS" }>["payload"];
+type ParsedPageResetPayload = Extract<ParsedExtensionMessage, { type: "PAGE_RESET" }>["payload"];
 type ParsedInvestigateNowPayload = Extract<
   ParsedExtensionMessage,
   { type: "INVESTIGATE_NOW" }
@@ -85,9 +87,7 @@ type ParsedBackgroundMessage = Extract<
       | "GET_CACHED";
   }
 >;
-type ExtensionRuntimeErrorResponse = ReturnType<
-  typeof extensionRuntimeErrorResponseSchema.parse
->;
+type ExtensionRuntimeErrorResponse = ReturnType<typeof extensionRuntimeErrorResponseSchema.parse>;
 
 const SUBSTACK_POST_PATH_REGEX = /^\/p\/[^/?#]+/i;
 const KNOWN_DECLARATIVE_DOMAINS = [
@@ -95,6 +95,7 @@ const KNOWN_DECLARATIVE_DOMAINS = [
   "lesswrong.com",
   "x.com",
   "twitter.com",
+  "wikipedia.org",
 ];
 
 const injectedCustomSubstackTabs = new Map<number, string>();
@@ -110,11 +111,8 @@ function isContentMismatchError(error: unknown): boolean {
   return error instanceof ApiClientError && error.errorCode === "CONTENT_MISMATCH";
 }
 
-function toRuntimeErrorResponse(
-  error: unknown,
-): ExtensionRuntimeErrorResponse {
-  const errorCode =
-    error instanceof ApiClientError ? error.errorCode : undefined;
+function toRuntimeErrorResponse(error: unknown): ExtensionRuntimeErrorResponse {
+  const errorCode = error instanceof ApiClientError ? error.errorCode : undefined;
   return extensionRuntimeErrorResponseSchema.parse({
     ok: false,
     error: describeError(error),
@@ -136,9 +134,7 @@ function isBackgroundMessage(message: ParsedExtensionMessage): message is Parsed
 function isKnownDeclarativeDomain(hostname: string): boolean {
   const normalizedHostname = hostname.toLowerCase();
   return KNOWN_DECLARATIVE_DOMAINS.some(
-    (domain) =>
-      normalizedHostname === domain ||
-      normalizedHostname.endsWith(`.${domain}`),
+    (domain) => normalizedHostname === domain || normalizedHostname.endsWith(`.${domain}`),
   );
 }
 
@@ -147,38 +143,30 @@ function hasCandidateSubstackPath(url: URL): boolean {
 }
 
 async function detectSubstackDomFingerprint(tabId: number): Promise<boolean> {
-  const [probeResult] = await chrome.scripting.executeScript({
-    target: { tabId },
-    func: () => {
-      const hasPostPath = /^\/p\/[^/?#]+/i.test(window.location.pathname);
-      const hasSubstackFingerprint =
-        document.querySelector(
-          [
-            'link[href*="substackcdn.com"]',
-            'script[src*="substackcdn.com"]',
-            'img[src*="substackcdn.com"]',
-            'meta[property="og:url"][content*=".substack.com"]',
-            'meta[name="twitter:image"][content*="post_preview/"]',
-          ].join(","),
-        ) !== null;
-      return hasPostPath && hasSubstackFingerprint;
-    },
+  const probeResult = await executeTabFunction(tabId, () => {
+    const hasPostPath = /^\/p\/[^/?#]+/i.test(window.location.pathname);
+    const hasSubstackFingerprint =
+      document.querySelector(
+        [
+          'link[href*="substackcdn.com"]',
+          'script[src*="substackcdn.com"]',
+          'img[src*="substackcdn.com"]',
+          'meta[property="og:url"][content*=".substack.com"]',
+          'meta[name="twitter:image"][content*="post_preview/"]',
+        ].join(","),
+      ) !== null;
+    return hasPostPath && hasSubstackFingerprint;
   });
 
-  return probeResult?.result === true;
+  return probeResult === true;
 }
 
 async function injectContentScriptIntoTab(tabId: number): Promise<void> {
-  await Promise.all([
-    chrome.scripting.executeScript({
-      target: { tabId },
-      files: ["content/main.js"],
-    }),
-    chrome.scripting.insertCSS({
-      target: { tabId },
-      files: ["content/annotations.css"],
-    }),
-  ]);
+  await injectTabAssets({
+    tabId,
+    scriptFile: "content/main.js",
+    cssFile: "content/annotations.css",
+  });
 }
 
 async function hasContentScriptListener(tabId: number): Promise<boolean> {
@@ -193,10 +181,7 @@ async function hasContentScriptListener(tabId: number): Promise<boolean> {
   }
 }
 
-async function maybeInjectKnownDomainContentScript(
-  tabId: number,
-  tabUrl: string,
-): Promise<void> {
+async function maybeInjectKnownDomainContentScript(tabId: number, tabUrl: string): Promise<void> {
   let parsedUrl: URL;
   try {
     parsedUrl = new URL(tabUrl);
@@ -219,10 +204,7 @@ async function maybeInjectKnownDomainContentScript(
   }
 }
 
-async function maybeInjectCustomDomainSubstack(
-  tabId: number,
-  tabUrl: string,
-): Promise<void> {
+async function maybeInjectCustomDomainSubstack(tabId: number, tabUrl: string): Promise<void> {
   let parsedUrl: URL;
   try {
     parsedUrl = new URL(tabUrl);
@@ -257,42 +239,29 @@ async function ensureSubstackInjectionForOpenTabs(): Promise<void> {
   const tabs = await browser.tabs.query({});
   await Promise.all(
     tabs.map(async (tab) => {
-      if (!tab.id || !tab.url) return;
+      if (tab.id === undefined || tab.url === undefined || tab.url.length === 0) return;
       await maybeInjectKnownDomainContentScript(tab.id, tab.url);
       await maybeInjectCustomDomainSubstack(tab.id, tab.url);
     }),
   );
 }
 
-type InvestigationPoller = {
-  tabSessionId: number;
-  investigationId: string;
-  inFlight: boolean;
-  timer: ReturnType<typeof setInterval> | null;
-};
-
-const investigationPollers = new Map<number, InvestigationPoller>();
-const latestTabSessionByTab = new Map<number, number>();
+const backgroundInvestigationState = new BackgroundInvestigationState();
 const INVESTIGATION_POLL_ALARM_PREFIX = "investigation-poll:";
 // Chrome enforces a minimum repeating alarm interval; keep this as a wake-up
 // recovery signal and retain in-memory 5s polling while the worker is alive.
 const INVESTIGATION_POLL_RECOVERY_ALARM_PERIOD_MINUTES = 0.5;
 
 function noteTabSession(tabId: number, tabSessionId: number): void {
-  const existing = latestTabSessionByTab.get(tabId);
-  if (existing === undefined || tabSessionId > existing) {
-    latestTabSessionByTab.set(tabId, tabSessionId);
-  }
+  backgroundInvestigationState.noteTabSession(tabId, tabSessionId);
 }
 
 function retireTabSession(tabId: number, tabSessionId: number): void {
-  noteTabSession(tabId, tabSessionId + 1);
+  backgroundInvestigationState.retireTabSession(tabId, tabSessionId);
 }
 
 function isStaleTabSession(tabId: number, tabSessionId: number): boolean {
-  const latest = latestTabSessionByTab.get(tabId);
-  if (latest === undefined) return false;
-  return tabSessionId < latest;
+  return backgroundInvestigationState.isStaleTabSession(tabId, tabSessionId);
 }
 
 async function cacheApiErrorStatus(input: {
@@ -355,11 +324,13 @@ function parsePollRecoveryAlarmTabId(alarmName: string): number | null {
 }
 
 function schedulePollRecoveryAlarm(tabId: number): void {
-  void browser.alarms.create(pollRecoveryAlarmName(tabId), {
-    periodInMinutes: INVESTIGATION_POLL_RECOVERY_ALARM_PERIOD_MINUTES,
-  }).catch((error: unknown) => {
-    console.error("Failed to schedule investigation poll recovery alarm:", error);
-  });
+  void browser.alarms
+    .create(pollRecoveryAlarmName(tabId), {
+      periodInMinutes: INVESTIGATION_POLL_RECOVERY_ALARM_PERIOD_MINUTES,
+    })
+    .catch((error: unknown) => {
+      console.error("Failed to schedule investigation poll recovery alarm:", error);
+    });
 }
 
 function clearPollRecoveryAlarm(tabId: number): void {
@@ -371,18 +342,16 @@ function clearPollRecoveryAlarm(tabId: number): void {
 function stopInvestigationPolling(tabId: number): void {
   clearPollRecoveryAlarm(tabId);
 
-  const existing = investigationPollers.get(tabId);
+  const existing = backgroundInvestigationState.getPoller(tabId);
   if (!existing) return;
 
   if (existing.timer) {
     clearInterval(existing.timer);
   }
-  investigationPollers.delete(tabId);
+  backgroundInvestigationState.clearPoller(tabId);
 }
 
-function isInvestigatingCheckStatus(
-  status: InvestigateNowOutput["status"],
-): boolean {
+function isInvestigatingCheckStatus(status: InvestigateNowOutput["status"]): boolean {
   return status === "PENDING" || status === "PROCESSING";
 }
 
@@ -392,9 +361,7 @@ function isInvestigatingSnapshot(
   return snapshot.investigationState === "INVESTIGATING";
 }
 
-function toInvestigationStatusSnapshot(
-  output: GetInvestigationOutput,
-): InvestigationStatusOutput {
+function toInvestigationStatusSnapshot(output: GetInvestigationOutput): InvestigationStatusOutput {
   const { checkedAt: _checkedAt, ...snapshot } = output;
   return snapshot;
 }
@@ -414,11 +381,11 @@ async function startInvestigationPolling(input: {
     inFlight: false,
     timer: null,
   };
-  investigationPollers.set(input.tabId, poller);
+  backgroundInvestigationState.setPoller(input.tabId, poller);
   schedulePollRecoveryAlarm(input.tabId);
 
   const tick = async () => {
-    const activePoller = investigationPollers.get(input.tabId);
+    const activePoller = backgroundInvestigationState.getPoller(input.tabId);
     if (
       activePoller?.tabSessionId !== input.tabSessionId ||
       activePoller.investigationId !== input.investigationId
@@ -464,7 +431,7 @@ async function startInvestigationPolling(input: {
     } catch (error) {
       console.error("investigation polling failed:", error);
     } finally {
-      const current = investigationPollers.get(input.tabId);
+      const current = backgroundInvestigationState.getPoller(input.tabId);
       if (current) {
         current.inFlight = false;
       }
@@ -472,7 +439,7 @@ async function startInvestigationPolling(input: {
   };
 
   await tick();
-  const current = investigationPollers.get(input.tabId);
+  const current = backgroundInvestigationState.getPoller(input.tabId);
   if (!current || current !== poller) {
     return;
   }
@@ -490,15 +457,12 @@ async function maybeResumePollingFromCachedStatus(
     stopInvestigationPolling(tabId);
     return;
   }
-  if (
-    status.investigationState !== "INVESTIGATING" ||
-    status.investigationId === undefined
-  ) {
+  if (status.investigationState !== "INVESTIGATING" || status.investigationId === undefined) {
     stopInvestigationPolling(tabId);
     return;
   }
 
-  const activePoller = investigationPollers.get(tabId);
+  const activePoller = backgroundInvestigationState.getPoller(tabId);
   if (
     activePoller?.tabSessionId === status.tabSessionId &&
     activePoller.investigationId === status.investigationId
@@ -545,7 +509,7 @@ let restoreInvestigationPollingPromise: Promise<void> | null = null;
 
 async function restoreInvestigationPollingState(): Promise<void> {
   restoreInvestigationPollingPromise ??= (async () => {
-    for (const tabId of investigationPollers.keys()) {
+    for (const tabId of backgroundInvestigationState.pollerTabIds()) {
       stopInvestigationPolling(tabId);
     }
     await clearAllPollRecoveryAlarms();
@@ -557,21 +521,16 @@ async function restoreInvestigationPollingState(): Promise<void> {
   await restoreInvestigationPollingPromise;
 }
 
-async function cacheInvestigateNowResult(
-  input: {
-    tabId: number;
-    tabSessionId: number;
-    request: ViewPostInput;
-    result: InvestigateNowOutput;
-    existingStatus?: InvestigationStatusOutput | null;
-  },
-): Promise<void> {
+async function cacheInvestigateNowResult(input: {
+  tabId: number;
+  tabSessionId: number;
+  request: ViewPostInput;
+  result: InvestigateNowOutput;
+  existingStatus?: InvestigationStatusOutput | null;
+}): Promise<void> {
   const { tabId, tabSessionId, request, result } = input;
 
-  const initialSnapshot = snapshotFromInvestigateNowResult(
-    result,
-    input.existingStatus,
-  );
+  const initialSnapshot = snapshotFromInvestigateNowResult(result, input.existingStatus);
 
   await cachePostStatus(
     tabId,
@@ -590,14 +549,13 @@ async function cacheInvestigateNowResult(
   }
 }
 
-async function maybeAutoInvestigate(
-  input: {
-    tabId: number;
-    tabSessionId: number;
-    request: ViewPostInput;
-    existingStatus: ExtensionPostStatus | null;
-  },
-): Promise<void> {
+async function maybeAutoInvestigate(input: {
+  tabId: number;
+  tabSessionId: number;
+  request: ViewPostInput;
+  registeredVersion: RegisterObservedVersionOutput;
+  existingStatus: ExtensionPostStatus | null;
+}): Promise<void> {
   if (!hasUserOpenAiKey() || !isAutoInvestigateEnabled()) {
     return;
   }
@@ -609,7 +567,9 @@ async function maybeAutoInvestigate(
   }
 
   try {
-    const result = await investigateNow(input.request);
+    const result = await investigateNow({
+      postVersionId: input.registeredVersion.postVersionId,
+    });
     if (isStaleTabSession(input.tabId, input.tabSessionId)) {
       return;
     }
@@ -651,45 +611,43 @@ async function maybeAutoInvestigate(
   }
 }
 
-browser.runtime.onMessage.addListener(
-  (message: unknown, sender: Runtime.MessageSender) => {
-    const protocolError = unsupportedProtocolVersionResponse(message);
-    if (protocolError) {
-      return protocolError;
+browser.runtime.onMessage.addListener((message: unknown, sender: Runtime.MessageSender) => {
+  const protocolError = unsupportedProtocolVersionResponse(message);
+  if (protocolError) {
+    return protocolError;
+  }
+
+  const parsedMessage = extensionMessageSchema.safeParse(message);
+  if (!parsedMessage.success) return false;
+  const typedMessage = parsedMessage.data;
+  if (!isBackgroundMessage(typedMessage)) return false;
+
+  const handle = async () => {
+    switch (typedMessage.type) {
+      case "PAGE_CONTENT":
+        return handlePageContent(typedMessage.payload, sender);
+      case "PAGE_SKIPPED":
+        return handlePageSkipped(typedMessage.payload, sender);
+      case "PAGE_RESET":
+        return handlePageReset(typedMessage.payload, sender);
+      case "GET_STATUS":
+        return handleGetStatus(typedMessage.payload, sender);
+      case "INVESTIGATE_NOW":
+        return handleInvestigateNow(typedMessage.payload, sender);
+      case "GET_CACHED":
+        return handleGetCached(sender);
     }
+  };
 
-    const parsedMessage = extensionMessageSchema.safeParse(message);
-    if (!parsedMessage.success) return false;
-    const typedMessage = parsedMessage.data;
-    if (!isBackgroundMessage(typedMessage)) return false;
-
-    const handle = async () => {
-      switch (typedMessage.type) {
-        case "PAGE_CONTENT":
-          return handlePageContent(typedMessage.payload, sender);
-        case "PAGE_SKIPPED":
-          return handlePageSkipped(typedMessage.payload, sender);
-        case "PAGE_RESET":
-          return handlePageReset(typedMessage.payload, sender);
-        case "GET_STATUS":
-          return handleGetStatus(typedMessage.payload, sender);
-        case "INVESTIGATE_NOW":
-          return handleInvestigateNow(typedMessage.payload, sender);
-        case "GET_CACHED":
-          return handleGetCached(sender);
-      }
-    };
-
-    return handle().catch((err: unknown) => {
-      if (isContentMismatchError(err)) {
-        console.warn("Background handler rejected mismatched page content:", err);
-      } else {
-        console.error("Background handler error:", err);
-      }
-      return toRuntimeErrorResponse(err);
-    });
-  },
-);
+  return handle().catch((err: unknown) => {
+    if (isContentMismatchError(err)) {
+      console.warn("Background handler rejected mismatched page content:", err);
+    } else {
+      console.error("Background handler error:", err);
+    }
+    return toRuntimeErrorResponse(err);
+  });
+});
 
 async function handlePageContent(
   payload: ParsedPageContentPayload,
@@ -697,9 +655,13 @@ async function handlePageContent(
 ): Promise<ViewPostOutput> {
   const request = toViewPostInput(payload.content);
 
+  let registeredVersion: RegisterObservedVersionOutput;
   let result: ViewPostOutput;
   try {
-    result = await recordViewAndGetStatus(request);
+    registeredVersion = await registerObservedVersion(request);
+    result = await recordViewAndGetStatus({
+      postVersionId: registeredVersion.postVersionId,
+    });
   } catch (error) {
     if (sender.tab?.id !== undefined) {
       await cacheApiErrorStatus({
@@ -738,39 +700,14 @@ async function handlePageContent(
 
     const resultUpdateInterim = toInvestigationStatusForCaching(result);
     const existingForSessionUpdateInterim =
-      existingForSession === null
-        ? null
-        : toInvestigationStatusForCaching(existingForSession);
+      existingForSession === null ? null : toInvestigationStatusForCaching(existingForSession);
 
-    let snapshot: InvestigationStatusOutput;
-    if (result.investigationState === "INVESTIGATED") {
-      snapshot = result;
-    } else if (resultUpdateInterim !== null) {
-      snapshot = resultUpdateInterim;
-    } else if (existingForSession?.investigationState === "INVESTIGATING") {
-      if (existingForSessionUpdateInterim !== null) {
-        snapshot = existingForSession;
-      } else {
-        snapshot = {
-          investigationState: "INVESTIGATING",
-          status: existingForSession.status,
-          provenance: existingForSession.provenance,
-          claims: null,
-          priorInvestigationResult: null,
-        };
-      }
-    } else if (
-      existingForSession?.investigationState === "FAILED" &&
-      existingForSession.provenance !== undefined
-    ) {
-      snapshot = {
-        investigationState: "FAILED",
-        provenance: existingForSession.provenance,
-        claims: null,
-      };
-    } else {
-      snapshot = result;
-    }
+    const { snapshot, shouldAutoInvestigate } = decidePageContentSnapshot({
+      result,
+      resultUpdateInterim,
+      existingForSession,
+      existingForSessionUpdateInterim,
+    });
 
     const nextStatus = createPostStatusFromInvestigation({
       tabSessionId: payload.tabSessionId,
@@ -784,14 +721,19 @@ async function handlePageContent(
     });
     await cachePostStatus(tabId, nextStatus);
 
-    if (
-      result.investigationState === "NOT_INVESTIGATED" ||
-      resultUpdateInterim !== null
-    ) {
+    const postCacheAction = decidePageContentPostCacheAction({
+      status: nextStatus,
+      shouldAutoInvestigate,
+    });
+
+    if (postCacheAction === "RESUME_POLLING") {
+      await maybeResumePollingFromCachedStatus(tabId, nextStatus);
+    } else if (postCacheAction === "AUTO_INVESTIGATE") {
       void maybeAutoInvestigate({
         tabId,
         tabSessionId: payload.tabSessionId,
         request,
+        registeredVersion,
         existingStatus: existingForSession,
       }).catch((error: unknown) => {
         console.error("auto investigate failed:", error);
@@ -860,10 +802,7 @@ async function handleGetStatus(
   if (sender.tab?.id !== undefined) {
     const existing = await getActivePostStatus(sender.tab.id);
     if (existing) {
-      if (
-        tabSessionId !== undefined &&
-        tabSessionId !== existing.tabSessionId
-      ) {
+      if (tabSessionId !== undefined && tabSessionId !== existing.tabSessionId) {
         return response;
       }
 
@@ -900,9 +839,13 @@ async function handleInvestigateNow(
 
   const request = payload.request;
 
+  let registeredVersion: RegisterObservedVersionOutput;
   let result: InvestigateNowOutput;
   try {
-    result = await investigateNow(request);
+    registeredVersion = await registerObservedVersion(request);
+    result = await investigateNow({
+      postVersionId: registeredVersion.postVersionId,
+    });
   } catch (error) {
     if (sender.tab?.id !== undefined) {
       await cacheApiErrorStatus({
@@ -940,9 +883,7 @@ async function handleInvestigateNow(
       tabSessionId: payload.tabSessionId,
       request,
       result,
-      ...(preservedExistingStatus !== null
-        ? { existingStatus: preservedExistingStatus }
-        : {}),
+      ...(preservedExistingStatus !== null ? { existingStatus: preservedExistingStatus } : {}),
     });
 
     if (isInvestigatingCheckStatus(result.status)) {
@@ -964,9 +905,7 @@ async function handleInvestigateNow(
   return result;
 }
 
-async function handleGetCached(
-  sender: Runtime.MessageSender,
-): Promise<ExtensionPageStatus | null> {
+async function handleGetCached(sender: Runtime.MessageSender): Promise<ExtensionPageStatus | null> {
   if (sender.tab?.id !== undefined) {
     const status = await getActiveStatus(sender.tab.id);
     await maybeResumePollingFromCachedStatus(sender.tab.id, status);
@@ -975,7 +914,7 @@ async function handleGetCached(
 
   // Popup doesn't have a tab — resolve active tab from background context.
   const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.id) return null;
+  if (tab?.id === undefined) return null;
   const status = await getActiveStatus(tab.id);
   await maybeResumePollingFromCachedStatus(tab.id, status);
   return status;
@@ -1005,7 +944,7 @@ browser.runtime.onInstalled.addListener(() => {
 
 browser.tabs.onRemoved.addListener((tabId) => {
   injectedCustomSubstackTabs.delete(tabId);
-  latestTabSessionByTab.delete(tabId);
+  backgroundInvestigationState.clearTabSession(tabId);
   stopInvestigationPolling(tabId);
   clearCache(tabId);
 });
@@ -1013,7 +952,7 @@ browser.tabs.onRemoved.addListener((tabId) => {
 browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (changeInfo.status !== "loading") return;
   injectedCustomSubstackTabs.delete(tabId);
-  latestTabSessionByTab.delete(tabId);
+  backgroundInvestigationState.clearTabSession(tabId);
   stopInvestigationPolling(tabId);
   void clearActiveStatus(tabId).catch((error: unknown) => {
     console.error("failed to clear active status on tab loading:", error);
@@ -1024,7 +963,7 @@ browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
 // DOM is ready, rather than waiting for all subresources (`status: "complete"`).
 // Substack pages are heavy and `complete` can fire 5-8 seconds after the
 // article content is already visible and parseable.
-chrome.webNavigation.onDOMContentLoaded.addListener((details) => {
+addDomContentLoadedListener((details) => {
   if (details.frameId !== 0) return;
   void Promise.all([
     maybeInjectKnownDomainContentScript(details.tabId, details.url),
@@ -1036,7 +975,7 @@ browser.tabs.onActivated.addListener(({ tabId }) => {
   void browser.tabs
     .get(tabId)
     .then((tab) => {
-      if (!tab.url) return;
+      if (tab.url === undefined || tab.url.length === 0) return;
       return Promise.all([
         maybeInjectKnownDomainContentScript(tabId, tab.url),
         maybeInjectCustomDomainSubstack(tabId, tab.url),
@@ -1047,7 +986,7 @@ browser.tabs.onActivated.addListener(({ tabId }) => {
     });
 });
 
-chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
+addHistoryStateUpdatedListener((details) => {
   if (details.frameId !== 0) return;
   void Promise.all([
     maybeInjectKnownDomainContentScript(details.tabId, details.url),

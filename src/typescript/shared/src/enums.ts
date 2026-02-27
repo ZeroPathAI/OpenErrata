@@ -1,18 +1,10 @@
-export const PLATFORM_VALUES = ["LESSWRONG", "X", "SUBSTACK"] as const;
+export const PLATFORM_VALUES = ["LESSWRONG", "X", "SUBSTACK", "WIKIPEDIA"] as const;
 export type Platform = (typeof PLATFORM_VALUES)[number];
 
-export const CHECK_STATUS_VALUES = [
-  "PENDING",
-  "PROCESSING",
-  "COMPLETE",
-  "FAILED",
-] as const;
+export const CHECK_STATUS_VALUES = ["PENDING", "PROCESSING", "COMPLETE", "FAILED"] as const;
 export type CheckStatus = (typeof CHECK_STATUS_VALUES)[number];
 
-export const CONTENT_PROVENANCE_VALUES = [
-  "SERVER_VERIFIED",
-  "CLIENT_FALLBACK",
-] as const;
+export const CONTENT_PROVENANCE_VALUES = ["SERVER_VERIFIED", "CLIENT_FALLBACK"] as const;
 export type ContentProvenance = (typeof CONTENT_PROVENANCE_VALUES)[number];
 
 export const INVESTIGATION_PROVIDER_VALUES = ["OPENAI", "ANTHROPIC"] as const;

@@ -35,12 +35,9 @@ test("leaves connection strings unchanged when uselibpqcompat is already present
 });
 
 test("leaves strict sslmodes unchanged", () => {
-  const verifyFull =
-    "postgresql://user:pass@db.example.com/openerrata?sslmode=verify-full";
-  const verifyCa =
-    "postgresql://user:pass@db.example.com/openerrata?sslmode=verify-ca";
-  const disable =
-    "postgresql://user:pass@db.example.com/openerrata?sslmode=disable";
+  const verifyFull = "postgresql://user:pass@db.example.com/openerrata?sslmode=verify-full";
+  const verifyCa = "postgresql://user:pass@db.example.com/openerrata?sslmode=verify-ca";
+  const disable = "postgresql://user:pass@db.example.com/openerrata?sslmode=disable";
 
   assert.equal(normalizePgConnectionStringForNode(verifyFull), verifyFull);
   assert.equal(normalizePgConnectionStringForNode(verifyCa), verifyCa);

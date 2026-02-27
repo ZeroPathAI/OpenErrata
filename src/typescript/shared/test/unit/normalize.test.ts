@@ -2,14 +2,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { hashContent, normalizeContent } from "../../src/normalize.js";
 
-test(
-  "normalizeContent removes zero-width chars, collapses whitespace, and trims",
-  () => {
-    const raw = "  Cafe\u0301\u200B   is \n\t great\uFEFF  ";
+test("normalizeContent removes zero-width chars, collapses whitespace, and trims", () => {
+  const raw = "  Cafe\u0301\u200B   is \n\t great\uFEFF  ";
 
-    assert.equal(normalizeContent(raw), "Caf\u00E9 is great");
-  },
-);
+  assert.equal(normalizeContent(raw), "Caf\u00E9 is great");
+});
 
 test("normalizeContent is idempotent", () => {
   const raw = "\u200BCafe\u0301\n\nrocks\t";

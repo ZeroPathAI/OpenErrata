@@ -195,8 +195,7 @@ export function apiErrorToPostStatus(input: {
   investigationId?: string;
   provenance?: ContentProvenance;
 }): ExtensionPostStatus {
-  const errorCode =
-    input.error instanceof ApiClientError ? input.error.errorCode : undefined;
+  const errorCode = input.error instanceof ApiClientError ? input.error.errorCode : undefined;
   const statusInput: PostStatusInput = {
     tabSessionId: input.tabSessionId,
     platform: input.platform,

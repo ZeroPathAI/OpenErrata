@@ -22,12 +22,14 @@ pnpm db:generate      # Regenerate Prisma client
 hatches defeat the purpose of TypeScript's type system and often mask real bugs.
 
 Prohibited patterns:
+
 - `value as any`
 - `value as unknown as SomeType`
 - `{} as SomeType`
 - `(obj as any).property`
 
 Permitted patterns:
+
 - `as const` for literal type inference
 - `as SomeType` ONLY after runtime validation (e.g., after Zod `.parse()`)
 - Type assertions in test files where mocking requires partial objects
@@ -42,7 +44,10 @@ ensures assignability with Prisma-generated types and Zod-inferred types:
 export type Platform = "LESSWRONG" | "X";
 
 // Bad — TS enum, not assignable to/from Prisma's generated type
-export enum Platform { LESSWRONG = "LESSWRONG", X = "X" }
+export enum Platform {
+  LESSWRONG = "LESSWRONG",
+  X = "X",
+}
 ```
 
 ## Package Dependencies

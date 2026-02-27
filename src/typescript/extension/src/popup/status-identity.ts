@@ -1,5 +1,6 @@
 import type { ExtensionPageStatus } from "@openerrata/shared";
 import type { SupportedPageIdentity } from "../lib/post-identity";
+import { parseWikipediaIdentity } from "../lib/wikipedia-url";
 
 const SUBSTACK_POST_PATH_REGEX = /^\/p\/[^/?#]+/i;
 
@@ -10,6 +11,38 @@ export function isSubstackPostPathUrl(url: string): boolean {
   } catch {
     return false;
   }
+}
+
+function statusMatchesWikipediaPage(
+  status: ExtensionPageStatus,
+  identity: SupportedPageIdentity | null,
+  tabUrl: string,
+): boolean {
+  const tabIdentity = parseWikipediaIdentity(tabUrl);
+  const statusIdentity = parseWikipediaIdentity(status.pageUrl);
+  if (tabIdentity === null || statusIdentity === null) {
+    return false;
+  }
+  if (tabIdentity.language !== statusIdentity.language) {
+    return false;
+  }
+
+  const pageIdMatch =
+    tabIdentity.pageId !== null &&
+    statusIdentity.pageId !== null &&
+    tabIdentity.pageId === statusIdentity.pageId;
+  const titleMatch =
+    tabIdentity.title !== null &&
+    statusIdentity.title !== null &&
+    tabIdentity.title === statusIdentity.title;
+  if (!pageIdMatch && !titleMatch) {
+    return false;
+  }
+
+  if (identity === null) {
+    return true;
+  }
+  return identity.platform === "WIKIPEDIA";
 }
 
 export function statusMatchesIdentity(
@@ -41,10 +74,11 @@ export function statusMatchesIdentity(
     return identity.platform === "SUBSTACK";
   }
 
+  if (status.platform === "WIKIPEDIA") {
+    return statusMatchesWikipediaPage(status, identity, tabUrl);
+  }
+
   if (!identity) return false;
 
-  return (
-    status.platform === identity.platform &&
-    status.externalId === identity.externalId
-  );
+  return status.platform === identity.platform && status.externalId === identity.externalId;
 }

@@ -17,16 +17,10 @@ type IsExactly<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : neve
 
 const platformTypesMatch: IsExactly<SharedPlatform, PrismaPlatform> = true;
 const statusTypesMatch: IsExactly<SharedCheckStatus, PrismaCheckStatus> = true;
-const provenanceTypesMatch: IsExactly<
-  SharedContentProvenance,
-  PrismaContentProvenance
-> = true;
-const providerTypesMatch: IsExactly<
-  SharedInvestigationProvider,
-  PrismaInvestigationProvider
-> = true;
-const modelTypesMatch: IsExactly<SharedInvestigationModel, PrismaInvestigationModel> =
+const provenanceTypesMatch: IsExactly<SharedContentProvenance, PrismaContentProvenance> = true;
+const providerTypesMatch: IsExactly<SharedInvestigationProvider, PrismaInvestigationProvider> =
   true;
+const modelTypesMatch: IsExactly<SharedInvestigationModel, PrismaInvestigationModel> = true;
 
 void platformTypesMatch;
 void statusTypesMatch;

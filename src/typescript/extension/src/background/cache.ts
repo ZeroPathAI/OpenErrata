@@ -1,9 +1,6 @@
 import browser from "webextension-polyfill";
 
-import {
-  createTabStatusCacheStore,
-  type CacheBrowserApi,
-} from "./cache-store.js";
+import { createTabStatusCacheStore, type CacheBrowserApi } from "./cache-store.js";
 import { updateToolbarBadge } from "./toolbar-badge.js";
 
 const browserCacheApi: CacheBrowserApi = {

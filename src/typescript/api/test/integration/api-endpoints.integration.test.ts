@@ -1,37 +1,29 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { after, afterEach, test } from "node:test";
 import type { RequestEvent } from "@sveltejs/kit";
 import type { InvestigatorInput } from "../../src/lib/investigators/interface.js";
-import {
-  hashContent,
-  normalizeContent,
-  WORD_COUNT_LIMIT,
-  type Platform,
-} from "@openerrata/shared";
+import { hashContent, normalizeContent, WORD_COUNT_LIMIT, type Platform } from "@openerrata/shared";
 import {
   createDeterministicRandom,
   randomChance,
   randomInt,
   sleep,
 } from "../helpers/fuzz-utils.js";
-import {
-  INTEGRATION_LESSWRONG_FIXTURE_KEYS,
-  readLesswrongFixture,
-} from "./lesswrong-fixtures.js";
+import { INTEGRATION_LESSWRONG_FIXTURE_KEYS, readLesswrongFixture } from "./lesswrong-fixtures.js";
 
-process.env['NODE_ENV'] = "test";
-process.env['DATABASE_URL'] ??=
-  "postgresql://openerrata:openerrata_dev@localhost:5433/openerrata";
-process.env['HMAC_SECRET'] = "test-hmac-secret";
-process.env['BLOB_STORAGE_PROVIDER'] = "aws";
-process.env['BLOB_STORAGE_REGION'] = "us-east-1";
-process.env['BLOB_STORAGE_ENDPOINT'] = "";
-process.env['BLOB_STORAGE_BUCKET'] = "test-openerrata-images";
-process.env['BLOB_STORAGE_ACCESS_KEY_ID'] = "test-blob-access-key";
-process.env['BLOB_STORAGE_SECRET_ACCESS_KEY'] = "test-blob-secret";
-process.env['BLOB_STORAGE_PUBLIC_URL_PREFIX'] = "https://example.test/images";
-process.env['DATABASE_ENCRYPTION_KEY'] = "integration-test-database-encryption-key";
-process.env['OPENAI_API_KEY'] = "sk-test-openai-key";
+process.env["NODE_ENV"] = "test";
+process.env["DATABASE_URL"] ??= "postgresql://openerrata:openerrata_dev@localhost:5433/openerrata";
+process.env["HMAC_SECRET"] = "test-hmac-secret";
+process.env["BLOB_STORAGE_PROVIDER"] = "aws";
+process.env["BLOB_STORAGE_REGION"] = "us-east-1";
+process.env["BLOB_STORAGE_ENDPOINT"] = "";
+process.env["BLOB_STORAGE_BUCKET"] = "test-openerrata-images";
+process.env["BLOB_STORAGE_ACCESS_KEY_ID"] = "test-blob-access-key";
+process.env["BLOB_STORAGE_SECRET_ACCESS_KEY"] = "test-blob-secret";
+process.env["BLOB_STORAGE_PUBLIC_URL_PREFIX"] = "https://example.test/images";
+process.env["DATABASE_ENCRYPTION_KEY"] = "integration-test-database-encryption-key";
+process.env["OPENAI_API_KEY"] = "sk-test-openai-key";
 
 const INTEGRATION_TEST_RUN_ID = [
   Date.now().toString(36),
@@ -41,9 +33,7 @@ const INTEGRATION_TEST_RUN_ID = [
 const INTEGRATION_DATA_PREFIX = `integration-test-${INTEGRATION_TEST_RUN_ID}-`;
 
 function withIntegrationPrefix(value: string): string {
-  return value.startsWith(INTEGRATION_DATA_PREFIX)
-    ? value
-    : `${INTEGRATION_DATA_PREFIX}${value}`;
+  return value.startsWith(INTEGRATION_DATA_PREFIX) ? value : `${INTEGRATION_DATA_PREFIX}${value}`;
 }
 
 const [
@@ -59,21 +49,20 @@ const [
   { lesswrongHtmlToNormalizedText },
   { orchestrateInvestigation },
   { OpenAIInvestigator, InvestigatorExecutionError },
-] =
-  await Promise.all([
-    import("../../src/lib/trpc/router.js"),
-    import("../../src/lib/db/client.js"),
-    import("../../src/lib/trpc/context.js"),
-    import("../../src/lib/services/instance-api-key.js"),
-    import("../../src/routes/health/+server.js"),
-    import("../../src/routes/graphql/+server.js"),
-    import("../../src/lib/services/queue.js"),
-    import("../../src/lib/services/investigation-lifecycle.js"),
-    import("../../src/lib/services/selector.js"),
-    import("../../src/lib/services/content-fetcher.js"),
-    import("../../src/lib/services/orchestrator.js"),
-    import("../../src/lib/investigators/openai.js"),
-  ]);
+] = await Promise.all([
+  import("../../src/lib/trpc/router.js"),
+  import("../../src/lib/db/client.js"),
+  import("../../src/lib/trpc/context.js"),
+  import("../../src/lib/services/instance-api-key.js"),
+  import("../../src/routes/health/+server.js"),
+  import("../../src/routes/graphql/+server.js"),
+  import("../../src/lib/services/queue.js"),
+  import("../../src/lib/services/investigation-lifecycle.js"),
+  import("../../src/lib/services/selector.js"),
+  import("../../src/lib/services/content-fetcher.js"),
+  import("../../src/lib/services/orchestrator.js"),
+  import("../../src/lib/investigators/openai.js"),
+]);
 
 const prisma = getPrisma();
 
@@ -91,21 +80,53 @@ type SeededPost = {
   url: string;
   contentText: string;
   contentHash: string;
+  versionHash: string;
+  postVersionId: string;
 };
 
-type AppCaller = ReturnType<typeof createCaller>;
-type InvestigateNowResult = Awaited<
-  ReturnType<AppCaller["post"]["investigateNow"]>
->;
+type RawAppCaller = ReturnType<typeof appRouter.createCaller>;
+type ViewPostInput = Parameters<RawAppCaller["post"]["registerObservedVersion"]>[0];
+type VersionedPostInput = Parameters<RawAppCaller["post"]["recordViewAndGetStatus"]>[0];
+type WrappedPostRouter = Omit<RawAppCaller["post"], "recordViewAndGetStatus" | "investigateNow"> & {
+  recordViewAndGetStatus: (
+    input: ViewPostInput | VersionedPostInput,
+  ) => ReturnType<RawAppCaller["post"]["recordViewAndGetStatus"]>;
+  investigateNow: (
+    input: ViewPostInput | VersionedPostInput,
+  ) => ReturnType<RawAppCaller["post"]["investigateNow"]>;
+};
+type AppCaller = Omit<RawAppCaller, "post"> & {
+  post: WrappedPostRouter;
+};
+type InvestigateNowResult = Awaited<ReturnType<AppCaller["post"]["investigateNow"]>>;
 type XViewInput = Awaited<ReturnType<typeof buildXViewInput>>;
 
 let promptCounter = 0;
 
-function createCaller(options: CallerOptions = {}) {
+function isVersionedPostInput(
+  input: ViewPostInput | VersionedPostInput,
+): input is VersionedPostInput {
+  return "postVersionId" in input;
+}
+
+async function toVersionedPostInput(
+  postRouter: RawAppCaller["post"],
+  input: ViewPostInput | VersionedPostInput,
+): Promise<VersionedPostInput> {
+  if (isVersionedPostInput(input)) {
+    return input;
+  }
+  const registered = await postRouter.registerObservedVersion(input);
+  return {
+    postVersionId: registered.postVersionId,
+  };
+}
+
+function createCaller(options: CallerOptions = {}): AppCaller {
   const isAuthenticated = options.isAuthenticated ?? false;
   const userOpenAiApiKey = options.userOpenAiApiKey ?? null;
 
-  return appRouter.createCaller({
+  const caller = appRouter.createCaller({
     event: null as unknown as RequestEvent,
     prisma,
     viewerKey: options.viewerKey ?? "integration-viewer",
@@ -115,6 +136,24 @@ function createCaller(options: CallerOptions = {}) {
     userOpenAiApiKey,
     hasValidAttestation: false,
   });
+
+  return {
+    public: caller.public,
+    post: {
+      registerObservedVersion: caller.post.registerObservedVersion,
+      getInvestigation: caller.post.getInvestigation,
+      validateSettings: caller.post.validateSettings,
+      batchStatus: caller.post.batchStatus,
+      recordViewAndGetStatus: async (input: ViewPostInput | VersionedPostInput) => {
+        const versioned = await toVersionedPostInput(caller.post, input);
+        return caller.post.recordViewAndGetStatus(versioned);
+      },
+      investigateNow: async (input: ViewPostInput | VersionedPostInput) => {
+        const versioned = await toVersionedPostInput(caller.post, input);
+        return caller.post.investigateNow(versioned);
+      },
+    },
+  };
 }
 
 type GraphqlError = {
@@ -132,9 +171,7 @@ async function queryPublicGraphql<TData>(
   query: string,
   variables?: Record<string, unknown>,
 ): Promise<TData> {
-  const requestBody = JSON.stringify(
-    variables === undefined ? { query } : { query, variables },
-  );
+  const requestBody = JSON.stringify(variables === undefined ? { query } : { query, variables });
   const response = await graphqlPost({
     request: new Request("http://localhost/graphql", {
       method: "POST",
@@ -147,13 +184,14 @@ async function queryPublicGraphql<TData>(
 
   assert.equal(response.status, 200);
   const payload = (await response.json()) as GraphqlEnvelope<TData>;
-  if (payload.errors && payload.errors.length > 0) {
-    assert.fail(
-      `GraphQL errors: ${payload.errors.map((error) => error.message).join("; ")}`,
-    );
+  if (payload.errors !== undefined && payload.errors.length > 0) {
+    assert.fail(`GraphQL errors: ${payload.errors.map((error) => error.message).join("; ")}`);
   }
-  assert.ok(payload.data);
-  return payload.data;
+  const data = payload.data;
+  if (data === undefined) {
+    assert.fail("GraphQL response missing data");
+  }
+  return data;
 }
 
 function createMockRequestEvent(headers?: HeadersInit): RequestEvent {
@@ -193,7 +231,9 @@ async function resetDatabase(): Promise<void> {
       ? []
       : await prisma.investigation.findMany({
           where: {
-            postId: { in: integrationPostIds },
+            postVersion: {
+              postId: { in: integrationPostIds },
+            },
           },
           select: { id: true },
         });
@@ -289,7 +329,8 @@ async function assertIntegrationDatabaseInvariants(): Promise<void> {
   >`
     SELECT DISTINCT i."id" AS "investigationId", i."status"::text AS "status"
     FROM "Investigation" i
-    JOIN "Post" p ON p."id" = i."postId"
+    JOIN "PostVersion" pv ON pv."id" = i."postVersionId"
+    JOIN "Post" p ON p."id" = pv."postId"
     JOIN "Claim" c ON c."investigationId" = i."id"
     WHERE p."externalId" LIKE ${integrationExternalIdPrefix}
       AND i."status" <> 'COMPLETE'
@@ -306,7 +347,8 @@ async function assertIntegrationDatabaseInvariants(): Promise<void> {
   >`
     SELECT i."id" AS "investigationId"
     FROM "Investigation" i
-    JOIN "Post" p ON p."id" = i."postId"
+    JOIN "PostVersion" pv ON pv."id" = i."postVersionId"
+    JOIN "Post" p ON p."id" = pv."postId"
     LEFT JOIN "InvestigationRun" r ON r."investigationId" = i."id"
     WHERE p."externalId" LIKE ${integrationExternalIdPrefix}
       AND i."status" = 'PROCESSING'
@@ -319,9 +361,7 @@ async function assertIntegrationDatabaseInvariants(): Promise<void> {
     `invariant failed: PROCESSING investigations must have runs: ${JSON.stringify(processingInvestigationsWithoutRun)}`,
   );
 
-  const orphanSources = await prisma.$queryRaw<
-    Array<{ sourceId: string; claimId: string }>
-  >`
+  const orphanSources = await prisma.$queryRaw<Array<{ sourceId: string; claimId: string }>>`
     SELECT s."id" AS "sourceId", s."claimId"
     FROM "Source" s
     LEFT JOIN "Claim" c ON c."id" = s."claimId"
@@ -350,6 +390,126 @@ async function seedPrompt(label: string): Promise<{ id: string }> {
   });
 }
 
+function sha256(input: string): string {
+  return createHash("sha256").update(input).digest("hex");
+}
+
+const EMPTY_IMAGE_OCCURRENCES_HASH = sha256(JSON.stringify([]));
+
+function versionHashFromContentHash(contentHash: string): string {
+  return sha256(`${contentHash}\n${EMPTY_IMAGE_OCCURRENCES_HASH}`);
+}
+
+async function ensurePostVersionForSeed(input: {
+  postId: string;
+  contentHash: string;
+  contentText: string;
+  provenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK";
+  fetchFailureReason?: string;
+}): Promise<{ id: string; versionHash: string }> {
+  const wordCount = input.contentText.split(/\s+/).filter(Boolean).length;
+  const versionHash = versionHashFromContentHash(input.contentHash);
+
+  const [contentBlob, imageOccurrenceSet] = await Promise.all([
+    prisma.contentBlob.upsert({
+      where: { contentHash: input.contentHash },
+      create: {
+        contentHash: input.contentHash,
+        contentText: input.contentText,
+        wordCount,
+      },
+      update: {
+        contentText: input.contentText,
+        wordCount,
+      },
+      select: { id: true },
+    }),
+    prisma.imageOccurrenceSet.upsert({
+      where: { occurrencesHash: EMPTY_IMAGE_OCCURRENCES_HASH },
+      create: { occurrencesHash: EMPTY_IMAGE_OCCURRENCES_HASH },
+      update: {},
+      select: { id: true },
+    }),
+  ]);
+
+  const now = new Date();
+  const fetchFailureReason =
+    input.provenance === "CLIENT_FALLBACK"
+      ? (input.fetchFailureReason ?? "fetch unavailable")
+      : null;
+  const serverVerifiedAt = input.provenance === "SERVER_VERIFIED" ? now : null;
+  const existing = await prisma.postVersion.findUnique({
+    where: {
+      postId_versionHash: {
+        postId: input.postId,
+        versionHash,
+      },
+    },
+    select: {
+      id: true,
+      contentProvenance: true,
+    },
+  });
+  if (existing === null) {
+    return prisma.postVersion.create({
+      data: {
+        postId: input.postId,
+        versionHash,
+        contentBlobId: contentBlob.id,
+        imageOccurrenceSetId: imageOccurrenceSet.id,
+        contentProvenance: input.provenance,
+        fetchFailureReason,
+        serverVerifiedAt,
+        firstSeenAt: now,
+        lastSeenAt: now,
+        seenCount: 1,
+      },
+      select: {
+        id: true,
+        versionHash: true,
+      },
+    });
+  }
+
+  return prisma.postVersion.update({
+    where: { id: existing.id },
+    data: {
+      contentBlobId: contentBlob.id,
+      imageOccurrenceSetId: imageOccurrenceSet.id,
+      lastSeenAt: now,
+      seenCount: {
+        increment: 1,
+      },
+      ...(input.provenance === "SERVER_VERIFIED" && existing.contentProvenance === "CLIENT_FALLBACK"
+        ? {
+            contentProvenance: "SERVER_VERIFIED",
+            fetchFailureReason: null,
+            serverVerifiedAt: now,
+          }
+        : {}),
+    },
+    select: {
+      id: true,
+      versionHash: true,
+    },
+  });
+}
+
+async function loadLatestPostVersionByIdentity(input: { platform: Platform; externalId: string }) {
+  return prisma.postVersion.findFirst({
+    where: {
+      post: {
+        platform: input.platform,
+        externalId: input.externalId,
+      },
+    },
+    orderBy: [{ lastSeenAt: "desc" }],
+    include: {
+      contentBlob: true,
+    },
+  });
+}
+
 async function seedPost(input: {
   platform: Platform;
   externalId: string;
@@ -359,16 +519,12 @@ async function seedPost(input: {
   const externalId = withIntegrationPrefix(input.externalId);
   const contentText = normalizeContent(input.contentText);
   const contentHash = await hashContent(contentText);
-  const wordCount = contentText.split(/\s+/).filter(Boolean).length;
 
   const post = await prisma.post.create({
     data: {
       platform: input.platform,
       externalId,
       url: input.url,
-      latestContentText: contentText,
-      latestContentHash: contentHash,
-      wordCount,
     },
     select: {
       id: true,
@@ -377,11 +533,19 @@ async function seedPost(input: {
       url: true,
     },
   });
+  const postVersion = await ensurePostVersionForSeed({
+    postId: post.id,
+    contentHash,
+    contentText,
+    provenance: "CLIENT_FALLBACK",
+  });
 
   return {
     ...post,
     contentText,
     contentHash,
+    versionHash: postVersion.versionHash,
+    postVersionId: postVersion.id,
   };
 }
 
@@ -466,26 +630,21 @@ async function seedInvestigation(input: {
 }): Promise<{ id: string }> {
   const prompt = await seedPrompt(input.promptLabel);
   const checkedAt = input.status === "COMPLETE" ? (input.checkedAt ?? new Date()) : null;
-  const serverVerifiedAt =
-    input.provenance === "SERVER_VERIFIED"
-      ? (checkedAt ?? new Date())
-      : null;
+  const postVersion = await ensurePostVersionForSeed({
+    postId: input.postId,
+    contentHash: input.contentHash,
+    contentText: input.contentText,
+    provenance: input.provenance,
+  });
 
   const investigation = await prisma.investigation.create({
     data: {
-      postId: input.postId,
-      contentHash: input.contentHash,
-      contentText: input.contentText,
-      contentProvenance: input.provenance,
-      fetchFailureReason:
-        input.provenance === "CLIENT_FALLBACK" ? "fetch unavailable" : null,
-      serverVerifiedAt,
+      postVersionId: postVersion.id,
       status: input.status,
       promptId: prompt.id,
       provider: "OPENAI",
       model: "OPENAI_GPT_5",
       checkedAt,
-      isUpdate: (input.parentInvestigationId ?? null) !== null,
       parentInvestigationId: input.parentInvestigationId ?? null,
       contentDiff: input.contentDiff ?? null,
     },
@@ -548,26 +707,18 @@ async function seedClaimWithSource(
   return { id: claim.id };
 }
 
-async function seedCorroborationCredits(
-  investigationId: string,
-  count: number,
-): Promise<void> {
+async function seedCorroborationCredits(investigationId: string, count: number): Promise<void> {
   for (let index = 1; index <= count; index += 1) {
     await prisma.corroborationCredit.create({
       data: {
         investigationId,
-        reporterKey: withIntegrationPrefix(
-          `reporter-${index.toString()}-${investigationId}`,
-        ),
+        reporterKey: withIntegrationPrefix(`reporter-${index.toString()}-${investigationId}`),
       },
     });
   }
 }
 
-function buildXViewInput(input: {
-  externalId: string;
-  observedContentText: string;
-}) {
+function buildXViewInput(input: { externalId: string; observedContentText: string }) {
   const externalId = withIntegrationPrefix(input.externalId);
   const observedContentText = input.observedContentText;
 
@@ -585,10 +736,7 @@ function buildXViewInput(input: {
   };
 }
 
-function buildLesswrongViewInput(input: {
-  externalId: string;
-  htmlContent: string;
-}) {
+function buildLesswrongViewInput(input: { externalId: string; htmlContent: string }) {
   const externalId = withIntegrationPrefix(input.externalId);
 
   return {
@@ -621,11 +769,7 @@ async function withMockLesswrongCanonicalHtml<ResponseType>(
   const originalFetch = globalThis.fetch;
   const mockedFetch: typeof fetch = async (input, init) => {
     const url =
-      typeof input === "string"
-        ? input
-        : input instanceof URL
-          ? input.toString()
-          : input.url;
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     if (url !== lesswrongGraphqlUrl) {
       return originalFetch(input, init);
     }
@@ -732,7 +876,10 @@ async function runConcurrentInvestigateNowScenario(input: {
   );
   const investigationIds = new Set(results.map((result) => result.investigationId));
   assert.equal(investigationIds.size, 1);
-  assert.equal(results.every((result) => result.status === "PENDING"), true);
+  assert.equal(
+    results.every((result) => result.status === "PENDING"),
+    true,
+  );
   const firstResult = results[0];
   assert.ok(firstResult);
 
@@ -757,7 +904,7 @@ function buildSucceededAttemptAudit(label: string) {
       responseId: `response-${label}`,
       responseStatus: "completed",
       responseModelVersion: "test-model-version",
-      responseOutputText: "{\"claims\":[]}",
+      responseOutputText: '{"claims":[]}',
       outputItems: [],
       outputTextParts: [],
       outputTextAnnotations: [],
@@ -812,9 +959,7 @@ void test("post.recordViewAndGetStatus stores content and reports not investigat
     externalId: "view-post-1",
     observedContentText: "  This   is a post body for viewPost.  ",
   });
-  const expectedObservedHash = await hashContent(
-    normalizeContent(input.observedContentText),
-  );
+  const expectedObservedHash = await hashContent(normalizeContent(input.observedContentText));
 
   const result = await caller.post.recordViewAndGetStatus(input);
 
@@ -829,16 +974,19 @@ void test("post.recordViewAndGetStatus stores content and reports not investigat
       },
     },
     select: {
-      latestContentHash: true,
-      latestContentText: true,
       uniqueViewScore: true,
       viewCount: true,
     },
   });
+  const latestVersion = await loadLatestPostVersionByIdentity({
+    platform: input.platform,
+    externalId: input.externalId,
+  });
 
   assert.ok(post);
-  assert.equal(post.latestContentHash, expectedObservedHash);
-  assert.equal(post.latestContentText, normalizeContent(input.observedContentText));
+  assert.ok(latestVersion);
+  assert.equal(latestVersion.contentBlob.contentHash, expectedObservedHash);
+  assert.equal(latestVersion.contentBlob.contentText, normalizeContent(input.observedContentText));
   assert.equal(post.uniqueViewScore, 1);
   assert.equal(post.viewCount, 1);
 });
@@ -855,8 +1003,7 @@ void test("post.recordViewAndGetStatus for LessWrong derives observed content fr
 
   const result = await withMockLesswrongFetch(
     INTEGRATION_LESSWRONG_FIXTURE_KEYS.POST_VIEW_HTML,
-    () =>
-    caller.post.recordViewAndGetStatus(input),
+    () => caller.post.recordViewAndGetStatus(input),
   );
 
   assert.equal(result.investigationState, "NOT_INVESTIGATED");
@@ -870,21 +1017,53 @@ void test("post.recordViewAndGetStatus for LessWrong derives observed content fr
       },
     },
     select: {
-      latestContentHash: true,
-      latestContentText: true,
       uniqueViewScore: true,
       viewCount: true,
     },
+  });
+  const latestVersion = await loadLatestPostVersionByIdentity({
+    platform: input.platform,
+    externalId: input.externalId,
   });
 
   const expectedCanonicalText = lesswrongHtmlToNormalizedText(lesswrongFixture.html);
   const expectedCanonicalHash = await hashContent(expectedCanonicalText);
 
   assert.ok(post);
-  assert.equal(post.latestContentText, expectedCanonicalText);
-  assert.equal(post.latestContentHash, expectedCanonicalHash);
+  assert.ok(latestVersion);
+  assert.equal(latestVersion.contentBlob.contentText, expectedCanonicalText);
+  assert.equal(latestVersion.contentBlob.contentHash, expectedCanonicalHash);
   assert.equal(post.uniqueViewScore, 1);
   assert.equal(post.viewCount, 1);
+});
+
+void test("post.recordViewAndGetStatus rejects canonical hash mismatches for server-verified content", async () => {
+  const caller = createCaller();
+  const input = buildLesswrongViewInput({
+    externalId: "view-post-content-mismatch-1",
+    htmlContent: "<article><p>Observed browser content.</p></article>",
+  });
+
+  await assert.rejects(
+    async () =>
+      withMockLesswrongCanonicalHtml(
+        "<article><p>Different canonical server content.</p></article>",
+        () => caller.post.recordViewAndGetStatus(input),
+      ),
+    /Observed content does not match canonical content/,
+  );
+
+  const post = await prisma.post.findUnique({
+    where: {
+      platform_externalId: {
+        platform: input.platform,
+        externalId: input.externalId,
+      },
+    },
+    select: { id: true },
+  });
+
+  assert.equal(post, null);
 });
 
 void test("post.recordViewAndGetStatus applies strict hash lookup and does not reuse stale investigations", async () => {
@@ -972,9 +1151,8 @@ void test("post.recordViewAndGetStatus returns interim old claims from latest co
     externalId,
     htmlContent: previousHtml,
   });
-  await withMockLesswrongCanonicalHtml(
-    previousHtml,
-    () => caller.post.recordViewAndGetStatus(previousInput),
+  await withMockLesswrongCanonicalHtml(previousHtml, () =>
+    caller.post.recordViewAndGetStatus(previousInput),
   );
 
   const post = await prisma.post.findUnique({
@@ -1003,9 +1181,8 @@ void test("post.recordViewAndGetStatus returns interim old claims from latest co
     externalId,
     htmlContent: currentHtml,
   });
-  const result = await withMockLesswrongCanonicalHtml(
-    currentHtml,
-    () => caller.post.recordViewAndGetStatus(currentInput),
+  const result = await withMockLesswrongCanonicalHtml(currentHtml, () =>
+    caller.post.recordViewAndGetStatus(currentInput),
   );
 
   assert.equal(result.investigationState, "NOT_INVESTIGATED");
@@ -1013,18 +1190,19 @@ void test("post.recordViewAndGetStatus returns interim old claims from latest co
   const interimResult = result.priorInvestigationResult;
   assert.notEqual(interimResult, null);
   assert.ok(interimResult);
-  assert.equal(
-    interimResult.sourceInvestigationId,
-    sourceInvestigation.id,
-  );
+  assert.equal(interimResult.sourceInvestigationId, sourceInvestigation.id);
   assert.equal(interimResult.oldClaims.length, 2);
 
   const currentCanonicalText = lesswrongHtmlToNormalizedText(currentHtml);
   const currentCanonicalHash = await hashContent(currentCanonicalText);
   const currentVersionInvestigations = await prisma.investigation.findMany({
     where: {
-      postId: post.id,
-      contentHash: currentCanonicalHash,
+      postVersion: {
+        postId: post.id,
+        contentBlob: {
+          contentHash: currentCanonicalHash,
+        },
+      },
     },
     select: { id: true },
   });
@@ -1032,7 +1210,9 @@ void test("post.recordViewAndGetStatus returns interim old claims from latest co
 
   const allInvestigations = await prisma.investigation.findMany({
     where: {
-      postId: post.id,
+      postVersion: {
+        postId: post.id,
+      },
     },
     select: { id: true },
   });
@@ -1055,24 +1235,14 @@ void test("post.recordViewAndGetStatus does not reuse CLIENT_FALLBACK investigat
     externalId,
     htmlContent: previousHtml,
   });
-  await withMockLesswrongCanonicalHtml(
-    previousHtml,
-    () => caller.post.recordViewAndGetStatus(previousInput),
-  );
-
-  const post = await prisma.post.findUnique({
-    where: {
-      platform_externalId: {
-        platform: previousInput.platform,
-        externalId: previousInput.externalId,
-      },
-    },
-    select: { id: true },
-  });
-  assert.ok(post);
-
   const previousCanonicalText = lesswrongHtmlToNormalizedText(previousHtml);
   const previousCanonicalHash = await hashContent(previousCanonicalText);
+  const post = await seedPost({
+    platform: previousInput.platform,
+    externalId,
+    url: previousInput.url,
+    contentText: previousCanonicalText,
+  });
   const fallbackOnlySource = await seedCompleteInvestigation({
     postId: post.id,
     contentHash: previousCanonicalHash,
@@ -1085,9 +1255,8 @@ void test("post.recordViewAndGetStatus does not reuse CLIENT_FALLBACK investigat
     externalId,
     htmlContent: currentHtml,
   });
-  const result = await withMockLesswrongCanonicalHtml(
-    currentHtml,
-    () => caller.post.recordViewAndGetStatus(currentInput),
+  const result = await withMockLesswrongCanonicalHtml(currentHtml, () =>
+    caller.post.recordViewAndGetStatus(currentInput),
   );
 
   assert.equal(result.investigationState, "NOT_INVESTIGATED");
@@ -1150,9 +1319,8 @@ void test("post.recordViewAndGetStatus uses newest complete SERVER_VERIFIED inve
     externalId,
     htmlContent: baselineHtml,
   });
-  await withMockLesswrongCanonicalHtml(
-    baselineHtml,
-    () => caller.post.recordViewAndGetStatus(baselineInput),
+  await withMockLesswrongCanonicalHtml(baselineHtml, () =>
+    caller.post.recordViewAndGetStatus(baselineInput),
   );
 
   const post = await prisma.post.findUnique({
@@ -1192,9 +1360,8 @@ void test("post.recordViewAndGetStatus uses newest complete SERVER_VERIFIED inve
     externalId,
     htmlContent: currentHtml,
   });
-  const result = await withMockLesswrongCanonicalHtml(
-    currentHtml,
-    () => caller.post.recordViewAndGetStatus(currentInput),
+  const result = await withMockLesswrongCanonicalHtml(currentHtml, () =>
+    caller.post.recordViewAndGetStatus(currentInput),
   );
 
   assert.equal(result.investigationState, "NOT_INVESTIGATED");
@@ -1202,10 +1369,7 @@ void test("post.recordViewAndGetStatus uses newest complete SERVER_VERIFIED inve
   const newestInterimResult = result.priorInvestigationResult;
   assert.notEqual(newestInterimResult, null);
   assert.ok(newestInterimResult);
-  assert.equal(
-    newestInterimResult.sourceInvestigationId,
-    newerSource.id,
-  );
+  assert.equal(newestInterimResult.sourceInvestigationId, newerSource.id);
   assert.equal(newestInterimResult.oldClaims.length, 1);
   assert.equal(newestInterimResult.oldClaims[0]?.text, "Claim 22");
 });
@@ -1219,9 +1383,8 @@ void test("post.recordViewAndGetStatus returns INVESTIGATED for current-version 
     externalId,
     htmlContent: previousHtml,
   });
-  await withMockLesswrongCanonicalHtml(
-    previousHtml,
-    () => caller.post.recordViewAndGetStatus(previousInput),
+  await withMockLesswrongCanonicalHtml(previousHtml, () =>
+    caller.post.recordViewAndGetStatus(previousInput),
   );
 
   const post = await prisma.post.findUnique({
@@ -1289,7 +1452,6 @@ void test("post.getInvestigation returns complete investigation with claims", as
 
   assert.equal(result.investigationState, "INVESTIGATED");
   assert.equal(result.provenance, "CLIENT_FALLBACK");
-  assert.ok(result.claims);
   assert.equal(result.claims.length, 1);
   assert.equal(result.claims[0]?.sources.length, 1);
   assert.equal(result.checkedAt, "2026-02-19T00:00:00.000Z");
@@ -1349,10 +1511,7 @@ void test("post.getInvestigation returns priorInvestigationResult for update inv
   assert.notEqual(updatePrior, null);
   assert.ok(updatePrior);
   assert.equal(updatePrior.oldClaims.length, 1);
-  assert.equal(
-    updatePrior.sourceInvestigationId,
-    parent.id,
-  );
+  assert.equal(updatePrior.sourceInvestigationId, parent.id);
 
   const nonUpdateResult = await caller.post.getInvestigation({
     investigationId: nonUpdateInvestigation.id,
@@ -1393,9 +1552,8 @@ void test("post.investigateNow creates update lineage metadata for edited server
     externalId,
     htmlContent: previousHtml,
   });
-  await withMockLesswrongCanonicalHtml(
-    previousHtml,
-    () => caller.post.recordViewAndGetStatus(previousInput),
+  await withMockLesswrongCanonicalHtml(previousHtml, () =>
+    caller.post.recordViewAndGetStatus(previousInput),
   );
 
   const post = await prisma.post.findUnique({
@@ -1423,9 +1581,8 @@ void test("post.investigateNow creates update lineage metadata for edited server
     externalId,
     htmlContent: currentHtml,
   });
-  const result = await withMockLesswrongCanonicalHtml(
-    currentHtml,
-    () => caller.post.investigateNow(currentInput),
+  const result = await withMockLesswrongCanonicalHtml(currentHtml, () =>
+    caller.post.investigateNow(currentInput),
   );
 
   assert.equal(result.status, "PENDING");
@@ -1437,23 +1594,28 @@ void test("post.investigateNow creates update lineage metadata for edited server
     where: { id: result.investigationId },
     select: {
       status: true,
-      contentHash: true,
-      contentProvenance: true,
       parentInvestigationId: true,
       contentDiff: true,
+      postVersion: {
+        select: {
+          contentProvenance: true,
+          contentBlob: {
+            select: {
+              contentHash: true,
+            },
+          },
+        },
+      },
     },
   });
 
   assert.ok(storedInvestigation);
   assert.equal(storedInvestigation.status, "PENDING");
-  assert.equal(storedInvestigation.contentHash, currentCanonicalHash);
-  assert.equal(storedInvestigation.contentProvenance, "SERVER_VERIFIED");
+  assert.equal(storedInvestigation.postVersion.contentBlob.contentHash, currentCanonicalHash);
+  assert.equal(storedInvestigation.postVersion.contentProvenance, "SERVER_VERIFIED");
   assert.equal(storedInvestigation.parentInvestigationId, sourceInvestigation.id);
   assert.notEqual(storedInvestigation.contentDiff, null);
-  assert.equal(
-    storedInvestigation.contentDiff?.startsWith("Diff summary (line context):"),
-    true,
-  );
+  assert.equal(storedInvestigation.contentDiff?.startsWith("Diff summary (line context):"), true);
 
   const runCount = await prisma.investigationRun.count({
     where: {
@@ -1508,22 +1670,27 @@ void test("post.investigateNow creates update lineage metadata using latest comp
     where: { id: result.investigationId },
     select: {
       status: true,
-      contentHash: true,
-      contentProvenance: true,
       parentInvestigationId: true,
       contentDiff: true,
+      postVersion: {
+        select: {
+          contentProvenance: true,
+          contentBlob: {
+            select: {
+              contentHash: true,
+            },
+          },
+        },
+      },
     },
   });
   assert.ok(storedInvestigation);
   assert.equal(storedInvestigation.status, "PENDING");
-  assert.equal(storedInvestigation.contentHash, currentCanonicalHash);
-  assert.equal(storedInvestigation.contentProvenance, "CLIENT_FALLBACK");
+  assert.equal(storedInvestigation.postVersion.contentBlob.contentHash, currentCanonicalHash);
+  assert.equal(storedInvestigation.postVersion.contentProvenance, "CLIENT_FALLBACK");
   assert.equal(storedInvestigation.parentInvestigationId, sourceInvestigation.id);
   assert.notEqual(storedInvestigation.contentDiff, null);
-  assert.equal(
-    storedInvestigation.contentDiff?.startsWith("Diff summary (line context):"),
-    true,
-  );
+  assert.equal(storedInvestigation.contentDiff?.startsWith("Diff summary (line context):"), true);
 
   const runCount = await prisma.investigationRun.count({
     where: { investigationId: result.investigationId },
@@ -1562,11 +1729,14 @@ void test("post.investigateNow deduplicates concurrent callers to one pending in
   assert.ok(post);
 
   const storedInvestigations = await prisma.investigation.findMany({
-    where: { postId: post.id },
+    where: {
+      postVersion: {
+        postId: post.id,
+      },
+    },
     select: {
       id: true,
       status: true,
-      contentHash: true,
     },
   });
   assert.equal(storedInvestigations.length, 1);
@@ -1594,9 +1764,8 @@ void test("post.investigateNow deduplicates concurrent edited-content requests t
     externalId,
     htmlContent: previousHtml,
   });
-  await withMockLesswrongCanonicalHtml(
-    previousHtml,
-    () => authSeedCaller.post.recordViewAndGetStatus(previousInput),
+  await withMockLesswrongCanonicalHtml(previousHtml, () =>
+    authSeedCaller.post.recordViewAndGetStatus(previousInput),
   );
 
   const post = await prisma.post.findUnique({
@@ -1631,17 +1800,16 @@ void test("post.investigateNow deduplicates concurrent edited-content requests t
       ipRangeKey: withIntegrationPrefix(`update-concurrent-ip-${index.toString()}`),
     }),
   );
-  const results = await withMockLesswrongCanonicalHtml(
-    currentHtml,
-    () =>
-      Promise.all(
-        callers.map((caller) => caller.post.investigateNow(currentInput)),
-      ),
+  const results = await withMockLesswrongCanonicalHtml(currentHtml, () =>
+    Promise.all(callers.map((caller) => caller.post.investigateNow(currentInput))),
   );
 
   const uniqueIds = new Set(results.map((result) => result.investigationId));
   assert.equal(uniqueIds.size, 1);
-  assert.equal(results.every((result) => result.status === "PENDING"), true);
+  assert.equal(
+    results.every((result) => result.status === "PENDING"),
+    true,
+  );
   const updateInvestigationId = [...uniqueIds][0];
   if (updateInvestigationId === undefined) {
     assert.fail("missing update investigation id from concurrent investigateNow");
@@ -1651,8 +1819,12 @@ void test("post.investigateNow deduplicates concurrent edited-content requests t
   const currentCanonicalHash = await hashContent(currentCanonicalText);
   const storedUpdateInvestigations = await prisma.investigation.findMany({
     where: {
-      postId: post.id,
-      contentHash: currentCanonicalHash,
+      postVersion: {
+        postId: post.id,
+        contentBlob: {
+          contentHash: currentCanonicalHash,
+        },
+      },
     },
     select: {
       id: true,
@@ -1665,10 +1837,7 @@ void test("post.investigateNow deduplicates concurrent edited-content requests t
   assert.ok(storedUpdateInvestigation);
   assert.equal(storedUpdateInvestigation.id, updateInvestigationId);
   assert.equal(storedUpdateInvestigation.status, "PENDING");
-  assert.equal(
-    storedUpdateInvestigation.parentInvestigationId,
-    sourceInvestigation.id,
-  );
+  assert.equal(storedUpdateInvestigation.parentInvestigationId, sourceInvestigation.id);
 
   const updateRunCount = await prisma.investigationRun.count({
     where: {
@@ -1784,9 +1953,7 @@ void test("post.investigateNow randomized concurrency fuzz preserves dedupe inva
       const viewerKey = withIntegrationPrefix(
         `fuzz-viewer-${round.toString()}-${index.toString()}`,
       );
-      const ipRangeKey = withIntegrationPrefix(
-        `fuzz-ip-${round.toString()}-${index.toString()}`,
-      );
+      const ipRangeKey = withIntegrationPrefix(`fuzz-ip-${round.toString()}-${index.toString()}`);
 
       if (callerMode === "authenticated") {
         return {
@@ -1839,7 +2006,11 @@ void test("post.investigateNow randomized concurrency fuzz preserves dedupe inva
     );
 
     const investigationIds = new Set(results.map((result) => result.investigationId));
-    assert.equal(investigationIds.size, 1, `all callers should converge to one investigation (${roundTag})`);
+    assert.equal(
+      investigationIds.size,
+      1,
+      `all callers should converge to one investigation (${roundTag})`,
+    );
     const firstResult = results[0];
     assert.ok(firstResult, `missing first result (${roundTag})`);
     const investigationId = firstResult.investigationId;
@@ -1863,9 +2034,7 @@ void test("post.investigateNow randomized concurrency fuzz preserves dedupe inva
         ? new Set(["PENDING", "PROCESSING"])
         : new Set([expectedStoredStatus]);
     assert.equal(
-      Array.from(returnedStatuses).every((status) =>
-        allowedReturnedStatuses.has(status),
-      ),
+      Array.from(returnedStatuses).every((status) => allowedReturnedStatuses.has(status)),
       true,
       `returned statuses fell outside allowed transition window (${roundTag})`,
     );
@@ -1889,7 +2058,11 @@ void test("post.investigateNow randomized concurrency fuzz preserves dedupe inva
     assert.ok(post, `post should exist after investigateNow (${roundTag})`);
 
     const storedInvestigations = await prisma.investigation.findMany({
-      where: { postId: post.id },
+      where: {
+        postVersion: {
+          postId: post.id,
+        },
+      },
       select: { id: true, status: true },
     });
     assert.equal(
@@ -1899,7 +2072,11 @@ void test("post.investigateNow randomized concurrency fuzz preserves dedupe inva
     );
     const storedInvestigation = storedInvestigations[0];
     assert.ok(storedInvestigation, `missing stored investigation (${roundTag})`);
-    assert.equal(storedInvestigation.id, investigationId, `stored investigation id mismatch (${roundTag})`);
+    assert.equal(
+      storedInvestigation.id,
+      investigationId,
+      `stored investigation id mismatch (${roundTag})`,
+    );
     assert.equal(
       storedInvestigation.status,
       expectedStoredStatus,
@@ -1930,7 +2107,11 @@ void test("post.investigateNow randomized concurrency fuzz preserves dedupe inva
     assert.ok(run, `missing run record (${roundTag})`);
 
     if (expectedStoredStatus === "PENDING") {
-      assert.notEqual(run.queuedAt, null, `pending investigations must have queuedAt (${roundTag})`);
+      assert.notEqual(
+        run.queuedAt,
+        null,
+        `pending investigations must have queuedAt (${roundTag})`,
+      );
     }
 
     if (expectedStoredStatus === "PROCESSING") {
@@ -2007,11 +2188,15 @@ void test("orchestrateInvestigation skips work when lease is held by another wor
   };
 
   try {
-    await orchestrateInvestigation(run.id, { info() {}, error() {} }, {
-      isLastAttempt: false,
-      attemptNumber: 1,
-      workerIdentity: withIntegrationPrefix("contending-worker"),
-    });
+    await orchestrateInvestigation(
+      run.id,
+      { info() {}, error() {} },
+      {
+        isLastAttempt: false,
+        attemptNumber: 1,
+        workerIdentity: withIntegrationPrefix("contending-worker"),
+      },
+    );
   } finally {
     Object.defineProperty(
       OpenAIInvestigator.prototype,
@@ -2099,11 +2284,15 @@ void test("orchestrateInvestigation passes update context to investigator for up
   };
 
   try {
-    await orchestrateInvestigation(run.id, { info() {}, error() {} }, {
-      isLastAttempt: false,
-      attemptNumber: 1,
-      workerIdentity: withIntegrationPrefix("worker-update-context"),
-    });
+    await orchestrateInvestigation(
+      run.id,
+      { info() {}, error() {} },
+      {
+        isLastAttempt: false,
+        attemptNumber: 1,
+        workerIdentity: withIntegrationPrefix("worker-update-context"),
+      },
+    );
   } finally {
     Object.defineProperty(
       OpenAIInvestigator.prototype,
@@ -2262,9 +2451,7 @@ void test("ensureInvestigationQueued randomized state model preserves lifecycle 
     const allowRequeueFailed = randomChance(random, 0.5);
     const enqueue = randomChance(random, 0.7);
     const includeOnPendingRun = randomChance(random, 0.6);
-    const canonicalProvenance = randomChance(random, 0.5)
-      ? "SERVER_VERIFIED"
-      : "CLIENT_FALLBACK";
+    const canonicalProvenance = randomChance(random, 0.5) ? "SERVER_VERIFIED" : "CLIENT_FALLBACK";
     const canonicalFetchFailureReason =
       canonicalProvenance === "CLIENT_FALLBACK"
         ? `fuzz-fetch-failure-${round.toString()}`
@@ -2292,9 +2479,7 @@ void test("ensureInvestigationQueued randomized state model preserves lifecycle 
     let seededActiveLeaseExpiresAt: Date | null = null;
 
     if (seedCase.status !== null) {
-      seededExistingProvenance = randomChance(random, 0.5)
-        ? "SERVER_VERIFIED"
-        : "CLIENT_FALLBACK";
+      seededExistingProvenance = randomChance(random, 0.5) ? "SERVER_VERIFIED" : "CLIENT_FALLBACK";
       const investigation = await seedInvestigation({
         postId: post.id,
         contentHash: post.contentHash,
@@ -2307,9 +2492,7 @@ void test("ensureInvestigationQueued randomized state model preserves lifecycle 
 
       if (seedCase.runKind !== "NONE") {
         if (seedCase.runKind === "ACTIVE") {
-          seededActiveLeaseOwner = withIntegrationPrefix(
-            `active-worker-${round.toString()}`,
-          );
+          seededActiveLeaseOwner = withIntegrationPrefix(`active-worker-${round.toString()}`);
           seededActiveLeaseExpiresAt = new Date(Date.now() + 10 * 60_000);
           const run = await seedInvestigationRun({
             investigationId: investigation.id,
@@ -2340,26 +2523,22 @@ void test("ensureInvestigationQueued randomized state model preserves lifecycle 
     let onPendingRunCalls = 0;
     let onPendingInvestigationId: string | null = null;
     let onPendingRunId: string | null = null;
-    const canonical =
-      canonicalProvenance === "CLIENT_FALLBACK"
+    const canonicalPostVersion = await ensurePostVersionForSeed({
+      postId: post.id,
+      contentHash: post.contentHash,
+      contentText: post.contentText,
+      provenance: canonicalProvenance,
+      ...(canonicalProvenance === "CLIENT_FALLBACK"
         ? {
-            contentHash: post.contentHash,
-            contentText: post.contentText,
-            provenance: "CLIENT_FALLBACK" as const,
             fetchFailureReason:
-              canonicalFetchFailureReason ??
-              `fuzz-fetch-failure-fallback-${round.toString()}`,
+              canonicalFetchFailureReason ?? `fuzz-fetch-failure-fallback-${round.toString()}`,
           }
-        : {
-            contentHash: post.contentHash,
-            contentText: post.contentText,
-            provenance: "SERVER_VERIFIED" as const,
-          };
+        : {}),
+    });
     const result = await ensureInvestigationQueued({
       prisma,
-      postId: post.id,
+      postVersionId: canonicalPostVersion.id,
       promptId: prompt.id,
-      canonical,
       allowRequeueFailed,
       enqueue,
       ...(includeOnPendingRun
@@ -2375,14 +2554,12 @@ void test("ensureInvestigationQueued randomized state model preserves lifecycle 
 
     const startedWithoutInvestigation = seedCase.status === null;
     const expectedCreated = startedWithoutInvestigation;
-    const statusAfterRecord =
-      startedWithoutInvestigation
+    const statusAfterRecord = startedWithoutInvestigation
+      ? "PENDING"
+      : seedCase.status === "FAILED" && allowRequeueFailed
         ? "PENDING"
-        : seedCase.status === "FAILED" && allowRequeueFailed
-          ? "PENDING"
-          : seedCase.status;
-    const runExistedBeforeCall =
-      seedCase.status !== null && seedCase.runKind !== "NONE";
+        : seedCase.status;
+    const runExistedBeforeCall = seedCase.status !== null && seedCase.runKind !== "NONE";
     const expectedRunCreated = !runExistedBeforeCall;
     const expectedRecoveredFromStaleProcessing =
       statusAfterRecord === "PROCESSING" &&
@@ -2393,11 +2570,7 @@ void test("ensureInvestigationQueued randomized state model preserves lifecycle 
     const expectedEnqueued = enqueue && expectedFinalStatus === "PENDING";
 
     assert.equal(result.created, expectedCreated, `created mismatch (${roundTag})`);
-    assert.equal(
-      result.runCreated,
-      expectedRunCreated,
-      `runCreated mismatch (${roundTag})`,
-    );
+    assert.equal(result.runCreated, expectedRunCreated, `runCreated mismatch (${roundTag})`);
     assert.equal(result.enqueued, expectedEnqueued, `enqueued mismatch (${roundTag})`);
     assert.equal(
       result.investigation.status,
@@ -2412,15 +2585,10 @@ void test("ensureInvestigationQueued randomized state model preserves lifecycle 
       );
     }
     if (seededRunId !== null) {
-      assert.equal(
-        result.run.id,
-        seededRunId,
-        `existing run identity mismatch (${roundTag})`,
-      );
+      assert.equal(result.run.id, seededRunId, `existing run identity mismatch (${roundTag})`);
     }
 
-    const expectedOnPendingRunCalls =
-      includeOnPendingRun && expectedEnqueued ? 1 : 0;
+    const expectedOnPendingRunCalls = includeOnPendingRun && expectedEnqueued ? 1 : 0;
     assert.equal(
       onPendingRunCalls,
       expectedOnPendingRunCalls,
@@ -2436,13 +2604,21 @@ void test("ensureInvestigationQueued randomized state model preserves lifecycle 
     }
 
     const storedInvestigations = await prisma.investigation.findMany({
-      where: { postId: post.id },
+      where: {
+        postVersion: {
+          postId: post.id,
+        },
+      },
       select: {
         id: true,
         status: true,
-        contentProvenance: true,
-        fetchFailureReason: true,
-        serverVerifiedAt: true,
+        postVersion: {
+          select: {
+            contentProvenance: true,
+            fetchFailureReason: true,
+            serverVerifiedAt: true,
+          },
+        },
       },
     });
     assert.equal(
@@ -2472,36 +2648,36 @@ void test("ensureInvestigationQueued randomized state model preserves lifecycle 
             ? "SERVER_VERIFIED"
             : "CLIENT_FALLBACK";
     assert.equal(
-      storedInvestigation.contentProvenance,
+      storedInvestigation.postVersion.contentProvenance,
       expectedProvenance,
       `stored provenance mismatch (${roundTag})`,
     );
     if (expectedProvenance === "SERVER_VERIFIED") {
       assert.notEqual(
-        storedInvestigation.serverVerifiedAt,
+        storedInvestigation.postVersion.serverVerifiedAt,
         null,
         `server-verified rows should have serverVerifiedAt (${roundTag})`,
       );
       assert.equal(
-        storedInvestigation.fetchFailureReason,
+        storedInvestigation.postVersion.fetchFailureReason,
         null,
         `server-verified rows should not retain fetch failures (${roundTag})`,
       );
     } else {
       assert.equal(
-        storedInvestigation.serverVerifiedAt,
+        storedInvestigation.postVersion.serverVerifiedAt,
         null,
         `client-fallback rows should not have serverVerifiedAt (${roundTag})`,
       );
       if (seedCase.status === null) {
         assert.equal(
-          storedInvestigation.fetchFailureReason,
+          storedInvestigation.postVersion.fetchFailureReason,
           canonicalFetchFailureReason ?? null,
           `new client-fallback row should preserve canonical failure reason (${roundTag})`,
         );
       } else {
         assert.equal(
-          storedInvestigation.fetchFailureReason,
+          storedInvestigation.postVersion.fetchFailureReason,
           "fetch unavailable",
           `existing client-fallback row should preserve prior failure reason (${roundTag})`,
         );
@@ -2527,11 +2703,7 @@ void test("ensureInvestigationQueued randomized state model preserves lifecycle 
       expectedRecoveredFromStaleProcessing ||
       (expectedRunCreated && statusAfterRecord === "PENDING");
     if (expectQueuedAtNotNull) {
-      assert.notEqual(
-        storedRun.queuedAt,
-        null,
-        `queuedAt should be populated (${roundTag})`,
-      );
+      assert.notEqual(storedRun.queuedAt, null, `queuedAt should be populated (${roundTag})`);
     } else {
       assert.equal(storedRun.queuedAt, null, `queuedAt should remain null (${roundTag})`);
     }
@@ -2595,7 +2767,6 @@ void test("post.investigateNow allows user OpenAI key callers and returns inline
   assert.equal(result.investigationId, seeded.investigationId);
   assert.equal(result.status, "COMPLETE");
   assert.equal(result.provenance, "CLIENT_FALLBACK");
-  assert.ok(result.claims);
   assert.equal(result.claims.length, 1);
 });
 
@@ -2908,7 +3079,11 @@ void test("post.investigateNow rejects content over word-count limit", async () 
   if (!post) return;
 
   const investigationCount = await prisma.investigation.count({
-    where: { postId: post.id },
+    where: {
+      postVersion: {
+        postId: post.id,
+      },
+    },
   });
   assert.equal(investigationCount, 0);
 });
@@ -2943,10 +3118,12 @@ void test("post.batchStatus returns investigation state and incorrect claim coun
       {
         platform: investigatedPost.platform,
         externalId: investigatedPost.externalId,
+        versionHash: investigatedPost.versionHash,
       },
       {
         platform: pendingPost.platform,
         externalId: pendingPost.externalId,
+        versionHash: pendingPost.versionHash,
       },
     ],
   });
@@ -3241,9 +3418,7 @@ void test("public.getPostInvestigations lists all complete investigations for a 
   });
   await seedCorroborationCredits(fallbackInvestigation.id, 2);
 
-  const serverVerifiedText = normalizeContent(
-    "Server-verified content revision for same post.",
-  );
+  const serverVerifiedText = normalizeContent("Server-verified content revision for same post.");
   const serverVerifiedHash = await hashContent(serverVerifiedText);
   const serverVerifiedInvestigation = await seedCompleteInvestigation({
     postId: post.id,
@@ -3375,12 +3550,13 @@ void test("public.searchInvestigations filters by query/platform and includes fa
     offset: 0,
   });
 
-  const queryIds = new Set<string>(
-    queryResult.investigations.map((item) => item.id),
-  );
+  const queryIds = new Set<string>(queryResult.investigations.map((item) => item.id));
   assert.equal(queryIds.has(moonInvestigation.id), true);
   assert.equal(queryIds.has(fallbackMoonInvestigation.id), true);
-  assert.equal(queryResult.investigations.every((item) => item.platform === "LESSWRONG"), true);
+  assert.equal(
+    queryResult.investigations.every((item) => item.platform === "LESSWRONG"),
+    true,
+  );
 
   const platformResult = await caller.public.searchInvestigations({
     platform: "X",
@@ -3388,9 +3564,7 @@ void test("public.searchInvestigations filters by query/platform and includes fa
     offset: 0,
   });
 
-  const platformIds = new Set<string>(
-    platformResult.investigations.map((item) => item.id),
-  );
+  const platformIds = new Set<string>(platformResult.investigations.map((item) => item.id));
   assert.equal(platformIds.has(xInvestigation.id), true);
   assert.equal(platformIds.has(moonInvestigation.id), false);
 

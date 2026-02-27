@@ -10,55 +10,22 @@ import {
 } from "../../src/lib/settings-core";
 
 test("normalizeApiBaseUrl accepts https URLs and local development http URLs", () => {
-  assert.equal(
-    normalizeApiBaseUrl("  https://api.openerrata.com/ "),
-    "https://api.openerrata.com",
-  );
-  assert.equal(
-    normalizeApiBaseUrl("http://localhost:5173/"),
-    "http://localhost:5173",
-  );
-  assert.equal(
-    normalizeApiBaseUrl("http://dev.localhost:5173/"),
-    "http://dev.localhost:5173",
-  );
+  assert.equal(normalizeApiBaseUrl("  https://api.openerrata.com/ "), "https://api.openerrata.com");
+  assert.equal(normalizeApiBaseUrl("http://localhost:5173/"), "http://localhost:5173");
+  assert.equal(normalizeApiBaseUrl("http://dev.localhost:5173/"), "http://dev.localhost:5173");
   assert.equal(
     normalizeApiBaseUrl("http://host.docker.internal:8080/"),
     "http://host.docker.internal:8080",
   );
-  assert.equal(
-    normalizeApiBaseUrl("http://127.0.0.1:8080/"),
-    "http://127.0.0.1:8080",
-  );
-  assert.equal(
-    normalizeApiBaseUrl("http://192.168.1.12:3000/"),
-    "http://192.168.1.12:3000",
-  );
-  assert.equal(
-    normalizeApiBaseUrl("http://172.20.1.12:3000/"),
-    "http://172.20.1.12:3000",
-  );
-  assert.equal(
-    normalizeApiBaseUrl("http://10.10.10.10:3000/"),
-    "http://10.10.10.10:3000",
-  );
-  assert.equal(
-    normalizeApiBaseUrl("http://0.0.0.0:3000/"),
-    "http://0.0.0.0:3000",
-  );
-  assert.equal(
-    normalizeApiBaseUrl("http://localhost.:5173/"),
-    "http://localhost.:5173",
-  );
+  assert.equal(normalizeApiBaseUrl("http://127.0.0.1:8080/"), "http://127.0.0.1:8080");
+  assert.equal(normalizeApiBaseUrl("http://192.168.1.12:3000/"), "http://192.168.1.12:3000");
+  assert.equal(normalizeApiBaseUrl("http://172.20.1.12:3000/"), "http://172.20.1.12:3000");
+  assert.equal(normalizeApiBaseUrl("http://10.10.10.10:3000/"), "http://10.10.10.10:3000");
+  assert.equal(normalizeApiBaseUrl("http://0.0.0.0:3000/"), "http://0.0.0.0:3000");
+  assert.equal(normalizeApiBaseUrl("http://localhost.:5173/"), "http://localhost.:5173");
   assert.equal(normalizeApiBaseUrl("http://[::1]:3000/"), "http://[::1]:3000");
-  assert.equal(
-    normalizeApiBaseUrl("http://[fd12:3456::1]:3000/"),
-    "http://[fd12:3456::1]:3000",
-  );
-  assert.equal(
-    normalizeApiBaseUrl("http://[fe80::1]:3000/"),
-    "http://[fe80::1]:3000",
-  );
+  assert.equal(normalizeApiBaseUrl("http://[fd12:3456::1]:3000/"), "http://[fd12:3456::1]:3000");
+  assert.equal(normalizeApiBaseUrl("http://[fe80::1]:3000/"), "http://[fe80::1]:3000");
 });
 
 test("normalizeApiBaseUrl rejects public http URLs, non-http(s), and malformed values", () => {
@@ -81,14 +48,8 @@ test("API base URL validation message documents HTTPS requirement", () => {
 });
 
 test("apiHostPermissionFor preserves explicit origin port", () => {
-  assert.equal(
-    apiHostPermissionFor("http://localhost:5173"),
-    "http://localhost:5173/*",
-  );
-  assert.equal(
-    apiHostPermissionFor("https://api.openerrata.com"),
-    "https://api.openerrata.com/*",
-  );
+  assert.equal(apiHostPermissionFor("http://localhost:5173"), "http://localhost:5173/*");
+  assert.equal(apiHostPermissionFor("https://api.openerrata.com"), "https://api.openerrata.com/*");
 });
 
 test("apiEndpointUrl resolves endpoint paths from API base URL", () => {

@@ -1,10 +1,12 @@
 import { makeExecutableSchema } from "@graphql-tools/schema";
 import { DateTimeResolver } from "graphql-scalars";
+import type { GraphQLSchema } from "graphql";
 import {
   getMetricsInputSchema,
   getPostInvestigationsInputSchema,
   getPublicInvestigationInputSchema,
   searchInvestigationsInputSchema,
+  type Platform,
 } from "@openerrata/shared";
 import type { PrismaClient } from "$lib/generated/prisma/client";
 import {
@@ -28,6 +30,7 @@ const typeDefs = /* GraphQL */ `
     LESSWRONG
     X
     SUBSTACK
+    WIKIPEDIA
   }
 
   """
@@ -35,9 +38,13 @@ const typeDefs = /* GraphQL */ `
   signal so consumers can apply their own trust policy.
   """
   enum ContentProvenance {
-    """The server independently fetched and verified the post content from the platform."""
+    """
+    The server independently fetched and verified the post content from the platform.
+    """
     SERVER_VERIFIED
-    """Server-side fetch failed (rate limit, outage, anti-bot block); the investigation used content submitted by the browser extension."""
+    """
+    Server-side fetch failed (rate limit, outage, anti-bot block); the investigation used content submitted by the browser extension.
+    """
     CLIENT_FALLBACK
   }
 
@@ -59,17 +66,29 @@ const typeDefs = /* GraphQL */ `
   """
   type PublicInvestigation {
     id: ID!
-    """How the investigated content was obtained, with provenance-specific fields."""
+    """
+    How the investigated content was obtained, with provenance-specific fields.
+    """
     origin: InvestigationOrigin!
-    """Number of distinct authenticated users who independently submitted matching content for this investigation, providing independent confirmation of what the post said."""
+    """
+    Number of distinct authenticated users who independently submitted matching content for this investigation, providing independent confirmation of what the post said.
+    """
     corroborationCount: Int!
-    """When this investigation was completed."""
+    """
+    When this investigation was completed.
+    """
     checkedAt: DateTime!
-    """Version identifier of the LLM prompt used for this investigation."""
+    """
+    Version identifier of the LLM prompt used for this investigation.
+    """
     promptVersion: String!
-    """LLM provider used (e.g. "OPENAI")."""
+    """
+    LLM provider used (e.g. "OPENAI").
+    """
     provider: String!
-    """LLM model used (e.g. "GPT4O")."""
+    """
+    LLM model used (e.g. "GPT4O").
+    """
     model: String!
   }
 
@@ -78,9 +97,13 @@ const typeDefs = /* GraphQL */ `
   """
   type PublicPost {
     platform: Platform!
-    """Platform-specific identifier for the post (e.g. tweet ID, LessWrong slug)."""
+    """
+    Platform-specific identifier for the post (e.g. tweet ID, LessWrong slug).
+    """
     externalId: String!
-    """Original URL of the post on the platform."""
+    """
+    Original URL of the post on the platform.
+    """
     url: String!
   }
 
@@ -88,11 +111,17 @@ const typeDefs = /* GraphQL */ `
   A source cited by the LLM to support its reasoning about a claim.
   """
   type PublicSource {
-    """URL of the source the LLM found via web search."""
+    """
+    URL of the source the LLM found via web search.
+    """
     url: String!
-    """Title of the source page or document."""
+    """
+    Title of the source page or document.
+    """
     title: String!
-    """Relevant excerpt from the source that supports the reasoning."""
+    """
+    Relevant excerpt from the source that supports the reasoning.
+    """
     snippet: String!
   }
 
@@ -102,15 +131,25 @@ const typeDefs = /* GraphQL */ `
   """
   type PublicClaim {
     id: ID!
-    """Exact verbatim quote of the incorrect claim from the post text. Used for DOM matching in the browser extension."""
+    """
+    Exact verbatim quote of the incorrect claim from the post text. Used for DOM matching in the browser extension.
+    """
     text: String!
-    """Surrounding text (~10 words before and after) for disambiguating duplicate text in the post."""
+    """
+    Surrounding text (~10 words before and after) for disambiguating duplicate text in the post.
+    """
     context: String!
-    """One- or two-sentence factual correction summarizing why the claim is incorrect."""
+    """
+    One- or two-sentence factual correction summarizing why the claim is incorrect.
+    """
     summary: String!
-    """Detailed investigation reasoning explaining the evidence against the claim."""
+    """
+    Detailed investigation reasoning explaining the evidence against the claim.
+    """
     reasoning: String!
-    """Sources found via web search that support the correction."""
+    """
+    Sources found via web search that support the correction.
+    """
     sources: [PublicSource!]!
   }
 
@@ -121,7 +160,9 @@ const typeDefs = /* GraphQL */ `
   type PublicInvestigationResult {
     investigation: PublicInvestigation!
     post: PublicPost!
-    """Claims flagged as incorrect. Empty if the post passed fact-checking with no issues."""
+    """
+    Claims flagged as incorrect. Empty if the post passed fact-checking with no issues.
+    """
     claims: [PublicClaim!]!
   }
 
@@ -131,15 +172,25 @@ const typeDefs = /* GraphQL */ `
   """
   type PostInvestigationSummary {
     id: ID!
-    """SHA-256 hash of the normalized post content that was investigated. Different hashes indicate the post was edited between investigations."""
+    """
+    SHA-256 hash of the normalized post content that was investigated. Different hashes indicate the post was edited between investigations.
+    """
     contentHash: String!
-    """How the investigated content was obtained, with provenance-specific fields."""
+    """
+    How the investigated content was obtained, with provenance-specific fields.
+    """
     origin: InvestigationOrigin!
-    """Number of distinct authenticated users who independently submitted matching content."""
+    """
+    Number of distinct authenticated users who independently submitted matching content.
+    """
     corroborationCount: Int!
-    """When this investigation was completed."""
+    """
+    When this investigation was completed.
+    """
     checkedAt: DateTime!
-    """Number of incorrect claims flagged in this investigation."""
+    """
+    Number of incorrect claims flagged in this investigation.
+    """
     claimCount: Int!
   }
 
@@ -148,9 +199,13 @@ const typeDefs = /* GraphQL */ `
   A post may have multiple investigations if its content was edited.
   """
   type PostInvestigationsResult {
-    """The post, or null if no post exists for the given platform/externalId."""
+    """
+    The post, or null if no post exists for the given platform/externalId.
+    """
     post: PublicPost
-    """Completed investigations for this post, one per content version."""
+    """
+    Completed investigations for this post, one per content version.
+    """
     investigations: [PostInvestigationSummary!]!
   }
 
@@ -160,20 +215,34 @@ const typeDefs = /* GraphQL */ `
   """
   type SearchInvestigationSummary {
     id: ID!
-    """SHA-256 hash of the normalized post content that was investigated."""
+    """
+    SHA-256 hash of the normalized post content that was investigated.
+    """
     contentHash: String!
-    """When this investigation was completed."""
+    """
+    When this investigation was completed.
+    """
     checkedAt: DateTime!
     platform: Platform!
-    """Platform-specific identifier for the post."""
+    """
+    Platform-specific identifier for the post.
+    """
     externalId: String!
-    """Original URL of the post on the platform."""
+    """
+    Original URL of the post on the platform.
+    """
     url: String!
-    """How the investigated content was obtained, with provenance-specific fields."""
+    """
+    How the investigated content was obtained, with provenance-specific fields.
+    """
     origin: InvestigationOrigin!
-    """Number of distinct authenticated users who independently submitted matching content."""
+    """
+    Number of distinct authenticated users who independently submitted matching content.
+    """
     corroborationCount: Int!
-    """Number of incorrect claims flagged in this investigation."""
+    """
+    Number of incorrect claims flagged in this investigation.
+    """
     claimCount: Int!
   }
 
@@ -185,11 +254,17 @@ const typeDefs = /* GraphQL */ `
   Aggregate fact-checking statistics, optionally filtered by platform, author, or time window.
   """
   type PublicMetrics {
-    """Total number of posts with completed investigations matching the filter."""
+    """
+    Total number of posts with completed investigations matching the filter.
+    """
     totalInvestigatedPosts: Int!
-    """Number of investigated posts that had at least one incorrect claim flagged."""
+    """
+    Number of investigated posts that had at least one incorrect claim flagged.
+    """
     investigatedPostsWithFlags: Int!
-    """Ratio of posts with flags to total investigated posts (investigatedPostsWithFlags / totalInvestigatedPosts)."""
+    """
+    Ratio of posts with flags to total investigated posts (investigatedPostsWithFlags / totalInvestigatedPosts).
+    """
     factCheckIncidence: Float!
   }
 
@@ -208,9 +283,13 @@ const typeDefs = /* GraphQL */ `
     does not exist.
     """
     postInvestigations(
-      """Platform the post belongs to."""
+      """
+      Platform the post belongs to.
+      """
       platform: Platform!
-      """Platform-specific post identifier (e.g. tweet ID, LessWrong slug)."""
+      """
+      Platform-specific post identifier (e.g. tweet ID, LessWrong slug).
+      """
       externalId: String!
     ): PostInvestigationsResult!
 
@@ -220,13 +299,21 @@ const typeDefs = /* GraphQL */ `
     fetch full details for a specific result.
     """
     searchInvestigations(
-      """Free-text search query. Omit to browse all investigations."""
+      """
+      Free-text search query. Omit to browse all investigations.
+      """
       query: String
-      """Filter to a specific platform."""
+      """
+      Filter to a specific platform.
+      """
       platform: Platform
-      """Maximum number of results to return (1-100)."""
+      """
+      Maximum number of results to return (1-100).
+      """
       limit: Int = 20
-      """Number of results to skip for pagination."""
+      """
+      Number of results to skip for pagination.
+      """
       offset: Int = 0
     ): SearchInvestigationsResult!
 
@@ -235,21 +322,27 @@ const typeDefs = /* GraphQL */ `
     for global metrics.
     """
     publicMetrics(
-      """Filter to a specific platform."""
+      """
+      Filter to a specific platform.
+      """
       platform: Platform
-      """Filter to a specific author by ID."""
+      """
+      Filter to a specific author by ID.
+      """
       authorId: ID
-      """Only count investigations completed on or after this timestamp (inclusive)."""
+      """
+      Only count investigations completed on or after this timestamp (inclusive).
+      """
       windowStart: DateTime
-      """Only count investigations completed on or before this timestamp (inclusive)."""
+      """
+      Only count investigations completed on or before this timestamp (inclusive).
+      """
       windowEnd: DateTime
     ): PublicMetrics!
   }
 `;
 
-function toDateTimeInput(
-  value: Date | string | null | undefined,
-): string | undefined {
+function toDateTimeInput(value: Date | string | null | undefined): string | undefined {
   if (value === null || value === undefined) {
     return undefined;
   }
@@ -261,86 +354,105 @@ function toDateTimeInput(
 
 type SearchInvestigationsArgs = {
   query?: string;
-  platform?: "LESSWRONG" | "X" | "SUBSTACK";
+  platform?: Platform;
   limit?: number;
   offset?: number;
 };
 
 type PublicMetricsArgs = {
-  platform?: "LESSWRONG" | "X" | "SUBSTACK";
+  platform?: Platform;
   authorId?: string;
   windowStart?: Date | string;
   windowEnd?: Date | string;
 };
 
-const resolvers = {
-  DateTime: DateTimeResolver,
-  InvestigationOrigin: {
-    __resolveType: (
-      value: unknown,
-    ): "ServerVerifiedOrigin" | "ClientFallbackOrigin" | null => {
-      if (value === null || typeof value !== "object") return null;
-      const origin = value as { provenance?: string };
-      if (origin.provenance === "SERVER_VERIFIED") return "ServerVerifiedOrigin";
-      if (origin.provenance === "CLIENT_FALLBACK") return "ClientFallbackOrigin";
-      return null;
-    },
-  },
-  Query: {
-    publicInvestigation: async (
-      _root: unknown,
-      args: { investigationId: string },
-      ctx: PublicGraphqlContext,
-    ) => {
-      const input = getPublicInvestigationInputSchema.parse({
-        investigationId: args.investigationId,
-      });
-      return getPublicInvestigationById(ctx.prisma, input.investigationId);
-    },
-
-    postInvestigations: async (
-      _root: unknown,
-      args: { platform: "LESSWRONG" | "X" | "SUBSTACK"; externalId: string },
-      ctx: PublicGraphqlContext,
-    ) => {
-      const input = getPostInvestigationsInputSchema.parse({
-        platform: args.platform,
-        externalId: args.externalId,
-      });
-      return getPublicPostInvestigations(ctx.prisma, input);
-    },
-
-    searchInvestigations: async (
-      _root: unknown,
-      args: SearchInvestigationsArgs,
-      ctx: PublicGraphqlContext,
-    ) => {
-      const input = searchInvestigationsInputSchema.parse({
-        query: args.query,
-        platform: args.platform,
-        limit: args.limit,
-        offset: args.offset,
-      });
-      return searchPublicInvestigations(ctx.prisma, input);
-    },
-
-    publicMetrics: async (
-      _root: unknown,
-      args: PublicMetricsArgs,
-      ctx: PublicGraphqlContext,
-    ) => {
-      const input = getMetricsInputSchema.parse({
-        platform: args.platform,
-        authorId: args.authorId,
-        windowStart: toDateTimeInput(args.windowStart),
-        windowEnd: toDateTimeInput(args.windowEnd),
-      });
-      return getPublicMetrics(ctx.prisma, input);
-    },
-  },
+type PublicReadModel = {
+  getPublicInvestigationById: typeof getPublicInvestigationById;
+  getPublicPostInvestigations: typeof getPublicPostInvestigations;
+  searchPublicInvestigations: typeof searchPublicInvestigations;
+  getPublicMetrics: typeof getPublicMetrics;
 };
 
-export const publicGraphqlSchema = makeExecutableSchema({
-  typeDefs,
-  resolvers,
-});
+const defaultPublicReadModel: PublicReadModel = {
+  getPublicInvestigationById,
+  getPublicPostInvestigations,
+  searchPublicInvestigations,
+  getPublicMetrics,
+};
+
+function createResolvers(publicReadModel: PublicReadModel) {
+  return {
+    DateTime: DateTimeResolver,
+    InvestigationOrigin: {
+      __resolveType: (value: unknown): "ServerVerifiedOrigin" | "ClientFallbackOrigin" | null => {
+        if (value === null || typeof value !== "object") return null;
+        const origin = value as { provenance?: string };
+        if (origin.provenance === "SERVER_VERIFIED") return "ServerVerifiedOrigin";
+        if (origin.provenance === "CLIENT_FALLBACK") return "ClientFallbackOrigin";
+        return null;
+      },
+    },
+    Query: {
+      publicInvestigation: async (
+        _root: unknown,
+        args: { investigationId: string },
+        ctx: PublicGraphqlContext,
+      ) => {
+        const input = getPublicInvestigationInputSchema.parse({
+          investigationId: args.investigationId,
+        });
+        return publicReadModel.getPublicInvestigationById(ctx.prisma, input.investigationId);
+      },
+
+      postInvestigations: async (
+        _root: unknown,
+        args: {
+          platform: Platform;
+          externalId: string;
+        },
+        ctx: PublicGraphqlContext,
+      ) => {
+        const input = getPostInvestigationsInputSchema.parse({
+          platform: args.platform,
+          externalId: args.externalId,
+        });
+        return publicReadModel.getPublicPostInvestigations(ctx.prisma, input);
+      },
+
+      searchInvestigations: async (
+        _root: unknown,
+        args: SearchInvestigationsArgs,
+        ctx: PublicGraphqlContext,
+      ) => {
+        const input = searchInvestigationsInputSchema.parse({
+          query: args.query,
+          platform: args.platform,
+          limit: args.limit,
+          offset: args.offset,
+        });
+        return publicReadModel.searchPublicInvestigations(ctx.prisma, input);
+      },
+
+      publicMetrics: async (_root: unknown, args: PublicMetricsArgs, ctx: PublicGraphqlContext) => {
+        const input = getMetricsInputSchema.parse({
+          platform: args.platform,
+          authorId: args.authorId,
+          windowStart: toDateTimeInput(args.windowStart),
+          windowEnd: toDateTimeInput(args.windowEnd),
+        });
+        return publicReadModel.getPublicMetrics(ctx.prisma, input);
+      },
+    },
+  };
+}
+
+export function createPublicGraphqlSchema(
+  publicReadModel: PublicReadModel = defaultPublicReadModel,
+): GraphQLSchema {
+  return makeExecutableSchema({
+    typeDefs,
+    resolvers: createResolvers(publicReadModel),
+  });
+}
+
+export const publicGraphqlSchema = createPublicGraphqlSchema();

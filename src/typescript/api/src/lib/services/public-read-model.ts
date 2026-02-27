@@ -1,10 +1,6 @@
 import { Prisma, type PrismaClient } from "$lib/generated/prisma/client";
 import { contentProvenanceSchema, platformSchema, type Platform } from "@openerrata/shared";
 
-function escapeLikePattern(query: string): string {
-  return query.replace(/[\\%_]/g, (char) => `\\${char}`);
-}
-
 type PublicInvestigationOrigin =
   | {
       provenance: "SERVER_VERIFIED";
@@ -200,6 +196,25 @@ function parsePublicLifecycle(input: {
   };
 }
 
+function publicMetricsConditions(input: PublicMetricsInput): Prisma.Sql[] {
+  const conditions: Prisma.Sql[] = [Prisma.sql`i."status" = 'COMPLETE'`];
+
+  if (input.platform !== undefined) {
+    conditions.push(Prisma.sql`p."platform" = ${input.platform}`);
+  }
+  if (input.authorId !== undefined && input.authorId.length > 0) {
+    conditions.push(Prisma.sql`p."authorId" = ${input.authorId}`);
+  }
+  if (input.windowStart !== undefined && input.windowStart.length > 0) {
+    conditions.push(Prisma.sql`i."checkedAt" >= ${input.windowStart}`);
+  }
+  if (input.windowEnd !== undefined && input.windowEnd.length > 0) {
+    conditions.push(Prisma.sql`i."checkedAt" <= ${input.windowEnd}`);
+  }
+
+  return conditions;
+}
+
 export async function getPublicInvestigationById(
   prisma: PrismaClient,
   investigationId: string,
@@ -210,7 +225,16 @@ export async function getPublicInvestigationById(
       status: "COMPLETE",
     },
     include: {
-      post: true,
+      postVersion: {
+        include: {
+          post: true,
+          contentBlob: {
+            select: {
+              contentHash: true,
+            },
+          },
+        },
+      },
       prompt: true,
       claims: { include: { sources: true } },
       _count: { select: { corroborationCredits: true } },
@@ -223,9 +247,9 @@ export async function getPublicInvestigationById(
 
   const lifecycle = parsePublicLifecycle({
     investigationId: investigation.id,
-    contentProvenance: investigation.contentProvenance,
-    serverVerifiedAt: investigation.serverVerifiedAt,
-    fetchFailureReason: investigation.fetchFailureReason,
+    contentProvenance: investigation.postVersion.contentProvenance,
+    serverVerifiedAt: investigation.postVersion.serverVerifiedAt,
+    fetchFailureReason: investigation.postVersion.fetchFailureReason,
     checkedAt: investigation.checkedAt,
   });
   if (lifecycle === null) {
@@ -243,9 +267,9 @@ export async function getPublicInvestigationById(
       model: investigation.model,
     },
     post: {
-      platform: parsePlatform(investigation.post.platform),
-      externalId: investigation.post.externalId,
-      url: investigation.post.url,
+      platform: parsePlatform(investigation.postVersion.post.platform),
+      externalId: investigation.postVersion.post.externalId,
+      url: investigation.postVersion.post.url,
     },
     claims: investigation.claims.map((claim) => ({
       id: claim.id,
@@ -279,32 +303,43 @@ export async function getPublicPostInvestigations(
     return { post: null, investigations: [] };
   }
 
-  const investigations = await prisma.$queryRaw<
-    Array<{
-      id: string;
-      contentHash: string;
-      contentProvenance: string;
-      serverVerifiedAt: Date | null;
-      fetchFailureReason: string | null;
-      checkedAt: Date | null;
-      claimCount: number;
-      corroborationCount: number;
-    }>
-  >`
-    SELECT
-      i."id",
-      i."contentHash",
-      i."contentProvenance",
-      i."serverVerifiedAt",
-      i."fetchFailureReason",
-      i."checkedAt",
-      (SELECT COUNT(*) FROM "Claim" c WHERE c."investigationId" = i."id")::int AS "claimCount",
-      (SELECT COUNT(*) FROM "CorroborationCredit" cc WHERE cc."investigationId" = i."id")::int AS "corroborationCount"
-    FROM "Investigation" i
-    WHERE i."postId" = ${post.id}
-      AND i."status" = 'COMPLETE'
-    ORDER BY i."checkedAt" DESC NULLS LAST, i."id" DESC
-  `;
+  const investigations = await prisma.investigation.findMany({
+    where: {
+      status: "COMPLETE",
+      postVersion: {
+        postId: post.id,
+      },
+    },
+    orderBy: [
+      {
+        checkedAt: {
+          sort: "desc",
+          nulls: "last",
+        },
+      },
+      { id: "desc" },
+    ],
+    include: {
+      postVersion: {
+        select: {
+          contentBlob: {
+            select: {
+              contentHash: true,
+            },
+          },
+          contentProvenance: true,
+          serverVerifiedAt: true,
+          fetchFailureReason: true,
+        },
+      },
+      _count: {
+        select: {
+          claims: true,
+          corroborationCredits: true,
+        },
+      },
+    },
+  });
 
   return {
     post: {
@@ -315,9 +350,9 @@ export async function getPublicPostInvestigations(
     investigations: investigations.flatMap((investigation) => {
       const lifecycle = parsePublicLifecycle({
         investigationId: investigation.id,
-        contentProvenance: investigation.contentProvenance,
-        serverVerifiedAt: investigation.serverVerifiedAt,
-        fetchFailureReason: investigation.fetchFailureReason,
+        contentProvenance: investigation.postVersion.contentProvenance,
+        serverVerifiedAt: investigation.postVersion.serverVerifiedAt,
+        fetchFailureReason: investigation.postVersion.fetchFailureReason,
         checkedAt: investigation.checkedAt,
       });
       if (lifecycle === null) {
@@ -327,11 +362,11 @@ export async function getPublicPostInvestigations(
       return [
         {
           id: investigation.id,
-          contentHash: investigation.contentHash,
+          contentHash: investigation.postVersion.contentBlob.contentHash,
           origin: lifecycle.origin,
-          corroborationCount: investigation.corroborationCount,
+          corroborationCount: investigation._count.corroborationCredits,
           checkedAt: lifecycle.checkedAt,
-          claimCount: investigation.claimCount,
+          claimCount: investigation._count.claims,
         },
       ];
     }),
@@ -342,56 +377,80 @@ export async function searchPublicInvestigations(
   prisma: PrismaClient,
   input: PublicSearchInvestigationsInput,
 ): Promise<PublicSearchInvestigationsResult> {
-  const platformFilter = input.platform
-    ? Prisma.sql`AND p."platform" = ${input.platform}`
-    : Prisma.empty;
-  const textFilter = input.query
-    ? Prisma.sql`AND i."contentText" ILIKE ${`%${escapeLikePattern(input.query)}%`} ESCAPE '\\'`
-    : Prisma.empty;
-
-  const investigations = await prisma.$queryRaw<
-    Array<{
-      id: string;
-      contentHash: string;
-      checkedAt: Date | null;
-      platform: string;
-      externalId: string;
-      url: string;
-      contentProvenance: string;
-      serverVerifiedAt: Date | null;
-      fetchFailureReason: string | null;
-      claimCount: number;
-      corroborationCount: number;
-    }>
-  >`
-    SELECT
-      i."id",
-      i."contentHash",
-      i."checkedAt",
-      p."platform",
-      p."externalId",
-      p."url",
-      i."contentProvenance",
-      i."serverVerifiedAt",
-      i."fetchFailureReason",
-      (SELECT COUNT(*) FROM "Claim" c WHERE c."investigationId" = i."id")::int AS "claimCount",
-      (SELECT COUNT(*) FROM "CorroborationCredit" cc WHERE cc."investigationId" = i."id")::int AS "corroborationCount"
-    FROM "Investigation" i
-    JOIN "Post" p ON p."id" = i."postId"
-    WHERE i."status" = 'COMPLETE'
-      ${platformFilter}
-      ${textFilter}
-    ORDER BY i."checkedAt" DESC NULLS LAST, i."id" DESC
-    LIMIT ${input.limit} OFFSET ${input.offset}
-  `;
+  const investigations = await prisma.investigation.findMany({
+    where: {
+      status: "COMPLETE",
+      ...(input.platform === undefined && input.query === undefined
+        ? {}
+        : {
+            postVersion: {
+              ...(input.platform === undefined
+                ? {}
+                : {
+                    post: {
+                      platform: input.platform,
+                    },
+                  }),
+              ...(input.query === undefined
+                ? {}
+                : {
+                    contentBlob: {
+                      contentText: {
+                        contains: input.query,
+                        mode: "insensitive",
+                      },
+                    },
+                  }),
+            },
+          }),
+    },
+    orderBy: [
+      {
+        checkedAt: {
+          sort: "desc",
+          nulls: "last",
+        },
+      },
+      { id: "desc" },
+    ],
+    skip: input.offset,
+    take: input.limit,
+    include: {
+      postVersion: {
+        select: {
+          contentBlob: {
+            select: {
+              contentHash: true,
+            },
+          },
+          contentProvenance: true,
+          serverVerifiedAt: true,
+          fetchFailureReason: true,
+          post: {
+            select: {
+              platform: true,
+              externalId: true,
+              url: true,
+            },
+          },
+        },
+      },
+      _count: {
+        select: {
+          claims: true,
+          corroborationCredits: true,
+        },
+      },
+    },
+  });
 
   return {
     investigations: investigations.flatMap((investigation) => {
       const lifecycle = parsePublicLifecycle({
         investigationId: investigation.id,
-        contentProvenance: investigation.contentProvenance,
-        serverVerifiedAt: investigation.serverVerifiedAt,
-        fetchFailureReason: investigation.fetchFailureReason,
+        contentProvenance: investigation.postVersion.contentProvenance,
+        serverVerifiedAt: investigation.postVersion.serverVerifiedAt,
+        fetchFailureReason: investigation.postVersion.fetchFailureReason,
         checkedAt: investigation.checkedAt,
       });
       if (lifecycle === null) {
@@ -401,14 +460,14 @@ export async function searchPublicInvestigations(
       return [
         {
           id: investigation.id,
-          contentHash: investigation.contentHash,
+          contentHash: investigation.postVersion.contentBlob.contentHash,
           checkedAt: lifecycle.checkedAt,
-          platform: parsePlatform(investigation.platform),
-          externalId: investigation.externalId,
-          url: investigation.url,
+          platform: parsePlatform(investigation.postVersion.post.platform),
+          externalId: investigation.postVersion.post.externalId,
+          url: investigation.postVersion.post.url,
           origin: lifecycle.origin,
-          corroborationCount: investigation.corroborationCount,
-          claimCount: investigation.claimCount,
+          corroborationCount: investigation._count.corroborationCredits,
+          claimCount: investigation._count.claims,
         },
       ];
     }),
@@ -419,20 +478,7 @@ export async function getPublicMetrics(
   prisma: PrismaClient,
   input: PublicMetricsInput,
 ): Promise<PublicMetricsResult> {
-  const conditions: Prisma.Sql[] = [Prisma.sql`i."status" = 'COMPLETE'`];
-
-  if (input.platform) {
-    conditions.push(Prisma.sql`p."platform" = ${input.platform}`);
-  }
-  if (input.authorId) {
-    conditions.push(Prisma.sql`p."authorId" = ${input.authorId}`);
-  }
-  if (input.windowStart) {
-    conditions.push(Prisma.sql`i."checkedAt" >= ${input.windowStart}`);
-  }
-  if (input.windowEnd) {
-    conditions.push(Prisma.sql`i."checkedAt" <= ${input.windowEnd}`);
-  }
+  const conditions = publicMetricsConditions(input);
 
   const result = await prisma.$queryRaw<
     Array<{
@@ -441,13 +487,14 @@ export async function getPublicMetrics(
     }>
   >`
     SELECT
-      COUNT(DISTINCT i."postId")::int AS total_investigated,
+      COUNT(DISTINCT pv."postId")::int AS total_investigated,
       COUNT(DISTINCT CASE
         WHEN EXISTS (SELECT 1 FROM "Claim" c WHERE c."investigationId" = i."id")
-        THEN i."postId"
+        THEN pv."postId"
       END)::int AS with_flags
     FROM "Investigation" i
-    JOIN "Post" p ON p."id" = i."postId"
+    JOIN "PostVersion" pv ON pv."id" = i."postVersionId"
+    JOIN "Post" p ON p."id" = pv."postId"
     WHERE ${Prisma.join(conditions, " AND ")}
   `;
 

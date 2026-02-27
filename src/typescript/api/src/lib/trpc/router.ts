@@ -1,10 +1,7 @@
 import { router } from "./init.js";
 import { postRouter } from "./routes/post.js";
 import { publicRouter } from "./routes/public.js";
-import type {
-  EXTENSION_TRPC_PATH,
-  ExtensionApiProcedureContract,
-} from "@openerrata/shared";
+import type { EXTENSION_TRPC_PATH, ExtensionApiProcedureContract } from "@openerrata/shared";
 import type { inferRouterInputs, inferRouterOutputs } from "@trpc/server";
 
 export const appRouter = router({
@@ -15,6 +12,11 @@ export const appRouter = router({
 type IsExactly<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
 type RouterInputs = inferRouterInputs<typeof appRouter>;
 type RouterOutputs = inferRouterOutputs<typeof appRouter>;
+
+const registerObservedVersionInputMatches: IsExactly<
+  RouterInputs["post"]["registerObservedVersion"],
+  ExtensionApiProcedureContract[typeof EXTENSION_TRPC_PATH.REGISTER_OBSERVED_VERSION]["input"]
+> = true;
 
 const recordViewAndGetStatusInputMatches: IsExactly<
   RouterInputs["post"]["recordViewAndGetStatus"],
@@ -36,6 +38,11 @@ const validateSettingsInputMatches: IsExactly<
   ExtensionApiProcedureContract[typeof EXTENSION_TRPC_PATH.VALIDATE_SETTINGS]["input"]
 > = true;
 
+const registerObservedVersionOutputMatches: IsExactly<
+  RouterOutputs["post"]["registerObservedVersion"],
+  ExtensionApiProcedureContract[typeof EXTENSION_TRPC_PATH.REGISTER_OBSERVED_VERSION]["output"]
+> = true;
+
 const recordViewAndGetStatusOutputMatches: IsExactly<
   RouterOutputs["post"]["recordViewAndGetStatus"],
   ExtensionApiProcedureContract[typeof EXTENSION_TRPC_PATH.RECORD_VIEW_AND_GET_STATUS]["output"]
@@ -51,10 +58,12 @@ const validateSettingsOutputMatches: IsExactly<
   ExtensionApiProcedureContract[typeof EXTENSION_TRPC_PATH.VALIDATE_SETTINGS]["output"]
 > = true;
 
+void registerObservedVersionInputMatches;
 void recordViewAndGetStatusInputMatches;
 void getInvestigationInputMatches;
 void investigateNowInputMatches;
 void validateSettingsInputMatches;
+void registerObservedVersionOutputMatches;
 void recordViewAndGetStatusOutputMatches;
 void investigateNowOutputMatches;
 void validateSettingsOutputMatches;

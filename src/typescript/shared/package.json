@@ -6,7 +6,8 @@
   "types": "src/index.ts",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test:unit": "tsx --test \"test/unit/**/*.test.ts\""
+    "test:unit": "tsx --test \"test/unit/**/*.test.ts\"",
+    "test:unit:coverage": "c8 --config ../.c8rc.shared.json tsx --test \"test/unit/**/*.test.ts\""
   },
   "dependencies": {
     "zod": "^4.3.6"

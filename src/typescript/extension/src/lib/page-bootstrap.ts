@@ -17,9 +17,7 @@ export function ensurePageStylesheet(options: StylesheetBootstrapOptions): void 
   const stylesheetLinks = Array.from(
     document.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]'),
   );
-  const hasExpectedStylesheet = stylesheetLinks.some(
-    (link) => link.href === expectedHref,
-  );
+  const hasExpectedStylesheet = stylesheetLinks.some((link) => link.href === expectedHref);
   if (hasExpectedStylesheet) return;
 
   const fallbackLink = document.createElement("link");

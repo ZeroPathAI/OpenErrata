@@ -1,36 +1,45 @@
 # OpenErrata Browser Extension
 
-Chrome MV3 extension that extracts post content from LessWrong and X, sends it
-to the OpenErrata API, and renders inline annotations on incorrect claims.
+WebExtension (Chrome MV3 primary, Firefox-compatible) that extracts post
+content from LessWrong, X, Substack, and Wikipedia, sends it to the OpenErrata
+API, and renders inline annotations on incorrect claims.
 
 ## Build
 
 ```bash
 pnpm dev    # vite build --watch (rebuilds on file change)
-pnpm build  # production build to dist/
+pnpm build  # production build to dist/ (Chrome) and dist/firefox/
 ```
 
-After building, load `dist/` as an unpacked extension in Chrome via
-`chrome://extensions` (Developer mode).
+Firefox package metadata uses `browser_specific_settings.gecko.id`. Override
+the default id with `FIREFOX_GECKO_ID=<your-addon-id>` when running `pnpm build`.
+
+After building:
+
+- Chrome: load `dist/` via `chrome://extensions` (Developer mode).
+- Firefox: load `dist/firefox/manifest.json` via `about:debugging#/runtime/this-firefox`.
 
 ## Architecture
 
 ### Message Flow
 
 ```
-Content Script (runs on LessWrong/X pages)
+Content Script (runs on supported pages)
   → extract content via platform adapter
-  → chrome.runtime.sendMessage({ type: "PAGE_CONTENT", payload })
-  → Background Service Worker
-      → api-client.ts: HTTP POST to /trpc/post.recordViewAndGetStatus
+  → browser.runtime.sendMessage({ type: "PAGE_CONTENT", payload })
+  → Background runtime (service worker in Chrome, scripts/event page in Firefox)
+      → api-client.ts: HTTP POST to /trpc/post.registerObservedVersion
+      → receives { postVersionId, versionHash, provenance }
+      → api-client.ts: HTTP POST to /trpc/post.recordViewAndGetStatus({ postVersionId })
+      → optional: /trpc/post.investigateNow({ postVersionId }) when auto-investigate is enabled
       → OpenErrata API
   ← response with investigationState + claims
   → Content Script renders annotations (or records "skipped")
 ```
 
-The popup communicates with the background via `chrome.runtime.sendMessage`
+The popup communicates with the background via `browser.runtime.sendMessage`
 using the same message protocol. The popup sends `GET_CACHED` to fetch the
-active tab's status; the background queries `chrome.tabs.query` to resolve
+active tab's status; the background queries `browser.tabs.query` to resolve
 the active tab (since popup messages have no `sender.tab`).
 
 ### Content Scripts — IIFE Build Requirement
@@ -38,10 +47,13 @@ the active tab (since popup messages have no `sender.tab`).
 **Content scripts MUST be built as IIFE (no ES module imports).** MV3 loads
 content scripts as classic scripts — `import` statements are syntax errors.
 
-The Vite config uses a two-pass build:
-1. Main build: background (ES module), popup, options → can use `import`
+The Vite config uses a multi-pass build:
+
+1. Main build: Chrome runtime assets (module background + popup + options)
 2. Content script build: `lib` mode with `formats: ["iife"]` → single file,
    all dependencies inlined
+3. Firefox background build: `lib` mode with `formats: ["iife"]` so
+   `background.scripts` can run without module imports
 
 If you add a new dependency to the content script, it gets bundled into the
 IIFE automatically. If the IIFE gets too large, refactor shared code into
@@ -78,9 +90,16 @@ The content script sends `PAGE_SKIPPED` when skipping.
 - Media check: `tweetPhoto`, `videoPlayer`, `card.wrapper` test IDs
 - Note: X DOM selectors are fragile and change periodically
 
+### Wikipedia Adapter
+
+- URL pattern: `*.wikipedia.org/wiki/{title}`
+- Content selector: main article content root
+- Media check: same extension media classification rules (`text_only`, `has_images`, `has_video`)
+
 ### DOM Matching (spec §2.8)
 
 Claims are matched to DOM positions in three tiers:
+
 1. Exact substring match (unique occurrence)
 2. Context-disambiguated match (find context string, then claim within it)
 3. Fuzzy fallback (Levenshtein distance sliding window)
@@ -97,9 +116,10 @@ If all tiers fail, the claim appears in the popup but is not annotated inline.
 
 ### Extension Settings
 
-The options page (`options/App.svelte`) stores settings in `chrome.storage.local`:
+The options page (`options/App.svelte`) stores settings in `browser.storage.local`:
+
 - `openaiApiKey` — user-provided OpenAI key for request-scoped investigations
-- `autoInvestigate` — auto-trigger investigate-now after `recordViewAndGetStatus` misses
+- `autoInvestigate` — auto-trigger investigate-now after the register+record flow returns `NOT_INVESTIGATED`
 - `apiBaseUrl` — API server URL (default: `https://api.openerrata.com`)
 - `hmacSecret` — optional override for request attestation secret
 - `apiKey` — optional instance API key
@@ -108,6 +128,6 @@ The options page (`options/App.svelte`) stores settings in `chrome.storage.local
 shape. Both the options page and background API client use it.
 
 When a user saves a non-localhost API URL, the options page requests
-host-origin permission via `chrome.permissions.request` before persisting the
+host-origin permission via `browser.permissions.request` before persisting the
 URL. The background's `api-client.ts` then reads settings on init (and on
 storage changes) and uses them for all API calls.

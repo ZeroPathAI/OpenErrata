@@ -74,11 +74,7 @@ test("acquire coalesces concurrent callers on the same connection", async () => 
     return mockUtils;
   });
 
-  const [a, b, c] = await Promise.all([
-    manager.acquire(),
-    manager.acquire(),
-    manager.acquire(),
-  ]);
+  const [a, b, c] = await Promise.all([manager.acquire(), manager.acquire(), manager.acquire()]);
 
   assert.equal(a, mockUtils);
   assert.equal(b, mockUtils);
@@ -105,8 +101,7 @@ test("acquire throws after close", async () => {
   await manager.close();
   await assert.rejects(
     () => manager.acquire(),
-    (error) =>
-      expectQueueError(error, QueueClosedError, QUEUE_ERROR_CODES.CLOSED),
+    (error) => expectQueueError(error, QueueClosedError, QUEUE_ERROR_CODES.CLOSED),
   );
 });
 
@@ -120,8 +115,7 @@ test("close releases ready utils", async () => {
   assert.equal(mockUtils.released, true);
   await assert.rejects(
     () => manager.acquire(),
-    (error) =>
-      expectQueueError(error, QueueClosedError, QUEUE_ERROR_CODES.CLOSED),
+    (error) => expectQueueError(error, QueueClosedError, QUEUE_ERROR_CODES.CLOSED),
   );
 });
 
@@ -143,8 +137,7 @@ test("close during initialization waits for init then releases", async () => {
   assert.equal(mockUtils.released, true);
   await assert.rejects(
     () => acquirePromise,
-    (error) =>
-      expectQueueError(error, QueueClosedError, QUEUE_ERROR_CODES.CLOSED),
+    (error) => expectQueueError(error, QueueClosedError, QUEUE_ERROR_CODES.CLOSED),
   );
 });
 
@@ -165,8 +158,7 @@ test("close during failed initialization transitions to closed", async () => {
   // acquire should see "closed", not the connection error
   await assert.rejects(
     () => acquirePromise,
-    (error) =>
-      expectQueueError(error, QueueClosedError, QUEUE_ERROR_CODES.CLOSED),
+    (error) => expectQueueError(error, QueueClosedError, QUEUE_ERROR_CODES.CLOSED),
   );
 });
 
@@ -193,12 +185,7 @@ test("acquire swallows close errors and retries on next call", async () => {
   await assert.rejects(
     () => manager.close(),
     (error) =>
-      expectQueueError(
-        error,
-        QueueReleaseError,
-        QUEUE_ERROR_CODES.RELEASE_FAILED,
-        releaseFailure,
-      ),
+      expectQueueError(error, QueueReleaseError, QUEUE_ERROR_CODES.RELEASE_FAILED, releaseFailure),
   );
 
   // Second acquire should reconnect (not throw "closed" or "release failed")
@@ -249,8 +236,7 @@ test("close is idempotent", async () => {
   await manager.close();
   await assert.rejects(
     () => manager.acquire(),
-    (error) =>
-      expectQueueError(error, QueueClosedError, QUEUE_ERROR_CODES.CLOSED),
+    (error) => expectQueueError(error, QueueClosedError, QUEUE_ERROR_CODES.CLOSED),
   );
 });
 
@@ -307,15 +293,9 @@ test("randomized acquire/close schedule preserves lifecycle invariants", async (
           const startedAfterClose = closeSuccessCount > 0;
           try {
             const utils = await manager.acquire();
-            assert.equal(
-              seenUtils.has(utils),
-              true,
-              "acquire returned an unknown utils instance",
-            );
+            assert.equal(seenUtils.has(utils), true, "acquire returned an unknown utils instance");
             if (startedAfterClose) {
-              assert.fail(
-                "acquire resolved successfully even though manager was already closed",
-              );
+              assert.fail("acquire resolved successfully even though manager was already closed");
             }
           } catch (error) {
             assert.equal(
@@ -366,8 +346,7 @@ test("randomized acquire/close schedule preserves lifecycle invariants", async (
       Array.from({ length: 8 }, async () => {
         await assert.rejects(
           () => manager.acquire(),
-          (error) =>
-            expectQueueError(error, QueueClosedError, QUEUE_ERROR_CODES.CLOSED),
+          (error) => expectQueueError(error, QueueClosedError, QUEUE_ERROR_CODES.CLOSED),
         );
       }),
     );

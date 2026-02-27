@@ -39,7 +39,9 @@ test("isExtensionContextInvalidatedError matches known runtime-disconnect messag
     true,
   );
   assert.equal(
-    isExtensionContextInvalidatedError(new Error("Observed content does not match canonical content")),
+    isExtensionContextInvalidatedError(
+      new Error("Observed content does not match canonical content"),
+    ),
     false,
   );
 });

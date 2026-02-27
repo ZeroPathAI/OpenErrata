@@ -62,12 +62,7 @@ function readPriorInvestigationResult(snapshot: unknown): UpdateInterimClaims | 
 }
 
 export function toInvestigationStatusForCaching(
-  snapshot:
-    | ViewPostOutput
-    | InvestigationStatusOutput
-    | ExtensionPostStatus
-    | null
-    | undefined,
+  snapshot: ViewPostOutput | InvestigationStatusOutput | ExtensionPostStatus | null | undefined,
 ): InvestigationStatusOutput | null {
   if (snapshot === null || snapshot === undefined) {
     return null;

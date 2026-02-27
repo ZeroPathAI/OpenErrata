@@ -55,11 +55,7 @@ function decryptOpenAiKey(input: {
     );
   }
 
-  const decipher = createDecipheriv(
-    "aes-256-gcm",
-    keyBytes,
-    Buffer.from(input.iv, "base64"),
-  );
+  const decipher = createDecipheriv("aes-256-gcm", keyBytes, Buffer.from(input.iv, "base64"));
   decipher.setAuthTag(Buffer.from(input.authTag, "base64"));
   const decrypted = Buffer.concat([
     decipher.update(Buffer.from(input.ciphertext, "base64")),
@@ -68,11 +64,7 @@ function decryptOpenAiKey(input: {
   return decrypted.toString("utf8");
 }
 
-type AttachOpenAiKeySourceResult =
-  | "ATTACHED"
-  | "ALREADY_ATTACHED"
-  | "NOT_PENDING"
-  | "MISSING_RUN";
+type AttachOpenAiKeySourceResult = "ATTACHED" | "ALREADY_ATTACHED" | "NOT_PENDING" | "MISSING_RUN";
 
 export async function attachOpenAiKeySourceIfPendingRun(
   prisma: PrismaClient,

@@ -59,9 +59,9 @@ misleading.
 
 ## 2.1 Scope
 
-v1 ships fact-checking for posts on LessWrong, X, and Substack. Investigations
-use post text plus attached images when available. Posts classified as
-`has_video` (video/iframe detected and no extracted images) are skipped.
+v1 ships fact-checking for posts on LessWrong, X, Substack, and Wikipedia.
+Investigations use post text plus attached images when available. Posts classified
+as `has_video` (video/iframe detected and no extracted images) are skipped.
 
 Users can trigger investigations in two ways (both async queued):
 
@@ -77,7 +77,7 @@ The following are explicitly out of scope:
 
 **Not in v1 (but will be attempted in the future):**
 
-- Additional platforms beyond LessWrong, X, and Substack.
+- Additional platforms beyond LessWrong, X, Substack, and Wikipedia.
 - Analysis types other than fact-checking — the model supports extensibility, but v1
   doesn't ship it.
 - Fact-checking comments or threads, in addition to top-level isolated posts.
@@ -310,46 +310,64 @@ properties adapt to dark/light themes.
 
 **View path (all users):**
 
+The extension-to-API view path uses two sequential calls. The first call
+(`registerObservedVersion`) sends platform-observed content, resolves the
+canonical content version, and returns a `postVersionId`. The second call
+(`recordViewAndGetStatus`) takes that `postVersionId`, records the view, and
+returns investigation status. This split lets the second call use a cheap
+primary-key lookup instead of re-deriving the content version.
+
 ```
 User visits post
   → Content script extracts metadata + observed content text/media state/image URLs
   → If the adapter detects private/gated access, emit `PAGE_SKIPPED(reason="private_or_gated")`
-    and stop (no `viewPost` request is sent)
-  → Background worker calls API: viewPost(...)
-      - Include observedContentText for X/Substack
+    and stop (no API requests are sent)
+  → Background worker calls API: registerObservedVersion(...)
+      - Include observedContentText for X/Substack/Wikipedia
       - For LessWrong, include metadata.htmlContent (do not include observedContentText)
-      - Include observed image URLs for metadata persistence
-  → API upserts Post + metadata and increments raw viewCount / unique-view signals
-  → API checks whether this observed content version already has a completed investigation:
-      HIT  → return { investigationState: "INVESTIGATED", claims: [...] }
+      - Include observed image URLs and image occurrences for metadata persistence
+  → API upserts Post + platform metadata
+  → API attempts server-side content verification (best effort):
+      VERIFIED + matches observed content  → continue with `SERVER_VERIFIED`
+      VERIFIED + mismatch                  → reject request (`CONTENT_MISMATCH`)
+      NOT VERIFIED                         → continue with `CLIENT_FALLBACK`
+  → API upserts PostVersion (content blob + image occurrences + provenance)
+  → API returns { platform, externalId, versionHash, postVersionId, provenance }
+
+  → Background worker calls API: recordViewAndGetStatus({ postVersionId })
+  → API looks up PostVersion by primary key
+      NOT FOUND → return { investigationState: "NOT_INVESTIGATED", claims: null,
+                           priorInvestigationResult: null }
+                  (version was never registered; nothing to do)
+  → API increments raw viewCount, updates uniqueViewScore, records corroboration credit
+  → API checks whether this content version has a completed investigation:
+      HIT  → return { investigationState: "INVESTIGATED", provenance, claims: [...] }
              (already investigated for this content version; client is done)
-      MISS → continue
-  → For misses only, API attempts server-side verification (best effort):
-      VERIFIED + matches selected observed version source → continue with `SERVER_VERIFIED`
-      VERIFIED + mismatch                 → reject request (`CONTENT_MISMATCH`)
-                                            and do not update post/view/corroboration signals
-      NOT VERIFIED                        → continue with `CLIENT_FALLBACK`
-  → API updates canonical content-version signals and corroboration signals
-  → API checks whether the selected content version has a completed investigation:
-      HIT  → return { investigationState: "INVESTIGATED", claims: [...] }
-             (already investigated for this content version; client is done)
-      MISS + latest complete SERVER_VERIFIED exists →
+      MISS + latest complete SERVER_VERIFIED exists for this post →
          return { investigationState: "NOT_INVESTIGATED", claims: null,
                   priorInvestigationResult: { oldClaims: claims, sourceInvestigationId } }
-         (reuse prior verified claims as interim context; no run is queued on viewPost)
+         (reuse prior verified claims as interim context; no run is queued)
       MISS + only CLIENT_FALLBACK/none latest exists →
          return { investigationState: "NOT_INVESTIGATED", claims: null }
          (no completed investigation yet for this content version)
-  → Client renders current state; viewPost alone does not enqueue a new investigation
+  → Client renders current state; recordViewAndGetStatus alone does not enqueue a new investigation
   → Investigation begins only via investigateNow(...) or selector queueing
 ```
 
 **Investigate-now path (both auth modes, unified async queue):**
 
+The extension reuses the `postVersionId` from `registerObservedVersion` (which
+was already called during the view path) to call `investigateNow`. If the
+content has changed since the view, the extension calls `registerObservedVersion`
+again first.
+
 ```
 User clicks "Investigate Now" (or auto-investigate triggers)
-  → Background worker calls API: investigateNow(...), optionally including a user OpenAI key
-  → API resolves the post's current content version (same verification policy as viewPost)
+  → Background worker calls API: registerObservedVersion(...) (if not already done)
+  → Background worker calls API: investigateNow({ postVersionId }),
+    optionally including a user OpenAI key via x-openai-api-key header
+  → API looks up PostVersion by primary key
+      NOT FOUND → reject request (unknown post version)
   → API checks for an existing Investigation row for that content version
       no row     → create PENDING row, start background run,
                    return { investigationId, status: PENDING }
@@ -369,10 +387,10 @@ User clicks "Investigate Now" (or auto-investigate triggers)
 **Auto-investigate (extension-side):**
 
 ```
-After viewPost returns { investigationState: "NOT_INVESTIGATED", claims: null,
-                         priorInvestigationResult: { oldClaims, sourceInvestigationId } | null }
+After recordViewAndGetStatus returns { investigationState: "NOT_INVESTIGATED", claims: null,
+                                       priorInvestigationResult: ... | null }
   → If user OpenAI key exists and auto-investigate is enabled:
-      background worker calls investigateNow(...) and then polls for completion
+      background worker calls investigateNow({ postVersionId }) and then polls for completion
   → Result is cached locally when returned
 ```
 
@@ -409,10 +427,12 @@ post + content version.
 The cache is keyed by post + content version. On a view, the API checks for a
 completed investigation matching the current version.
 
-- **On every view**: The API records the latest observed post content/version, increments raw
-  viewCount, updates uniqueViewScore with capped credit rules, and then checks for cached results.
-- **Client input simplification**: the extension sends platform-observed content; the API computes
-  the version key internally.
+- **On every view**: `registerObservedVersion` resolves the content version and returns a
+  `postVersionId`; `recordViewAndGetStatus` increments raw viewCount, updates uniqueViewScore
+  with capped credit rules, and checks for cached results.
+- **Client input simplification**: the extension sends platform-observed content to
+  `registerObservedVersion`; the API computes the version key internally. Subsequent calls
+  (`recordViewAndGetStatus`, `investigateNow`) reference the resolved version by `postVersionId`.
 - **Hit**: Return claims. The view still increments the counter.
 - **Miss**: Return `{ investigationState: "NOT_INVESTIGATED", claims: null }` (optionally with
   `priorInvestigationResult` when a prior complete `SERVER_VERIFIED` investigation exists).
@@ -424,10 +444,10 @@ completed investigation matching the current version.
   interim via `priorInvestigationResult = { oldClaims, sourceInvestigationId }`.
   This is a temporary UI state only, does not count as a final cache hit, and does
   not by itself queue a new investigation run.
-- **Version key semantics**: In v1 the version key is derived from normalized text only. For
-  LessWrong, normalized text is derived server-side from `metadata.htmlContent`; for X/Substack it
-  is derived from `observedContentText`. Attached images are investigation context but are not part
-  of the version key.
+- **Version key semantics**: The version key (`versionHash`) is derived from both normalized text
+  and image occurrences: `sha256(contentHash + "\n" + occurrencesHash)`. For LessWrong and
+  Wikipedia, normalized text is derived server-side from canonical sources; for X/Substack it is
+  derived from `observedContentText`.
 - **Idempotent creation**: If a duplicate investigation is requested (same post + content version), reuse the
   existing row rather than creating a second one.
 - **Stale prompt**: If the investigation's prompt version doesn't match the current server prompt,
@@ -439,7 +459,7 @@ completed investigation matching the current version.
 One problem is how to verify the accuracy of the content that users send us
 from the browser extension. For some platforms this is easier than others; it's
 hard to cross-verify e.g. twitter posts, but it's easier to verify that a
-particular person indeed wrote a particular LessWrong/Substack post. The app
+particular person indeed wrote a particular LessWrong/Substack/Wikipedia article. The app
 only displays highlights for posts when their content/metadata matches, but
 verification is still necessary to support future endeavors like credibility
 scores.
@@ -473,14 +493,14 @@ consumers can apply their own trust policy.
 
 **Signal updates:** The raw signals change in two places:
 
-- **On `viewPost`**: when an authenticated user views a post with a client-fallback
+- **On `recordViewAndGetStatus`**: when an authenticated user views a post with a client-fallback
   investigation and submits matching content, corroboration credit is added for that reporter
   (duplicate submissions from the same reporter are ignored).
 - **On successful server-side fetch**: if a previously-failed server fetch later succeeds
-  (e.g., on a subsequent `viewPost` where the server retries) **and the server-computed content
-  version matches the investigation's version**, `contentProvenance` is updated to
-  `SERVER_VERIFIED` and `serverVerifiedAt` is set. If the versions differ, the existing
-  investigation is left unchanged — it was run against different content.
+  (e.g., on a subsequent `registerObservedVersion` where the server retries) **and the
+  server-computed content version matches the investigation's version**, `contentProvenance`
+  is updated to `SERVER_VERIFIED` and `serverVerifiedAt` is set. If the versions differ, the
+  existing investigation is left unchanged — it was run against different content.
 - **Interim display policy:** Interim reuse is only enabled when the prior completed investigation has
   `contentProvenance = "SERVER_VERIFIED"`. `CLIENT_FALLBACK` investigations are never reused as
   interim results on a new version.
@@ -536,7 +556,7 @@ Key design considerations for appeals:
   store appeal context. This preserves the transparency goal — anyone can see
   what the original pass found, what was appealed, and what the
   re-investigation concluded.
-- **The `@@unique([postId, contentHash])` constraint needs a discriminator.**
+- **The `@@unique([postVersionId])` constraint needs a discriminator.**
   The v1 schema enforces one investigation per content version. Appeals require
   allowing multiple investigations for the same content, distinguished by type
   (e.g., `ORIGINAL` vs `APPEAL`) or by a parent investigation reference.
@@ -573,11 +593,11 @@ and provider search indexes are time-varying.
 
 ## 2.13 Abuse Resistance
 
-`viewPost` is an unauthenticated write endpoint. Without mitigation, an
-attacker could inflate `uniqueViewScore` to prioritize arbitrary posts,
-fabricate post content that gets sent to the LLM, or DoS the API with junk
-views. Full rate limiting is out of scope for v1, but the following baseline
-measures are required:
+`registerObservedVersion` and `recordViewAndGetStatus` are unauthenticated
+write endpoints. Without mitigation, an attacker could inflate
+`uniqueViewScore` to prioritize arbitrary posts, fabricate post content that
+gets sent to the LLM, or DoS the API with junk views. Full rate limiting is
+out of scope for v1, but the following baseline measures are required:
 
 1. **Extension attestation signal (not authentication).** The extension includes an attestation
    signal generated from a bundled default secret (with an optional local override in extension
@@ -624,28 +644,28 @@ measures (proof-of-work, behavioral analysis) are planned for future versions.
 
 ### Post (shared base)
 
+`Post` is a thin identity record. Content versions, text, and investigation linkage
+flow through `PostVersion` (see §3.2.4).
+
 ```prisma
 model Post {
-  id              String          @id @default(cuid())
+  id              String   @id @default(cuid())
   platform        Platform
   externalId      String          // Platform's native ID
   url             String
   authorId        String?
-  author          Author?         @relation(fields: [authorId], references: [id])
-  viewCount       Int             @default(0) // Raw views (analytics)
-  uniqueViewScore Int             @default(0) // Capped selector score
+  author          Author?  @relation(fields: [authorId], references: [id])
+  viewCount       Int      @default(0) // Raw views (analytics)
+  uniqueViewScore Int      @default(0) // Capped selector score
   lastViewedAt    DateTime?
-  latestContentHash String?       // Best-available content hash (server-verified preferred; fallback client-observed)
-  latestContentText String?       // Best-available content text used for selection/investigation
-  latestServerVerifiedContentHash String? // Most recent content hash with SERVER_VERIFIED provenance
-  wordCount       Int             @default(0) // Computed on upsert from latestContentText. Posts >10000 words skipped by selector.
-  investigations  Investigation[]
+  versions        PostVersion[]
   viewCredits     PostViewCredit[]
   lesswrongMeta   LesswrongMeta?
   xMeta           XMeta?
   substackMeta    SubstackMeta?
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
+  wikipediaMeta   WikipediaMeta?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   @@unique([platform, externalId])
   @@index([viewCount])
@@ -671,6 +691,7 @@ enum Platform {
   LESSWRONG
   X
   SUBSTACK
+  WIKIPEDIA
   // Adding a platform: add a value here + a new *Meta model.
 }
 ```
@@ -743,6 +764,102 @@ model SubstackMeta {
 
   @@unique([publicationSubdomain, slug])
 }
+
+model WikipediaMeta {
+  postId         String    @id
+  post           Post      @relation(fields: [postId], references: [id])
+  pageId         String
+  language       String    // ISO 639 language code (e.g. "en", "de")
+  title          String    // Canonical page title (underscored form)
+  displayTitle   String?   // Human-readable title with formatting
+  revisionId     String    // MediaWiki revision ID observed by the extension
+  lastModifiedAt DateTime?
+  imageUrls      String[]
+
+  @@unique([language, pageId])
+}
+```
+
+### Content versioning
+
+Content text and image positions are stored in content-addressed tables, shared
+across `PostVersion` rows when identical. `PostVersion` is the central
+intermediary linking a `Post` to its `Investigation`: each version captures
+a snapshot of content + images + provenance, and at most one investigation may
+exist per version.
+
+```prisma
+model ContentBlob {
+  id          String   @id @default(cuid())
+  contentHash String   @unique    // SHA-256 of contentText
+  contentText String               // Normalized plain text
+  wordCount   Int                  // Computed on creation; posts >10000 words skipped by selector
+  createdAt   DateTime @default(now())
+
+  postVersions PostVersion[]
+}
+
+model ImageOccurrenceSet {
+  id              String   @id @default(cuid())
+  occurrencesHash String   @unique    // SHA-256 of sorted occurrence data, for dedup
+  createdAt       DateTime @default(now())
+
+  occurrences  ImageOccurrence[]
+  postVersions PostVersion[]
+}
+
+model ImageOccurrence {
+  id                   String             @id @default(cuid())
+  occurrenceSetId      String
+  occurrenceSet        ImageOccurrenceSet @relation(fields: [occurrenceSetId], references: [id], onDelete: Cascade)
+  originalIndex        Int                // 0-based ordinal position of the image in the page
+  normalizedTextOffset Int                // Character offset in the normalized content text
+  sourceUrl            String
+  captionText          String?
+  createdAt            DateTime           @default(now())
+
+  @@unique([occurrenceSetId, originalIndex])
+  @@index([occurrenceSetId, normalizedTextOffset, originalIndex])
+}
+
+model PostVersion {
+  id                   String             @id @default(cuid())
+  postId               String
+  post                 Post               @relation(fields: [postId], references: [id], onDelete: Cascade)
+  versionHash          String             // sha256(contentHash + "\n" + occurrencesHash)
+  contentBlobId        String
+  contentBlob          ContentBlob        @relation(fields: [contentBlobId], references: [id])
+  imageOccurrenceSetId String
+  imageOccurrenceSet   ImageOccurrenceSet @relation(fields: [imageOccurrenceSetId], references: [id])
+  contentProvenance    ContentProvenance
+  fetchFailureReason   String?            // Populated when provenance is CLIENT_FALLBACK
+  serverVerifiedAt     DateTime?          // Set when server-side fetch succeeds
+  firstSeenAt          DateTime           @default(now())
+  lastSeenAt           DateTime           @default(now())
+  seenCount            Int                @default(1)
+
+  investigation      Investigation?
+  versionViewCredits PostVersionViewCredit[]
+
+  @@unique([postId, versionHash])
+  @@unique([postId, contentBlobId, imageOccurrenceSetId])
+  @@index([postId, lastSeenAt])
+  @@index([postId, contentProvenance, lastSeenAt])
+}
+
+model PostVersionViewCredit {
+  id            String      @id @default(cuid())
+  postVersionId String
+  postVersion   PostVersion @relation(fields: [postVersionId], references: [id], onDelete: Cascade)
+  viewerKey     String
+  ipRangeKey    String
+  bucketDay     DateTime
+  createdAt     DateTime    @default(now())
+
+  @@unique([postVersionId, viewerKey, bucketDay])
+  @@index([postVersionId, bucketDay])
+  @@index([postVersionId, ipRangeKey, bucketDay])
+}
 ```
 
 ### Investigation & claims
@@ -758,35 +875,62 @@ model Prompt {
 }
 
 model Investigation {
-  id              String        @id @default(cuid())
-  postId          String
-  post            Post          @relation(fields: [postId], references: [id])
-  contentHash     String        // SHA-256 of normalized contentText
-  contentText     String        // Normalized plain text sent to LLM
-  contentProvenance ContentProvenance
-  fetchFailureReason String?    // Populated when provenance is CLIENT_FALLBACK
-  serverVerifiedAt DateTime?    // Set when server-side fetch succeeds (null until then)
-  status          CheckStatus
-  isUpdate        Boolean       @default(false) // True when this run updates an existing claim set after content edits
-  parentInvestigationId String?  // Prior completed investigation used as interim source
-  contentDiff     String?       // Line-oriented diff used for update-mode prompting
-  promptId        String
-  prompt          Prompt        @relation(fields: [promptId], references: [id])
-  provider        InvestigationProvider
-  model           InvestigationModel
-  modelVersion    String?       // Provider-reported model revision/version when available
-  parentInvestigation    Investigation?  @relation("InvestigationUpdateLineage", fields: [parentInvestigationId], references: [id])
-  updates                Investigation[] @relation("InvestigationUpdateLineage")
-  checkedAt       DateTime?
-  attempts        InvestigationAttempt[]
-  claims          Claim[]
-  images          InvestigationImage[]
-  corroborationCredits CorroborationCredit[]
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  id                    String                @id @default(cuid())
+  postVersionId         String
+  postVersion           PostVersion           @relation(fields: [postVersionId], references: [id])
+  parentInvestigationId String?               // Prior completed investigation for update lineage
+  parentInvestigation   Investigation?        @relation("InvestigationUpdateLineage", fields: [parentInvestigationId], references: [id])
+  contentDiff           String?               // Line-oriented diff used for update-mode prompting
+  status                CheckStatus
+  promptId              String
+  prompt                Prompt                @relation(fields: [promptId], references: [id])
+  provider              InvestigationProvider
+  model                 InvestigationModel
+  modelVersion          String?               // Provider-reported model revision/version when available
+  checkedAt             DateTime?             // Null until completion
+  run                   InvestigationRun?
+  attempts              InvestigationAttempt[]
+  updates               Investigation[]       @relation("InvestigationUpdateLineage")
+  claims                Claim[]
+  images                InvestigationImage[]
+  corroborationCredits  CorroborationCredit[]
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
 
-  @@unique([postId, contentHash])
-  @@index([postId, status])
+  @@unique([postVersionId])     // At most one investigation per content version
+  @@index([status])
+}
+
+model InvestigationRun {
+  id              String                        @id @default(cuid())
+  investigationId String                        @unique
+  investigation   Investigation                 @relation(fields: [investigationId], references: [id], onDelete: Cascade)
+  leaseOwner      String?                       // Worker identity holding the run
+  leaseExpiresAt  DateTime?                     // When the worker's lease expires
+  recoverAfterAt  DateTime?                     // Grace period before another worker can recover
+  queuedAt        DateTime?
+  startedAt       DateTime?
+  heartbeatAt     DateTime?
+  openAiKeySource InvestigationOpenAiKeySource?
+  createdAt       DateTime                      @default(now())
+  updatedAt       DateTime                      @updatedAt
+
+  @@index([leaseExpiresAt])
+  @@index([recoverAfterAt])
+}
+
+model InvestigationOpenAiKeySource {
+  runId      String           @id
+  run        InvestigationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  ciphertext String                        // AES-256-GCM encrypted user API key
+  iv         String
+  authTag    String
+  keyId      String                        // Identifies the encryption key version
+  expiresAt  DateTime                      // Short-lived lease; worker must start before expiry
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+
+  @@index([expiresAt])
 }
 
 model ImageBlob {
@@ -1059,13 +1203,20 @@ interface InvestigationResult {
 ## 3.3 API Endpoints (tRPC)
 
 ```typescript
-// Record a view. Returns cached results if they exist.
-// Upserts Post + platform metadata. Increments raw viewCount and updates uniqueViewScore.
-// Client sends platform-observed content; API computes hashes server-side.
-postRouter.viewPost
-  Input:  { platform, externalId, url, observedImageUrls?,
-            observedContentText?, // required for X/Substack; omitted for LessWrong
+// Register observed content version. Upserts Post + platform metadata. Resolves
+// canonical content via server-side verification (best effort) or client fallback.
+// Returns a postVersionId that subsequent calls use as a cheap PK reference.
+postRouter.registerObservedVersion
+  Input:  { platform, externalId, url, observedImageUrls?, observedImageOccurrences?,
+            observedContentText?, // required for X/Substack/Wikipedia; omitted for LessWrong
             metadata: { title?, authorName?, ... } }
+  Output: { platform, externalId, versionHash, postVersionId, provenance: ContentProvenance }
+
+// Record a view and return cached investigation status. Increments raw viewCount
+// and updates uniqueViewScore. Uses postVersionId from registerObservedVersion
+// for a direct primary-key lookup (no content re-derivation).
+postRouter.recordViewAndGetStatus
+  Input:  { postVersionId }
   Output:
     | { investigationState: "NOT_INVESTIGATED", claims: null,
         priorInvestigationResult: { oldClaims: Claim[], sourceInvestigationId: string } | null }
@@ -1087,24 +1238,33 @@ postRouter.getInvestigation
     | { investigationState: "INVESTIGATED", provenance: ContentProvenance,
         claims: Claim[], checkedAt: DateTime }
 
-// Request immediate investigation.
+// Request immediate investigation. Uses postVersionId from registerObservedVersion.
 // Authorization: instance API key OR request-scoped user OpenAI key (`x-openai-api-key`).
 // Rejects posts exceeding the word count limit (same 10,000-word cap as the selector).
 // Idempotent: if an investigation already exists for this content version, returns its
 // current status (which may be COMPLETE or FAILED, not just PENDING).
 // All paths are async queue-backed; user-key requests attach an encrypted short-lived lease.
 postRouter.investigateNow
-  Input:  { platform, externalId, url, observedImageUrls?,
-            observedContentText?, // required for X/Substack; omitted for LessWrong
-            metadata: { title?, authorName?, ... } }
+  Input:  { postVersionId }
   Output:
     | { investigationId, status: "PENDING" | "PROCESSING", provenance: ContentProvenance }
     | { investigationId, status: "FAILED", provenance: ContentProvenance }
     | { investigationId, status: "COMPLETE", provenance: ContentProvenance, claims: Claim[] }
 
+// Validate extension settings (API key, OpenAI key).
+postRouter.validateSettings
+  Input:  (none)
+  Output:
+    | { instanceApiKeyAccepted, openaiApiKeyStatus: "missing" }
+    | { instanceApiKeyAccepted, openaiApiKeyStatus: "valid" }
+    | { instanceApiKeyAccepted, openaiApiKeyStatus: "format_invalid" | "authenticated_restricted"
+        | "invalid" | "error", openaiApiKeyMessage }
+
 // Batch check (for listing pages — which posts have results?)
+// Uses composite key (platform + externalId + versionHash) because it serves
+// the public tRPC API and does not participate in the extension's PK-based flow.
 postRouter.batchStatus
-  Input:  { posts: { platform, externalId }[] }
+  Input:  { posts: { platform, externalId, versionHash }[] }
   Output: { statuses: (
               | { platform, externalId, investigationState: "NOT_INVESTIGATED", incorrectClaimCount: 0 }
               | { platform, externalId, investigationState: "INVESTIGATED", incorrectClaimCount }
@@ -1126,6 +1286,7 @@ enum Platform {
   LESSWRONG
   X
   SUBSTACK
+  WIKIPEDIA
 }
 
 enum ContentProvenance {
@@ -1259,76 +1420,83 @@ In v1, public metrics focus on incidence rather than truth-rate leaderboards:
 
 ## 3.5 Cache & Idempotency Implementation
 
-Cache lookup query:
+Investigations reference content versions via `postVersionId` FK to the `PostVersion` table.
+`PostVersion` stores the `versionHash`, `contentBlobId` (normalized text), and
+`imageOccurrenceSetId`. The `Investigation` table is unique on `postVersionId` —
+at most one investigation per content version.
+
+Cache lookup query (completed investigation for a given post version):
 
 ```sql
 SELECT *
 FROM "Investigation"
-WHERE "postId" = $1 AND "contentHash" = $2 AND "status" = 'COMPLETE'
+WHERE "postVersionId" = $1 AND "status" = 'COMPLETE'
 LIMIT 1;
 ```
 
-Interim update candidate query:
+Interim update candidate query (latest complete server-verified investigation for a post):
 
 ```sql
-SELECT *
-FROM "Investigation"
-WHERE "postId" = $1
-  AND "status" = 'COMPLETE'
-  AND "contentProvenance" = 'SERVER_VERIFIED'
-ORDER BY "checkedAt" DESC
+SELECT i.*
+FROM "Investigation" i
+JOIN "PostVersion" pv ON pv."id" = i."postVersionId"
+WHERE pv."postId" = $1
+  AND i."status" = 'COMPLETE'
+  AND pv."contentProvenance" = 'SERVER_VERIFIED'
+ORDER BY i."checkedAt" DESC
 LIMIT 1;
 ```
 
 SQL examples in this document target Prisma's default quoted identifiers (`"Post"`,
-`"Investigation"`, camelCase column names). If you use `@map`/`@@map`, adjust queries accordingly.
+`"PostVersion"`, `"Investigation"`, camelCase column names). If you use `@map`/`@@map`,
+adjust queries accordingly.
 
-Idempotent creation uses `INSERT ... ON CONFLICT ("postId", "contentHash") DO NOTHING` and then
-fetches the row ID. This prevents duplicate investigations under concurrency.
+Idempotent creation uses upsert semantics on `(postId, versionHash)` in `PostVersion` and
+uniqueness on `postVersionId` in `Investigation` to prevent duplicates under concurrency.
 
 ## 3.6 Investigation Selector Queries
 
+The selector picks the most recently seen `PostVersion` per post, joins to
+`ContentBlob` for word-count filtering, and left-joins `Investigation` +
+`InvestigationRun` to find versions that are either uninvestigated or stuck in
+a recoverable pending/processing state.
+
 ```sql
--- Select posts with the highest capped unique-view score that have no investigation
--- for their current content version.
-SELECT p."id", p."uniqueViewScore", p."latestContentHash", p."latestContentText"
-FROM "Post" p
-WHERE p."latestContentHash" IS NOT NULL
-  AND p."wordCount" <= 10000
-  AND NOT EXISTS (
-    SELECT 1 FROM "Investigation" i
-    WHERE i."postId" = p."id"
-      AND i."contentHash" = p."latestContentHash"
+-- Select candidate post versions for investigation, ordered by unique-view score.
+WITH latest_versions AS (
+  SELECT DISTINCT ON (pv."postId")
+    pv."id" AS "postVersionId",
+    pv."postId",
+    pv."contentBlobId",
+    pv."lastSeenAt"
+  FROM "PostVersion" pv
+  ORDER BY pv."postId", pv."lastSeenAt" DESC, pv."id" DESC
+)
+SELECT
+  lv."postVersionId",
+  i."id" AS "investigationId",
+  i."status" AS "investigationStatus",
+  r."id" AS "runId",
+  r."leaseOwner",
+  r."leaseExpiresAt",
+  r."recoverAfterAt"
+FROM latest_versions lv
+JOIN "Post" p ON p."id" = lv."postId"
+JOIN "ContentBlob" cb ON cb."id" = lv."contentBlobId"
+LEFT JOIN "Investigation" i ON i."postVersionId" = lv."postVersionId"
+LEFT JOIN "InvestigationRun" r ON r."investigationId" = i."id"
+WHERE cb."wordCount" <= 10000
+  AND (
+    i."id" IS NULL                          -- no investigation yet
+    OR i."status" = 'PENDING'               -- pending (may need run)
+    OR (i."status" = 'PROCESSING' AND ...)  -- stuck processing (lease/recovery expired)
   )
 ORDER BY p."uniqueViewScore" DESC
 LIMIT :budget;
 ```
 
-```sql
--- Enqueue idempotently (race-safe under concurrency)
-WITH candidates AS (
-  SELECT p."id", p."latestContentHash", p."latestContentText", p."uniqueViewScore"
-  FROM "Post" p
-  WHERE p."latestContentHash" IS NOT NULL
-    AND p."wordCount" <= 10000
-    AND NOT EXISTS (
-      SELECT 1 FROM "Investigation" i
-      WHERE i."postId" = p."id"
-        AND i."contentHash" = p."latestContentHash"
-    )
-  ORDER BY p."uniqueViewScore" DESC
-  LIMIT :budget
-)
-INSERT INTO "Investigation" (
-  "postId", "contentHash", "contentText", "status", "contentProvenance",
-  "promptId", "provider", "model"
-)
-SELECT
-  c."id", c."latestContentHash", c."latestContentText", 'PENDING', :content_provenance,
-  :prompt_id, :provider, :model
-FROM candidates c
-ON CONFLICT ("postId", "contentHash") DO NOTHING;
-```
+Each candidate is then passed to `ensureInvestigationQueued({ postVersionId, promptId })`
+which handles idempotent creation of the `Investigation` row and job enqueueing.
 
 ## 3.7 Job Queue
 
@@ -1338,8 +1506,8 @@ User-key requests attach an encrypted short-lived lease for worker-side credenti
 
 ```
 Investigation selected (by selector or any investigateNow request)
-  → INSERT INTO "Investigation" (...) ON CONFLICT ("postId", "contentHash") DO NOTHING
-  → If conflict: reuse existing investigation row and do not enqueue duplicate work
+  → Upsert investigation for postVersionId (idempotent: one investigation per content version)
+  → If already exists: reuse existing investigation row and do not enqueue duplicate work
   → Worker picks up job → UPDATE status = PROCESSING
   → Worker calls Investigator.investigate()
   → On success: UPDATE status = COMPLETE
@@ -1358,7 +1526,7 @@ Failure classes:
 If a user-key lease is missing/expired when the worker starts, the run fails and
 requires an explicit user re-request.
 
-`FAILED` is terminal for a given `(postId, contentHash)` in v1. Re-running that exact content
+`FAILED` is terminal for a given `postVersionId` in v1. Re-running that exact content
 version requires an explicit operator/admin action (e.g., reset status or delete/recreate row),
 not automatic selector retries.
 ```
@@ -1377,6 +1545,13 @@ interface PlatformAdapter {
   platformKey: string;
 }
 
+interface ImageOccurrence {
+  originalIndex: number;        // 0-based ordinal position of the image in the page
+  normalizedTextOffset: number; // Character offset in the normalized content text
+  sourceUrl: string;
+  captionText?: string;
+}
+
 interface PlatformContent {
   platform: Platform;
   externalId: string;
@@ -1384,6 +1559,7 @@ interface PlatformContent {
   contentText: string; // Client-observed normalized plain text; must be non-empty
   mediaState: "text_only" | "has_images" | "has_video"; // "has_video" means video/iframe detected and imageUrls is empty; text may still be present.
   imageUrls: string[];
+  imageOccurrences?: ImageOccurrence[]; // Positional image data; sent to API as observedImageOccurrences
   metadata: Record<string, unknown>;
 }
 ```
@@ -1458,62 +1634,65 @@ only `has_video` tweets (video present, no extracted images, even when tweet tex
    (`post_preview/{numericId}/twitter.jpg` pattern).
 4. Content root selector: `.body.markup`.
 5. Subscriber-only/paywalled views are skipped (`reason: "private_or_gated"`) and are not sent
-   to `viewPost`/`investigateNow`.
+   to `registerObservedVersion`/`recordViewAndGetStatus`/`investigateNow`.
 
 Because custom-domain Substack publishers can use arbitrary hostnames, the extension cannot
 pre-enumerate all required origins in the manifest. v1 therefore keeps broad host permissions
 and applies strict runtime checks before injection (path must be `/p/*` and Substack fingerprint
 must be present). This is an intentional tradeoff for custom-domain support.
 
-## 3.12 Extension Manifest (v3)
+## 3.12 Wikipedia Content Script
 
-```jsonc
-{
-  "manifest_version": 3,
-  "name": "OpenErrata",
-  "version": "0.1.0",
-  "description": "Fact-check LessWrong, X, and Substack posts with AI-powered claim verification.",
-  "permissions": ["activeTab", "storage", "scripting", "webNavigation", "alarms"],
-  "host_permissions": [
-    "https://*/*",
-    "http://*/*",
-  ],
-  "background": {
-    "service_worker": "src/background/index.ts",
-    "type": "module",
-  },
-  "content_scripts": [
-    {
-      "matches": ["https://www.lesswrong.com/*", "https://lesswrong.com/*"],
-      "js": ["src/content/main.ts"],
-      "css": ["src/content/annotations.css"],
-      "run_at": "document_idle",
-    },
-    {
-      "matches": ["https://x.com/*", "https://twitter.com/*"],
-      "js": ["src/content/main.ts"],
-      "css": ["src/content/annotations.css"],
-      "run_at": "document_idle",
-    },
-    {
-      "matches": ["https://*.substack.com/p/*"],
-      "js": ["src/content/main.ts"],
-      "css": ["src/content/annotations.css"],
-      "run_at": "document_idle",
-    },
-  ],
-  "action": {
-    "default_popup": "src/popup/index.html",
-    "default_icon": {
-      "16": "icons/icon-16.png",
-      "48": "icons/icon-48.png",
-      "128": "icons/icon-128.png",
-    },
-  },
-}
-```
+Wikipedia articles are served as static HTML with MediaWiki metadata available via
+JavaScript globals (`mw.config`).
 
-## 3.13 Project Layout
+1. Declarative injection on `*.wikipedia.org/wiki/*` and `*.wikipedia.org/w/index.php*`.
+   The `*.wikipedia.org` wildcard covers all language subdomains.
+2. `externalId` is `{language}:{pageId}` (e.g. `en:12345`), derived from `wgArticleId`
+   and the hostname language code.
+3. The adapter reads MediaWiki config values (`wgArticleId`, `wgRevisionId`,
+   `wgNamespaceNumber`, `wgPageName`, `wgRevisionTimestamp`) and filters out
+   non-article namespaces (namespace !== 0).
+4. Content root: `#mw-content-text .mw-parser-output`. Excluded sections
+   (References, External links, See also, Further reading, Notes, Bibliography)
+   and non-article elements (navboxes, infobox metadata, edit links, etc.) are
+   pruned before text extraction.
+5. Server-side canonical fetch uses the MediaWiki `action=parse` API pinned to
+   the observed `revisionId`, ensuring content verification matches exactly the
+   revision the user saw.
+6. Wikipedia articles have no single author; no `Author` row is linked.
+
+**Media behavior:** Same rules as other platforms — extract image URLs and
+occurrences from the article body; `has_video` articles are skipped.
+
+## 3.13 Extension Manifest (v3)
+
+The canonical manifest is `extension/src/manifest.json`. This section documents
+the design decisions rather than duplicating the file.
+
+**Required permissions:** `activeTab`, `storage`, `scripting`, `webNavigation`, `alarms`.
+
+**Host permissions:** Broad (`https://*/*`, `http://*/*`). Required because
+custom-domain Substack publishers use arbitrary hostnames that cannot be
+pre-enumerated (see §3.11). Runtime checks restrict actual injection to
+recognized platforms.
+
+**Content script injection strategy:**
+
+| Platform   | Injection        | Match patterns                                                     |
+| ---------- | ---------------- | ------------------------------------------------------------------ |
+| LessWrong  | Declarative      | `lesswrong.com/*`                                                  |
+| X          | Declarative      | `x.com/*`, `twitter.com/*`                                        |
+| Substack   | Declarative + dynamic | `*.substack.com/p/*` (declarative); custom domains via `chrome.scripting` after fingerprint check |
+| Wikipedia  | Declarative      | `*.wikipedia.org/wiki/*`, `*.wikipedia.org/w/index.php*`          |
+
+All declarative entries inject the same content script and annotation CSS at
+`document_idle`. Dynamic injection (Substack custom domains) uses the same
+assets via `chrome.scripting.executeScript` / `chrome.scripting.insertCSS`.
+
+**Background:** Module service worker (Chrome MV3); IIFE fallback for Firefox.
+
+## 3.14 Project Layout
 
 ```
 openerrata/
@@ -1544,6 +1723,9 @@ openerrata/
 │       │   │   │   ├── adapters/      # Platform adapters (one per site)
 │       │   │   │   │   ├── lesswrong.ts
 │       │   │   │   │   ├── x.ts
+│       │   │   │   │   ├── substack.ts
+│       │   │   │   │   ├── wikipedia.ts
+│       │   │   │   │   ├── utils.ts   # Shared extraction helpers (image occurrences)
 │       │   │   │   │   └── index.ts   # Registry
 │       │   │   │   ├── annotator.ts   # Annotation rendering
 │       │   │   │   ├── dom-mapper.ts  # Claim text → DOM ranges

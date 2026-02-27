@@ -2,9 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { parseEnvironmentValues } from "../../src/lib/config/env.js";
 
-function createBaseEnvironment(
-  overrides: Partial<NodeJS.ProcessEnv> = {},
-): NodeJS.ProcessEnv {
+function createBaseEnvironment(overrides: Partial<NodeJS.ProcessEnv> = {}): NodeJS.ProcessEnv {
   return {
     DATABASE_URL: "postgresql://openerrata:openerrata_dev@localhost:5433/openerrata",
     HMAC_SECRET: "test-hmac-secret",
@@ -84,8 +82,5 @@ test("accepts s3-compatible blob storage with endpoint and region", () => {
   );
   assert.equal(environment.BLOB_STORAGE_PROVIDER, "s3_compatible");
   assert.equal(environment.BLOB_STORAGE_REGION, "auto");
-  assert.equal(
-    environment.BLOB_STORAGE_ENDPOINT,
-    "https://example.r2.cloudflarestorage.com",
-  );
+  assert.equal(environment.BLOB_STORAGE_ENDPOINT, "https://example.r2.cloudflarestorage.com");
 });

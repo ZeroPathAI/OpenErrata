@@ -86,12 +86,7 @@ type PageSnapshot =
     };
 
 function pageKeyFor(content: PlatformContent): string {
-  return [
-    content.platform,
-    content.externalId,
-    content.mediaState,
-    content.contentText,
-  ].join(":");
+  return [content.platform, content.externalId, content.mediaState, content.contentText].join(":");
 }
 
 function pageLocatorForSessionKey(url: string): string {
@@ -108,7 +103,7 @@ function inferIdentityForSkippedPage(
   adapter: PlatformAdapter,
 ): { platform: Platform; externalId: string } | null {
   const supportedIdentity = parseSupportedPageIdentity(url);
-  if (supportedIdentity) {
+  if (supportedIdentity !== null) {
     return supportedIdentity;
   }
 
@@ -119,7 +114,7 @@ function inferIdentityForSkippedPage(
   try {
     const parsed = new URL(url);
     const match = parsed.pathname.match(SUBSTACK_POST_PATH_REGEX);
-    if (!match?.[1]) {
+    if (match?.[1] === undefined || match[1].length === 0) {
       return null;
     }
     return {
@@ -173,10 +168,7 @@ function scrollToClaimRange(range: Range): boolean {
   return true;
 }
 
-function areClaimsEqual(
-  left: InvestigationClaim[],
-  right: InvestigationClaim[],
-): boolean {
+function areClaimsEqual(left: InvestigationClaim[], right: InvestigationClaim[]): boolean {
   if (left.length !== right.length) return false;
 
   for (const [index, leftClaim] of left.entries()) {
@@ -210,9 +202,7 @@ function areClaimsEqual(
   return true;
 }
 
-function extractDisplayClaimsFromViewPost(
-  viewPost: ViewPostOutput,
-): InvestigationClaim[] {
+function extractDisplayClaimsFromViewPost(viewPost: ViewPostOutput): InvestigationClaim[] {
   if (viewPost.investigationState === "INVESTIGATED") {
     return viewPost.claims;
   }
@@ -270,16 +260,14 @@ export class PageSessionController {
     if (this.#booted) return;
     this.#booted = true;
 
-    this.#cachedStatusUnsubscribe = this.#sync.installCachedStatusListener(
-      () => {
-        void this.#syncStatusFromBackgroundCache().catch((error: unknown) => {
-          if (isExtensionContextInvalidatedError(error)) {
-            return;
-          }
-          console.error("Failed to sync background status:", error);
-        });
-      },
-    );
+    this.#cachedStatusUnsubscribe = this.#sync.installCachedStatusListener(() => {
+      void this.#syncStatusFromBackgroundCache().catch((error: unknown) => {
+        if (isExtensionContextInvalidatedError(error)) {
+          return;
+        }
+        console.error("Failed to sync background status:", error);
+      });
+    });
 
     this.#observer.start();
     this.scheduleRefresh();
@@ -366,9 +354,7 @@ export class PageSessionController {
       return focusClaimResponseSchema.parse({ ok: false });
     }
 
-    const claim = this.#annotations
-      .getClaims()
-      .find((candidate) => candidate.id === claimId);
+    const claim = this.#annotations.getClaims().find((candidate) => candidate.id === claimId);
     if (!claim) {
       return focusClaimResponseSchema.parse({ ok: false });
     }
@@ -438,10 +424,7 @@ export class PageSessionController {
   #scheduleSyncRetry(sessionKey: string): void {
     this.#pendingSyncRetrySessionKey = sessionKey;
     const retryDelayMs = this.#nextSyncRetryDelayMs;
-    this.#nextSyncRetryDelayMs = Math.min(
-      this.#nextSyncRetryDelayMs * 2,
-      SYNC_RETRY_MAX_MS,
-    );
+    this.#nextSyncRetryDelayMs = Math.min(this.#nextSyncRetryDelayMs * 2, SYNC_RETRY_MAX_MS);
     this.scheduleRefresh(retryDelayMs);
   }
 
@@ -620,10 +603,7 @@ export class PageSessionController {
     };
   }
 
-  async #syncTrackedSnapshot(
-    tabSessionId: number,
-    snapshot: TrackedPostSnapshot,
-  ): Promise<void> {
+  async #syncTrackedSnapshot(tabSessionId: number, snapshot: TrackedPostSnapshot): Promise<void> {
     let viewPost: Awaited<ReturnType<ContentSyncClient["sendPageContent"]>>;
     try {
       viewPost = await this.#sync.sendPageContent(tabSessionId, snapshot.content);
@@ -642,10 +622,7 @@ export class PageSessionController {
         this.#resetSyncRetryState();
         this.#annotations.clearAll();
         this.#syncCachedFailureStatus();
-        console.warn(
-          "Page content request exceeded API body size limit; skipping retries.",
-          error,
-        );
+        console.warn("Page content request exceeded API body size limit; skipping retries.", error);
         return;
       }
       if (isExtensionContextInvalidatedError(error)) {
@@ -761,10 +738,7 @@ export class PageSessionController {
   #isCurrentSessionPostStatus(
     status: ParsedExtensionPageStatus | null,
   ): status is Extract<ParsedExtensionPageStatus, { kind: "POST" }> {
-    if (
-      status?.kind !== "POST" ||
-      this.#state.kind !== "TRACKED_POST"
-    ) {
+    if (status?.kind !== "POST" || this.#state.kind !== "TRACKED_POST") {
       return false;
     }
 

@@ -9,9 +9,7 @@ const manager = createQueueManager(() =>
   }),
 );
 
-export async function enqueueInvestigationRun(
-  runId: string,
-): Promise<void> {
+export async function enqueueInvestigationRun(runId: string): Promise<void> {
   const utils = await manager.acquire();
   await utils.addJob(
     "investigate",

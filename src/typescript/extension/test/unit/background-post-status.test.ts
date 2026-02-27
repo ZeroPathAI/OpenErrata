@@ -47,7 +47,7 @@ test("createPostStatusFromInvestigation maps completed investigation to INVESTIG
     pageUrl: "https://www.lesswrong.com/posts/lw-3/example",
     investigationState: "INVESTIGATED",
     provenance: "SERVER_VERIFIED",
-    claims: null,
+    claims: [],
   });
 
   assert.equal(status.investigationState, "INVESTIGATED");

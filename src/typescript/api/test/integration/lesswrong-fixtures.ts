@@ -147,21 +147,15 @@ export async function readLesswrongFixture(fixtureKey: string): Promise<Lesswron
   return record;
 }
 
-export function resolveLesswrongFixtureDefinition(
-  fixtureKey: string,
-): LesswrongFixtureDefinition {
+export function resolveLesswrongFixtureDefinition(fixtureKey: string): LesswrongFixtureDefinition {
   if (!Object.hasOwn(INTEGRATION_LESSWRONG_FIXTURE_DEFINITIONS, fixtureKey)) {
-    const knownFixtureKeys = Object.keys(
-      INTEGRATION_LESSWRONG_FIXTURE_DEFINITIONS,
-    ).join(", ");
+    const knownFixtureKeys = Object.keys(INTEGRATION_LESSWRONG_FIXTURE_DEFINITIONS).join(", ");
     throw new Error(
       `Unknown LessWrong fixture key "${fixtureKey}". Known keys: ${knownFixtureKeys}.`,
     );
   }
 
-  return INTEGRATION_LESSWRONG_FIXTURE_DEFINITIONS[
-    fixtureKey as IntegrationLesswrongFixtureKey
-  ];
+  return INTEGRATION_LESSWRONG_FIXTURE_DEFINITIONS[fixtureKey as IntegrationLesswrongFixtureKey];
 }
 
 async function writeLesswrongFixture(fixture: LesswrongFixture): Promise<void> {
@@ -222,7 +216,7 @@ export async function fetchLesswrongHtmlFromLive(externalId: string): Promise<st
 
   const payload: unknown = await response.json();
   const html = extractLesswrongHtml(payload);
-  if (!html) {
+  if (html === null || html.length === 0) {
     throw new Error(`Could not extract html for LessWrong post ${externalId}.`);
   }
   return html;

@@ -3,9 +3,7 @@ import {
   extensionRuntimeErrorResponseSchema,
 } from "@openerrata/shared";
 
-type ExtensionRuntimeErrorResponse = ReturnType<
-  typeof extensionRuntimeErrorResponseSchema.parse
->;
+type ExtensionRuntimeErrorResponse = ReturnType<typeof extensionRuntimeErrorResponseSchema.parse>;
 
 type ProtocolMessageEnvelope = {
   type: unknown;
@@ -13,12 +11,7 @@ type ProtocolMessageEnvelope = {
 };
 
 function isProtocolMessageEnvelope(message: unknown): message is ProtocolMessageEnvelope {
-  return (
-    typeof message === "object" &&
-    message !== null &&
-    "type" in message &&
-    "v" in message
-  );
+  return typeof message === "object" && message !== null && "type" in message && "v" in message;
 }
 
 export function unsupportedProtocolVersionResponse(

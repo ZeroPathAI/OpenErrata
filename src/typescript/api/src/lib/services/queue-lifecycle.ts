@@ -25,8 +25,7 @@ export const QUEUE_ERROR_CODES = {
   RELEASE_FAILED: "QUEUE_RELEASE_FAILED",
 } as const;
 
-export type QueueErrorCode =
-  (typeof QUEUE_ERROR_CODES)[keyof typeof QUEUE_ERROR_CODES];
+export type QueueErrorCode = (typeof QUEUE_ERROR_CODES)[keyof typeof QUEUE_ERROR_CODES];
 
 class QueueLifecycleError extends Error {
   constructor(
@@ -47,21 +46,13 @@ export class QueueClosedError extends QueueLifecycleError {
 
 export class QueueConnectError extends QueueLifecycleError {
   constructor(cause: unknown) {
-    super(
-      QUEUE_ERROR_CODES.CONNECT_FAILED,
-      "Queue utilities failed to initialize",
-      { cause },
-    );
+    super(QUEUE_ERROR_CODES.CONNECT_FAILED, "Queue utilities failed to initialize", { cause });
   }
 }
 
 export class QueueReleaseError extends QueueLifecycleError {
   constructor(cause: unknown) {
-    super(
-      QUEUE_ERROR_CODES.RELEASE_FAILED,
-      "Queue utilities failed to release",
-      { cause },
-    );
+    super(QUEUE_ERROR_CODES.RELEASE_FAILED, "Queue utilities failed to release", { cause });
   }
 }
 
@@ -156,9 +147,7 @@ export function createQueueManager<T extends Releasable>(
     }
   }
 
-  async function awaitInitThenClose(
-    initPromise: Promise<T>,
-  ): Promise<void> {
+  async function awaitInitThenClose(initPromise: Promise<T>): Promise<void> {
     let utils: T;
     try {
       utils = await initPromise;

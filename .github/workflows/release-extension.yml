@@ -10,13 +10,27 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  build-and-test:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     defaults:
       run:
         working-directory: src/typescript
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -36,6 +50,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Install Playwright Chromium
+        run: pnpm --filter @openerrata/extension exec playwright install --with-deps chromium
+
       - name: Generate Prisma client
         run: pnpm db:generate
 
@@ -43,10 +60,13 @@ jobs:
         run: pnpm typecheck
 
       - name: Lint and dead-code checks
-        run: pnpm lint && pnpm knip
+        run: pnpm lint && pnpm knip && pnpm format:check
 
-      - name: Run extension tests
-        run: pnpm run test:unit:shared && pnpm run test:unit:extension
+      - name: Run full test suite
+        run: pnpm test
+
+      - name: Run coverage checks
+        run: pnpm test:coverage
 
       - name: Build extension
         run: pnpm --filter @openerrata/extension build
@@ -61,28 +81,85 @@ jobs:
             echo "version=$(date +%Y%m%d)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Package extension zip
+      - name: Package Chrome extension zip
         run: |
           cd extension/dist
-          zip -r "$GITHUB_WORKSPACE/openerrata-extension-${{ steps.version.outputs.version }}.zip" .
+          zip -r "$GITHUB_WORKSPACE/openerrata-extension-chrome-${{ steps.version.outputs.version }}.zip" .
 
-      - name: Create GitHub Release
-        if: github.ref_type == 'tag'
-        uses: softprops/action-gh-release@v2
-        with:
-          files: openerrata-extension-${{ steps.version.outputs.version }}.zip
-          generate_release_notes: true
+      - name: Package Firefox extension zip
+        run: |
+          cd extension/dist/firefox
+          zip -r "$GITHUB_WORKSPACE/openerrata-extension-firefox-${{ steps.version.outputs.version }}.zip" .
 
-      - name: Upload artifact (non-tag builds)
-        if: github.ref_type != 'tag'
+      - name: Enforce bundle size hard limit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          chrome_zip="$GITHUB_WORKSPACE/openerrata-extension-chrome-${{ steps.version.outputs.version }}.zip"
+          firefox_zip="$GITHUB_WORKSPACE/openerrata-extension-firefox-${{ steps.version.outputs.version }}.zip"
+          limit_bytes=5242880
+
+          chrome_bytes="$(stat -c%s "$chrome_zip")"
+          firefox_bytes="$(stat -c%s "$firefox_zip")"
+
+          if [ "$chrome_bytes" -gt "$limit_bytes" ]; then
+            echo "Chrome zip exceeds 5 MiB: ${chrome_bytes} bytes"
+            exit 1
+          fi
+
+          if [ "$firefox_bytes" -gt "$limit_bytes" ]; then
+            echo "Firefox zip exceeds 5 MiB: ${firefox_bytes} bytes"
+            exit 1
+          fi
+
+      - name: Verify Firefox zip integrity
+        run: unzip -t "$GITHUB_WORKSPACE/openerrata-extension-firefox-${{ steps.version.outputs.version }}.zip"
+
+      - name: Lint Firefox extension package
+        run: npx -y web-ext@8.9.0 lint --source-dir extension/dist/firefox
+
+      - name: Upload packaged zips
         uses: actions/upload-artifact@v4
         with:
-          name: openerrata-extension-${{ steps.version.outputs.version }}
-          path: openerrata-extension-${{ steps.version.outputs.version }}.zip
+          name: openerrata-extension-zips-${{ steps.version.outputs.version }}
+          path: |
+            ${{ github.workspace }}/openerrata-extension-chrome-${{ steps.version.outputs.version }}.zip
+            ${{ github.workspace }}/openerrata-extension-firefox-${{ steps.version.outputs.version }}.zip
+
+  release:
+    needs: [build-and-test]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download packaged zips
+        uses: actions/download-artifact@v4
+        with:
+          name: openerrata-extension-zips-${{ needs.build-and-test.outputs.version }}
+          path: .
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            openerrata-extension-chrome-${{ needs.build-and-test.outputs.version }}.zip
+            openerrata-extension-firefox-${{ needs.build-and-test.outputs.version }}.zip
+          generate_release_notes: true
+
+  publish:
+    needs: [build-and-test, release]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    environment: extension-store-publish
+    steps:
+      - name: Download packaged zips
+        uses: actions/download-artifact@v4
+        with:
+          name: openerrata-extension-zips-${{ needs.build-and-test.outputs.version }}
+          path: .
 
       - name: Publish to Chrome Web Store
         if: >-
-          github.ref_type == 'tag' &&
           env.CHROME_EXTENSION_ID != '' &&
           env.CHROME_CLIENT_ID != '' &&
           env.CHROME_CLIENT_SECRET != '' &&
@@ -94,9 +171,25 @@ jobs:
           CHROME_REFRESH_TOKEN: ${{ secrets.CHROME_REFRESH_TOKEN }}
         run: |
           npx -y chrome-webstore-upload-cli@3 upload \
-            --source "$GITHUB_WORKSPACE/openerrata-extension-${{ steps.version.outputs.version }}.zip" \
+            --source "openerrata-extension-chrome-${{ needs.build-and-test.outputs.version }}.zip" \
             --extension-id "$CHROME_EXTENSION_ID" \
             --client-id "$CHROME_CLIENT_ID" \
             --client-secret "$CHROME_CLIENT_SECRET" \
             --refresh-token "$CHROME_REFRESH_TOKEN" \
             --auto-publish
+
+      - name: Publish to Firefox Add-ons
+        if: >-
+          env.FIREFOX_JWT_ISSUER != '' &&
+          env.FIREFOX_JWT_SECRET != ''
+        env:
+          FIREFOX_JWT_ISSUER: ${{ secrets.FIREFOX_JWT_ISSUER }}
+          FIREFOX_JWT_SECRET: ${{ secrets.FIREFOX_JWT_SECRET }}
+        run: |
+          mkdir -p firefox-upload
+          unzip -q "openerrata-extension-firefox-${{ needs.build-and-test.outputs.version }}.zip" -d firefox-upload
+          npx -y web-ext@8.9.0 sign \
+            --source-dir firefox-upload \
+            --api-key "$FIREFOX_JWT_ISSUER" \
+            --api-secret "$FIREFOX_JWT_SECRET" \
+            --channel listed

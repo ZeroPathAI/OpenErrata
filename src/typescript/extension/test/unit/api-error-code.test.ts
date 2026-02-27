@@ -31,6 +31,24 @@ test("extractApiErrorCode reads openerrataCode from nested shape data", () => {
   );
 });
 
+test("extractApiErrorCode maps data.httpStatus=413 to PAYLOAD_TOO_LARGE", () => {
+  assert.equal(
+    extractApiErrorCode({
+      data: { httpStatus: 413 },
+    }),
+    "PAYLOAD_TOO_LARGE",
+  );
+});
+
+test("extractApiErrorCode maps meta.response.status=413 to PAYLOAD_TOO_LARGE", () => {
+  assert.equal(
+    extractApiErrorCode({
+      meta: { response: { status: 413 } },
+    }),
+    "PAYLOAD_TOO_LARGE",
+  );
+});
+
 test("extractApiErrorCode walks cause chain", () => {
   const nested = {
     cause: {

@@ -17,10 +17,7 @@ const startupCheckPolicyByComponent: Record<StartupComponent, StartupCheckPolicy
 
 const startupCheckPromises = new Map<string, Promise<void>>();
 
-function startupCheckKey(
-  component: StartupComponent,
-  policy: StartupCheckPolicy,
-): string {
+function startupCheckKey(component: StartupComponent, policy: StartupCheckPolicy): string {
   return [
     component,
     policy.checkDatabase ? "db:1" : "db:0",
@@ -32,10 +29,7 @@ async function assertDatabaseCredentials(component: StartupComponent): Promise<v
   try {
     await getPrisma().$queryRaw`SELECT 1`;
   } catch (error) {
-    throw new Error(
-      `[startup:${component}] Database credential check failed`,
-      { cause: error },
-    );
+    throw new Error(`[startup:${component}] Database credential check failed`, { cause: error });
   }
 }
 
@@ -44,10 +38,7 @@ async function assertOpenAiCredentials(component: StartupComponent): Promise<voi
     const client = new OpenAI({ apiKey: requireOpenAiApiKey() });
     await client.models.list();
   } catch (error) {
-    throw new Error(
-      `[startup:${component}] OpenAI credential check failed`,
-      { cause: error },
-    );
+    throw new Error(`[startup:${component}] OpenAI credential check failed`, { cause: error });
   }
 }
 

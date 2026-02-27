@@ -8,10 +8,7 @@ export interface ExtensionSettings {
   hmacSecret: string;
 }
 
-const LOCAL_DEV_HOSTNAMES = new Set([
-  "localhost",
-  "host.docker.internal",
-]);
+const LOCAL_DEV_HOSTNAMES = new Set(["localhost", "host.docker.internal"]);
 
 export const API_BASE_URL_REQUIREMENTS_MESSAGE =
   "API Server URL must use HTTPS. HTTP is allowed only for localhost and private-network development addresses.";
@@ -36,9 +33,7 @@ export type StoredSettings = Partial<Record<(typeof SETTINGS_KEYS)[number], unkn
 
 function normalizeIpLiteralHost(hostname: string): string {
   const unwrapped =
-    hostname.startsWith("[") && hostname.endsWith("]")
-      ? hostname.slice(1, -1)
-      : hostname;
+    hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
   const zoneIndex = unwrapped.indexOf("%");
   if (zoneIndex === -1) {
     return unwrapped;
@@ -132,9 +127,7 @@ function normalizeHmacSecret(value: unknown): string {
 
 export function normalizeExtensionSettings(stored: StoredSettings): ExtensionSettings {
   return {
-    apiBaseUrl:
-      normalizeApiBaseUrl(stored.apiBaseUrl) ??
-      DEFAULT_EXTENSION_SETTINGS.apiBaseUrl,
+    apiBaseUrl: normalizeApiBaseUrl(stored.apiBaseUrl) ?? DEFAULT_EXTENSION_SETTINGS.apiBaseUrl,
     apiKey: normalizeApiKey(stored.apiKey),
     openaiApiKey: normalizeOpenaiApiKey(stored.openaiApiKey),
     autoInvestigate: normalizeAutoInvestigate(stored.autoInvestigate),
@@ -149,8 +142,6 @@ export function apiHostPermissionFor(apiBaseUrl: string): string {
 
 export function apiEndpointUrl(apiBaseUrl: string, endpointPath: string): string {
   const trimmedEndpointPath = endpointPath.replace(/^\/+/, "");
-  const baseWithTrailingSlash = apiBaseUrl.endsWith("/")
-    ? apiBaseUrl
-    : `${apiBaseUrl}/`;
+  const baseWithTrailingSlash = apiBaseUrl.endsWith("/") ? apiBaseUrl : `${apiBaseUrl}/`;
   return new URL(trimmedEndpointPath, baseWithTrailingSlash).toString();
 }

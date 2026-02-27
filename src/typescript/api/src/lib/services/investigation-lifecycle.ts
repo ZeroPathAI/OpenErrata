@@ -1,29 +1,16 @@
 import { isUniqueConstraintError } from "$lib/db/errors.js";
-import type {
-  Investigation,
-  InvestigationRun,
-  PrismaClient,
-} from "$lib/generated/prisma/client";
+import type { Investigation, InvestigationRun, PrismaClient } from "$lib/generated/prisma/client";
 import {
   DEFAULT_INVESTIGATION_MODEL,
   DEFAULT_INVESTIGATION_PROVIDER,
   WORD_COUNT_LIMIT,
-  type ContentProvenance,
 } from "@openerrata/shared";
 import { enqueueInvestigationRun } from "./queue.js";
-
-type CanonicalInvestigationContent =
-  | {
-      contentHash: string;
-      contentText: string;
-      provenance: "SERVER_VERIFIED";
-    }
-  | {
-      contentHash: string;
-      contentText: string;
-      provenance: "CLIENT_FALLBACK";
-      fetchFailureReason: string;
-    };
+import {
+  isRecoverableProcessingRunState,
+  recoveredProcessingRunData,
+  runTimingForInvestigationStatus,
+} from "./investigation-state.js";
 
 export class InvestigationWordLimitError extends Error {
   readonly limit: number;
@@ -41,53 +28,52 @@ export function wordCount(text: string): number {
   return text.split(/\s+/).filter(Boolean).length;
 }
 
-export function exceedsInvestigationWordLimit(text: string): boolean {
-  return wordCount(text) > WORD_COUNT_LIMIT;
-}
-
-function serverVerifiedAtFor(provenance: ContentProvenance): Date | null {
-  return provenance === "SERVER_VERIFIED" ? new Date() : null;
-}
-
 async function findInvestigation(
   prisma: PrismaClient,
-  postId: string,
-  contentHash: string,
+  postVersionId: string,
 ): Promise<Investigation | null> {
   return prisma.investigation.findUnique({
     where: {
-      postId_contentHash: {
-        postId,
-        contentHash,
+      postVersionId,
+    },
+  });
+}
+
+async function loadPostVersionWordCount(
+  prisma: PrismaClient,
+  postVersionId: string,
+): Promise<number> {
+  const postVersion = await prisma.postVersion.findUnique({
+    where: { id: postVersionId },
+    select: {
+      contentBlob: {
+        select: {
+          wordCount: true,
+        },
       },
     },
   });
+
+  if (postVersion === null) {
+    throw new Error(`PostVersion ${postVersionId} not found`);
+  }
+
+  return postVersion.contentBlob.wordCount;
 }
 
 async function createInvestigation(
   prisma: PrismaClient,
   input: {
-    postId: string;
+    postVersionId: string;
     promptId: string;
-    canonical: CanonicalInvestigationContent;
     parentInvestigationId?: string;
     contentDiff?: string;
   },
 ): Promise<Investigation> {
   return prisma.investigation.create({
     data: {
-      postId: input.postId,
-      contentHash: input.canonical.contentHash,
-      contentText: input.canonical.contentText,
-      contentProvenance: input.canonical.provenance,
-      fetchFailureReason:
-        input.canonical.provenance === "CLIENT_FALLBACK"
-          ? input.canonical.fetchFailureReason
-          : null,
-      serverVerifiedAt: serverVerifiedAtFor(input.canonical.provenance),
+      postVersionId: input.postVersionId,
       status: "PENDING",
-      // parentInvestigationId is the source of truth for update lineage.
-      isUpdate: (input.parentInvestigationId ?? null) !== null,
       parentInvestigationId: input.parentInvestigationId ?? null,
       contentDiff: input.contentDiff ?? null,
       promptId: input.promptId,
@@ -114,22 +100,15 @@ async function createInvestigationRun(
   },
 ): Promise<InvestigationRun> {
   const now = new Date();
+  const timing = runTimingForInvestigationStatus(input.investigationStatus, now);
   return prisma.investigationRun.create({
     data: {
       investigationId: input.investigationId,
-      queuedAt: input.investigationStatus === "PENDING" ? now : null,
-      startedAt: input.investigationStatus === "PROCESSING" ? now : null,
-      heartbeatAt: input.investigationStatus === "PROCESSING" ? now : null,
+      queuedAt: timing.queuedAt,
+      startedAt: timing.startedAt,
+      heartbeatAt: timing.heartbeatAt,
     },
   });
-}
-
-function isRecoverableProcessingRun(run: InvestigationRun): boolean {
-  const now = Date.now();
-  if (run.leaseOwner !== null) {
-    return run.leaseExpiresAt === null || run.leaseExpiresAt.getTime() <= now;
-  }
-  return run.recoverAfterAt === null || run.recoverAfterAt.getTime() <= now;
 }
 
 async function tryRecoverExpiredProcessingRun(
@@ -157,13 +136,7 @@ async function tryRecoverExpiredProcessingRun(
           },
         ],
       },
-      data: {
-        leaseOwner: null,
-        leaseExpiresAt: null,
-        recoverAfterAt: null,
-        heartbeatAt: null,
-        queuedAt: now,
-      },
+      data: recoveredProcessingRunData(now),
     });
 
     if (recoveredRun.count === 0) return null;
@@ -220,33 +193,10 @@ async function ensureInvestigationRunRecord(
   return { run, created };
 }
 
-export async function maybeUpgradeInvestigationProvenance(
-  prisma: PrismaClient,
-  postId: string,
-  serverHash: string,
-): Promise<number> {
-  const updated = await prisma.investigation.updateMany({
-    where: {
-      postId,
-      contentHash: serverHash,
-      contentProvenance: "CLIENT_FALLBACK",
-      serverVerifiedAt: null,
-    },
-    data: {
-      contentProvenance: "SERVER_VERIFIED",
-      serverVerifiedAt: new Date(),
-      fetchFailureReason: null,
-    },
-  });
-
-  return updated.count;
-}
-
 type EnsureInvestigationInput = {
   prisma: PrismaClient;
-  postId: string;
+  postVersionId: string;
   promptId: string;
-  canonical: CanonicalInvestigationContent;
   parentInvestigationId?: string;
   contentDiff?: string;
   rejectOverWordLimitOnCreate?: boolean;
@@ -259,46 +209,28 @@ type EnsureInvestigationInput = {
   }) => Promise<void>;
 };
 
-async function ensureInvestigationRecord(
-  input: EnsureInvestigationInput,
-): Promise<{
+async function ensureInvestigationRecord(input: EnsureInvestigationInput): Promise<{
   investigation: Investigation;
   created: boolean;
 }> {
   const rejectOverWordLimitOnCreate = input.rejectOverWordLimitOnCreate ?? true;
   const allowRequeueFailed = input.allowRequeueFailed ?? false;
 
-  if (input.canonical.provenance === "SERVER_VERIFIED") {
-    await maybeUpgradeInvestigationProvenance(
-      input.prisma,
-      input.postId,
-      input.canonical.contentHash,
-    );
-  }
-
-  let investigation = await findInvestigation(
-    input.prisma,
-    input.postId,
-    input.canonical.contentHash,
-  );
+  let investigation = await findInvestigation(input.prisma, input.postVersionId);
   let created = false;
 
   if (!investigation) {
-    if (
-      rejectOverWordLimitOnCreate &&
-      exceedsInvestigationWordLimit(input.canonical.contentText)
-    ) {
-      throw new InvestigationWordLimitError(
-        wordCount(input.canonical.contentText),
-        WORD_COUNT_LIMIT,
-      );
+    if (rejectOverWordLimitOnCreate) {
+      const observedWordCount = await loadPostVersionWordCount(input.prisma, input.postVersionId);
+      if (observedWordCount > WORD_COUNT_LIMIT) {
+        throw new InvestigationWordLimitError(observedWordCount, WORD_COUNT_LIMIT);
+      }
     }
 
     try {
       const createInput: Parameters<typeof createInvestigation>[1] = {
-        postId: input.postId,
+        postVersionId: input.postVersionId,
         promptId: input.promptId,
-        canonical: input.canonical,
       };
       if (input.parentInvestigationId !== undefined) {
         createInput.parentInvestigationId = input.parentInvestigationId;
@@ -310,43 +242,15 @@ async function ensureInvestigationRecord(
       created = true;
     } catch (error) {
       if (!isUniqueConstraintError(error)) throw error;
-      investigation = await findInvestigation(
-        input.prisma,
-        input.postId,
-        input.canonical.contentHash,
-      );
+      investigation = await findInvestigation(input.prisma, input.postVersionId);
       if (!investigation) throw error;
     }
-  }
-
-  if (
-    input.canonical.provenance === "SERVER_VERIFIED" &&
-    investigation.contentProvenance === "CLIENT_FALLBACK"
-  ) {
-    await maybeUpgradeInvestigationProvenance(
-      input.prisma,
-      input.postId,
-      input.canonical.contentHash,
-    );
-    const upgraded = await findInvestigation(
-      input.prisma,
-      input.postId,
-      input.canonical.contentHash,
-    );
-    if (!upgraded) {
-      throw new Error(
-        `Investigation missing after provenance upgrade for post ${input.postId}`,
-      );
-    }
-    investigation = upgraded;
   }
 
   if (allowRequeueFailed && investigation.status === "FAILED") {
     investigation = await input.prisma.investigation.update({
       where: { id: investigation.id },
       data: {
-        // Keep denormalized isUpdate aligned with parentInvestigationId.
-        isUpdate: (input.parentInvestigationId ?? null) !== null,
         parentInvestigationId: input.parentInvestigationId ?? null,
         contentDiff: input.contentDiff ?? null,
         status: "PENDING",
@@ -358,17 +262,14 @@ async function ensureInvestigationRecord(
   return { investigation, created };
 }
 
-export async function ensureInvestigationQueued(
-  input: EnsureInvestigationInput,
-): Promise<{
+export async function ensureInvestigationQueued(input: EnsureInvestigationInput): Promise<{
   investigation: Investigation;
   run: InvestigationRun;
   created: boolean;
   runCreated: boolean;
   enqueued: boolean;
 }> {
-  const { investigation: initialInvestigation, created } =
-    await ensureInvestigationRecord(input);
+  const { investigation: initialInvestigation, created } = await ensureInvestigationRecord(input);
   const { run: initialRun, created: runCreated } = await ensureInvestigationRunRecord(
     input.prisma,
     initialInvestigation,
@@ -376,7 +277,7 @@ export async function ensureInvestigationQueued(
   let investigation = initialInvestigation;
   let run = initialRun;
 
-  if (investigation.status === "PROCESSING" && isRecoverableProcessingRun(run)) {
+  if (investigation.status === "PROCESSING" && isRecoverableProcessingRunState(run)) {
     const recovered = await tryRecoverExpiredProcessingRun(input.prisma, {
       investigationId: investigation.id,
       runId: run.id,

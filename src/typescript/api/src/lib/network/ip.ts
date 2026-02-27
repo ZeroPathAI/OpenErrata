@@ -58,11 +58,12 @@ function expandIpv6(input: string): string[] | null {
   const parts = address.split("::");
   if (parts.length > 2) return null;
 
-  const left = parts[0]
-    ? parts[0].split(":").filter((part) => part.length > 0)
-    : [];
+  const left =
+    parts[0] !== undefined && parts[0].length > 0
+      ? parts[0].split(":").filter((part) => part.length > 0)
+      : [];
   const right =
-    parts.length === 2 && parts[1]
+    parts.length === 2 && parts[1] !== undefined && parts[1].length > 0
       ? parts[1].split(":").filter((part) => part.length > 0)
       : [];
 
@@ -87,11 +88,19 @@ function mappedIpv4FromIpv6(expandedIpv6: string[]): Ipv4Octets | null {
   const mappedMarker = expandedIpv6[5];
   const highHextet = expandedIpv6[6];
   const lowHextet = expandedIpv6[7];
-  if (!mappedMarker || !highHextet || !lowHextet) return null;
+  if (
+    mappedMarker === undefined ||
+    mappedMarker.length === 0 ||
+    highHextet === undefined ||
+    highHextet.length === 0 ||
+    lowHextet === undefined ||
+    lowHextet.length === 0
+  ) {
+    return null;
+  }
 
   const isMappedPrefix =
-    expandedIpv6.slice(0, 5).every((hextet) => hextet === "0") &&
-    mappedMarker === "ffff";
+    expandedIpv6.slice(0, 5).every((hextet) => hextet === "0") && mappedMarker === "ffff";
   if (!isMappedPrefix) return null;
 
   const high = Number.parseInt(highHextet, 16);

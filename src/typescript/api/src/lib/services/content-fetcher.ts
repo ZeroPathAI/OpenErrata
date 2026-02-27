@@ -1,4 +1,11 @@
-import { normalizeContent, hashContent, type Platform } from "@openerrata/shared";
+import {
+  hashContent,
+  isExcludedWikipediaSectionTitle,
+  normalizeContent,
+  normalizeWikipediaSectionTitle,
+  shouldExcludeWikipediaElement,
+  WIKIPEDIA_LANGUAGE_CODE_REGEX,
+} from "@openerrata/shared";
 import { parseFragment, type DefaultTreeAdapterMap } from "parse5";
 
 type ServerFetchResult =
@@ -12,7 +19,7 @@ type ServerFetchResult =
       failureReason: string;
     };
 
-type CanonicalContentFetchResult =
+export type CanonicalContentFetchResult =
   | {
       provenance: "SERVER_VERIFIED";
       contentText: string;
@@ -23,30 +30,34 @@ type CanonicalContentFetchResult =
       fetchFailureReason: string;
     };
 
-type CanonicalFetchStrategy =
+type WikipediaCanonicalFetchInput = {
+  platform: "WIKIPEDIA";
+  url: string;
+  externalId: string;
+  metadata: {
+    language: string;
+    title: string;
+    revisionId: string;
+  };
+};
+
+export type CanonicalFetchInput =
   | {
-      capability: "SERVER_VERIFIED";
-      fetchContent: (externalId: string) => Promise<ServerFetchResult>;
+      platform: "LESSWRONG";
+      url: string;
+      externalId: string;
     }
   | {
-      capability: "CLIENT_FALLBACK_ONLY";
-      failureReason: string;
-    };
-
-const CANONICAL_FETCH_STRATEGIES: Record<Platform, CanonicalFetchStrategy> = {
-  LESSWRONG: {
-    capability: "SERVER_VERIFIED",
-    fetchContent: fetchLesswrongContent,
-  },
-  X: {
-    capability: "CLIENT_FALLBACK_ONLY",
-    failureReason: "X canonical server fetch unavailable",
-  },
-  SUBSTACK: {
-    capability: "CLIENT_FALLBACK_ONLY",
-    failureReason: "Substack canonical server fetch unavailable",
-  },
-};
+      platform: "X";
+      url: string;
+      externalId: string;
+    }
+  | {
+      platform: "SUBSTACK";
+      url: string;
+      externalId: string;
+    }
+  | WikipediaCanonicalFetchInput;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -132,21 +143,31 @@ export function lesswrongHtmlToNormalizedText(html: string): string {
   return normalizeContent(htmlToTextContent(html));
 }
 
-export async function fetchCanonicalContent(
-  platform: Platform,
-  _url: string,
-  externalId: string,
-): Promise<CanonicalContentFetchResult> {
-  const strategy = CANONICAL_FETCH_STRATEGIES[platform];
-  if (strategy.capability === "CLIENT_FALLBACK_ONLY") {
-    return {
-      provenance: "CLIENT_FALLBACK",
-      fetchFailureReason: strategy.failureReason,
-    };
+async function fetchServerVerifiedContent(
+  input: CanonicalFetchInput,
+): Promise<ServerFetchResult | null> {
+  switch (input.platform) {
+    case "LESSWRONG":
+      return fetchLesswrongContent(input);
+    case "WIKIPEDIA":
+      return fetchWikipediaContent(input);
+    case "X":
+    case "SUBSTACK":
+      return null;
   }
+}
 
+export async function fetchCanonicalContent(
+  input: CanonicalFetchInput,
+): Promise<CanonicalContentFetchResult> {
   try {
-    const fetched = await strategy.fetchContent(externalId);
+    const fetched = await fetchServerVerifiedContent(input);
+    if (fetched === null) {
+      return {
+        provenance: "CLIENT_FALLBACK",
+        fetchFailureReason: `${input.platform} canonical server fetch unavailable`,
+      };
+    }
     if (!fetched.success) {
       return {
         provenance: "CLIENT_FALLBACK",
@@ -166,7 +187,10 @@ export async function fetchCanonicalContent(
   }
 }
 
-async function fetchLesswrongContent(postId: string): Promise<ServerFetchResult> {
+async function fetchLesswrongContent(
+  input: Extract<CanonicalFetchInput, { platform: "LESSWRONG" }>,
+): Promise<ServerFetchResult> {
+  const postId = input.externalId;
   const response = await fetch("https://www.lesswrong.com/graphql", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -196,7 +220,7 @@ async function fetchLesswrongContent(postId: string): Promise<ServerFetchResult>
 
   const data: unknown = await response.json();
   const html = extractLesswrongHtml(data);
-  if (!html) {
+  if (html === null || html.length === 0) {
     return {
       success: false,
       failureReason: "Could not extract HTML from LW API response",
@@ -204,6 +228,229 @@ async function fetchLesswrongContent(postId: string): Promise<ServerFetchResult>
   }
 
   const contentText = lesswrongHtmlToNormalizedText(html);
+  const contentHash = await hashContent(contentText);
+  return { success: true, contentText, contentHash };
+}
+
+function isElementNode(
+  node: DefaultTreeAdapterMap["node"],
+): node is DefaultTreeAdapterMap["element"] {
+  return "tagName" in node;
+}
+
+function attrValue(node: DefaultTreeAdapterMap["element"], name: string): string | null {
+  const match = node.attrs.find((entry) => entry.name === name);
+  return match?.value ?? null;
+}
+
+function classTokens(node: DefaultTreeAdapterMap["element"]): string[] {
+  const classValue = attrValue(node, "class");
+  if (classValue === null || classValue.length === 0) return [];
+  return classValue
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+}
+
+function textContentOfNode(node: DefaultTreeAdapterMap["node"]): string {
+  if (isTextNode(node)) {
+    return node.value;
+  }
+
+  if (!hasChildren(node)) {
+    return "";
+  }
+
+  let text = "";
+  for (const child of node.childNodes) {
+    text += textContentOfNode(child);
+  }
+  return text;
+}
+
+const WIKIPEDIA_BLOCK_TAGS = new Set([
+  "p",
+  "li",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "figcaption",
+  "blockquote",
+  "tr",
+  "td",
+  "th",
+  "div",
+]);
+
+function headingLevelFromTag(tagName: string): number | null {
+  const match = tagName.match(/^h([2-6])$/i);
+  if (match?.[1] === undefined || match[1].length === 0) {
+    return null;
+  }
+  return Number(match[1]);
+}
+
+function shouldSkipWikipediaElement(node: DefaultTreeAdapterMap["element"]): boolean {
+  return shouldExcludeWikipediaElement({
+    tagName: node.tagName,
+    classTokens: classTokens(node),
+  });
+}
+
+function wikipediaHtmlToTextContent(html: string): string {
+  const fragment = parseFragment(html);
+  const stack: Array<{
+    node: DefaultTreeAdapterMap["node"];
+    phase: "enter" | "exit";
+  }> = [];
+  for (let index = fragment.childNodes.length - 1; index >= 0; index -= 1) {
+    const child = fragment.childNodes[index];
+    if (child !== undefined) {
+      stack.push({ node: child, phase: "enter" });
+    }
+  }
+
+  const chunks: string[] = [];
+  let skipSectionLevel: number | null = null;
+
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current) continue;
+
+    const { node, phase } = current;
+    if (phase === "exit") {
+      if (isElementNode(node) && WIKIPEDIA_BLOCK_TAGS.has(node.tagName.toLowerCase())) {
+        chunks.push(" ");
+      }
+      continue;
+    }
+
+    if (isElementNode(node)) {
+      const tagName = node.tagName.toLowerCase();
+      const headingLevel = headingLevelFromTag(tagName);
+      if (headingLevel !== null) {
+        if (skipSectionLevel !== null && headingLevel <= skipSectionLevel) {
+          skipSectionLevel = null;
+        }
+
+        const headingText = normalizeWikipediaSectionTitle(textContentOfNode(node));
+        if (isExcludedWikipediaSectionTitle(headingText)) {
+          skipSectionLevel = headingLevel;
+          continue;
+        }
+      }
+
+      if (skipSectionLevel !== null || shouldSkipWikipediaElement(node)) {
+        continue;
+      }
+
+      if (WIKIPEDIA_BLOCK_TAGS.has(tagName)) {
+        chunks.push(" ");
+      }
+
+      if (hasChildren(node)) {
+        stack.push({ node, phase: "exit" });
+        for (let index = node.childNodes.length - 1; index >= 0; index -= 1) {
+          const child = node.childNodes[index];
+          if (child !== undefined) {
+            stack.push({ node: child, phase: "enter" });
+          }
+        }
+      }
+      continue;
+    }
+
+    if (skipSectionLevel !== null) {
+      continue;
+    }
+
+    if (isTextNode(node)) {
+      chunks.push(node.value);
+    }
+  }
+
+  return chunks.join("");
+}
+
+export function wikipediaHtmlToNormalizedText(html: string): string {
+  return normalizeContent(wikipediaHtmlToTextContent(html));
+}
+
+function extractWikipediaParsePayload(value: unknown): {
+  html: string;
+  revisionId: string;
+} | null {
+  if (!isRecord(value)) return null;
+  const parse = value["parse"];
+  if (!isRecord(parse)) return null;
+
+  const text = parse["text"];
+  const rawRevisionId = parse["revid"];
+  if (typeof text !== "string") return null;
+  if (
+    typeof rawRevisionId !== "number" &&
+    !(typeof rawRevisionId === "string" && /^\d+$/.test(rawRevisionId))
+  ) {
+    return null;
+  }
+
+  return {
+    html: text,
+    revisionId: String(rawRevisionId),
+  };
+}
+
+async function fetchWikipediaContent(
+  input: WikipediaCanonicalFetchInput,
+): Promise<ServerFetchResult> {
+  const language = input.metadata.language.trim().toLowerCase();
+  const revisionId = input.metadata.revisionId.trim();
+  if (
+    language.length === 0 ||
+    revisionId.length === 0 ||
+    !WIKIPEDIA_LANGUAGE_CODE_REGEX.test(language)
+  ) {
+    return {
+      success: false,
+      failureReason: "Wikipedia canonical fetch requires valid language and revision metadata",
+    };
+  }
+
+  const endpoint = new URL(`https://${language}.wikipedia.org/w/api.php`);
+  endpoint.searchParams.set("action", "parse");
+  endpoint.searchParams.set("format", "json");
+  endpoint.searchParams.set("formatversion", "2");
+  endpoint.searchParams.set("prop", "text|revid");
+  endpoint.searchParams.set("oldid", revisionId);
+
+  const response = await fetch(endpoint);
+  if (!response.ok) {
+    return {
+      success: false,
+      failureReason: `Wikipedia parse API returned ${response.status}`,
+    };
+  }
+
+  const data: unknown = await response.json();
+  const payload = extractWikipediaParsePayload(data);
+  if (!payload) {
+    return {
+      success: false,
+      failureReason: "Could not extract canonical article HTML from Wikipedia parse response",
+    };
+  }
+
+  if (payload.revisionId !== revisionId) {
+    return {
+      success: false,
+      failureReason: `Wikipedia parse revision mismatch: expected ${revisionId}, got ${payload.revisionId}`,
+    };
+  }
+
+  const contentText = wikipediaHtmlToNormalizedText(payload.html);
   const contentHash = await hashContent(contentText);
   return { success: true, contentText, contentHash };
 }

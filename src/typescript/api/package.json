@@ -17,7 +17,8 @@
     "prisma:generate": "svelte-kit sync && prisma generate",
     "prisma:migrate:dev": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",
-    "typecheck": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json"
+    "typecheck": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "test:unit:coverage": "c8 --config ../.c8rc.api.json tsx --test \"test/unit/**/*.test.ts\""
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.994.0",

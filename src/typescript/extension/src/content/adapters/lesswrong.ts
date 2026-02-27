@@ -1,11 +1,7 @@
 import { normalizeContent } from "@openerrata/shared";
+import { isLikelyVisible, type AdapterExtractionResult, type PlatformAdapter } from "./model";
 import {
-  isLikelyVisible,
-  type AdapterExtractionResult,
-  type PlatformAdapter,
-} from "./model";
-import {
-  extractImageUrlsFromRoot,
+  extractContentWithImageOccurrencesFromRoot,
   readFirstMetaDateAsIso,
   readFirstTimeDateAsIso,
   readPublishedDateFromJsonLd,
@@ -42,7 +38,7 @@ type RootSelectionResult =
     };
 
 function parseAuthorSlug(href: string | null): string | null {
-  if (!href) return null;
+  if (href === null || href.length === 0) return null;
   const match = href.match(/\/users\/([^/?#]+)/);
   return match?.[1] ?? null;
 }
@@ -68,14 +64,17 @@ function findPostAuthorLink(scope: ParentNode): HTMLAnchorElement | null {
 
 function toCanonicalVersioningHtml(canonicalRoot: Element): string {
   const clone = canonicalRoot.cloneNode(true) as Element;
-
-  // LessWrong linkposts prepend a client-rendered callout block that is not
-  // present in GraphQL `contents.html`, so include only canonical post HTML.
-  clone.querySelectorAll(".LinkPostMessage-root").forEach((node) => {
-    node.remove();
-  });
+  removeLinkPostCallouts(clone);
 
   return (clone as HTMLElement).innerHTML;
+}
+
+function removeLinkPostCallouts(root: Element): void {
+  // LessWrong linkposts prepend a client-rendered callout block that is not
+  // present in GraphQL `contents.html`, so include only canonical post HTML.
+  root.querySelectorAll(".LinkPostMessage-root").forEach((node) => {
+    node.remove();
+  });
 }
 
 function extractPostIdFromUrl(url: string): string | null {
@@ -93,7 +92,7 @@ function isUnknownRecord(value: unknown): value is Record<string, unknown> {
 
 function scriptPrimaryPostId(script: HTMLScriptElement): string | null {
   const text = script.textContent;
-  if (!text) return null;
+  if (text.length === 0) return null;
 
   try {
     const parsed = JSON.parse(text) as unknown;
@@ -103,7 +102,7 @@ function scriptPrimaryPostId(script: HTMLScriptElement): string | null {
       const maybeUrl = candidate["url"];
       if (typeof maybeUrl !== "string") continue;
       const postId = extractPostIdFromUrl(maybeUrl);
-      if (postId) {
+      if (postId !== null && postId.length > 0) {
         return postId;
       }
     }
@@ -121,7 +120,7 @@ function bodyPrimaryPostIds(contentRoot: Element): string[] {
   const ids = new Set<string>();
   for (const script of postBody.querySelectorAll<HTMLScriptElement>(JSON_LD_SELECTOR)) {
     const postId = scriptPrimaryPostId(script);
-    if (postId) {
+    if (postId !== null && postId.length > 0) {
       ids.add(postId);
     }
   }
@@ -165,18 +164,13 @@ function pickContentRoot(document: Document, externalId: string): RootSelectionR
     };
   }
 
-  const isJsdom = document.defaultView?.navigator.userAgent
-    .toLowerCase()
-    .includes("jsdom") === true;
+  const isJsdom =
+    document.defaultView?.navigator.userAgent.toLowerCase().includes("jsdom") === true;
 
-  const withCanonicalRoot = roots.filter(
-    (root) => findCanonicalRootWithin(root) !== null,
-  );
+  const withCanonicalRoot = roots.filter((root) => findCanonicalRootWithin(root) !== null);
   const canonicalCandidates = withCanonicalRoot.length > 0 ? withCanonicalRoot : roots;
 
-  const identityMatches = canonicalCandidates.filter((root) =>
-    bodyMatchesPostId(root, externalId),
-  );
+  const identityMatches = canonicalCandidates.filter((root) => bodyMatchesPostId(root, externalId));
   const visibleIdentityMatches = identityMatches.filter((root) => isLikelyVisible(root));
 
   if (visibleIdentityMatches.length === 1) {
@@ -268,13 +262,11 @@ function pickTitle(scope: ParentNode, fallbackTitle: string): string | null {
     .map((heading) => normalizeContent(heading.textContent))
     .filter(Boolean);
   const bestHeading = headingTitles.sort((left, right) => right.length - left.length)[0];
-  if (bestHeading) {
+  if (bestHeading !== undefined && bestHeading.length > 0) {
     return bestHeading;
   }
 
-  const normalizedFallback = normalizeContent(
-    fallbackTitle.replace(/\s*[|·]\s*LessWrong.*$/i, ""),
-  );
+  const normalizedFallback = normalizeContent(fallbackTitle.replace(/\s*[|·]\s*LessWrong.*$/i, ""));
   return normalizedFallback.length > 0 ? normalizedFallback : null;
 }
 
@@ -299,7 +291,7 @@ export const lesswrongAdapter: PlatformAdapter = {
     const url = window.location.href;
     const match = url.match(POST_URL_REGEX);
     const externalId = match?.[1];
-    if (!externalId) {
+    if (externalId === undefined || externalId.length === 0) {
       return {
         kind: "not_ready",
         reason: "missing_identity",
@@ -321,8 +313,13 @@ export const lesswrongAdapter: PlatformAdapter = {
       };
     }
     const canonicalVersioningHtml = toCanonicalVersioningHtml(canonicalRoot);
-
-    const contentText = normalizeContent(canonicalRoot.textContent);
+    const canonicalExtractionRoot = canonicalRoot.cloneNode(true) as Element;
+    removeLinkPostCallouts(canonicalExtractionRoot);
+    const extractedContent = extractContentWithImageOccurrencesFromRoot(
+      canonicalExtractionRoot,
+      url,
+    );
+    const contentText = extractedContent.contentText;
     const postScope = rootSelection.root.closest("#postBody") ?? document;
     const title = pickTitle(postScope, document.title);
 
@@ -334,18 +331,15 @@ export const lesswrongAdapter: PlatformAdapter = {
     const tags = Array.from(postScope.querySelectorAll(TAG_SELECTOR))
       .map((el) => normalizeContent(el.textContent))
       .filter(Boolean);
-    const slugToken = match[2];
-    const slug = (slugToken === undefined ? "" : normalizeContent(slugToken)) || externalId;
+    const slugToken = match?.[2];
+    const normalizedSlug = slugToken === undefined ? "" : normalizeContent(slugToken);
+    const slug = normalizedSlug.length > 0 ? normalizedSlug : externalId;
     const publishedAt = extractPublishedAt(document, postScope);
 
-    const imageUrls = extractImageUrlsFromRoot(canonicalRoot, url);
+    const imageUrls = extractedContent.imageUrls;
     const hasVideoMedia = canonicalRoot.querySelector("video, iframe") !== null;
     const mediaState =
-      imageUrls.length > 0
-        ? "has_images"
-        : hasVideoMedia
-          ? "has_video"
-          : "text_only";
+      imageUrls.length > 0 ? "has_images" : hasVideoMedia ? "has_video" : "text_only";
     const metadata = {
       slug,
       htmlContent: canonicalVersioningHtml,
@@ -365,6 +359,7 @@ export const lesswrongAdapter: PlatformAdapter = {
         contentText,
         mediaState,
         imageUrls,
+        imageOccurrences: extractedContent.imageOccurrences,
         metadata,
       },
     };
@@ -373,7 +368,7 @@ export const lesswrongAdapter: PlatformAdapter = {
   getContentRoot(document: Document): Element | null {
     const url = window.location.href;
     const externalId = extractPostIdFromUrl(url);
-    if (!externalId) {
+    if (externalId === null || externalId.length === 0) {
       return null;
     }
 

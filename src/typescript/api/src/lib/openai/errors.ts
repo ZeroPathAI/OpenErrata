@@ -58,8 +58,7 @@ export function classifyOpenAiKeyValidationStatus(
   if (statusCode >= 400 && statusCode < 500) {
     return {
       openaiApiKeyStatus: "error",
-      openaiApiKeyMessage:
-        `OpenAI returned HTTP ${statusCode.toString()} while validating this key.`,
+      openaiApiKeyMessage: `OpenAI returned HTTP ${statusCode.toString()} while validating this key.`,
     };
   }
 

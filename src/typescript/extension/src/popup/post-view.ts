@@ -11,10 +11,7 @@ export type PostPopupView =
   | { kind: "investigating" }
   | { kind: "not_investigated"; canRequest: boolean };
 
-export function computePostView(
-  matched: PostStatus,
-  canRequest: boolean,
-): PostPopupView {
+export function computePostView(matched: PostStatus, canRequest: boolean): PostPopupView {
   if (matched.investigationState === "INVESTIGATED" && matched.claims.length > 0) {
     return { kind: "found_claims", claims: matched.claims };
   }

@@ -49,11 +49,7 @@ class BlobStorageService {
     this.publicUrlPrefix = config.publicUrlPrefix.replace(/\/+$/, "");
   }
 
-  async uploadImage(
-    bytes: Uint8Array,
-    contentHash: string,
-    mimeType: string,
-  ): Promise<string> {
+  async uploadImage(bytes: Uint8Array, contentHash: string, mimeType: string): Promise<string> {
     const storageKey = `images/${contentHash}`;
     await this.client.send(
       new PutObjectCommand({

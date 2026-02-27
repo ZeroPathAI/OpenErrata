@@ -9,9 +9,7 @@ type InvestigatedViewPostOutput = Extract<
 
 export type InvestigationClaim = InvestigatedViewPostOutput["claims"][number];
 
-export type InvestigationResult = z.infer<
-  typeof import("./schemas.js").investigationResultSchema
->;
+export type InvestigationResult = z.infer<typeof import("./schemas.js").investigationResultSchema>;
 
 export type ClaimId = z.infer<typeof import("./schemas.js").claimIdSchema>;
 
@@ -29,6 +27,10 @@ export interface PlatformMetadataByPlatform {
     z.infer<typeof import("./schemas.js").viewPostInputSchema>,
     { platform: "SUBSTACK" }
   >["metadata"];
+  WIKIPEDIA: Extract<
+    z.infer<typeof import("./schemas.js").viewPostInputSchema>,
+    { platform: "WIKIPEDIA" }
+  >["metadata"];
 }
 
 // ── Platform adapter (spec §3.8) ──────────────────────────────────────────
@@ -38,14 +40,32 @@ export type PlatformContent = Extract<
   { type: "PAGE_CONTENT" }
 >["payload"]["content"];
 
+export type ObservedImageOccurrence = NonNullable<
+  z.infer<typeof import("./schemas.js").viewPostInputSchema>["observedImageOccurrences"]
+>[number];
+
 // ── tRPC input/output shapes ──────────────────────────────────────────────
 
 export type ViewPostInput = z.infer<typeof import("./schemas.js").viewPostInputSchema>;
-export type ViewPostInputWire = z.input<
-  typeof import("./schemas.js").viewPostInputSchema
->;
 
 export type ViewPostOutput = z.infer<typeof import("./schemas.js").viewPostOutputSchema>;
+
+export type RegisterObservedVersionInput = z.infer<
+  typeof import("./schemas.js").registerObservedVersionInputSchema
+>;
+export type RegisterObservedVersionInputWire = z.input<
+  typeof import("./schemas.js").registerObservedVersionInputSchema
+>;
+export type RegisterObservedVersionOutput = z.infer<
+  typeof import("./schemas.js").registerObservedVersionOutputSchema
+>;
+
+export type RecordViewAndGetStatusInput = z.infer<
+  typeof import("./schemas.js").recordViewAndGetStatusInputSchema
+>;
+export type RecordViewAndGetStatusInputWire = z.input<
+  typeof import("./schemas.js").recordViewAndGetStatusInputSchema
+>;
 
 export type InvestigationStatusOutput = z.infer<
   typeof import("./schemas.js").investigationStatusOutputSchema
@@ -62,6 +82,11 @@ export type GetInvestigationOutput = z.infer<
   typeof import("./schemas.js").getInvestigationOutputSchema
 >;
 
+export type InvestigateNowInput = z.infer<typeof import("./schemas.js").investigateNowInputSchema>;
+export type InvestigateNowInputWire = z.input<
+  typeof import("./schemas.js").investigateNowInputSchema
+>;
+
 export type InvestigateNowOutput = z.infer<
   typeof import("./schemas.js").investigateNowOutputSchema
 >;
@@ -73,9 +98,14 @@ export type SettingsValidationOutput = z.infer<
 // ── Extension/API tRPC contract ───────────────────────────────────────────
 
 export interface ExtensionApiProcedureContract {
+  "post.registerObservedVersion": {
+    kind: "mutation";
+    input: RegisterObservedVersionInputWire;
+    output: RegisterObservedVersionOutput;
+  };
   "post.recordViewAndGetStatus": {
     kind: "mutation";
-    input: ViewPostInputWire;
+    input: RecordViewAndGetStatusInputWire;
     output: ViewPostOutput;
   };
   "post.getInvestigation": {
@@ -85,7 +115,7 @@ export interface ExtensionApiProcedureContract {
   };
   "post.investigateNow": {
     kind: "mutation";
-    input: ViewPostInputWire;
+    input: InvestigateNowInputWire;
     output: InvestigateNowOutput;
   };
   "post.validateSettings": {
@@ -119,9 +149,7 @@ export type ExtensionApiOutput<P extends ExtensionApiProcedurePath> =
 
 // ── Extension cache/status shapes ─────────────────────────────────────────
 
-export type ExtensionPostStatus = z.infer<
-  typeof import("./schemas.js").extensionPostStatusSchema
->;
+export type ExtensionPostStatus = z.infer<typeof import("./schemas.js").extensionPostStatusSchema>;
 
 export type ExtensionSkippedStatus = z.infer<
   typeof import("./schemas.js").extensionSkippedStatusSchema
@@ -129,9 +157,7 @@ export type ExtensionSkippedStatus = z.infer<
 
 export type ExtensionSkippedReason = ExtensionSkippedStatus["reason"];
 
-export type ExtensionPageStatus = z.infer<
-  typeof import("./schemas.js").extensionPageStatusSchema
->;
+export type ExtensionPageStatus = z.infer<typeof import("./schemas.js").extensionPageStatusSchema>;
 
 export type ExtensionRuntimeErrorCode = z.infer<
   typeof import("./schemas.js").extensionRuntimeErrorCodeSchema

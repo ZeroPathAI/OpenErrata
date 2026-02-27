@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
-  claimIdSchema,
-  investigationIdSchema,
-} from "@openerrata/shared";
+import { claimIdSchema, investigationIdSchema } from "@openerrata/shared";
 import {
   snapshotFromInvestigateNowResult,
   toInvestigationStatusForCaching,
@@ -48,7 +45,6 @@ test("snapshotFromInvestigateNowResult preserves interim oldClaims while pending
       investigationId: investigationIdSchema.parse("inv-new-1"),
       status: "PENDING",
       provenance: "SERVER_VERIFIED",
-      claims: null,
     },
     cached,
   );
@@ -56,10 +52,12 @@ test("snapshotFromInvestigateNowResult preserves interim oldClaims while pending
   assert.equal(snapshot.investigationState, "INVESTIGATING");
   assert.equal(snapshot.status, "PENDING");
   assert.equal(snapshot.provenance, "SERVER_VERIFIED");
-  assert.notEqual(snapshot.priorInvestigationResult, null);
-  assert.deepEqual(snapshot.priorInvestigationResult?.oldClaims, oldClaims);
+  const priorResult = snapshot.priorInvestigationResult;
+  assert.notEqual(priorResult, null);
+  if (priorResult === null) throw new Error("expected priorInvestigationResult");
+  assert.deepEqual(priorResult.oldClaims, oldClaims);
   assert.equal(
-    snapshot.priorInvestigationResult?.sourceInvestigationId,
+    priorResult.sourceInvestigationId,
     existing.priorInvestigationResult.sourceInvestigationId,
   );
 });
@@ -70,7 +68,6 @@ test("snapshotFromInvestigateNowResult falls back to empty pending state without
       investigationId: investigationIdSchema.parse("inv-pending-2"),
       status: "PENDING",
       provenance: "CLIENT_FALLBACK",
-      claims: null,
     },
     null,
   );
@@ -122,7 +119,6 @@ test("status transition preserves interim oldClaims from NOT_INVESTIGATED to INV
       investigationId: investigationIdSchema.parse("inv-new-2"),
       status: "PENDING",
       provenance: "SERVER_VERIFIED",
-      claims: null,
     },
     cachedInitial,
   );
@@ -137,10 +133,9 @@ test("status transition preserves interim oldClaims from NOT_INVESTIGATED to INV
 
   assert.equal(pendingStatus.investigationState, "INVESTIGATING");
   assert.equal(pendingStatus.status, "PENDING");
-  assert.notEqual(pendingStatus.priorInvestigationResult, null);
-  assert.deepEqual(pendingStatus.priorInvestigationResult?.oldClaims, oldClaims);
-  assert.equal(
-    pendingStatus.priorInvestigationResult?.sourceInvestigationId,
-    investigationIdSchema.parse("inv-old-2"),
-  );
+  const pendingPriorResult = pendingStatus.priorInvestigationResult;
+  assert.notEqual(pendingPriorResult, null);
+  if (pendingPriorResult === null) throw new Error("expected priorInvestigationResult");
+  assert.deepEqual(pendingPriorResult.oldClaims, oldClaims);
+  assert.equal(pendingPriorResult.sourceInvestigationId, investigationIdSchema.parse("inv-old-2"));
 });

@@ -1,8 +1,11 @@
 import type {
-  ViewPostInput,
+  RegisterObservedVersionInput,
+  RegisterObservedVersionOutput,
+  RecordViewAndGetStatusInput,
   ViewPostOutput,
   GetInvestigationInput,
   GetInvestigationOutput,
+  InvestigateNowInput,
   InvestigateNowOutput,
   ExtensionApiInput,
   ExtensionApiMutationPath,
@@ -12,15 +15,12 @@ import type {
 } from "@openerrata/shared";
 import {
   EXTENSION_TRPC_PATH,
+  registerObservedVersionOutputSchema,
   getInvestigationOutputSchema,
   investigateNowOutputSchema,
   viewPostOutputSchema,
 } from "@openerrata/shared";
-import {
-  createTRPCUntypedClient,
-  httpLink,
-  type TRPCUntypedClient,
-} from "@trpc/client";
+import { createTRPCUntypedClient, httpLink, type TRPCUntypedClient } from "@trpc/client";
 import browser from "webextension-polyfill";
 import {
   DEFAULT_EXTENSION_SETTINGS,
@@ -32,9 +32,12 @@ import {
 import { extractApiErrorCode } from "./api-error-code.js";
 export { ApiClientError } from "./api-client-error.js";
 import { ApiClientError } from "./api-client-error.js";
-
-const BUNDLED_ATTESTATION_SECRET = "openerrata-attestation-v1";
-const TRPC_REQUEST_BODY_LIMIT_BYTES = 512 * 1024;
+import {
+  assertTrpcResponseAccepted,
+  buildTrpcRequestInit,
+  clientKeyFor,
+  shouldIncludeUserOpenAiKeyHeader,
+} from "./api-client-core.js";
 
 let settings: ExtensionSettings = { ...DEFAULT_EXTENSION_SETTINGS };
 let initPromise: Promise<void> | null = null;
@@ -42,13 +45,12 @@ let storageListenerRegistered = false;
 const cachedClientsByKey = new Map<string, TrpcClient>();
 
 type TrpcClient = TRPCUntypedClient<never>;
+type ParsedRegisterObservedVersionOutput = ReturnType<
+  typeof registerObservedVersionOutputSchema.parse
+>;
 type ParsedViewPostOutput = ReturnType<typeof viewPostOutputSchema.parse>;
-type ParsedGetInvestigationOutput = ReturnType<
-  typeof getInvestigationOutputSchema.parse
->;
-type ParsedInvestigateNowOutput = ReturnType<
-  typeof investigateNowOutputSchema.parse
->;
+type ParsedGetInvestigationOutput = ReturnType<typeof getInvestigationOutputSchema.parse>;
+type ParsedInvestigateNowOutput = ReturnType<typeof investigateNowOutputSchema.parse>;
 
 async function loadSettingsFromStorage(): Promise<void> {
   settings = await loadExtensionSettings();
@@ -102,43 +104,14 @@ async function computeHmac(secret: string, body: string): Promise<string> {
     ["sign"],
   );
 
-  const sig = await crypto.subtle.sign(
-    "HMAC",
-    key,
-    new TextEncoder().encode(body),
-  );
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body));
 
   return Array.from(new Uint8Array(sig))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
 }
 
-function attestationSecretFor(settingsValue: ExtensionSettings): string {
-  const configured = settingsValue.hmacSecret.trim();
-  return configured.length > 0 ? configured : BUNDLED_ATTESTATION_SECRET;
-}
-
-function clientKeyFor(
-  settingsValue: ExtensionSettings,
-  includeUserOpenAiHeader: boolean,
-): string {
-  return [
-    settingsValue.apiBaseUrl,
-    settingsValue.apiKey.trim(),
-    includeUserOpenAiHeader ? settingsValue.openaiApiKey.trim() : "",
-    attestationSecretFor(settingsValue),
-  ].join("|");
-}
-
-function shouldIncludeUserOpenAiKeyHeader(
-  path: ExtensionApiProcedurePath,
-): boolean {
-  return path === EXTENSION_TRPC_PATH.INVESTIGATE_NOW;
-}
-
-function getOrCreateTrpcClient(options: {
-  includeUserOpenAiHeader: boolean;
-}): TrpcClient {
+function getOrCreateTrpcClient(options: { includeUserOpenAiHeader: boolean }): TrpcClient {
   const key = clientKeyFor(settings, options.includeUserOpenAiHeader);
   const cachedClient = cachedClientsByKey.get(key);
   if (cachedClient) {
@@ -150,43 +123,15 @@ function getOrCreateTrpcClient(options: {
       httpLink({
         url: apiEndpointUrl(settings.apiBaseUrl, "trpc"),
         fetch: async (url, init) => {
-          const headers = new Headers(init?.headers);
-          const apiKey = settings.apiKey.trim();
-          if (apiKey.length > 0) {
-            headers.set("x-api-key", apiKey);
-          }
-          const userOpenAiApiKey = settings.openaiApiKey.trim();
-          if (options.includeUserOpenAiHeader && userOpenAiApiKey.length > 0) {
-            headers.set("x-openai-api-key", userOpenAiApiKey);
-          }
-
-          if (typeof init?.body === "string" && init.body.length > 0) {
-            const bodyBytes = utf8ByteLength(init.body);
-            if (bodyBytes > TRPC_REQUEST_BODY_LIMIT_BYTES) {
-              throw new ApiClientError(
-                `tRPC request body too large (${bodyBytes.toString()} bytes > ${TRPC_REQUEST_BODY_LIMIT_BYTES.toString()} bytes)`,
-                { errorCode: "PAYLOAD_TOO_LARGE" },
-              );
-            }
-            const signature = await computeHmac(
-              attestationSecretFor(settings),
-              init.body,
-            );
-            headers.set("x-openerrata-signature", signature);
-          }
-
-          const requestInit: RequestInit = { headers };
-          if (init?.method !== undefined) {
-            requestInit.method = init.method;
-          }
-          if (init?.body !== undefined) {
-            requestInit.body = init.body;
-          }
-          if (init?.signal !== undefined) {
-            requestInit.signal = init.signal;
-          }
-
-          return fetch(url, requestInit);
+          const requestInit = await buildTrpcRequestInit({
+            init,
+            settings,
+            includeUserOpenAiHeader: options.includeUserOpenAiHeader,
+            computeHmac,
+          });
+          const response = await fetch(url, requestInit);
+          assertTrpcResponseAccepted(response.status);
+          return response;
         },
       }),
     ],
@@ -199,10 +144,6 @@ function getOrCreateTrpcClient(options: {
 function describeError(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error);
-}
-
-function utf8ByteLength(value: string): number {
-  return new TextEncoder().encode(value).byteLength;
 }
 
 function isPayloadTooLargeError(error: unknown): boolean {
@@ -245,23 +186,27 @@ async function queryApi<Path extends ExtensionApiQueryPath>(
   path: Path,
   input: ExtensionApiInput<Path>,
 ): Promise<ExtensionApiOutput<Path>> {
-  return withTrpcClient(path, (client) =>
-    client.query(path, input),
-  ) as Promise<ExtensionApiOutput<Path>>;
+  return withTrpcClient(path, (client) => client.query(path, input)) as Promise<
+    ExtensionApiOutput<Path>
+  >;
 }
 
 async function mutateApi<Path extends ExtensionApiMutationPath>(
   path: Path,
   input: ExtensionApiInput<Path>,
 ): Promise<ExtensionApiOutput<Path>> {
-  return withTrpcClient(path, (client) =>
-    client.mutation(path, input),
-  ) as Promise<ExtensionApiOutput<Path>>;
+  return withTrpcClient(path, (client) => client.mutation(path, input)) as Promise<
+    ExtensionApiOutput<Path>
+  >;
 }
 
-function normalizeRecordViewAndGetStatusOutput(
-  value: ParsedViewPostOutput,
-): ViewPostOutput {
+function normalizeRecordViewAndGetStatusOutput(value: ParsedViewPostOutput): ViewPostOutput {
+  return value;
+}
+
+function normalizeRegisterObservedVersionOutput(
+  value: ParsedRegisterObservedVersionOutput,
+): RegisterObservedVersionOutput {
   return value;
 }
 
@@ -271,9 +216,7 @@ function normalizeGetInvestigationOutput(
   return value;
 }
 
-function normalizeInvestigateNowOutput(
-  value: ParsedInvestigateNowOutput,
-): InvestigateNowOutput {
+function normalizeInvestigateNowOutput(value: ParsedInvestigateNowOutput): InvestigateNowOutput {
   return value;
 }
 
@@ -291,12 +234,21 @@ async function assertApiHostPermissionGranted(apiBaseUrl: string): Promise<void>
 }
 
 export async function recordViewAndGetStatus(
-  input: ViewPostInput,
+  input: RecordViewAndGetStatusInput,
 ): Promise<ViewPostOutput> {
   const output = viewPostOutputSchema.parse(
     await mutateApi(EXTENSION_TRPC_PATH.RECORD_VIEW_AND_GET_STATUS, input),
   );
   return normalizeRecordViewAndGetStatusOutput(output);
+}
+
+export async function registerObservedVersion(
+  input: RegisterObservedVersionInput,
+): Promise<RegisterObservedVersionOutput> {
+  const output = registerObservedVersionOutputSchema.parse(
+    await mutateApi(EXTENSION_TRPC_PATH.REGISTER_OBSERVED_VERSION, input),
+  );
+  return normalizeRegisterObservedVersionOutput(output);
 }
 
 export async function getInvestigation(
@@ -308,9 +260,7 @@ export async function getInvestigation(
   return normalizeGetInvestigationOutput(output);
 }
 
-export async function investigateNow(
-  input: ViewPostInput,
-): Promise<InvestigateNowOutput> {
+export async function investigateNow(input: InvestigateNowInput): Promise<InvestigateNowOutput> {
   const output = investigateNowOutputSchema.parse(
     await mutateApi(EXTENSION_TRPC_PATH.INVESTIGATE_NOW, input),
   );

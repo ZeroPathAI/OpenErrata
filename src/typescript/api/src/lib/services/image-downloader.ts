@@ -3,10 +3,7 @@ import { MAX_IMAGE_BYTES } from "@openerrata/shared";
 import { getPrisma } from "$lib/db/client.js";
 import { isUniqueConstraintError } from "$lib/db/errors.js";
 import type { ImageBlob } from "$lib/generated/prisma/client";
-import {
-  hasAddressIntersection,
-  resolvePublicHostAddresses,
-} from "$lib/network/host-safety.js";
+import { hasAddressIntersection, resolvePublicHostAddresses } from "$lib/network/host-safety.js";
 import { isRedirectStatus } from "$lib/network/http-status.js";
 import { uploadImage } from "./blob-storage.js";
 
@@ -14,7 +11,7 @@ const IMAGE_DOWNLOAD_TIMEOUT_MS = 15_000;
 const MAX_REDIRECT_HOPS = 5;
 
 function parseImageContentType(contentTypeHeader: string | null): string | null {
-  if (!contentTypeHeader) return null;
+  if (contentTypeHeader === null || contentTypeHeader.length === 0) return null;
   const normalized = contentTypeHeader.split(";")[0]?.trim().toLowerCase() ?? "";
   if (!normalized.startsWith("image/")) return null;
   return normalized;
@@ -29,7 +26,7 @@ function uniqueImageUrls(urls: string[]): string[] {
     try {
       const parsed = new URL(trimmed);
       if (parsed.protocol !== "http:" && parsed.protocol !== "https:") continue;
-      if (parsed.username || parsed.password) continue;
+      if (parsed.username.length > 0 || parsed.password.length > 0) continue;
       unique.add(parsed.toString());
     } catch {
       // Ignore malformed image URLs to keep investigation flow robust.
@@ -80,9 +77,7 @@ async function readResponseBytesWithinLimit(
   return bytes;
 }
 
-async function downloadImage(
-  url: string,
-): Promise<{ bytes: Uint8Array; mimeType: string } | null> {
+async function downloadImage(url: string): Promise<{ bytes: Uint8Array; mimeType: string } | null> {
   try {
     let currentUrl = new URL(url);
 
@@ -90,9 +85,7 @@ async function downloadImage(
       if (currentUrl.protocol !== "http:" && currentUrl.protocol !== "https:") {
         return null;
       }
-      const resolvedBeforeRequest = await resolvePublicHostAddresses(
-        currentUrl.hostname,
-      );
+      const resolvedBeforeRequest = await resolvePublicHostAddresses(currentUrl.hostname);
       if (!resolvedBeforeRequest) {
         return null;
       }
@@ -109,7 +102,7 @@ async function downloadImage(
 
       if (isRedirectStatus(response.status)) {
         const location = response.headers.get("location");
-        if (!location) {
+        if (location === null || location.length === 0) {
           return null;
         }
 
@@ -124,9 +117,7 @@ async function downloadImage(
       // Re-resolve and require overlap with pre-request answers. This narrows
       // DNS rebinding windows by rejecting responses when hostname resolution
       // shifts to a disjoint address set during request handling.
-      const resolvedAfterRequest = await resolvePublicHostAddresses(
-        currentUrl.hostname,
-      );
+      const resolvedAfterRequest = await resolvePublicHostAddresses(currentUrl.hostname);
       if (
         !resolvedAfterRequest ||
         !hasAddressIntersection(resolvedBeforeRequest, resolvedAfterRequest)
@@ -135,12 +126,12 @@ async function downloadImage(
       }
 
       const contentType = parseImageContentType(response.headers.get("content-type"));
-      if (!contentType) {
+      if (contentType === null || contentType.length === 0) {
         return null;
       }
 
       const contentLengthHeader = response.headers.get("content-length");
-      if (contentLengthHeader) {
+      if (contentLengthHeader !== null && contentLengthHeader.length > 0) {
         const contentLength = Number.parseInt(contentLengthHeader, 10);
         if (Number.isFinite(contentLength) && contentLength > MAX_IMAGE_BYTES) {
           return null;
@@ -148,7 +139,7 @@ async function downloadImage(
       }
 
       const bytes = await readResponseBytesWithinLimit(response, MAX_IMAGE_BYTES);
-      if (!bytes) {
+      if (bytes === null) {
         return null;
       }
 
@@ -168,14 +159,12 @@ function hashImageBytes(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-async function findOrCreateImageBlob(
-  input: {
-    contentHash: string;
-    originalUrl: string;
-    bytes: Uint8Array;
-    mimeType: string;
-  },
-): Promise<ImageBlob | null> {
+async function findOrCreateImageBlob(input: {
+  contentHash: string;
+  originalUrl: string;
+  bytes: Uint8Array;
+  mimeType: string;
+}): Promise<ImageBlob | null> {
   const prisma = getPrisma();
   const existing = await prisma.imageBlob.findUnique({
     where: { contentHash: input.contentHash },
@@ -204,35 +193,56 @@ async function findOrCreateImageBlob(
   }
 }
 
-type StoredImage = {
+export type ResolvedDownloadedImage = {
   blob: ImageBlob;
   bytes: Uint8Array;
   mimeType: string;
+  contentHash: string;
 };
+
+type ImageDownloadResolution =
+  | {
+      sourceUrl: string;
+      status: "resolved";
+      image: ResolvedDownloadedImage;
+    }
+  | {
+      sourceUrl: string;
+      status: "failed";
+    };
 
 export async function downloadAndStoreImages(
   urls: string[],
   maxCount: number,
-): Promise<StoredImage[]> {
+): Promise<ImageDownloadResolution[]> {
   const uniqueUrls = uniqueImageUrls(urls).slice(0, maxCount);
   if (uniqueUrls.length === 0) {
     return [];
   }
 
-  const storedImages: StoredImage[] = [];
-  const seenContentHashes = new Set<string>();
+  const resolutions: ImageDownloadResolution[] = [];
+  const resolvedByContentHash = new Map<string, ResolvedDownloadedImage>();
 
   for (const imageUrl of uniqueUrls) {
     const downloaded = await downloadImage(imageUrl);
     if (!downloaded) {
+      resolutions.push({
+        sourceUrl: imageUrl,
+        status: "failed",
+      });
       continue;
     }
 
     const contentHash = hashImageBytes(downloaded.bytes);
-    if (seenContentHashes.has(contentHash)) {
+    const duplicateResolution = resolvedByContentHash.get(contentHash);
+    if (duplicateResolution) {
+      resolutions.push({
+        sourceUrl: imageUrl,
+        status: "resolved",
+        image: duplicateResolution,
+      });
       continue;
     }
-    seenContentHashes.add(contentHash);
 
     const blob = await findOrCreateImageBlob({
       contentHash,
@@ -240,14 +250,27 @@ export async function downloadAndStoreImages(
       bytes: downloaded.bytes,
       mimeType: downloaded.mimeType,
     });
-    if (blob) {
-      storedImages.push({
-        blob,
-        bytes: downloaded.bytes,
-        mimeType: downloaded.mimeType,
+    if (!blob) {
+      resolutions.push({
+        sourceUrl: imageUrl,
+        status: "failed",
       });
+      continue;
     }
+
+    const resolvedImage: ResolvedDownloadedImage = {
+      blob,
+      bytes: downloaded.bytes,
+      mimeType: downloaded.mimeType,
+      contentHash,
+    };
+    resolvedByContentHash.set(contentHash, resolvedImage);
+    resolutions.push({
+      sourceUrl: imageUrl,
+      status: "resolved",
+      image: resolvedImage,
+    });
   }
 
-  return storedImages;
+  return resolutions;
 }

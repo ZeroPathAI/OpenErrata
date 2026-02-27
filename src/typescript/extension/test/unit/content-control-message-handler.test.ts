@@ -67,12 +67,9 @@ test("handleContentControlMessage returns unsupported protocol runtime error", a
   });
 
   assert.notEqual(response, false);
-  assert.deepEqual(
-    extensionRuntimeErrorResponseSchema.parse(await response),
-    {
-      ok: false,
-      error: `Unsupported extension message protocol version: expected ${EXTENSION_MESSAGE_PROTOCOL_VERSION}, received ${EXTENSION_MESSAGE_PROTOCOL_VERSION + 1}`,
-      errorCode: "UNSUPPORTED_PROTOCOL_VERSION",
-    },
-  );
+  assert.deepEqual(extensionRuntimeErrorResponseSchema.parse(await response), {
+    ok: false,
+    error: `Unsupported extension message protocol version: expected ${EXTENSION_MESSAGE_PROTOCOL_VERSION}, received ${EXTENSION_MESSAGE_PROTOCOL_VERSION + 1}`,
+    errorCode: "UNSUPPORTED_PROTOCOL_VERSION",
+  });
 });

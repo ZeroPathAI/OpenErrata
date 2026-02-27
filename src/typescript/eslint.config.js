@@ -28,10 +28,7 @@ const typeAwareRules = {
 
   // ── Operator/template strictness ──────────────────────────────
   "@typescript-eslint/restrict-plus-operands": "error",
-  "@typescript-eslint/restrict-template-expressions": [
-    "error",
-    { allowNumber: true },
-  ],
+  "@typescript-eslint/restrict-template-expressions": ["error", { allowNumber: true }],
   "@typescript-eslint/no-base-to-string": "error",
 
   // ── Array/iteration safety ────────────────────────────────────
@@ -49,12 +46,20 @@ const typeAwareRules = {
   "@typescript-eslint/only-throw-error": "error",
   "@typescript-eslint/prefer-promise-reject-errors": "error",
   "@typescript-eslint/use-unknown-in-catch-callback-variable": "error",
+  "@typescript-eslint/strict-boolean-expressions": [
+    "error",
+    {
+      allowNullableObject: true,
+      allowNullableBoolean: true,
+      allowString: false,
+      allowNumber: false,
+      allowNullableString: false,
+      allowNullableNumber: false,
+    },
+  ],
 
   // ── Unnecessary / redundant code ──────────────────────────────
-  "@typescript-eslint/no-unnecessary-condition": [
-    "error",
-    { allowConstantLoopConditions: true },
-  ],
+  "@typescript-eslint/no-unnecessary-condition": ["error", { allowConstantLoopConditions: true }],
   "@typescript-eslint/no-unnecessary-type-assertion": "error",
   "@typescript-eslint/no-unnecessary-type-arguments": "error",
   "@typescript-eslint/no-unnecessary-boolean-literal-compare": "error",
@@ -67,10 +72,7 @@ const typeAwareRules = {
   "@typescript-eslint/no-unnecessary-qualifier": "error",
 
   // ── Void discipline ───────────────────────────────────────────
-  "@typescript-eslint/no-confusing-void-expression": [
-    "error",
-    { ignoreArrowShorthand: true },
-  ],
+  "@typescript-eslint/no-confusing-void-expression": ["error", { ignoreArrowShorthand: true }],
   "@typescript-eslint/no-meaningless-void-operator": "error",
 
   // ── Exhaustiveness / assertions ───────────────────────────────
@@ -183,7 +185,6 @@ export default [
       "**/vite.config.ts",
       "**/svelte.config.js",
       "extension/playwright.config.ts",
-      "extension/test/**/*.ts",
     ],
     languageOptions: {
       parserOptions: {
@@ -225,10 +226,7 @@ export default [
     rules: {
       "@typescript-eslint/no-unused-vars": "off",
       "no-undef": "off",
-      "svelte/no-target-blank": [
-        "error",
-        { allowReferrer: false, enforceDynamicLinks: "always" },
-      ],
+      "svelte/no-target-blank": ["error", { allowReferrer: false, enforceDynamicLinks: "always" }],
       "svelte/no-dupe-style-properties": "error",
       "svelte/no-dupe-else-if-blocks": "error",
     },

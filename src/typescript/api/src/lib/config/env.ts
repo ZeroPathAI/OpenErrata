@@ -30,8 +30,7 @@ const baseEnvironmentSchema = z.object({
     .string()
     .min(1, "DATABASE_URL is required")
     .refine(
-      (value) =>
-        value.startsWith("postgres://") || value.startsWith("postgresql://"),
+      (value) => value.startsWith("postgres://") || value.startsWith("postgresql://"),
       "DATABASE_URL must use postgres:// or postgresql://",
     ),
   OPENAI_API_KEY: z.string().trim().min(1).optional(),
@@ -46,8 +45,7 @@ const baseEnvironmentSchema = z.object({
   BLOB_STORAGE_SECRET_ACCESS_KEY: requiredNonEmptyStringFromEnv,
   BLOB_STORAGE_PUBLIC_URL_PREFIX: requiredNonEmptyStringFromEnv,
   DATABASE_ENCRYPTION_KEY: requiredNonEmptyStringFromEnv,
-  DATABASE_ENCRYPTION_KEY_ID:
-    optionalNonEmptyStringFromEnv.default("primary"),
+  DATABASE_ENCRYPTION_KEY_ID: optionalNonEmptyStringFromEnv.default("primary"),
 });
 
 const awsBlobStorageEnvironmentSchema = baseEnvironmentSchema.extend({
@@ -86,9 +84,7 @@ function formatZodIssues(error: z.ZodError): string {
     .join("\n");
 }
 
-export function parseEnvironmentValues(
-  environmentValues: NodeJS.ProcessEnv,
-): Environment {
+export function parseEnvironmentValues(environmentValues: NodeJS.ProcessEnv): Environment {
   const result = environmentSchema.safeParse(environmentValues);
   if (result.success) return result.data;
 
@@ -100,8 +96,7 @@ function parseEnvironment(): Environment {
   try {
     return parseEnvironmentValues(process.env);
   } catch (error) {
-    const details =
-      error instanceof Error ? error.message : "Unknown environment parse error";
+    const details = error instanceof Error ? error.message : "Unknown environment parse error";
     console.error(
       `\nInvalid API environment configuration:\n${details}\n\n` +
         "Ensure the api/.env file exists with the required variables. " +
@@ -134,7 +129,7 @@ export function getEnv(): Environment {
 
 export function requireOpenAiApiKey(): string {
   const apiKey = getEnv().OPENAI_API_KEY;
-  if (!apiKey) {
+  if (apiKey === undefined || apiKey.length === 0) {
     throw new Error("OPENAI_API_KEY is required");
   }
   return apiKey;

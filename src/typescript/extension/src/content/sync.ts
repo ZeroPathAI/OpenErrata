@@ -12,24 +12,16 @@ import {
   type ViewPostOutput,
 } from "@openerrata/shared";
 import browser from "webextension-polyfill";
-import {
-  ExtensionRuntimeError,
-  isExtensionContextInvalidatedError,
-} from "../lib/runtime-error.js";
+import { ExtensionRuntimeError, isExtensionContextInvalidatedError } from "../lib/runtime-error.js";
 
-export type ParsedExtensionPageStatus = ReturnType<
-  typeof extensionPageStatusSchema.parse
->;
+export type ParsedExtensionPageStatus = ReturnType<typeof extensionPageStatusSchema.parse>;
 
 type CachedStatusListener = () => void;
 
 function throwIfRuntimeError(response: unknown): void {
   const parsedError = extensionRuntimeErrorResponseSchema.safeParse(response);
   if (!parsedError.success) return;
-  throw new ExtensionRuntimeError(
-    parsedError.data.error,
-    parsedError.data.errorCode,
-  );
+  throw new ExtensionRuntimeError(parsedError.data.error, parsedError.data.errorCode);
 }
 
 export class ContentSyncClient {
@@ -69,10 +61,7 @@ export class ContentSyncClient {
       });
   }
 
-  async sendPageContent(
-    tabSessionId: number,
-    content: PlatformContent,
-  ): Promise<ViewPostOutput> {
+  async sendPageContent(tabSessionId: number, content: PlatformContent): Promise<ViewPostOutput> {
     const response = await browser.runtime.sendMessage({
       v: EXTENSION_MESSAGE_PROTOCOL_VERSION,
       type: "PAGE_CONTENT",
@@ -114,9 +103,10 @@ export class ContentSyncClient {
   }
 
   installCachedStatusListener(listener: CachedStatusListener): () => void {
-    const onStorageChanged: Parameters<
-      typeof browser.storage.onChanged.addListener
-    >[0] = (changes, areaName) => {
+    const onStorageChanged: Parameters<typeof browser.storage.onChanged.addListener>[0] = (
+      changes,
+      areaName,
+    ) => {
       if (areaName !== "local") return;
       if (!Object.keys(changes).some((key) => key.startsWith("tab:"))) return;
       listener();

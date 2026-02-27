@@ -18,7 +18,10 @@ function readInputFixtureKeys(): RefreshMode[] {
           .split(",")
           .map((value) => value.trim())
           .filter((value) => value.length > 0);
-  const fromArgs = process.argv.slice(2).map((value) => value.trim()).filter(Boolean);
+  const fromArgs = process.argv
+    .slice(2)
+    .map((value) => value.trim())
+    .filter(Boolean);
   const keys = fromArgs.length > 0 ? fromArgs : fromEnv;
 
   return keys.map((fixtureKey) => ({

@@ -45,10 +45,7 @@ function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
 }
 
-async function fetchWithTimeout(
-  input: RequestInfo | URL,
-  init: RequestInit,
-): Promise<Response> {
+async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit): Promise<Response> {
   const controller = new AbortController();
   const forwardAbort = (): void => {
     controller.abort();
@@ -168,7 +165,7 @@ export async function probeSettingsConfiguration(
   input: SettingsProbeInput,
 ): Promise<SettingsProbeResult> {
   const normalizedApiBaseUrl = normalizeApiBaseUrl(input.apiBaseUrl);
-  if (!normalizedApiBaseUrl) {
+  if (normalizedApiBaseUrl === null) {
     return {
       status: "error",
       message: API_BASE_URL_REQUIREMENTS_MESSAGE,
@@ -187,17 +184,13 @@ export async function probeSettingsConfiguration(
   });
 
   try {
-    const response = await client.query(
-      EXTENSION_TRPC_PATH.VALIDATE_SETTINGS,
-      undefined,
-    );
+    const response = await client.query(EXTENSION_TRPC_PATH.VALIDATE_SETTINGS, undefined);
     const parsed = settingsValidationOutputSchema.safeParse(response);
 
     if (!parsed.success) {
       return {
         status: "error",
-        message:
-          "Validation response did not match the OpenErrata API contract.",
+        message: "Validation response did not match the OpenErrata API contract.",
       };
     }
 
@@ -209,8 +202,7 @@ export async function probeSettingsConfiguration(
     if (error instanceof TRPCClientError && isMissingValidateSettingsProcedure(error)) {
       return {
         status: "error",
-        message:
-          `Server is reachable but missing ${EXTENSION_TRPC_PATH.VALIDATE_SETTINGS}. Confirm this is the OpenErrata API server.`,
+        message: `Server is reachable but missing ${EXTENSION_TRPC_PATH.VALIDATE_SETTINGS}. Confirm this is the OpenErrata API server.`,
       };
     }
 

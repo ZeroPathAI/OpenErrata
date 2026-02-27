@@ -1,15 +1,7 @@
 import { getPrisma } from "$lib/db/client";
 import { getOrCreateCurrentPrompt } from "./prompt.js";
-import { fetchCanonicalContent } from "./content-fetcher.js";
-import {
-  ensureInvestigationQueued,
-  exceedsInvestigationWordLimit,
-  wordCount,
-} from "./investigation-lifecycle.js";
-import {
-  WORD_COUNT_LIMIT,
-  type Platform,
-} from "@openerrata/shared";
+import { ensureInvestigationQueued } from "./investigation-lifecycle.js";
+import { WORD_COUNT_LIMIT } from "@openerrata/shared";
 import { getSelectorBudget } from "$lib/config/runtime.js";
 
 export async function runSelector(): Promise<number> {
@@ -17,101 +9,79 @@ export async function runSelector(): Promise<number> {
   const budget = getSelectorBudget();
   const prompt = await getOrCreateCurrentPrompt();
 
-  // Select posts that either have no investigation for the current hash,
-  // or are stuck in PENDING and need re-queueing.
+  // Consider the most recently seen version for each post and enqueue
+  // investigations that are missing or in recoverable pending/processing states.
   const candidates = await prisma.$queryRaw<
     Array<{
-      id: string;
-      platform: Platform;
-      externalId: string;
-      url: string;
-      latestContentHash: string;
-      latestContentText: string;
+      postVersionId: string;
+      investigationId: string | null;
+      investigationStatus: "PENDING" | "PROCESSING" | "COMPLETE" | "FAILED" | null;
+      runId: string | null;
+      leaseOwner: string | null;
+      leaseExpiresAt: Date | null;
+      recoverAfterAt: Date | null;
     }>
   >`
-    SELECT p."id", p."platform", p."externalId", p."url",
-           p."latestContentHash", p."latestContentText"
-    FROM "Post" p
+    WITH latest_versions AS (
+      SELECT DISTINCT ON (pv."postId")
+        pv."id" AS "postVersionId",
+        pv."postId",
+        pv."contentBlobId",
+        pv."lastSeenAt"
+      FROM "PostVersion" pv
+      ORDER BY pv."postId", pv."lastSeenAt" DESC, pv."id" DESC
+    )
+    SELECT
+      lv."postVersionId",
+      i."id" AS "investigationId",
+      i."status" AS "investigationStatus",
+      r."id" AS "runId",
+      r."leaseOwner",
+      r."leaseExpiresAt",
+      r."recoverAfterAt"
+    FROM latest_versions lv
+    JOIN "Post" p
+      ON p."id" = lv."postId"
+    JOIN "ContentBlob" cb
+      ON cb."id" = lv."contentBlobId"
     LEFT JOIN "Investigation" i
-      ON i."postId" = p."id"
-     AND i."contentHash" = p."latestContentHash"
+      ON i."postVersionId" = lv."postVersionId"
     LEFT JOIN "InvestigationRun" r
       ON r."investigationId" = i."id"
-    WHERE p."latestContentHash" IS NOT NULL
-      AND p."latestContentText" IS NOT NULL
-      AND p."wordCount" <= ${WORD_COUNT_LIMIT}
+    WHERE cb."wordCount" <= ${WORD_COUNT_LIMIT}
       AND (
-        i."id" IS NULL
-        OR i."status" = 'PENDING'
-        OR (
-          i."status" = 'PROCESSING'
-          AND (
-            r."id" IS NULL
-            OR (
-              r."leaseOwner" IS NOT NULL
-              AND (r."leaseExpiresAt" IS NULL OR r."leaseExpiresAt" <= NOW())
-            )
-            OR (
-              r."leaseOwner" IS NULL
-              AND (r."recoverAfterAt" IS NULL OR r."recoverAfterAt" <= NOW())
-            )
+      i."id" IS NULL
+      OR i."status" = 'PENDING'
+      OR (
+        i."status" = 'PROCESSING'
+        AND (
+          r."id" IS NULL
+          OR (
+            r."leaseOwner" IS NOT NULL
+            AND (r."leaseExpiresAt" IS NULL OR r."leaseExpiresAt" <= NOW())
+          )
+          OR (
+            r."leaseOwner" IS NULL
+            AND (r."recoverAfterAt" IS NULL OR r."recoverAfterAt" <= NOW())
           )
         )
       )
+    )
     ORDER BY p."uniqueViewScore" DESC
     LIMIT ${budget}
   `;
 
   let enqueued = 0;
   for (const candidate of candidates) {
-    let contentHash = candidate.latestContentHash;
-    let contentText = candidate.latestContentText;
-
-    const canonical = await fetchCanonicalContent(
-      candidate.platform,
-      candidate.url,
-      candidate.externalId,
-    );
-
-    if (canonical.provenance === "SERVER_VERIFIED") {
-      contentHash = canonical.contentHash;
-      contentText = canonical.contentText;
-      await prisma.post.update({
-        where: { id: candidate.id },
-      data: {
-          latestContentHash: contentHash,
-          latestContentText: contentText,
-          wordCount: wordCount(contentText),
-        },
-      });
-    }
-
-    if (exceedsInvestigationWordLimit(contentText)) {
-      continue;
-    }
-
     const { enqueued: wasEnqueued } = await ensureInvestigationQueued({
       prisma,
-      postId: candidate.id,
+      postVersionId: candidate.postVersionId,
       promptId: prompt.id,
-      canonical:
-        canonical.provenance === "SERVER_VERIFIED"
-          ? {
-              contentHash,
-              contentText,
-              provenance: "SERVER_VERIFIED" as const,
-            }
-          : {
-              contentHash,
-              contentText,
-              provenance: "CLIENT_FALLBACK" as const,
-              fetchFailureReason: canonical.fetchFailureReason,
-            },
       rejectOverWordLimitOnCreate: false,
     });
 
     if (wasEnqueued) {
-      enqueued++;
+      enqueued += 1;
     }
   }
 

@@ -27,9 +27,28 @@ const investigatorJsonValueSchema: z.ZodType<InvestigatorJsonValue> = z.lazy(() 
     z.record(z.string(), investigatorJsonValueSchema),
   ]),
 );
-const investigatorJsonRecordSchema: z.ZodType<
-  Record<string, InvestigatorJsonValue>
-> = z.record(z.string(), investigatorJsonValueSchema);
+const investigatorJsonRecordSchema: z.ZodType<Record<string, InvestigatorJsonValue>> = z.record(
+  z.string(),
+  investigatorJsonValueSchema,
+);
+
+export type InvestigatorImageOccurrence =
+  | {
+      originalIndex: number;
+      normalizedTextOffset: number;
+      sourceUrl: string;
+      captionText?: string;
+      resolution: "resolved";
+      imageDataUri: string;
+      contentHash: string;
+    }
+  | {
+      originalIndex: number;
+      normalizedTextOffset: number;
+      sourceUrl: string;
+      captionText?: string;
+      resolution: "missing" | "omitted";
+    };
 
 export interface InvestigatorInput {
   contentText: string;
@@ -37,7 +56,7 @@ export interface InvestigatorInput {
   url: string;
   authorName?: string;
   postPublishedAt?: string;
-  imageUrls?: string[];
+  imageOccurrences?: InvestigatorImageOccurrence[];
   hasVideo?: boolean;
   isUpdate?: boolean;
   oldClaims?: InvestigationClaim[];
@@ -50,22 +69,24 @@ export const investigatorRequestedToolAuditSchema = z.object({
   rawDefinition: investigatorJsonRecordSchema,
 });
 
-export const investigatorOutputItemAuditSchema = z.object({
-  outputIndex: z.number().int().nonnegative(),
-  providerItemId: z.string().nullable(),
-  itemType: z.string().min(1),
-  itemStatus: z.string().nullable(),
-}).superRefine((audit, context) => {
-  const providerItemIdMissing = audit.providerItemId === null;
-  const itemStatusMissing = audit.itemStatus === null;
-  if (providerItemIdMissing !== itemStatusMissing) {
-    context.addIssue({
-      code: "custom",
-      path: ["providerItemId"],
-      message: "providerItemId and itemStatus must be either both present or both null",
-    });
-  }
-});
+export const investigatorOutputItemAuditSchema = z
+  .object({
+    outputIndex: z.number().int().nonnegative(),
+    providerItemId: z.string().nullable(),
+    itemType: z.string().min(1),
+    itemStatus: z.string().nullable(),
+  })
+  .superRefine((audit, context) => {
+    const providerItemIdMissing = audit.providerItemId === null;
+    const itemStatusMissing = audit.itemStatus === null;
+    if (providerItemIdMissing !== itemStatusMissing) {
+      context.addIssue({
+        code: "custom",
+        path: ["providerItemId"],
+        message: "providerItemId and itemStatus must be either both present or both null",
+      });
+    }
+  });
 
 export const investigatorOutputTextPartAuditSchema = z.object({
   outputIndex: z.number().int().nonnegative(),
@@ -96,27 +117,28 @@ export const investigatorReasoningSummaryAuditSchema = z.object({
   text: z.string(),
 });
 
-export const investigatorToolCallAuditSchema = z.object({
-  outputIndex: z.number().int().nonnegative(),
-  providerToolCallId: z.string().nullable(),
-  toolType: z.string().min(1),
-  status: z.string().nullable(),
-  rawPayload: investigatorJsonRecordSchema,
-  capturedAt: isoDateTimeSchema,
-  providerStartedAt: isoDateTimeSchema.nullable(),
-  providerCompletedAt: isoDateTimeSchema.nullable(),
-}).superRefine((toolCall, context) => {
-  const providerToolCallIdMissing = toolCall.providerToolCallId === null;
-  const statusMissing = toolCall.status === null;
-  if (providerToolCallIdMissing !== statusMissing) {
-    context.addIssue({
-      code: "custom",
-      path: ["providerToolCallId"],
-      message:
-        "providerToolCallId and status must be either both present or both null",
-    });
-  }
-});
+export const investigatorToolCallAuditSchema = z
+  .object({
+    outputIndex: z.number().int().nonnegative(),
+    providerToolCallId: z.string().nullable(),
+    toolType: z.string().min(1),
+    status: z.string().nullable(),
+    rawPayload: investigatorJsonRecordSchema,
+    capturedAt: isoDateTimeSchema,
+    providerStartedAt: isoDateTimeSchema.nullable(),
+    providerCompletedAt: isoDateTimeSchema.nullable(),
+  })
+  .superRefine((toolCall, context) => {
+    const providerToolCallIdMissing = toolCall.providerToolCallId === null;
+    const statusMissing = toolCall.status === null;
+    if (providerToolCallIdMissing !== statusMissing) {
+      context.addIssue({
+        code: "custom",
+        path: ["providerToolCallId"],
+        message: "providerToolCallId and status must be either both present or both null",
+      });
+    }
+  });
 
 export const investigatorUsageAuditSchema = z.object({
   inputTokens: z.number().int().nonnegative(),
@@ -171,44 +193,26 @@ export const investigatorAttemptAuditSchema = z.union([
   investigatorAttemptFailedAuditSchema,
 ]);
 
-export type InvestigatorRequestedToolAudit = z.infer<
-  typeof investigatorRequestedToolAuditSchema
->;
-export type InvestigatorOutputItemAudit = z.infer<
-  typeof investigatorOutputItemAuditSchema
->;
-export type InvestigatorOutputTextPartAudit = z.infer<
-  typeof investigatorOutputTextPartAuditSchema
->;
+export type InvestigatorRequestedToolAudit = z.infer<typeof investigatorRequestedToolAuditSchema>;
+export type InvestigatorOutputItemAudit = z.infer<typeof investigatorOutputItemAuditSchema>;
+export type InvestigatorOutputTextPartAudit = z.infer<typeof investigatorOutputTextPartAuditSchema>;
 export type InvestigatorOutputTextAnnotationAudit = z.infer<
   typeof investigatorOutputTextAnnotationAuditSchema
 >;
 export type InvestigatorReasoningSummaryAudit = z.infer<
   typeof investigatorReasoningSummaryAuditSchema
 >;
-export type InvestigatorToolCallAudit = z.infer<
-  typeof investigatorToolCallAuditSchema
->;
-export type InvestigatorUsageAudit = z.infer<
-  typeof investigatorUsageAuditSchema
->;
-export type InvestigatorResponseAudit = z.infer<
-  typeof investigatorResponseAuditSchema
->;
+export type InvestigatorToolCallAudit = z.infer<typeof investigatorToolCallAuditSchema>;
+export type InvestigatorUsageAudit = z.infer<typeof investigatorUsageAuditSchema>;
+export type InvestigatorResponseAudit = z.infer<typeof investigatorResponseAuditSchema>;
 export type InvestigatorErrorAudit = z.infer<typeof investigatorErrorAuditSchema>;
 export type InvestigatorAttemptSucceededAudit = z.infer<
   typeof investigatorAttemptSucceededAuditSchema
 >;
-export type InvestigatorAttemptFailedAudit = z.infer<
-  typeof investigatorAttemptFailedAuditSchema
->;
-export type InvestigatorAttemptAudit = z.infer<
-  typeof investigatorAttemptAuditSchema
->;
+export type InvestigatorAttemptFailedAudit = z.infer<typeof investigatorAttemptFailedAuditSchema>;
+export type InvestigatorAttemptAudit = z.infer<typeof investigatorAttemptAuditSchema>;
 
-export function parseInvestigatorAttemptAudit(
-  value: unknown,
-): InvestigatorAttemptAudit {
+export function parseInvestigatorAttemptAudit(value: unknown): InvestigatorAttemptAudit {
   return investigatorAttemptAuditSchema.parse(value);
 }
 

@@ -1,11 +1,8 @@
 import { getPrisma } from "$lib/db/client";
 import { requireOpenAiApiKey } from "$lib/config/env.js";
 import { isRecordNotFoundError } from "$lib/db/errors.js";
-import {
-  isNonRetryableOpenAiStatusCode,
-  readOpenAiStatusCode,
-} from "$lib/openai/errors.js";
-import { downloadAndStoreImages } from "./image-downloader.js";
+import { isNonRetryableOpenAiStatusCode, readOpenAiStatusCode } from "$lib/openai/errors.js";
+import { downloadAndStoreImages, type ResolvedDownloadedImage } from "./image-downloader.js";
 import {
   consumeOpenAiKeySource,
   ExpiredOpenAiKeySourceError,
@@ -22,15 +19,13 @@ import {
   type InvestigatorAttemptFailedAudit,
   type InvestigatorAttemptAudit,
   type InvestigatorAttemptSucceededAudit,
+  type InvestigatorImageOccurrence,
 } from "$lib/investigators/interface.js";
 import { toDate, toOptionalDate } from "$lib/date.js";
-import type {
-  ImageBlob,
-  Prisma,
-} from "$lib/generated/prisma/client";
+import type { ImageBlob, Prisma } from "$lib/generated/prisma/client";
 import { createHash } from "node:crypto";
 import { ZodError } from "zod";
-import { claimIdSchema, MAX_IMAGES_PER_INVESTIGATION } from "@openerrata/shared";
+import { claimIdSchema, MAX_IMAGES_PER_INVESTIGATION, type Platform } from "@openerrata/shared";
 
 interface Logger {
   info(msg: string): void;
@@ -52,21 +47,44 @@ function getServerInvestigator(): OpenAIInvestigator {
   return serverInvestigator;
 }
 const investigationContextInclude = {
-  post: {
+  postVersion: {
     select: {
-      platform: true,
-      url: true,
-      author: { select: { displayName: true } },
-      lesswrongMeta: { select: { publishedAt: true, imageUrls: true } },
-      xMeta: { select: { postedAt: true, mediaUrls: true } },
-      substackMeta: { select: { publishedAt: true, imageUrls: true } },
+      contentBlob: {
+        select: {
+          contentText: true,
+        },
+      },
+      imageOccurrenceSet: {
+        select: {
+          occurrences: {
+            orderBy: [{ originalIndex: "asc" }],
+            select: {
+              originalIndex: true,
+              normalizedTextOffset: true,
+              sourceUrl: true,
+              captionText: true,
+            },
+          },
+        },
+      },
+      post: {
+        select: {
+          platform: true,
+          url: true,
+          author: { select: { displayName: true } },
+          lesswrongMeta: { select: { publishedAt: true } },
+          xMeta: { select: { postedAt: true, mediaUrls: true } },
+          substackMeta: { select: { publishedAt: true } },
+          wikipediaMeta: { select: { lastModifiedAt: true, imageUrls: true } },
+        },
+      },
     },
   },
 } satisfies Prisma.InvestigationInclude;
 type InvestigationWithContext = Prisma.InvestigationGetPayload<{
   include: typeof investigationContextInclude;
 }>;
-type InvestigationPostContext = InvestigationWithContext["post"];
+type InvestigationVersionContext = InvestigationWithContext["postVersion"];
 const runContextInclude = {
   investigation: {
     include: {
@@ -86,31 +104,21 @@ const runContextInclude = {
 type InvestigationRunWithContext = Prisma.InvestigationRunGetPayload<{
   include: typeof runContextInclude;
 }>;
-type PromptPostContext =
-  | {
-      platform: "LESSWRONG";
-      url: string;
-      authorName?: string;
-      postPublishedAt?: string;
-      imageUrls?: string[];
-      hasVideo?: boolean;
-    }
-  | {
-      platform: "X";
-      url: string;
-      authorName?: string;
-      postPublishedAt?: string;
-      imageUrls?: string[];
-      hasVideo?: boolean;
-    }
-  | {
-      platform: "SUBSTACK";
-      url: string;
-      authorName?: string;
-      postPublishedAt?: string;
-      imageUrls?: string[];
-      hasVideo?: boolean;
-    };
+type PromptImageOccurrence = {
+  originalIndex: number;
+  normalizedTextOffset: number;
+  sourceUrl: string;
+  captionText?: string;
+};
+
+type PromptPostContext = {
+  platform: Platform;
+  url: string;
+  authorName?: string;
+  postPublishedAt?: string;
+  imageOccurrences: PromptImageOccurrence[];
+  hasVideo?: boolean;
+};
 
 type UnwrappedError = Error | Record<string, unknown> | string;
 
@@ -139,29 +147,28 @@ function isLikelyVideoUrl(url: string): boolean {
   );
 }
 
-function partitionXMediaUrls(mediaUrls: string[]): {
-  imageUrls: string[];
-  hasVideo: boolean;
-} {
-  const imageUrls: string[] = [];
+function hasXVideoMedia(mediaUrls: string[]): boolean {
   let hasVideo = false;
 
   for (const mediaUrl of mediaUrls) {
     if (isLikelyVideoUrl(mediaUrl)) {
       hasVideo = true;
-      continue;
+      break;
     }
-    imageUrls.push(mediaUrl);
   }
 
-  return {
-    imageUrls,
-    hasVideo,
-  };
+  return hasVideo;
 }
 
-function toPromptPostContext(post: InvestigationPostContext): PromptPostContext {
+function toPromptPostContext(postVersion: InvestigationVersionContext): PromptPostContext {
+  const post = postVersion.post;
   const authorName = post.author?.displayName;
+  const imageOccurrences = postVersion.imageOccurrenceSet.occurrences.map((occurrence) => ({
+    originalIndex: occurrence.originalIndex,
+    normalizedTextOffset: occurrence.normalizedTextOffset,
+    sourceUrl: occurrence.sourceUrl,
+    ...(occurrence.captionText === null ? {} : { captionText: occurrence.captionText }),
+  }));
 
   switch (post.platform) {
     case "LESSWRONG": {
@@ -171,20 +178,20 @@ function toPromptPostContext(post: InvestigationPostContext): PromptPostContext 
         url: post.url,
         ...(authorName != null && { authorName }),
         ...(publishedAt != null && { postPublishedAt: publishedAt.toISOString() }),
-        imageUrls: post.lesswrongMeta?.imageUrls ?? [],
+        imageOccurrences,
         hasVideo: false,
       };
     }
     case "X": {
       const postedAt = post.xMeta?.postedAt;
-      const xMedia = partitionXMediaUrls(post.xMeta?.mediaUrls ?? []);
+      const hasVideo = hasXVideoMedia(post.xMeta?.mediaUrls ?? []);
       return {
         platform: "X",
         url: post.url,
         ...(authorName != null && { authorName }),
         ...(postedAt != null && { postPublishedAt: postedAt.toISOString() }),
-        imageUrls: xMedia.imageUrls,
-        hasVideo: xMedia.hasVideo,
+        imageOccurrences,
+        hasVideo,
       };
     }
     case "SUBSTACK": {
@@ -194,7 +201,20 @@ function toPromptPostContext(post: InvestigationPostContext): PromptPostContext 
         url: post.url,
         ...(authorName != null && { authorName }),
         ...(publishedAt != null && { postPublishedAt: publishedAt.toISOString() }),
-        imageUrls: post.substackMeta?.imageUrls ?? [],
+        imageOccurrences,
+        hasVideo: false,
+      };
+    }
+    case "WIKIPEDIA": {
+      const lastModifiedAt = post.wikipediaMeta?.lastModifiedAt;
+      return {
+        platform: "WIKIPEDIA",
+        url: post.url,
+        ...(authorName != null && { authorName }),
+        ...(lastModifiedAt != null && {
+          postPublishedAt: lastModifiedAt.toISOString(),
+        }),
+        imageOccurrences,
         hasVideo: false,
       };
     }
@@ -204,9 +224,7 @@ function toPromptPostContext(post: InvestigationPostContext): PromptPostContext 
 }
 
 function unwrapError(error: unknown): UnwrappedError {
-  const root = error instanceof InvestigatorExecutionError
-    ? (error.cause ?? error)
-    : error;
+  const root = error instanceof InvestigatorExecutionError ? (error.cause ?? error) : error;
   if (root instanceof Error) return root;
   if (typeof root === "object" && root !== null) {
     return root as Record<string, unknown>;
@@ -267,11 +285,7 @@ async function tryClaimRunLease(
         },
         {
           investigation: { is: { status: "PROCESSING" } },
-          OR: [
-            { leaseOwner: null },
-            { leaseExpiresAt: null },
-            { leaseExpiresAt: { lte: now } },
-          ],
+          OR: [{ leaseOwner: null }, { leaseExpiresAt: null }, { leaseExpiresAt: { lte: now } }],
         },
       ],
     },
@@ -352,9 +366,7 @@ async function replaceInvestigationImages(
   investigationId: string,
   imageBlobs: ImageBlob[],
 ): Promise<void> {
-  const uniqueBlobs = [
-    ...new Map(imageBlobs.map((b) => [b.id, b])).values(),
-  ];
+  const uniqueBlobs = [...new Map(imageBlobs.map((b) => [b.id, b])).values()];
 
   await getPrisma().$transaction(async (tx) => {
     await tx.investigationImage.deleteMany({
@@ -389,23 +401,73 @@ function isSucceededAttemptAudit(
   return attemptAudit.error === null;
 }
 
-async function resolveStoredImageDataUris(
+function uniqueUrlsInOrder(urls: string[]): string[] {
+  const seen = new Set<string>();
+  const unique: string[] = [];
+
+  for (const url of urls) {
+    if (seen.has(url)) continue;
+    seen.add(url);
+    unique.push(url);
+  }
+
+  return unique;
+}
+
+async function resolvePromptImageOccurrences(
   investigationId: string,
-  candidateImageUrls: string[] | undefined,
-): Promise<string[]> {
-  if (!candidateImageUrls || candidateImageUrls.length === 0) {
+  imageOccurrences: PromptImageOccurrence[],
+): Promise<InvestigatorImageOccurrence[]> {
+  if (imageOccurrences.length === 0) {
+    await replaceInvestigationImages(investigationId, []);
     return [];
   }
 
-  const storedImages = await downloadAndStoreImages(
-    candidateImageUrls,
-    MAX_IMAGES_PER_INVESTIGATION,
+  const uniqueSourceUrls = uniqueUrlsInOrder(
+    imageOccurrences.map((occurrence) => occurrence.sourceUrl),
   );
+  const urlsWithinBudget = uniqueSourceUrls.slice(0, MAX_IMAGES_PER_INVESTIGATION);
+  const omittedSourceUrls = new Set(uniqueSourceUrls.slice(MAX_IMAGES_PER_INVESTIGATION));
+
+  const resolutions = await downloadAndStoreImages(urlsWithinBudget, MAX_IMAGES_PER_INVESTIGATION);
+
+  const resolvedBySourceUrl = new Map<string, ResolvedDownloadedImage>();
+  const uniqueResolvedBlobs = new Map<string, ResolvedDownloadedImage>();
+
+  for (const resolution of resolutions) {
+    if (resolution.status !== "resolved") continue;
+    resolvedBySourceUrl.set(resolution.sourceUrl, resolution.image);
+    uniqueResolvedBlobs.set(resolution.image.blob.id, resolution.image);
+  }
+
   await replaceInvestigationImages(
     investigationId,
-    storedImages.map((img) => img.blob),
+    Array.from(uniqueResolvedBlobs.values()).map((image) => image.blob),
   );
-  return storedImages.map((img) => toDataUri(img.bytes, img.mimeType));
+
+  return imageOccurrences.map((occurrence) => {
+    if (omittedSourceUrls.has(occurrence.sourceUrl)) {
+      return {
+        ...occurrence,
+        resolution: "omitted" as const,
+      };
+    }
+
+    const resolved = resolvedBySourceUrl.get(occurrence.sourceUrl);
+    if (!resolved) {
+      return {
+        ...occurrence,
+        resolution: "missing" as const,
+      };
+    }
+
+    return {
+      ...occurrence,
+      resolution: "resolved" as const,
+      imageDataUri: toDataUri(resolved.bytes, resolved.mimeType),
+      contentHash: resolved.contentHash,
+    };
+  });
 }
 
 async function persistAttemptAudit(
@@ -418,30 +480,22 @@ async function persistAttemptAudit(
   },
 ): Promise<void> {
   const attemptAudit = parseInvestigatorAttemptAudit(input.attemptAudit);
-  const failedAttemptAudit = isFailedAttemptAudit(attemptAudit)
-    ? attemptAudit
-    : null;
-  const succeededAttemptAudit = isSucceededAttemptAudit(attemptAudit)
-    ? attemptAudit
-    : null;
+  const failedAttemptAudit = isFailedAttemptAudit(attemptAudit) ? attemptAudit : null;
+  const succeededAttemptAudit = isSucceededAttemptAudit(attemptAudit) ? attemptAudit : null;
   if (input.outcome === "SUCCEEDED" && failedAttemptAudit) {
     throw new Error(
       `Attempt ${input.attemptNumber.toString()} is SUCCEEDED but contains error audit`,
     );
   }
   if (input.outcome === "FAILED" && succeededAttemptAudit) {
-    throw new Error(
-      `Attempt ${input.attemptNumber.toString()} is FAILED but has no error audit`,
-    );
+    throw new Error(`Attempt ${input.attemptNumber.toString()} is FAILED but has no error audit`);
   }
   if (
     input.outcome === "SUCCEEDED" &&
     succeededAttemptAudit === null &&
     failedAttemptAudit === null
   ) {
-    throw new Error(
-      `Attempt ${input.attemptNumber.toString()} has invalid outcome state`,
-    );
+    throw new Error(`Attempt ${input.attemptNumber.toString()} has invalid outcome state`);
   }
 
   const attempt = await tx.investigationAttempt.upsert({
@@ -527,10 +581,8 @@ async function persistAttemptAudit(
   const textPartIdByKey = new Map<string, string>();
   for (const textPart of attemptAudit.response?.outputTextParts ?? []) {
     const outputItemId = outputItemIdByIndex.get(textPart.outputIndex);
-    if (!outputItemId) {
-      throw new Error(
-        `Missing output item for text part outputIndex=${textPart.outputIndex}`,
-      );
+    if (outputItemId === undefined || outputItemId.length === 0) {
+      throw new Error(`Missing output item for text part outputIndex=${textPart.outputIndex}`);
     }
 
     const createdTextPart = await tx.investigationAttemptOutputTextPart.create({
@@ -542,17 +594,12 @@ async function persistAttemptAudit(
       },
     });
 
-    textPartIdByKey.set(
-      `${textPart.outputIndex}:${textPart.partIndex}`,
-      createdTextPart.id,
-    );
+    textPartIdByKey.set(`${textPart.outputIndex}:${textPart.partIndex}`, createdTextPart.id);
   }
 
   for (const annotation of attemptAudit.response?.outputTextAnnotations ?? []) {
-    const textPartId = textPartIdByKey.get(
-      `${annotation.outputIndex}:${annotation.partIndex}`,
-    );
-    if (!textPartId) {
+    const textPartId = textPartIdByKey.get(`${annotation.outputIndex}:${annotation.partIndex}`);
+    if (textPartId === undefined || textPartId.length === 0) {
       throw new Error(
         `Missing text part for annotation outputIndex=${annotation.outputIndex} partIndex=${annotation.partIndex}`,
       );
@@ -574,7 +621,7 @@ async function persistAttemptAudit(
 
   for (const summary of attemptAudit.response?.reasoningSummaries ?? []) {
     const outputItemId = outputItemIdByIndex.get(summary.outputIndex);
-    if (!outputItemId) {
+    if (outputItemId === undefined || outputItemId.length === 0) {
       throw new Error(
         `Missing output item for reasoning summary outputIndex=${summary.outputIndex}`,
       );
@@ -591,10 +638,8 @@ async function persistAttemptAudit(
 
   for (const toolCall of attemptAudit.response?.toolCalls ?? []) {
     const outputItemId = outputItemIdByIndex.get(toolCall.outputIndex);
-    if (!outputItemId) {
-      throw new Error(
-        `Missing output item for tool call outputIndex=${toolCall.outputIndex}`,
-      );
+    if (outputItemId === undefined || outputItemId.length === 0) {
+      throw new Error(`Missing output item for tool call outputIndex=${toolCall.outputIndex}`);
     }
 
     await tx.investigationAttemptToolCall.create({
@@ -621,8 +666,7 @@ async function persistAttemptAudit(
         outputTokens: attemptAudit.response.usage.outputTokens,
         totalTokens: attemptAudit.response.usage.totalTokens,
         cachedInputTokens: attemptAudit.response.usage.cachedInputTokens,
-        reasoningOutputTokens:
-          attemptAudit.response.usage.reasoningOutputTokens,
+        reasoningOutputTokens: attemptAudit.response.usage.reasoningOutputTokens,
       },
     });
   }
@@ -639,14 +683,12 @@ async function persistAttemptAudit(
   }
 }
 
-async function persistFailedAttemptAndMarkInvestigationFailed(
-  input: {
-    runId: string;
-    investigationId: string;
-    attemptNumber: number;
-    attemptAudit: InvestigatorAttemptAudit | null;
-  },
-): Promise<boolean> {
+async function persistFailedAttemptAndMarkInvestigationFailed(input: {
+  runId: string;
+  investigationId: string;
+  attemptNumber: number;
+  attemptAudit: InvestigatorAttemptAudit | null;
+}): Promise<boolean> {
   return getPrisma().$transaction(async (tx) => {
     // Guard: only mark FAILED if still PROCESSING. Another worker may have
     // already moved this investigation to COMPLETE or FAILED.
@@ -683,14 +725,12 @@ async function persistFailedAttemptAndMarkInvestigationFailed(
   });
 }
 
-async function persistFailedAttemptAndReleaseLease(
-  input: {
-    runId: string;
-    investigationId: string;
-    attemptNumber: number;
-    attemptAudit: InvestigatorAttemptAudit | null;
-  },
-): Promise<boolean> {
+async function persistFailedAttemptAndReleaseLease(input: {
+  runId: string;
+  investigationId: string;
+  attemptNumber: number;
+  attemptAudit: InvestigatorAttemptAudit | null;
+}): Promise<boolean> {
   return getPrisma().$transaction(async (tx) => {
     // Guard: only persist transient failure audit if the investigation is still
     // PROCESSING. This UPDATE also takes a row lock so terminal transitions
@@ -777,31 +817,27 @@ export async function orchestrateInvestigation(
       runKey.type === "SERVER_KEY"
         ? getServerInvestigator()
         : new OpenAIInvestigator(runKey.apiKey);
-    const promptPostContext = toPromptPostContext(investigation.post);
-    const imageDataUris = await resolveStoredImageDataUris(
+    const promptPostContext = toPromptPostContext(investigation.postVersion);
+    const resolvedImageOccurrences = await resolvePromptImageOccurrences(
       investigation.id,
-      promptPostContext.imageUrls,
+      promptPostContext.imageOccurrences,
     );
 
     if (
       investigation.parentInvestigationId !== null &&
       investigation.parentInvestigation === null
     ) {
-      throw new Error(
-        `Update investigation ${investigation.id} is missing parent investigation`,
-      );
+      throw new Error(`Update investigation ${investigation.id} is missing parent investigation`);
     }
 
     const output = await investigator.investigate({
-      contentText: investigation.contentText,
+      contentText: investigation.postVersion.contentBlob.contentText,
       ...promptPostContext,
-      imageUrls: imageDataUris,
+      imageOccurrences: resolvedImageOccurrences,
       ...(promptPostContext.hasVideo ? { hasVideo: true } : {}),
       ...(investigation.parentInvestigation !== null && {
         isUpdate: true,
-        ...(investigation.contentDiff === null
-          ? {}
-          : { contentDiff: investigation.contentDiff }),
+        ...(investigation.contentDiff === null ? {} : { contentDiff: investigation.contentDiff }),
         oldClaims: investigation.parentInvestigation.claims.map((claim) => ({
           id: claimIdSchema.parse(claim.id),
           text: claim.text,
@@ -895,8 +931,7 @@ export async function orchestrateInvestigation(
       return;
     }
 
-    const attemptAudit =
-      error instanceof InvestigatorExecutionError ? error.attemptAudit : null;
+    const attemptAudit = error instanceof InvestigatorExecutionError ? error.attemptAudit : null;
 
     // NON_RETRYABLE: deterministic provider or parsing failures.
     if (isNonRetryableProviderError(error)) {

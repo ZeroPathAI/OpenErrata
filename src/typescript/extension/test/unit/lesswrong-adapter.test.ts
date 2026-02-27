@@ -1,43 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { JSDOM } from "jsdom";
 import { lesswrongAdapter } from "../../src/content/adapters/lesswrong.js";
-import type { AdapterExtractionResult } from "../../src/content/adapters/model.js";
-
-type GlobalWindowScope = typeof globalThis & {
-  window?: Window & typeof globalThis;
-};
-
-function withWindow<T>(url: string, html: string, run: (document: Document) => T): T {
-  const dom = new JSDOM(html, { url });
-  const scope = globalThis as GlobalWindowScope;
-  const previousWindow = scope.window;
-  scope.window = dom.window as unknown as Window & typeof globalThis;
-  try {
-    return run(dom.window.document);
-  } finally {
-    if (previousWindow === undefined) {
-      delete scope.window;
-    } else {
-      scope.window = previousWindow;
-    }
-  }
-}
-
-function assertReady(
-  result: AdapterExtractionResult,
-): Extract<AdapterExtractionResult, { kind: "ready" }> {
-  assert.equal(result.kind, "ready");
-  return result;
-}
-
-function assertNotReady(
-  result: AdapterExtractionResult,
-  reason: Extract<AdapterExtractionResult, { kind: "not_ready" }>["reason"],
-): void {
-  assert.equal(result.kind, "not_ready");
-  assert.equal(result.reason, reason);
-}
+import { assertNotReady, assertReady, withWindow } from "../helpers/adapter-harness.js";
 
 test("LessWrong adapter reads author from post header instead of global /users links", () => {
   const result = withWindow(

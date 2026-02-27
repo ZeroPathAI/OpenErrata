@@ -25,12 +25,14 @@ function renderToTemplate(markdown: string): HTMLTemplateElement {
 test("renderClaimReasoningHtml keeps valid markdown links with safe attributes", () => {
   const template = renderToTemplate("See [OpenErrata](https://example.com/docs?q=1).");
   const links = template.content.querySelectorAll("a");
+  const firstLink = links.item(0);
 
   assert.equal(links.length, 1);
-  assert.equal(links[0]?.textContent, "OpenErrata");
-  assert.equal(links[0]?.getAttribute("href"), "https://example.com/docs?q=1");
-  assert.equal(links[0]?.getAttribute("target"), "_blank");
-  assert.equal(links[0]?.getAttribute("rel"), "noopener noreferrer");
+  assert.notEqual(firstLink, null);
+  assert.equal(firstLink.textContent, "OpenErrata");
+  assert.equal(firstLink.getAttribute("href"), "https://example.com/docs?q=1");
+  assert.equal(firstLink.getAttribute("target"), "_blank");
+  assert.equal(firstLink.getAttribute("rel"), "noopener noreferrer");
 });
 
 test("renderClaimReasoningHtml drops non-http(s) markdown links", () => {
@@ -39,8 +41,5 @@ test("renderClaimReasoningHtml drops non-http(s) markdown links", () => {
   );
 
   assert.equal(template.content.querySelectorAll("a").length, 0);
-  assert.match(
-    template.content.textContent ?? "",
-    /Bad \[js\]\(javascript:alert\(1\)\) and mailto\./,
-  );
+  assert.match(template.content.textContent, /Bad \[js\]\(javascript:alert\(1\)\) and mailto\./);
 });

@@ -1,4 +1,3 @@
-import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -10,7 +9,7 @@ import {
 } from "@openerrata/shared";
 import { chromium, expect, test, type BrowserContext, type Worker } from "@playwright/test";
 
-type Platform = "LESSWRONG" | "X" | "SUBSTACK";
+type Platform = "LESSWRONG" | "X" | "SUBSTACK" | "WIKIPEDIA";
 
 interface ExtensionHarness {
   context: BrowserContext;
@@ -32,9 +31,7 @@ interface ExpectedPostStatus {
   investigationState?: ExtensionPostStatus["investigationState"];
 }
 
-async function getCachedStatus(
-  serviceWorker: Worker,
-): Promise<unknown> {
+async function getCachedStatus(serviceWorker: Worker): Promise<unknown> {
   return serviceWorker.evaluate(async (protocolVersion: number) => {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (tab?.id === undefined) {
@@ -44,22 +41,21 @@ async function getCachedStatus(
     const [result] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: async (protocolVersion: number) => {
-        return chrome.runtime.sendMessage({
+        const response = (await chrome.runtime.sendMessage({
           v: protocolVersion,
           type: "GET_CACHED",
-        });
+        })) as unknown;
+        return response;
       },
       args: [protocolVersion],
     });
 
-    return result?.result ?? null;
+    const scriptResult = result?.result;
+    return scriptResult ?? null;
   }, EXTENSION_MESSAGE_PROTOCOL_VERSION);
 }
 
-function hasMatchingSkippedStatus(
-  status: unknown,
-  expected: ExpectedSkippedStatus,
-): boolean {
+function hasMatchingSkippedStatus(status: unknown, expected: ExpectedSkippedStatus): boolean {
   const parsed = extensionPageStatusSchema.safeParse(status);
   if (!parsed.success || parsed.data.kind !== "SKIPPED") return false;
   if (expected.pageUrl !== undefined && parsed.data.pageUrl !== expected.pageUrl) {
@@ -85,8 +81,7 @@ function hasMatchingPostStatus(status: unknown, expected: ExpectedPostStatus): b
     return false;
   }
   return (
-    parsed.data.platform === expected.platform &&
-    parsed.data.externalId === expected.externalId
+    parsed.data.platform === expected.platform && parsed.data.externalId === expected.externalId
   );
 }
 
@@ -94,17 +89,12 @@ async function launchExtensionHarness(): Promise<ExtensionHarness> {
   const extensionPath = resolve(process.cwd(), "dist");
   const userDataDir = mkdtempSync(join(tmpdir(), "openerrata-extension-e2e-"));
   const context = await chromium.launchPersistentContext(userDataDir, {
-    headless: false,
-    args: [
-      `--disable-extensions-except=${extensionPath}`,
-      `--load-extension=${extensionPath}`,
-    ],
+    headless: process.env["CI"] === "true",
+    args: [`--disable-extensions-except=${extensionPath}`, `--load-extension=${extensionPath}`],
   });
 
-  let serviceWorker = context.serviceWorkers()[0];
-  if (!serviceWorker) {
-    serviceWorker = await context.waitForEvent("serviceworker");
-  }
+  const serviceWorker =
+    context.serviceWorkers()[0] ?? (await context.waitForEvent("serviceworker"));
 
   await serviceWorker.evaluate(async () => {
     await chrome.storage.local.clear();
@@ -557,16 +547,6 @@ test("Substack private_or_gated state updates when origin changes but slug stays
       reason: "private_or_gated",
       pageUrl: secondUrl,
     });
-  } finally {
-    await closeExtensionHarness(harness);
-  }
-});
-
-test("sanity: extension service worker is loaded", async () => {
-  const harness = await launchExtensionHarness();
-  try {
-    const serviceWorkerUrl = harness.serviceWorker.url();
-    assert.ok(serviceWorkerUrl.includes("chrome-extension://"));
   } finally {
     await closeExtensionHarness(harness);
   }

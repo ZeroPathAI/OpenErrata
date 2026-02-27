@@ -6,6 +6,7 @@ import {
   DEFAULT_INVESTIGATION_MODEL,
   DEFAULT_INVESTIGATION_PROVIDER,
   investigationResultSchema,
+  validateAndSortImageOccurrences,
   type InvestigationResult,
 } from "@openerrata/shared";
 import { getEnv } from "$lib/config/env.js";
@@ -19,6 +20,7 @@ import {
   type Investigator,
   type InvestigatorAttemptAudit,
   type InvestigatorErrorAudit,
+  type InvestigatorImageOccurrence,
   type InvestigatorInput,
   type InvestigatorJsonValue,
   type InvestigatorOutput,
@@ -70,11 +72,17 @@ const providerStructuredInvestigationClaimPayloadSchema = z
     context: z.string().min(1),
     summary: z.string().min(1),
     reasoning: z.string().min(1),
-    sources: z.array(z.object({
-      url: providerStructuredSourceUrlSchema,
-      title: z.string().min(1),
-      snippet: z.string().min(1),
-    }).strict()).min(1),
+    sources: z
+      .array(
+        z
+          .object({
+            url: providerStructuredSourceUrlSchema,
+            title: z.string().min(1),
+            snippet: z.string().min(1),
+          })
+          .strict(),
+      )
+      .min(1),
   })
   .strict();
 
@@ -98,9 +106,7 @@ const updateNewActionSchema = z
  * there are no old claims, only "new" actions are permitted — carry actions are
  * structurally impossible.
  */
-function buildUpdateInvestigationResultSchema(
-  oldClaimIds: [string, ...string[]] | [],
-) {
+function buildUpdateInvestigationResultSchema(oldClaimIds: [string, ...string[]] | []) {
   const actionSchema =
     oldClaimIds.length > 0
       ? z.union([
@@ -131,10 +137,7 @@ type FunctionCallOutput = {
   output: string;
 };
 
-function buildTwoStepRequestInputAudit(
-  userPrompt: string,
-  validationPrompt: string,
-): string {
+function buildTwoStepRequestInputAudit(userPrompt: string, validationPrompt: string): string {
   return `=== Stage 1: Fact-check input ===
 ${userPrompt}
 
@@ -142,30 +145,181 @@ ${userPrompt}
 ${validationPrompt}`;
 }
 
+function appendTextInputPart(
+  contentParts: Array<
+    | {
+        type: "input_text";
+        text: string;
+      }
+    | {
+        type: "input_image";
+        detail: "auto";
+        image_url: string;
+      }
+  >,
+  text: string,
+): void {
+  if (text.length === 0) return;
+  contentParts.push({
+    type: "input_text",
+    text,
+  });
+}
+
+function normalizeImageOccurrences(
+  imageOccurrences: InvestigatorImageOccurrence[] | undefined,
+  contentText?: string,
+): InvestigatorImageOccurrence[] {
+  return validateAndSortImageOccurrences(imageOccurrences, {
+    ...(contentText === undefined ? {} : { contentTextLength: contentText.length }),
+    onValidationIssue: (issue): never => {
+      switch (issue.code) {
+        case "NON_CONTIGUOUS_ORIGINAL_INDEX":
+          throw new InvestigatorStructuredOutputError(
+            "Image occurrences must use contiguous originalIndex values starting at 0",
+          );
+        case "OFFSET_EXCEEDS_CONTENT_LENGTH":
+          throw new InvestigatorStructuredOutputError(
+            "Image occurrence offset exceeds contentText length",
+          );
+        case "DECREASING_NORMALIZED_TEXT_OFFSET":
+          throw new InvestigatorStructuredOutputError(
+            "Image occurrences must be non-decreasing by normalizedTextOffset",
+          );
+      }
+    },
+  });
+}
+
+function buildValidationImageContextNotes(
+  imageOccurrences: InvestigatorImageOccurrence[] | undefined,
+): string | undefined {
+  const normalizedOccurrences = normalizeImageOccurrences(imageOccurrences);
+  if (normalizedOccurrences.length === 0) {
+    return undefined;
+  }
+
+  const seenResolvedContentHashes = new Set<string>();
+  const lines = normalizedOccurrences.map((occurrence, index) => {
+    const captionPart =
+      occurrence.captionText === undefined
+        ? ""
+        : `; caption=${JSON.stringify(occurrence.captionText)}`;
+
+    if (occurrence.resolution === "resolved") {
+      const status = seenResolvedContentHashes.has(occurrence.contentHash)
+        ? "resolved_duplicate"
+        : "resolved_first";
+      seenResolvedContentHashes.add(occurrence.contentHash);
+      return `${(index + 1).toString()}. offset=${occurrence.normalizedTextOffset}; status=${status}; sourceUrl=${occurrence.sourceUrl}${captionPart}`;
+    }
+
+    return `${(index + 1).toString()}. offset=${occurrence.normalizedTextOffset}; status=${occurrence.resolution}; sourceUrl=${occurrence.sourceUrl}${captionPart}`;
+  });
+
+  return lines.join("\n");
+}
+
 function buildInitialInput(
   userPrompt: string,
-  imageUrls: string[] | undefined,
+  contentText: string,
+  imageOccurrences: InvestigatorImageOccurrence[] | undefined,
 ): string | ResponseInput {
-  if (!imageUrls || imageUrls.length === 0) {
+  const normalizedOccurrences = normalizeImageOccurrences(imageOccurrences, contentText);
+  if (normalizedOccurrences.length === 0) {
     return userPrompt;
   }
+
+  const postTextStart = userPrompt.indexOf(contentText);
+  const postTextEnd = postTextStart + contentText.length;
+  if (postTextStart < 0) {
+    throw new InvestigatorStructuredOutputError(
+      "Post contentText was not found in the stage-1 user prompt",
+    );
+  }
+  if (userPrompt.lastIndexOf(contentText) !== postTextStart) {
+    throw new InvestigatorStructuredOutputError(
+      "Post contentText appeared multiple times in the stage-1 user prompt",
+    );
+  }
+
+  const contentParts: Array<
+    | {
+        type: "input_text";
+        text: string;
+      }
+    | {
+        type: "input_image";
+        detail: "auto";
+        image_url: string;
+      }
+  > = [];
+  appendTextInputPart(contentParts, userPrompt.slice(0, postTextStart));
+
+  const seenResolvedContentHashes = new Set<string>();
+  let cursor = 0;
+  let omittedCount = 0;
+  for (const occurrence of normalizedOccurrences) {
+    appendTextInputPart(contentParts, contentText.slice(cursor, occurrence.normalizedTextOffset));
+    cursor = occurrence.normalizedTextOffset;
+
+    if (occurrence.captionText !== undefined) {
+      appendTextInputPart(contentParts, `[Image context] ${occurrence.captionText}`);
+    }
+
+    if (occurrence.resolution === "resolved") {
+      if (seenResolvedContentHashes.has(occurrence.contentHash)) {
+        appendTextInputPart(contentParts, "[Same image as earlier appears here.]");
+        continue;
+      }
+
+      seenResolvedContentHashes.add(occurrence.contentHash);
+      contentParts.push({
+        type: "input_image",
+        detail: "auto",
+        image_url: occurrence.imageDataUri,
+      });
+      continue;
+    }
+
+    if (occurrence.resolution === "omitted") {
+      omittedCount += 1;
+      appendTextInputPart(
+        contentParts,
+        "[Image present in source but omitted due to image budget.]",
+      );
+      continue;
+    }
+
+    appendTextInputPart(
+      contentParts,
+      "[Image present in source but unavailable at inference time.]",
+    );
+  }
+
+  appendTextInputPart(contentParts, contentText.slice(cursor));
+  if (omittedCount > 0) {
+    appendTextInputPart(
+      contentParts,
+      `[Note] ${omittedCount.toString()} image occurrence(s) were omitted due to image budget.`,
+    );
+  }
+  appendTextInputPart(contentParts, userPrompt.slice(postTextEnd));
 
   const multimodalInput: ResponseInput = [
     {
       role: "user",
-      content: [
-        { type: "input_text", text: userPrompt },
-        ...imageUrls.map((url) => ({
-          type: "input_image" as const,
-          detail: "auto" as const,
-          image_url: url,
-        })),
-      ],
+      content: contentParts,
     },
   ];
 
   return multimodalInput;
 }
+
+export const openAiInvestigatorInternals = {
+  buildInitialInput,
+  buildValidationImageContextNotes,
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -198,9 +352,7 @@ function sanitizeJsonValue(value: unknown, depth = 0): InvestigatorJsonValue {
 }
 
 function sanitizeJsonRecord(value: unknown): Record<string, InvestigatorJsonValue> {
-  return isRecord(value)
-    ? (sanitizeJsonValue(value) as Record<string, InvestigatorJsonValue>)
-    : {};
+  return isRecord(value) ? (sanitizeJsonValue(value) as Record<string, InvestigatorJsonValue>) : {};
 }
 
 function readString(value: unknown): string | null {
@@ -253,11 +405,7 @@ function parseTimestamp(value: unknown): string | null {
   return null;
 }
 
-function findTimestamp(
-  value: unknown,
-  candidateKeys: Set<string>,
-  depth = 0,
-): string | null {
+function findTimestamp(value: unknown, candidateKeys: Set<string>, depth = 0): string | null {
   if (depth > 6) return null;
 
   if (isRecord(value)) {
@@ -265,24 +413,22 @@ function findTimestamp(
       const normalizedKey = key.toLowerCase();
       if (candidateKeys.has(normalizedKey)) {
         const parsed = parseTimestamp(nested);
-        if (parsed) return parsed;
+        if (parsed !== null && parsed.length > 0) return parsed;
       }
       const nestedResult = findTimestamp(nested, candidateKeys, depth + 1);
-      if (nestedResult) return nestedResult;
+      if (nestedResult !== null && nestedResult.length > 0) return nestedResult;
     }
   } else if (Array.isArray(value)) {
     for (const nested of value) {
       const nestedResult = findTimestamp(nested, candidateKeys, depth + 1);
-      if (nestedResult) return nestedResult;
+      if (nestedResult !== null && nestedResult.length > 0) return nestedResult;
     }
   }
 
   return null;
 }
 
-function extractRequestedTools(
-  tools: unknown,
-): InvestigatorRequestedToolAudit[] {
+function extractRequestedTools(tools: unknown): InvestigatorRequestedToolAudit[] {
   if (!Array.isArray(tools)) return [];
 
   const extracted: InvestigatorRequestedToolAudit[] = [];
@@ -317,8 +463,7 @@ function extractOutputItems(outputItems: unknown[]): InvestigatorOutputItemAudit
     const itemStatus = readString(outputItem["status"]);
     extracted.push({
       outputIndex,
-      providerItemId:
-        providerItemId === null || itemStatus === null ? null : providerItemId,
+      providerItemId: providerItemId === null || itemStatus === null ? null : providerItemId,
       itemType: readString(outputItem["type"]) ?? "unknown",
       itemStatus: providerItemId === null || itemStatus === null ? null : itemStatus,
     });
@@ -346,7 +491,7 @@ function extractOutputTextArtifacts(outputItems: unknown[]): {
       const partType = readString(part["type"]);
       if (partType === "output_text") {
         const text = readString(part["text"]);
-        if (!text) continue;
+        if (text === null || text.length === 0) continue;
 
         parts.push({
           outputIndex,
@@ -389,7 +534,7 @@ function extractOutputTextArtifacts(outputItems: unknown[]): {
 
       if (partType === "refusal") {
         const refusal = readString(part["refusal"]);
-        if (!refusal) continue;
+        if (refusal === null || refusal.length === 0) continue;
 
         parts.push({
           outputIndex,
@@ -404,9 +549,7 @@ function extractOutputTextArtifacts(outputItems: unknown[]): {
   return { parts, annotations };
 }
 
-function extractReasoningSummaries(
-  outputItems: unknown[],
-): InvestigatorReasoningSummaryAudit[] {
+function extractReasoningSummaries(outputItems: unknown[]): InvestigatorReasoningSummaryAudit[] {
   const summaries: InvestigatorReasoningSummaryAudit[] = [];
 
   for (const [outputIndex, outputItem] of outputItems.entries()) {
@@ -418,7 +561,7 @@ function extractReasoningSummaries(
     for (const [summaryIndex, summaryPart] of summary.entries()) {
       if (!isRecord(summaryPart)) continue;
       const text = readString(summaryPart["text"]);
-      if (!text) continue;
+      if (text === null || text.length === 0) continue;
 
       summaries.push({
         outputIndex,
@@ -444,33 +587,18 @@ function toToolCallAudit(
 
   const providerStartedAt = findTimestamp(
     outputItem,
-    new Set([
-      "started_at",
-      "start_time",
-      "created_at",
-      "createdat",
-      "requested_at",
-      "timestamp",
-    ]),
+    new Set(["started_at", "start_time", "created_at", "createdat", "requested_at", "timestamp"]),
   );
   const providerCompletedAt = findTimestamp(
     outputItem,
-    new Set([
-      "completed_at",
-      "finished_at",
-      "ended_at",
-      "updated_at",
-      "completedat",
-      "finishedat",
-    ]),
+    new Set(["completed_at", "finished_at", "ended_at", "updated_at", "completedat", "finishedat"]),
   );
   const providerToolCallId = readString(outputItem["id"]);
   const status = readString(outputItem["status"]);
 
   return {
     outputIndex,
-    providerToolCallId:
-      providerToolCallId === null || status === null ? null : providerToolCallId,
+    providerToolCallId: providerToolCallId === null || status === null ? null : providerToolCallId,
     toolType: type,
     status: providerToolCallId === null || status === null ? null : status,
     rawPayload: sanitizeJsonRecord(outputItem),
@@ -517,9 +645,7 @@ function extractUsage(responseRecord: Record<string, unknown>): InvestigatorUsag
 }
 
 function extractResponseAudit(responseRecord: Record<string, unknown>): InvestigatorResponseAudit {
-  const outputItems = Array.isArray(responseRecord["output"])
-    ? responseRecord["output"]
-    : [];
+  const outputItems = Array.isArray(responseRecord["output"]) ? responseRecord["output"] : [];
 
   const outputTextArtifacts = extractOutputTextArtifacts(outputItems);
 
@@ -568,12 +694,8 @@ function offsetResponseAuditIndices(
   };
 }
 
-function aggregateUsage(
-  usages: (InvestigatorUsageAudit | null)[],
-): InvestigatorUsageAudit | null {
-  const presentUsages = usages.filter(
-    (usage): usage is InvestigatorUsageAudit => usage !== null,
-  );
+function aggregateUsage(usages: (InvestigatorUsageAudit | null)[]): InvestigatorUsageAudit | null {
+  const presentUsages = usages.filter((usage): usage is InvestigatorUsageAudit => usage !== null);
   if (presentUsages.length === 0) return null;
 
   return presentUsages.reduce<InvestigatorUsageAudit>(
@@ -581,8 +703,7 @@ function aggregateUsage(
       inputTokens: accumulator.inputTokens + usage.inputTokens,
       outputTokens: accumulator.outputTokens + usage.outputTokens,
       totalTokens: accumulator.totalTokens + usage.totalTokens,
-      cachedInputTokens:
-        (accumulator.cachedInputTokens ?? 0) + (usage.cachedInputTokens ?? 0),
+      cachedInputTokens: (accumulator.cachedInputTokens ?? 0) + (usage.cachedInputTokens ?? 0),
       reasoningOutputTokens:
         (accumulator.reasoningOutputTokens ?? 0) + (usage.reasoningOutputTokens ?? 0),
     }),
@@ -612,9 +733,7 @@ function mergeResponseAudits(
     responseOutputText: finalAudit.responseOutputText,
     outputItems: responseAudits.flatMap((audit) => audit.outputItems),
     outputTextParts: responseAudits.flatMap((audit) => audit.outputTextParts),
-    outputTextAnnotations: responseAudits.flatMap(
-      (audit) => audit.outputTextAnnotations,
-    ),
+    outputTextAnnotations: responseAudits.flatMap((audit) => audit.outputTextAnnotations),
     reasoningSummaries: responseAudits.flatMap((audit) => audit.reasoningSummaries),
     toolCalls: responseAudits.flatMap((audit) => audit.toolCalls),
     usage: aggregateUsage(responseAudits.map((audit) => audit.usage)),
@@ -624,9 +743,7 @@ function mergeResponseAudits(
 function extractPendingFunctionToolCalls(
   responseRecord: Record<string, unknown>,
 ): PendingFunctionToolCall[] {
-  const outputItems = Array.isArray(responseRecord["output"])
-    ? responseRecord["output"]
-    : [];
+  const outputItems = Array.isArray(responseRecord["output"]) ? responseRecord["output"] : [];
 
   const calls: PendingFunctionToolCall[] = [];
   for (const outputItem of outputItems) {
@@ -635,7 +752,15 @@ function extractPendingFunctionToolCalls(
     const callId = readString(outputItem["call_id"]);
     const name = readString(outputItem["name"]);
     const argumentsJson = readString(outputItem["arguments"]);
-    if (!callId || !name || argumentsJson === null) continue;
+    if (
+      callId === null ||
+      callId.length === 0 ||
+      name === null ||
+      name.length === 0 ||
+      argumentsJson === null
+    ) {
+      continue;
+    }
 
     calls.push({ callId, name, argumentsJson });
   }
@@ -643,9 +768,7 @@ function extractPendingFunctionToolCalls(
   return calls;
 }
 
-function deduplicateFunctionToolCalls(
-  calls: PendingFunctionToolCall[],
-): PendingFunctionToolCall[] {
+function deduplicateFunctionToolCalls(calls: PendingFunctionToolCall[]): PendingFunctionToolCall[] {
   const deduplicated: PendingFunctionToolCall[] = [];
   const seen = new Set<string>();
   for (const call of calls) {
@@ -656,9 +779,7 @@ function deduplicateFunctionToolCalls(
   return deduplicated;
 }
 
-async function executeFunctionToolCall(
-  call: PendingFunctionToolCall,
-): Promise<FunctionCallOutput> {
+async function executeFunctionToolCall(call: PendingFunctionToolCall): Promise<FunctionCallOutput> {
   if (call.name === FETCH_URL_TOOL_NAME) {
     const toolOutput = await executeFetchUrlTool(call.argumentsJson);
     return {
@@ -736,6 +857,7 @@ async function validateClaim(
   claimIndex: number,
   claim: InvestigationResult["claims"][number],
   contentText: string,
+  imageContextNotes: string | undefined,
   requestReasoning: {
     effort: "low" | "medium" | "high";
     summary: "auto" | "concise" | "detailed";
@@ -744,6 +866,7 @@ async function validateClaim(
   const validationPrompt = buildValidationPrompt({
     currentPostText: contentText,
     candidateClaim: claim,
+    ...(imageContextNotes === undefined ? {} : { imageContextNotes }),
   });
 
   let response: unknown;
@@ -755,10 +878,7 @@ async function validateClaim(
       input: validationPrompt,
       reasoning: requestReasoning,
       text: {
-        format: zodTextFormat(
-          claimValidationResultSchema,
-          "claim_validation_result",
-        ),
+        format: zodTextFormat(claimValidationResultSchema, "claim_validation_result"),
       },
     });
   } catch (caught) {
@@ -824,30 +944,23 @@ export class OpenAIInvestigator implements Investigator {
       ...(input.oldClaims !== undefined && { oldClaims: input.oldClaims }),
       ...(input.contentDiff !== undefined && { contentDiff: input.contentDiff }),
     });
-    const initialInput = buildInitialInput(userPrompt, input.imageUrls);
+    const initialInput = buildInitialInput(userPrompt, input.contentText, input.imageOccurrences);
+    const validationImageContextNotes = buildValidationImageContextNotes(input.imageOccurrences);
     const client = this.client;
 
-    const requestedTools = [
-      { type: "web_search_preview" as const },
-      fetchUrlToolDefinition,
-    ];
+    const requestedTools = [{ type: "web_search_preview" as const }, fetchUrlToolDefinition];
     const requestReasoning = {
       effort: DEFAULT_REASONING_EFFORT as "low" | "medium" | "high",
       summary: DEFAULT_REASONING_SUMMARY as "auto" | "concise" | "detailed",
     };
-    const oldClaimIds = (input.oldClaims ?? []).map((c) => c.id) as
-      | [string, ...string[]]
-      | [];
+    const oldClaimIds = (input.oldClaims ?? []).map((c) => c.id) as [string, ...string[]] | [];
     const stageOneFormat =
       input.isUpdate === true
         ? zodTextFormat(
             buildUpdateInvestigationResultSchema(oldClaimIds),
             "investigation_update_result",
           )
-        : zodTextFormat(
-            providerStructuredInvestigationResultSchema,
-            "investigation_result",
-          );
+        : zodTextFormat(providerStructuredInvestigationResultSchema, "investigation_result");
 
     const baseResponseRequest = {
       model: OPENAI_MODEL_ID,
@@ -861,10 +974,7 @@ export class OpenAIInvestigator implements Investigator {
     };
 
     const startedAt = new Date().toISOString();
-    const stageOneAttemptAuditBase: Omit<
-      InvestigatorAttemptAudit,
-      "response" | "error"
-    > = {
+    const stageOneAttemptAuditBase: Omit<InvestigatorAttemptAudit, "response" | "error"> = {
       startedAt,
       completedAt: null,
       requestModel: OPENAI_MODEL_ID,
@@ -925,7 +1035,7 @@ export class OpenAIInvestigator implements Investigator {
       );
       if (pendingFunctionCalls.length === 0) break;
 
-      if (!previousResponseId) {
+      if (previousResponseId === null || previousResponseId.length === 0) {
         const cause = new InvestigatorStructuredOutputError(
           "Tool calls were emitted without a response id",
         );
@@ -949,9 +1059,7 @@ export class OpenAIInvestigator implements Investigator {
     }
 
     if (!latestResponseRecord || responseAudits.length === 0) {
-      const cause = new InvestigatorStructuredOutputError(
-        "Model returned no response payload",
-      );
+      const cause = new InvestigatorStructuredOutputError("Model returned no response payload");
       throw new InvestigatorExecutionError(
         cause.message,
         parseInvestigatorAttemptAudit({
@@ -992,14 +1100,12 @@ export class OpenAIInvestigator implements Investigator {
 
     if (factCheckResponseAudit.responseStatus !== "completed") {
       const incompleteReason = readIncompleteReason(latestResponseRecord);
-      const cause = new InvestigatorIncompleteResponseError(
-        {
-          responseStatus: factCheckResponseAudit.responseStatus,
-          responseId: factCheckResponseAudit.responseId,
-          incompleteReason,
-          outputTextLength: factCheckResponseAudit.responseOutputText?.length ?? 0,
-        },
-      );
+      const cause = new InvestigatorIncompleteResponseError({
+        responseStatus: factCheckResponseAudit.responseStatus,
+        responseId: factCheckResponseAudit.responseId,
+        incompleteReason,
+        outputTextLength: factCheckResponseAudit.responseOutputText?.length ?? 0,
+      });
       throw new InvestigatorExecutionError(
         "OpenAI response was incomplete before structured output parsing",
         parseInvestigatorAttemptAudit({
@@ -1012,9 +1118,7 @@ export class OpenAIInvestigator implements Investigator {
 
     const outputText = factCheckResponseAudit.responseOutputText ?? "";
     if (outputText.trim().length === 0) {
-      const cause = new InvestigatorStructuredOutputError(
-        "Model returned empty structured output",
-      );
+      const cause = new InvestigatorStructuredOutputError("Model returned empty structured output");
       throw new InvestigatorExecutionError(
         cause.message,
         parseInvestigatorAttemptAudit({
@@ -1086,9 +1190,7 @@ export class OpenAIInvestigator implements Investigator {
       }
 
       const oldClaims = input.oldClaims ?? [];
-      const oldClaimsById = new Map(
-        oldClaims.map((claim) => [claim.id as string, claim] as const),
-      );
+      const oldClaimsById = new Map(oldClaims.map((claim) => [claim.id as string, claim] as const));
       const carriedClaimIds = new Set<string>();
 
       for (const [index, action] of updateResult.actions.entries()) {
@@ -1134,24 +1236,18 @@ export class OpenAIInvestigator implements Investigator {
       }
     }
 
-    const claimsToValidate = claimDispositions.filter(
-      (d) => d.needsValidation,
-    );
+    const claimsToValidate = claimDispositions.filter((d) => d.needsValidation);
 
-    const validationInputSummary = claimDispositions
-      .map((d) => d.validationDescription)
-      .join("\n");
+    const validationInputSummary = claimDispositions.map((d) => d.validationDescription).join("\n");
+    const stageTwoInputSummary =
+      validationImageContextNotes === undefined
+        ? validationInputSummary
+        : `${validationInputSummary}\n\nImage context notes:\n${validationImageContextNotes}`;
 
-    const stageTwoAttemptAuditBase: Omit<
-      InvestigatorAttemptAudit,
-      "response" | "error"
-    > = {
+    const stageTwoAttemptAuditBase: Omit<InvestigatorAttemptAudit, "response" | "error"> = {
       ...stageOneAttemptAuditBase,
       requestInstructions: TWO_STEP_REQUEST_INSTRUCTIONS,
-      requestInput: buildTwoStepRequestInputAudit(
-        userPrompt,
-        validationInputSummary,
-      ),
+      requestInput: buildTwoStepRequestInputAudit(userPrompt, stageTwoInputSummary),
     };
 
     // Fast path: no new claims require validation (for example, pure carry actions).
@@ -1206,6 +1302,7 @@ export class OpenAIInvestigator implements Investigator {
             index,
             claim,
             input.contentText,
+            validationImageContextNotes,
             requestReasoning,
           ),
         ),
@@ -1218,15 +1315,11 @@ export class OpenAIInvestigator implements Investigator {
       }
     }
 
-    const failedValidations = validationResults.filter(
-      (result) => result.error !== null,
-    );
+    const failedValidations = validationResults.filter((result) => result.error !== null);
     const validationFailureResponseAudits = failedValidations.flatMap((result) =>
       result.responseAudit === null ? [] : [result.responseAudit],
     );
-    const successfulValidations = validationResults.filter(
-      (result) => result.error === null,
-    );
+    const successfulValidations = validationResults.filter((result) => result.error === null);
 
     let validationOutputOffset = factCheckResponseAudit.outputItems.length;
     const orderedValidationResponseAudits = [
@@ -1235,10 +1328,7 @@ export class OpenAIInvestigator implements Investigator {
       ),
       ...validationFailureResponseAudits,
     ].map((responseAudit) => {
-      const offsetAudit = offsetResponseAuditIndices(
-        responseAudit,
-        validationOutputOffset,
-      );
+      const offsetAudit = offsetResponseAuditIndices(responseAudit, validationOutputOffset);
       validationOutputOffset += responseAudit.outputItems.length;
       return offsetAudit;
     });

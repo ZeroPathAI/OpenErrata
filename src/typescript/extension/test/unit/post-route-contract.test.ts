@@ -1,15 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { getAdapter } from "../../src/content/adapters/index";
-import {
-  isSupportedPostUrl,
-  parseSupportedPageIdentity,
-} from "../../src/lib/post-identity";
+import { isSupportedPostUrl, parseSupportedPageIdentity } from "../../src/lib/post-identity";
 import { isSubstackPostPathUrl } from "../../src/popup/status-identity";
 
 type SupportedCase = {
   url: string;
-  platform: "LESSWRONG" | "X" | "SUBSTACK";
+  platform: "LESSWRONG" | "X" | "SUBSTACK" | "WIKIPEDIA";
   externalId: string;
 };
 
@@ -54,6 +51,26 @@ const supportedCases: SupportedCase[] = [
     platform: "SUBSTACK",
     externalId: "example-post",
   },
+  {
+    url: "https://en.wikipedia.org/wiki/Climate_change",
+    platform: "WIKIPEDIA",
+    externalId: "en:Climate_change",
+  },
+  {
+    url: "https://de.wikipedia.org/wiki/Erde",
+    platform: "WIKIPEDIA",
+    externalId: "de:Erde",
+  },
+  {
+    url: "https://en.wikipedia.org/w/index.php?title=Climate_change&oldid=1244905470",
+    platform: "WIKIPEDIA",
+    externalId: "en:Climate_change",
+  },
+  {
+    url: "https://en.wikipedia.org/w/index.php?curid=12345&oldid=1244905470",
+    platform: "WIKIPEDIA",
+    externalId: "en:12345",
+  },
 ];
 
 const unsupportedUrls = [
@@ -61,6 +78,8 @@ const unsupportedUrls = [
   "https://www.lesswrong.com/posts",
   "https://x.com/home",
   "https://x.com/compose/post",
+  "https://en.wikipedia.org/wiki/Talk:Climate_change",
+  "https://en.wikipedia.org/w/index.php?oldid=1244905470",
   "https://example.com/i/status/1234567890123456789",
   "https://example.com/openerrata/status/1234567890123456789",
 ];

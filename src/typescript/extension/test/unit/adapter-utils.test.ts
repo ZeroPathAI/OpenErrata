@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { JSDOM } from "jsdom";
 import {
+  extractContentWithImageOccurrencesFromRoot,
   extractImageUrlsFromRoot,
   readFirstMetaDateAsIso,
   readFirstTimeDateAsIso,
@@ -39,7 +41,9 @@ function makeDocumentStub(input: {
     },
     querySelectorAll(selector: string) {
       if (selector === 'script[type="application/ld+json"]') {
-        return (input.scripts ?? []).map((text) => ({ textContent: text })) as unknown as NodeListOf<HTMLScriptElement>;
+        return (input.scripts ?? []).map((text) => ({
+          textContent: text,
+        })) as unknown as NodeListOf<HTMLScriptElement>;
       }
       return [] as unknown as NodeListOf<Element>;
     },
@@ -105,10 +109,7 @@ test("readPublishedDateFromJsonLd handles malformed and nested JSON-LD", () => {
     ],
   });
 
-  const publishedAt = readPublishedDateFromJsonLd(
-    document,
-    new Set(["datePublished"]),
-  );
+  const publishedAt = readPublishedDateFromJsonLd(document, new Set(["datePublished"]));
 
   assert.equal(publishedAt, "2025-08-09T10:11:12.000Z");
 });
@@ -149,13 +150,52 @@ test("extractImageUrlsFromRoot normalizes, deduplicates, and filters invalid sou
     null,
   ]);
 
-  const imageUrls = extractImageUrlsFromRoot(
-    root,
-    "https://example.com/posts/123",
-  );
+  const imageUrls = extractImageUrlsFromRoot(root, "https://example.com/posts/123");
 
   assert.deepEqual(imageUrls, [
     "https://example.com/images/a.png",
     "https://cdn.example.com/a.jpg",
   ]);
+});
+
+test("extractContentWithImageOccurrencesFromRoot keeps duplicate occurrences but unique imageUrls", () => {
+  const dom = new JSDOM(
+    `<!doctype html><html><body><div id="root">AA<img src="/one.png" />BB<img src="/one.png" />CC</div></body></html>`,
+    { url: "https://example.com/post/1" },
+  );
+  const root = dom.window.document.querySelector("#root");
+  assert.ok(root);
+
+  const extracted = extractContentWithImageOccurrencesFromRoot(root, "https://example.com/post/1");
+
+  assert.equal(extracted.contentText, "AABBCC");
+  assert.deepEqual(extracted.imageUrls, ["https://example.com/one.png"]);
+  assert.deepEqual(extracted.imageOccurrences, [
+    {
+      originalIndex: 0,
+      normalizedTextOffset: 2,
+      sourceUrl: "https://example.com/one.png",
+    },
+    {
+      originalIndex: 1,
+      normalizedTextOffset: 4,
+      sourceUrl: "https://example.com/one.png",
+    },
+  ]);
+});
+
+test("extractContentWithImageOccurrencesFromRoot caption precedence is figcaption > alt > title", () => {
+  const dom = new JSDOM(
+    `<!doctype html><html><body><div id="root">A<img src="/a.png" alt="alt-a" title="title-a" /><figure><img src="/b.png" alt="alt-b" title="title-b" /><figcaption>  fig-b  </figcaption></figure><img src="/c.png" title="title-c" />Z</div></body></html>`,
+    { url: "https://example.com/post/1" },
+  );
+  const root = dom.window.document.querySelector("#root");
+  assert.ok(root);
+
+  const extracted = extractContentWithImageOccurrencesFromRoot(root, "https://example.com/post/1");
+
+  assert.deepEqual(
+    extracted.imageOccurrences.map((occurrence) => occurrence.captionText),
+    ["alt-a", "fig-b", "title-c"],
+  );
 });

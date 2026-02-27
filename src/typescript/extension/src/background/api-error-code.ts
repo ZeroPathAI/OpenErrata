@@ -12,11 +12,20 @@ function parseRuntimeErrorCode(value: unknown): ExtensionRuntimeErrorCode | unde
   return parsed.success ? parsed.data : undefined;
 }
 
+const PAYLOAD_TOO_LARGE_HTTP_STATUS = 413;
 const MAX_CAUSE_CHAIN_DEPTH = 25;
 
-export function extractApiErrorCode(
-  error: unknown,
-): ExtensionRuntimeErrorCode | undefined {
+function parseHttpStatus(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) ? value : undefined;
+}
+
+function runtimeErrorCodeFromHttpStatus(status: unknown): ExtensionRuntimeErrorCode | undefined {
+  return parseHttpStatus(status) === PAYLOAD_TOO_LARGE_HTTP_STATUS
+    ? "PAYLOAD_TOO_LARGE"
+    : undefined;
+}
+
+export function extractApiErrorCode(error: unknown): ExtensionRuntimeErrorCode | undefined {
   let current: unknown = error;
   const seen = new Set<object>();
 
@@ -31,18 +40,31 @@ export function extractApiErrorCode(
     seen.add(current);
 
     const directCode = parseRuntimeErrorCode(current["errorCode"]);
-    if (directCode) return directCode;
+    if (directCode !== undefined) return directCode;
 
     const fromData = isRecord(current["data"])
       ? parseRuntimeErrorCode(current["data"]["openerrataCode"])
       : undefined;
-    if (fromData) return fromData;
+    if (fromData !== undefined) return fromData;
 
     const fromShapeData =
       isRecord(current["shape"]) && isRecord(current["shape"]["data"])
         ? parseRuntimeErrorCode(current["shape"]["data"]["openerrataCode"])
         : undefined;
-    if (fromShapeData) return fromShapeData;
+    if (fromShapeData !== undefined) return fromShapeData;
+
+    const fromHttpStatus =
+      runtimeErrorCodeFromHttpStatus(current["httpStatus"]) ??
+      (isRecord(current["data"])
+        ? runtimeErrorCodeFromHttpStatus(current["data"]["httpStatus"])
+        : undefined) ??
+      (isRecord(current["shape"]) && isRecord(current["shape"]["data"])
+        ? runtimeErrorCodeFromHttpStatus(current["shape"]["data"]["httpStatus"])
+        : undefined) ??
+      (isRecord(current["meta"]) && isRecord(current["meta"]["response"])
+        ? runtimeErrorCodeFromHttpStatus(current["meta"]["response"]["status"])
+        : undefined);
+    if (fromHttpStatus !== undefined) return fromHttpStatus;
 
     current = current["cause"];
   }

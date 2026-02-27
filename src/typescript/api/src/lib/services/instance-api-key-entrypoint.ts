@@ -66,9 +66,7 @@ function parseOptionPairs(tokens: readonly string[]): Map<string, string> {
     const token = tokens[i];
     if (token === undefined) break;
     if (!token.startsWith("--")) {
-      throw new Error(
-        `Unexpected argument "${token}".\n\n${usage()}`,
-      );
+      throw new Error(`Unexpected argument "${token}".\n\n${usage()}`);
     }
 
     const optionName = token.slice(2);
@@ -104,11 +102,7 @@ function parseArguments(tokens: readonly string[]): ParsedArguments {
     throw new Error(usage());
   }
 
-  if (
-    commandToken !== "list" &&
-    commandToken !== "activate" &&
-    commandToken !== "revoke"
-  ) {
+  if (commandToken !== "list" && commandToken !== "activate" && commandToken !== "revoke") {
     throw new Error(`Unknown command "${commandToken}".\n\n${usage()}`);
   }
 
@@ -132,9 +126,7 @@ function assertAllowedOptions(
   const allowedSet = new Set(allowedOptions);
   for (const optionName of options.keys()) {
     if (!allowedSet.has(optionName)) {
-      throw new Error(
-        `Unsupported option "--${optionName}" for this command.`,
-      );
+      throw new Error(`Unsupported option "--${optionName}" for this command.`);
     }
   }
 }
@@ -164,13 +156,11 @@ function readStatusFilter(options: Map<string, string>): StatusFilter {
     return normalized;
   }
 
-  throw new Error(
-    `Invalid status "${rawStatus}". Expected one of: all, active, revoked.`,
-  );
+  throw new Error(`Invalid status "${rawStatus}". Expected one of: all, active, revoked.`);
 }
 
 function requireDatabaseUrl(): string {
-  const value = process.env['DATABASE_URL'];
+  const value = process.env["DATABASE_URL"];
   if (typeof value !== "string" || value.trim().length === 0) {
     throw new Error("DATABASE_URL is required.");
   }
@@ -186,9 +176,7 @@ function createScriptPrismaClient(): PrismaClient {
   return new PrismaClient({ adapter });
 }
 
-function serializeInstanceApiKey(
-  key: InstanceApiKeyRow,
-): SerializedInstanceApiKey {
+function serializeInstanceApiKey(key: InstanceApiKeyRow): SerializedInstanceApiKey {
   return {
     id: key.id,
     name: key.name,
@@ -259,11 +247,7 @@ async function activateInstanceApiKey(
   });
 
   const action =
-    existing === null
-      ? "created"
-      : existing.revokedAt === null
-        ? "updated"
-        : "reactivated";
+    existing === null ? "created" : existing.revokedAt === null ? "updated" : "reactivated";
 
   const key =
     existing === null
@@ -346,11 +330,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (
-    commandToken === "help" ||
-    commandToken === "--help" ||
-    commandToken === "-h"
-  ) {
+  if (commandToken === "help" || commandToken === "--help" || commandToken === "-h") {
     console.log(usage());
     return;
   }

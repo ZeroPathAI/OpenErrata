@@ -38,10 +38,7 @@ function startIconAnimation(tabId: number): void {
     browser.action
       .setIcon({ tabId, path: animationFramePaths(frameIndex) })
       .catch((error: unknown) => {
-        console.warn(
-          `Icon animation frame failed for tab ${tabId.toString()}:`,
-          error,
-        );
+        console.warn(`Icon animation frame failed for tab ${tabId.toString()}:`, error);
       });
   }, ANIMATION_FRAME_INTERVAL_MS);
   iconAnimationTimers.set(tabId, timer);
@@ -75,10 +72,7 @@ function stopIconAnimation(tabId: number): void {
  * - CONTENT_MISMATCH:       "!" amber   — client page differs from canonical post content
  * - NOT_INVESTIGATED / null: ""         — no badge
  */
-export function updateToolbarBadge(
-  tabId: number,
-  status: ExtensionPostStatus | null,
-): void {
+export function updateToolbarBadge(tabId: number, status: ExtensionPostStatus | null): void {
   const previousUpdate = badgeUpdateQueues.get(tabId) ?? Promise.resolve();
   const nextUpdate = previousUpdate
     .catch(() => {
@@ -88,15 +82,11 @@ export function updateToolbarBadge(
       // Icon animation is best-effort — it must never prevent the badge from
       // being set, so errors are caught independently.
       if (status?.investigationState === "INVESTIGATING") {
-        await browser.action
-          .setIcon({ tabId, path: animationFramePaths(0) })
-          .catch(() => {});
+        await browser.action.setIcon({ tabId, path: animationFramePaths(0) }).catch(() => {});
         startIconAnimation(tabId);
       } else {
         stopIconAnimation(tabId);
-        await browser.action
-          .setIcon({ tabId, path: STATIC_ICON_PATHS })
-          .catch(() => {});
+        await browser.action.setIcon({ tabId, path: STATIC_ICON_PATHS }).catch(() => {});
       }
 
       const badge = toToolbarBadgeState(status);
@@ -125,9 +115,7 @@ export function updateToolbarBadge(
   badgeUpdateQueues.set(tabId, nextUpdate);
 }
 
-function toToolbarBadgeState(
-  status: ExtensionPostStatus | null,
-): ToolbarBadgeState {
+function toToolbarBadgeState(status: ExtensionPostStatus | null): ToolbarBadgeState {
   if (!status || status.investigationState === "NOT_INVESTIGATED") {
     return { text: "" };
   }

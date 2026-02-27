@@ -4,10 +4,7 @@
   "version": "0.1.4",
   "description": "Crowdsourced, inline LLM investigations of the things you're reading.",
   "permissions": ["activeTab", "storage", "scripting", "webNavigation", "alarms"],
-  "host_permissions": [
-    "https://*/*",
-    "http://*/*"
-  ],
+  "host_permissions": ["https://*/*", "http://*/*"],
   "background": {
     "service_worker": "background/index.js",
     "type": "module"
@@ -20,16 +17,19 @@
       "run_at": "document_idle"
     },
     {
-      "matches": [
-        "https://x.com/*",
-        "https://twitter.com/*"
-      ],
+      "matches": ["https://x.com/*", "https://twitter.com/*"],
       "js": ["content/main.js"],
       "css": ["content/annotations.css"],
       "run_at": "document_idle"
     },
     {
       "matches": ["https://*.substack.com/p/*"],
+      "js": ["content/main.js"],
+      "css": ["content/annotations.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://*.wikipedia.org/wiki/*", "https://*.wikipedia.org/w/index.php*"],
       "js": ["content/main.js"],
       "css": ["content/annotations.css"],
       "run_at": "document_idle"

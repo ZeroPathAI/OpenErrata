@@ -44,10 +44,7 @@ export const publicRouter = router({
     .input(getPublicInvestigationInputSchema)
     .output(publicGetInvestigationOutputSchema)
     .query(async ({ input, ctx }) => {
-      const result = await getPublicInvestigationById(
-        ctx.prisma,
-        input.investigationId,
-      );
+      const result = await getPublicInvestigationById(ctx.prisma, input.investigationId);
       if (!result) {
         return null;
       }

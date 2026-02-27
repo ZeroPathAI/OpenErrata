@@ -7,12 +7,9 @@ import type {
   ExtensionSkippedStatus,
   Platform,
 } from "@openerrata/shared";
+import { extensionPostStatusSchema, extensionSkippedStatusSchema } from "@openerrata/shared";
 import { createTabStatusCacheStore } from "../../src/background/cache-store";
-import {
-  createDeterministicRandom,
-  randomChance,
-  randomInt,
-} from "../helpers/fuzz-utils";
+import { createDeterministicRandom, randomChance, randomInt } from "../helpers/fuzz-utils";
 
 type ModelRecord = {
   activePostStatus: ExtensionPostStatus | null;
@@ -47,27 +44,52 @@ function createPostStatus(input: {
     platform: input.platform,
     externalId: input.externalId,
     pageUrl: input.pageUrl,
-    ...(input.investigationId === undefined
-      ? {}
-      : { investigationId: input.investigationId }),
+    ...(input.investigationId === undefined ? {} : { investigationId: input.investigationId }),
   } as const;
 
   if (input.investigationState === "INVESTIGATING") {
-    return {
+    return extensionPostStatusSchema.parse({
       ...base,
       investigationState: "INVESTIGATING",
       status: "PENDING",
       provenance: "CLIENT_FALLBACK",
       claims: null,
-    };
+      priorInvestigationResult: null,
+    });
   }
 
-  return {
+  if (input.investigationState === "INVESTIGATED") {
+    return extensionPostStatusSchema.parse({
+      ...base,
+      investigationState: "INVESTIGATED",
+      provenance: "CLIENT_FALLBACK",
+      claims: [],
+    });
+  }
+
+  if (input.investigationState === "NOT_INVESTIGATED") {
+    return extensionPostStatusSchema.parse({
+      ...base,
+      investigationState: "NOT_INVESTIGATED",
+      claims: null,
+      priorInvestigationResult: null,
+    });
+  }
+
+  if (input.investigationState === "FAILED") {
+    return extensionPostStatusSchema.parse({
+      ...base,
+      investigationState: "FAILED",
+      provenance: "CLIENT_FALLBACK",
+      claims: null,
+    });
+  }
+
+  return extensionPostStatusSchema.parse({
     ...base,
-    investigationState: "INVESTIGATED",
-    provenance: "CLIENT_FALLBACK",
-    claims: [],
-  };
+    investigationState: "CONTENT_MISMATCH",
+    claims: null,
+  });
 }
 
 function createSkippedStatus(input: {
@@ -77,14 +99,14 @@ function createSkippedStatus(input: {
   pageUrl: string;
   reason: ExtensionSkippedReason;
 }): ExtensionSkippedStatus {
-  return {
+  return extensionSkippedStatusSchema.parse({
     kind: "SKIPPED",
     tabSessionId: input.tabSessionId,
     platform: input.platform,
     externalId: input.externalId,
     pageUrl: input.pageUrl,
     reason: input.reason,
-  };
+  });
 }
 
 function matchesActiveStatus(
@@ -103,28 +125,32 @@ function matchesActiveStatus(
     return false;
   }
 
-  if (
-    activeStatus.investigationId !== undefined &&
-    incomingStatus.investigationId !== undefined
-  ) {
+  if (activeStatus.investigationId !== undefined && incomingStatus.investigationId !== undefined) {
     return activeStatus.investigationId === incomingStatus.investigationId;
   }
 
   return true;
 }
 
-function statusForBadge(
-  status: ExtensionPageStatus | null,
-): ExtensionPostStatus | null {
+function statusForBadge(status: ExtensionPageStatus | null): ExtensionPostStatus | null {
   if (status?.kind === "POST") {
     return status;
   }
   return null;
 }
 
+function pickRandom<T>(items: readonly T[], random: () => number): T {
+  const index = randomInt(random, 0, items.length - 1);
+  const selected = items[index];
+  if (selected === undefined) {
+    throw new Error(`Expected an item at index ${index.toString()}`);
+  }
+  return selected;
+}
+
 test("randomized tab-cache lifecycle preserves cache and badge invariants", async () => {
   const random = createDeterministicRandom(0x47c19a2b);
-  const knownPlatforms: Platform[] = ["X", "LESSWRONG", "SUBSTACK"];
+  const knownPlatforms: Platform[] = ["X", "LESSWRONG", "SUBSTACK", "WIKIPEDIA"];
   const knownSkipReasons: ExtensionSkippedReason[] = [
     "word_count",
     "unsupported_content",
@@ -195,11 +221,15 @@ test("randomized tab-cache lifecycle preserves cache and badge invariants", asyn
       } else if (operation === 1) {
         openTabs.delete(tabId);
       } else if (operation === 2) {
-        const platform = knownPlatforms[randomInt(random, 0, knownPlatforms.length - 1)];
+        const platform = pickRandom(knownPlatforms, random);
         const externalId = `${platform.toLowerCase()}-${round.toString()}-${step.toString()}`;
         const pageUrl = `https://example.test/${platform.toLowerCase()}/${externalId}`;
-        const investigationState: ExtensionPostStatus["investigationState"] =
-          randomChance(random, 0.5) ? "INVESTIGATING" : "INVESTIGATED";
+        const investigationState: ExtensionPostStatus["investigationState"] = randomChance(
+          random,
+          0.5,
+        )
+          ? "INVESTIGATING"
+          : "INVESTIGATED";
         const postStatus = createPostStatus({
           tabSessionId: randomInt(random, 1, 4),
           platform,
@@ -217,15 +247,12 @@ test("randomized tab-cache lifecycle preserves cache and badge invariants", asyn
         assert.deepEqual(badgeByTab.get(tabId), postStatus);
       } else if (operation === 3) {
         const existingActive = model.activePostStatus;
-        const platform =
-          existingActive?.platform ??
-          knownPlatforms[randomInt(random, 0, knownPlatforms.length - 1)];
+        const platform = existingActive?.platform ?? pickRandom(knownPlatforms, random);
         const externalId =
           existingActive?.externalId ??
           `${platform.toLowerCase()}-candidate-${round.toString()}-${step.toString()}`;
         const pageUrl =
-          existingActive?.pageUrl ??
-          `https://example.test/${platform.toLowerCase()}/${externalId}`;
+          existingActive?.pageUrl ?? `https://example.test/${platform.toLowerCase()}/${externalId}`;
 
         const candidate = createPostStatus({
           tabSessionId: randomChance(random, 0.7)
@@ -235,8 +262,8 @@ test("randomized tab-cache lifecycle preserves cache and badge invariants", asyn
           externalId,
           pageUrl,
           investigationState: randomChance(random, 0.5) ? "INVESTIGATING" : "INVESTIGATED",
-          ...(randomChance(random, 0.5)
-            ? { investigationId: existingActive?.investigationId }
+          ...(randomChance(random, 0.5) && existingActive?.investigationId !== undefined
+            ? { investigationId: existingActive.investigationId }
             : {}),
         });
 
@@ -252,14 +279,15 @@ test("randomized tab-cache lifecycle preserves cache and badge invariants", asyn
           assert.deepEqual(badgeByTab.get(tabId), badgeBefore);
         }
       } else if (operation === 4) {
-        const platform = knownPlatforms[randomInt(random, 0, knownPlatforms.length - 1)];
+        const platform = pickRandom(knownPlatforms, random);
         const externalId = `${platform.toLowerCase()}-skip-${round.toString()}-${step.toString()}`;
+        const reason = pickRandom(knownSkipReasons, random);
         const skippedStatus = createSkippedStatus({
           tabSessionId: randomInt(random, 1, 6),
           platform,
           externalId,
           pageUrl: `https://example.test/${platform.toLowerCase()}/${externalId}`,
-          reason: knownSkipReasons[randomInt(random, 0, knownSkipReasons.length - 1)] ?? "unsupported_content",
+          reason,
         });
 
         await cacheStore.cacheSkippedStatus(tabId, skippedStatus);
