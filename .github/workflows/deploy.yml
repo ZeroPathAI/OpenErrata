@@ -295,7 +295,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Install Playwright Chromium
-        run: pnpm --filter @openerrata/extension exec playwright install --with-deps chromium
+        run: pnpm --filter @openerrata/extension exec playwright install chromium
 
       - name: Generate Prisma client
         run: pnpm db:generate
