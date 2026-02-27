@@ -215,6 +215,9 @@ model PostVersion {
   imageOccurrenceSetId String
   imageOccurrenceSet   ImageOccurrenceSet @relation(fields: [imageOccurrenceSetId], references: [id])
   contentProvenance    ContentProvenance
+  // DB check constraints require:
+  // - fetchFailureReason is NULL when contentProvenance = SERVER_VERIFIED
+  // - serverVerifiedAt is NOT NULL when contentProvenance = SERVER_VERIFIED
   fetchFailureReason   String?
   serverVerifiedAt     DateTime?
   firstSeenAt          DateTime           @default(now())
@@ -259,6 +262,8 @@ model Investigation {
   postVersion           PostVersion           @relation(fields: [postVersionId], references: [id])
   parentInvestigationId String?
   parentInvestigation   Investigation?        @relation("InvestigationUpdateLineage", fields: [parentInvestigationId], references: [id])
+  // DB check constraint requires contentDiff presence to match update lineage:
+  // null for root investigations, non-null for updates.
   contentDiff           String?
   status                CheckStatus
   promptId              String
