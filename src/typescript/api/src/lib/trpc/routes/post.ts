@@ -93,6 +93,8 @@ const WIKIPEDIA_HOST_REGEX = /^([a-z0-9-]+)(?:\.m)?\.wikipedia\.org$/i;
 const WIKIPEDIA_ARTICLE_PATH_PREFIX = "/wiki/";
 const WIKIPEDIA_INDEX_PATH_REGEX = /^\/w\/index\.php(?:[/?#]|$)/i;
 const WIKIPEDIA_PAGE_ID_REGEX = /^\d+$/;
+const UNIQUE_CONSTRAINT_RACE_RETRY_ATTEMPTS = 30;
+const UNIQUE_CONSTRAINT_RACE_RETRY_DELAY_MS = 20;
 
 function unreachableInvestigationStatus(status: never): never {
   throw new TRPCError({
@@ -706,13 +708,17 @@ async function createOrFindByUniqueConstraint<T>(input: {
     if (!isUniqueConstraintError(error)) {
       throw error;
     }
-
-    const raced = await input.findExisting();
-    if (raced === null) {
-      throw error;
+    // In concurrent transactions, the winning insert can briefly be invisible
+    // to this transaction right after a unique-constraint conflict.
+    for (let attempt = 0; attempt < UNIQUE_CONSTRAINT_RACE_RETRY_ATTEMPTS; attempt += 1) {
+      const raced = await input.findExisting();
+      if (raced !== null) {
+        input.assertEquivalent(raced);
+        return raced;
+      }
+      await new Promise((resolve) => setTimeout(resolve, UNIQUE_CONSTRAINT_RACE_RETRY_DELAY_MS));
     }
-    input.assertEquivalent(raced);
-    return raced;
+    throw error;
   }
 }
 

@@ -415,9 +415,52 @@ function sha256(input: string): string {
 }
 
 const EMPTY_IMAGE_OCCURRENCES_HASH = sha256(JSON.stringify([]));
+let emptyImageOccurrenceSetPromise: Promise<{ id: string }> | null = null;
 
 function versionHashFromContentHash(contentHash: string): string {
   return sha256(`${contentHash}\n${EMPTY_IMAGE_OCCURRENCES_HASH}`);
+}
+
+function isPrismaUniqueConstraintError(error: unknown): boolean {
+  return isNonNullObject(error) && error["code"] === "P2002";
+}
+
+async function getOrCreateEmptyImageOccurrenceSet(): Promise<{ id: string }> {
+  emptyImageOccurrenceSetPromise ??= (async () => {
+    const existing = await prisma.imageOccurrenceSet.findUnique({
+      where: { occurrencesHash: EMPTY_IMAGE_OCCURRENCES_HASH },
+      select: { id: true },
+    });
+    if (existing !== null) {
+      return existing;
+    }
+
+    try {
+      return await prisma.imageOccurrenceSet.create({
+        data: { occurrencesHash: EMPTY_IMAGE_OCCURRENCES_HASH },
+        select: { id: true },
+      });
+    } catch (error) {
+      if (!isPrismaUniqueConstraintError(error)) {
+        throw error;
+      }
+      const raced = await prisma.imageOccurrenceSet.findUnique({
+        where: { occurrencesHash: EMPTY_IMAGE_OCCURRENCES_HASH },
+        select: { id: true },
+      });
+      if (raced !== null) {
+        return raced;
+      }
+      throw error;
+    }
+  })();
+
+  try {
+    return await emptyImageOccurrenceSetPromise;
+  } catch (error) {
+    emptyImageOccurrenceSetPromise = null;
+    throw error;
+  }
 }
 
 async function ensurePostVersionForSeed(input: {
@@ -444,12 +487,7 @@ async function ensurePostVersionForSeed(input: {
       },
       select: { id: true },
     }),
-    prisma.imageOccurrenceSet.upsert({
-      where: { occurrencesHash: EMPTY_IMAGE_OCCURRENCES_HASH },
-      create: { occurrencesHash: EMPTY_IMAGE_OCCURRENCES_HASH },
-      update: {},
-      select: { id: true },
-    }),
+    getOrCreateEmptyImageOccurrenceSet(),
   ]);
 
   const now = new Date();
