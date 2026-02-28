@@ -31,7 +31,6 @@ function toCanonicalFetchInput(input: ViewPostInput): CanonicalFetchInput {
     return {
       platform: "WIKIPEDIA",
       url: input.url,
-      externalId: input.externalId,
       metadata: {
         language: input.metadata.language,
         title: input.metadata.title,

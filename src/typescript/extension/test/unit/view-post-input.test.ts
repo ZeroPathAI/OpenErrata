@@ -109,6 +109,7 @@ test("toViewPostInput includes observedContentText for WIKIPEDIA", () => {
 
   assert.equal(result.platform, "WIKIPEDIA");
   assert.equal(result.observedContentText, "Climate change is warming the planet.");
+  assert.equal("externalId" in result, false);
   assert.deepEqual(result.observedImageOccurrences, content.imageOccurrences);
   assert.deepEqual(result.metadata, content.metadata);
 });

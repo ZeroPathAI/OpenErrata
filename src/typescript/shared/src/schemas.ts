@@ -139,16 +139,21 @@ const wikipediaMetadataSchema = z
 
 // ── Core request/response schemas ─────────────────────────────────────────
 
-const viewPostInputSharedSchema = z
+const versionedPostInputSharedSchema = z
   .object({
-    externalId: postIdSchema,
     url: z.url(),
     observedImageUrls: z.array(z.url()).optional(),
     observedImageOccurrences: observedImageOccurrencesSchema.optional(),
   })
   .strict();
 
-const lesswrongViewPostInputSchema = viewPostInputSharedSchema
+const nonWikipediaViewPostInputSharedSchema = versionedPostInputSharedSchema
+  .extend({
+    externalId: postIdSchema,
+  })
+  .strict();
+
+const lesswrongViewPostInputSchema = nonWikipediaViewPostInputSharedSchema
   .extend({
     platform: z.literal("LESSWRONG"),
     // LessWrong versioning derives canonical text from metadata.htmlContent.
@@ -156,7 +161,7 @@ const lesswrongViewPostInputSchema = viewPostInputSharedSchema
   })
   .strict();
 
-const xViewPostInputSchema = viewPostInputSharedSchema
+const xViewPostInputSchema = nonWikipediaViewPostInputSharedSchema
   .extend({
     platform: z.literal("X"),
     observedContentText: observedContentTextSchema,
@@ -164,7 +169,7 @@ const xViewPostInputSchema = viewPostInputSharedSchema
   })
   .strict();
 
-const substackViewPostInputSchema = viewPostInputSharedSchema
+const substackViewPostInputSchema = nonWikipediaViewPostInputSharedSchema
   .extend({
     platform: z.literal("SUBSTACK"),
     observedContentText: observedContentTextSchema,
@@ -172,7 +177,7 @@ const substackViewPostInputSchema = viewPostInputSharedSchema
   })
   .strict();
 
-const wikipediaViewPostInputSchema = viewPostInputSharedSchema
+const wikipediaViewPostInputSchema = versionedPostInputSharedSchema
   .extend({
     platform: z.literal("WIKIPEDIA"),
     observedContentText: observedContentTextSchema,
@@ -588,6 +593,7 @@ export const annotationVisibilityResponseSchema = z
 export const extensionRuntimeErrorCodeSchema = z.enum([
   "CONTENT_MISMATCH",
   "PAYLOAD_TOO_LARGE",
+  "INVALID_EXTENSION_MESSAGE",
   "UNSUPPORTED_PROTOCOL_VERSION",
 ]);
 

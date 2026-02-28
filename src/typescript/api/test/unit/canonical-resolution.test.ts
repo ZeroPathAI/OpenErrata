@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { viewPostInputSchema } from "@openerrata/shared";
+import type { ViewPostInput } from "@openerrata/shared";
 import { resolveCanonicalContentVersion } from "../../src/lib/services/canonical-resolution.js";
 import type { CanonicalFetchInput } from "../../src/lib/services/content-fetcher.js";
 
-function buildXViewInput(observedContentText: string) {
+function buildXViewInput(observedContentText: string): Extract<ViewPostInput, { platform: "X" }> {
   return viewPostInputSchema.parse({
     platform: "X",
     externalId: "unit-test-post-x-1",
@@ -16,13 +17,14 @@ function buildXViewInput(observedContentText: string) {
       text: observedContentText,
       mediaUrls: [],
     },
-  });
+  }) as Extract<ViewPostInput, { platform: "X" }>;
 }
 
-function buildWikipediaViewInput(observedContentText: string) {
+function buildWikipediaViewInput(
+  observedContentText: string,
+): Extract<ViewPostInput, { platform: "WIKIPEDIA" }> {
   return viewPostInputSchema.parse({
     platform: "WIKIPEDIA",
-    externalId: "unit-test-post-wikipedia-1",
     url: "https://en.wikipedia.org/wiki/OpenErrata",
     observedContentText,
     metadata: {
@@ -32,7 +34,7 @@ function buildWikipediaViewInput(observedContentText: string) {
       revisionId: "67890",
       displayTitle: "OpenErrata",
     },
-  });
+  }) as Extract<ViewPostInput, { platform: "WIKIPEDIA" }>;
 }
 
 test("resolveCanonicalContentVersion returns server-verified canonical content when hashes match", async () => {
@@ -141,7 +143,6 @@ test("resolveCanonicalContentVersion forwards required Wikipedia canonical fetch
   assert.deepEqual(capturedFetchInput, {
     platform: "WIKIPEDIA",
     url: viewInput.url,
-    externalId: viewInput.externalId,
     metadata: {
       language: "en",
       title: "OpenErrata",

@@ -53,6 +53,7 @@ import {
   executeTabFunction,
   injectTabAssets,
 } from "./browser-compat.js";
+import { wikipediaExternalIdFromPageId } from "../lib/wikipedia-url.js";
 
 // Initialize API client on worker start.
 void init();
@@ -109,6 +110,10 @@ function describeError(error: unknown): string {
 
 function isContentMismatchError(error: unknown): boolean {
   return error instanceof ApiClientError && error.errorCode === "CONTENT_MISMATCH";
+}
+
+function describeSchemaError(error: { message: string }): string {
+  return `Invalid extension message payload: ${error.message}`;
 }
 
 function toRuntimeErrorResponse(error: unknown): ExtensionRuntimeErrorResponse {
@@ -366,6 +371,16 @@ function toInvestigationStatusSnapshot(output: GetInvestigationOutput): Investig
   return snapshot;
 }
 
+function viewPostExternalId(request: ViewPostInput): string {
+  if (request.platform === "WIKIPEDIA") {
+    return wikipediaExternalIdFromPageId(
+      request.metadata.language.toLowerCase(),
+      request.metadata.pageId,
+    );
+  }
+  return request.externalId;
+}
+
 async function startInvestigationPolling(input: {
   tabId: number;
   tabSessionId: number;
@@ -529,6 +544,7 @@ async function cacheInvestigateNowResult(input: {
   existingStatus?: InvestigationStatusOutput | null;
 }): Promise<void> {
   const { tabId, tabSessionId, request, result } = input;
+  const externalId = viewPostExternalId(request);
 
   const initialSnapshot = snapshotFromInvestigateNowResult(result, input.existingStatus);
 
@@ -537,7 +553,7 @@ async function cacheInvestigateNowResult(input: {
     createPostStatusFromInvestigation({
       tabSessionId,
       platform: request.platform,
-      externalId: request.externalId,
+      externalId,
       pageUrl: request.url,
       investigationId: result.investigationId,
       ...initialSnapshot,
@@ -556,6 +572,8 @@ async function maybeAutoInvestigate(input: {
   registeredVersion: RegisterObservedVersionOutput;
   existingStatus: ExtensionPostStatus | null;
 }): Promise<void> {
+  const requestExternalId = viewPostExternalId(input.request);
+
   if (!hasUserOpenAiKey() || !isAutoInvestigateEnabled()) {
     return;
   }
@@ -589,7 +607,7 @@ async function maybeAutoInvestigate(input: {
         tabId: input.tabId,
         tabSessionId: input.tabSessionId,
         platform: input.request.platform,
-        externalId: input.request.externalId,
+        externalId: requestExternalId,
         investigationId: result.investigationId,
       });
     }
@@ -599,7 +617,7 @@ async function maybeAutoInvestigate(input: {
       tabId: input.tabId,
       tabSessionId: input.tabSessionId,
       platform: input.request.platform,
-      externalId: input.request.externalId,
+      externalId: requestExternalId,
       pageUrl: input.request.url,
       skipIfStale: true,
       ...(input.existingStatus?.tabSessionId === input.tabSessionId &&
@@ -618,7 +636,13 @@ browser.runtime.onMessage.addListener((message: unknown, sender: Runtime.Message
   }
 
   const parsedMessage = extensionMessageSchema.safeParse(message);
-  if (!parsedMessage.success) return false;
+  if (!parsedMessage.success) {
+    return extensionRuntimeErrorResponseSchema.parse({
+      ok: false,
+      error: describeSchemaError(parsedMessage.error),
+      errorCode: "INVALID_EXTENSION_MESSAGE",
+    });
+  }
   const typedMessage = parsedMessage.data;
   if (!isBackgroundMessage(typedMessage)) return false;
 
@@ -654,6 +678,7 @@ async function handlePageContent(
   sender: Runtime.MessageSender,
 ): Promise<ViewPostOutput> {
   const request = toViewPostInput(payload.content);
+  const requestExternalId = viewPostExternalId(request);
 
   let registeredVersion: RegisterObservedVersionOutput;
   let result: ViewPostOutput;
@@ -669,7 +694,7 @@ async function handlePageContent(
         tabId: sender.tab.id,
         tabSessionId: payload.tabSessionId,
         platform: request.platform,
-        externalId: request.externalId,
+        externalId: requestExternalId,
         pageUrl: request.url,
         skipIfStale: true,
         noteSession: true,
@@ -691,7 +716,7 @@ async function handlePageContent(
       existing !== null &&
       existing.tabSessionId === payload.tabSessionId &&
       existing.platform === request.platform &&
-      existing.externalId === request.externalId
+      existing.externalId === requestExternalId
         ? existing
         : null;
     if (!existingForSession) {
@@ -712,7 +737,7 @@ async function handlePageContent(
     const nextStatus = createPostStatusFromInvestigation({
       tabSessionId: payload.tabSessionId,
       platform: request.platform,
-      externalId: request.externalId,
+      externalId: requestExternalId,
       pageUrl: request.url,
       ...(existingForSession?.investigationId === undefined
         ? {}
@@ -838,6 +863,7 @@ async function handleInvestigateNow(
   }
 
   const request = payload.request;
+  const requestExternalId = viewPostExternalId(request);
 
   let registeredVersion: RegisterObservedVersionOutput;
   let result: InvestigateNowOutput;
@@ -853,7 +879,7 @@ async function handleInvestigateNow(
         tabId: sender.tab.id,
         tabSessionId: payload.tabSessionId,
         platform: request.platform,
-        externalId: request.externalId,
+        externalId: requestExternalId,
         pageUrl: request.url,
         skipIfStale: true,
         stopPolling: true,
@@ -874,7 +900,7 @@ async function handleInvestigateNow(
       existingStatus !== null &&
       existingStatus.tabSessionId === payload.tabSessionId &&
       existingStatus.platform === request.platform &&
-      existingStatus.externalId === request.externalId
+      existingStatus.externalId === requestExternalId
         ? existingStatusForCaching
         : null;
 
@@ -894,7 +920,7 @@ async function handleInvestigateNow(
         tabId: sender.tab.id,
         tabSessionId: payload.tabSessionId,
         platform: request.platform,
-        externalId: request.externalId,
+        externalId: requestExternalId,
         investigationId: result.investigationId,
       });
     } else {

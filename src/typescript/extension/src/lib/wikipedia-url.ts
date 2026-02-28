@@ -1,5 +1,5 @@
 const WIKIPEDIA_HOST_REGEX = /^([a-z0-9-]+)(?:\.m)?\.wikipedia\.org$/i;
-const WIKIPEDIA_ARTICLE_PATH_REGEX = /^\/wiki\/([^/?#]+)(?:[/?#]|$)/i;
+const WIKIPEDIA_ARTICLE_PATH_PREFIX = "/wiki/";
 const WIKIPEDIA_INDEX_PATH_REGEX = /^\/w\/index\.php(?:[/?#]|$)/i;
 const WIKIPEDIA_PAGE_ID_REGEX = /^\d+$/;
 
@@ -49,17 +49,31 @@ function safeDecodeURIComponent(value: string): string | null {
 }
 
 export function normalizeWikipediaTitleToken(rawToken: string): string | null {
-  const decoded = safeDecodeURIComponent(rawToken.replace(/\+/g, "%20"));
-  if (decoded === null) {
-    return null;
-  }
-
-  const normalized = decoded.replace(/_/g, " ").replace(/\s+/g, " ").trim();
+  const normalized = rawToken.replace(/_/g, " ").replace(/\s+/g, " ").trim();
   if (normalized.length === 0) {
     return null;
   }
 
   return normalized.replace(/ /g, "_");
+}
+
+function normalizeWikipediaPathTitleToken(rawToken: string): string | null {
+  const decoded = safeDecodeURIComponent(rawToken);
+  if (decoded === null) {
+    return null;
+  }
+
+  return normalizeWikipediaTitleToken(decoded);
+}
+
+function rawWikipediaTitleFromPath(pathname: string): string | null {
+  const isArticlePath = pathname.toLowerCase().startsWith(WIKIPEDIA_ARTICLE_PATH_PREFIX);
+  if (!isArticlePath) {
+    return null;
+  }
+
+  const rawTitle = pathname.slice(WIKIPEDIA_ARTICLE_PATH_PREFIX.length);
+  return rawTitle.length > 0 ? rawTitle : null;
 }
 
 function isArticleNamespace(title: string): boolean {
@@ -119,13 +133,15 @@ export function parseWikipediaIdentity(url: string): ParsedWikipediaIdentity | n
 
   const pageId = readWikipediaPageIdFromQuery(parsedUrl);
 
-  const pathMatch = parsedUrl.pathname.match(WIKIPEDIA_ARTICLE_PATH_REGEX);
-  const rawTitleFromPath = pathMatch?.[1];
+  const rawTitleFromPath = rawWikipediaTitleFromPath(parsedUrl.pathname);
   const rawTitleFromQuery = WIKIPEDIA_INDEX_PATH_REGEX.test(parsedUrl.pathname)
     ? parsedUrl.searchParams.get("title")
     : null;
-  const rawTitle = rawTitleFromPath ?? rawTitleFromQuery;
-  const title = rawTitle === null ? null : normalizeWikipediaTitleToken(rawTitle);
+  const titleFromPath =
+    rawTitleFromPath === null ? null : normalizeWikipediaPathTitleToken(rawTitleFromPath);
+  const titleFromQuery =
+    rawTitleFromQuery === null ? null : normalizeWikipediaTitleToken(rawTitleFromQuery);
+  const title = titleFromPath ?? titleFromQuery;
 
   if (title !== null && !isArticleNamespace(title)) {
     return null;

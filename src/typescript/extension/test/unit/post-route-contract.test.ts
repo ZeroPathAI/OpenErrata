@@ -67,6 +67,16 @@ const supportedCases: SupportedCase[] = [
     externalId: "en:Climate_change",
   },
   {
+    url: "https://en.wikipedia.org/wiki/AC/DC",
+    platform: "WIKIPEDIA",
+    externalId: "en:AC/DC",
+  },
+  {
+    url: "https://en.wikipedia.org/wiki/C%2B%2B",
+    platform: "WIKIPEDIA",
+    externalId: "en:C++",
+  },
+  {
     url: "https://en.wikipedia.org/w/index.php?curid=12345&oldid=1244905470",
     platform: "WIKIPEDIA",
     externalId: "en:12345",

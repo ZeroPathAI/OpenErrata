@@ -33,7 +33,6 @@ export type CanonicalContentFetchResult =
 type WikipediaCanonicalFetchInput = {
   platform: "WIKIPEDIA";
   url: string;
-  externalId: string;
   metadata: {
     language: string;
     title: string;

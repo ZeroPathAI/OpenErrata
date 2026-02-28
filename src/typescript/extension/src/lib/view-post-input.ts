@@ -2,7 +2,6 @@ import { viewPostInputSchema, type PlatformContent, type ViewPostInput } from "@
 
 export function toViewPostInput(content: PlatformContent): ViewPostInput {
   const common = {
-    externalId: content.externalId,
     url: content.url,
     observedImageUrls: content.imageUrls,
     observedImageOccurrences: content.imageOccurrences,
@@ -12,12 +11,14 @@ export function toViewPostInput(content: PlatformContent): ViewPostInput {
     case "LESSWRONG":
       return viewPostInputSchema.parse({
         ...common,
+        externalId: content.externalId,
         platform: "LESSWRONG",
         metadata: content.metadata,
       });
     case "X":
       return viewPostInputSchema.parse({
         ...common,
+        externalId: content.externalId,
         platform: "X",
         observedContentText: content.contentText,
         metadata: content.metadata,
@@ -25,6 +26,7 @@ export function toViewPostInput(content: PlatformContent): ViewPostInput {
     case "SUBSTACK":
       return viewPostInputSchema.parse({
         ...common,
+        externalId: content.externalId,
         platform: "SUBSTACK",
         observedContentText: content.contentText,
         metadata: content.metadata,

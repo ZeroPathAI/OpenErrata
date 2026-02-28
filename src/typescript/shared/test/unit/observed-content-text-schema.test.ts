@@ -16,6 +16,20 @@ function buildXViewPostInput(observedContentText: string) {
   };
 }
 
+function buildWikipediaViewPostInput(observedContentText: string) {
+  return {
+    platform: "WIKIPEDIA" as const,
+    url: "https://en.wikipedia.org/wiki/OpenErrata",
+    observedContentText,
+    metadata: {
+      language: "en",
+      title: "OpenErrata",
+      pageId: "12345",
+      revisionId: "67890",
+    },
+  };
+}
+
 test("viewPostInputSchema accepts observedContentText at UTF-8 byte limit", () => {
   const observedContentText = "a".repeat(MAX_OBSERVED_CONTENT_TEXT_UTF8_BYTES);
   const parsed = viewPostInputSchema.parse(buildXViewPostInput(observedContentText));
@@ -28,5 +42,19 @@ test("viewPostInputSchema rejects observedContentText over UTF-8 byte limit", ()
   // remaining below the character count cap.
   const observedContentText = "é".repeat(Math.floor(MAX_OBSERVED_CONTENT_TEXT_UTF8_BYTES / 2) + 1);
   const parsed = viewPostInputSchema.safeParse(buildXViewPostInput(observedContentText));
+  assert.equal(parsed.success, false);
+});
+
+test("viewPostInputSchema accepts Wikipedia input without externalId", () => {
+  const parsed = viewPostInputSchema.parse(buildWikipediaViewPostInput("OpenErrata article text"));
+  assert.equal(parsed.platform, "WIKIPEDIA");
+  assert.equal("externalId" in parsed, false);
+});
+
+test("viewPostInputSchema rejects Wikipedia input with client-provided externalId", () => {
+  const parsed = viewPostInputSchema.safeParse({
+    ...buildWikipediaViewPostInput("OpenErrata article text"),
+    externalId: "en:12345",
+  });
   assert.equal(parsed.success, false);
 });
