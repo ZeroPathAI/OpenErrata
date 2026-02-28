@@ -4,6 +4,7 @@ import {
   ExtensionRuntimeError,
   isContentMismatchRuntimeError,
   isExtensionContextInvalidatedError,
+  isInvalidExtensionMessageRuntimeError,
   isPayloadTooLargeRuntimeError,
 } from "../../src/lib/runtime-error.js";
 
@@ -17,6 +18,12 @@ test("isPayloadTooLargeRuntimeError matches ExtensionRuntimeError with PAYLOAD_T
   const tooLarge = new ExtensionRuntimeError("too large", "PAYLOAD_TOO_LARGE");
   assert.equal(isPayloadTooLargeRuntimeError(tooLarge), true);
   assert.equal(isPayloadTooLargeRuntimeError(new Error("too large")), false);
+});
+
+test("isInvalidExtensionMessageRuntimeError matches ExtensionRuntimeError with INVALID_EXTENSION_MESSAGE code", () => {
+  const invalidMessage = new ExtensionRuntimeError("invalid message", "INVALID_EXTENSION_MESSAGE");
+  assert.equal(isInvalidExtensionMessageRuntimeError(invalidMessage), true);
+  assert.equal(isInvalidExtensionMessageRuntimeError(new Error("invalid message")), false);
 });
 
 test("isExtensionContextInvalidatedError matches known runtime-disconnect messages", () => {

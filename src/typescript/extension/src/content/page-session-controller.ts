@@ -17,6 +17,7 @@ import { parseSupportedPageIdentity } from "../lib/post-identity";
 import {
   isContentMismatchRuntimeError,
   isExtensionContextInvalidatedError,
+  isInvalidExtensionMessageRuntimeError,
   isPayloadTooLargeRuntimeError,
 } from "../lib/runtime-error";
 import { toViewPostInput } from "../lib/view-post-input";
@@ -623,6 +624,16 @@ export class PageSessionController {
         this.#annotations.clearAll();
         this.#syncCachedFailureStatus();
         console.warn("Page content request exceeded API body size limit; skipping retries.", error);
+        return;
+      }
+      if (isInvalidExtensionMessageRuntimeError(error)) {
+        this.#resetSyncRetryState();
+        this.#annotations.clearAll();
+        this.#syncCachedFailureStatus();
+        console.warn(
+          "Extension message contract rejected PAGE_CONTENT payload/response; skipping retries.",
+          error,
+        );
         return;
       }
       if (isExtensionContextInvalidatedError(error)) {

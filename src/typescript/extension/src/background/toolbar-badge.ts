@@ -17,18 +17,26 @@ const ANIMATION_FRAME_INTERVAL_MS = 300;
 
 const iconAnimationTimers = new Map<number, ReturnType<typeof setInterval>>();
 
+function extensionAssetUrl(relativePath: string): string {
+  // In extension runtime this resolves from the extension root, avoiding
+  // service-worker-relative fetch failures for action icon updates.
+  return browser.runtime.getURL(relativePath);
+}
+
 function animationFramePaths(frameIndex: number): Record<string, string> {
   return {
-    "16": `icons/frame-${frameIndex.toString()}-16.png`,
-    "48": `icons/frame-${frameIndex.toString()}-48.png`,
+    "16": extensionAssetUrl(`icons/frame-${frameIndex.toString()}-16.png`),
+    "48": extensionAssetUrl(`icons/frame-${frameIndex.toString()}-48.png`),
   };
 }
 
-const STATIC_ICON_PATHS: Record<string, string> = {
-  "16": "icons/icon-16.png",
-  "48": "icons/icon-48.png",
-  "128": "icons/icon-128.png",
-};
+function staticIconPaths(): Record<string, string> {
+  return {
+    "16": extensionAssetUrl("icons/icon-16.png"),
+    "48": extensionAssetUrl("icons/icon-48.png"),
+    "128": extensionAssetUrl("icons/icon-128.png"),
+  };
+}
 
 function startIconAnimation(tabId: number): void {
   if (iconAnimationTimers.has(tabId)) return;
@@ -38,6 +46,7 @@ function startIconAnimation(tabId: number): void {
     browser.action
       .setIcon({ tabId, path: animationFramePaths(frameIndex) })
       .catch((error: unknown) => {
+        stopIconAnimation(tabId);
         console.warn(`Icon animation frame failed for tab ${tabId.toString()}:`, error);
       });
   }, ANIMATION_FRAME_INTERVAL_MS);
@@ -82,11 +91,23 @@ export function updateToolbarBadge(tabId: number, status: ExtensionPostStatus | 
       // Icon animation is best-effort — it must never prevent the badge from
       // being set, so errors are caught independently.
       if (status?.investigationState === "INVESTIGATING") {
-        await browser.action.setIcon({ tabId, path: animationFramePaths(0) }).catch(() => {});
-        startIconAnimation(tabId);
+        const investigatingIconApplied = await browser.action
+          .setIcon({ tabId, path: animationFramePaths(0) })
+          .then(() => true)
+          .catch((error: unknown) => {
+            console.warn(`Failed to set investigating icon for tab ${tabId.toString()}:`, error);
+            return false;
+          });
+
+        if (investigatingIconApplied) {
+          startIconAnimation(tabId);
+        } else {
+          stopIconAnimation(tabId);
+          await browser.action.setIcon({ tabId, path: staticIconPaths() }).catch(() => {});
+        }
       } else {
         stopIconAnimation(tabId);
-        await browser.action.setIcon({ tabId, path: STATIC_ICON_PATHS }).catch(() => {});
+        await browser.action.setIcon({ tabId, path: staticIconPaths() }).catch(() => {});
       }
 
       const badge = toToolbarBadgeState(status);

@@ -8,7 +8,7 @@
     "verify:dist": "node ./scripts/assert-build-artifacts.mjs",
     "typecheck": "tsc --noEmit",
     "test:unit": "tsx --test \"test/unit/**/*.test.ts\"",
-    "test:e2e": "pnpm build && playwright test -c playwright.config.ts",
+    "test:e2e": "pnpm build && node ./scripts/run-playwright-e2e.mjs",
     "test:unit:coverage": "c8 --config ../.c8rc.extension.json tsx --test \"test/unit/**/*.test.ts\""
   },
   "dependencies": {

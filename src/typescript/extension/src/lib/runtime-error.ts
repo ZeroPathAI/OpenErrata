@@ -18,6 +18,10 @@ export function isPayloadTooLargeRuntimeError(error: unknown): boolean {
   return error instanceof ExtensionRuntimeError && error.errorCode === "PAYLOAD_TOO_LARGE";
 }
 
+export function isInvalidExtensionMessageRuntimeError(error: unknown): boolean {
+  return error instanceof ExtensionRuntimeError && error.errorCode === "INVALID_EXTENSION_MESSAGE";
+}
+
 const EXTENSION_CONTEXT_INVALIDATED_PATTERNS = [
   "Extension context invalidated",
   "Could not establish connection. Receiving end does not exist.",

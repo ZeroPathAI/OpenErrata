@@ -1,9 +1,6 @@
 import {
   EXTENSION_MESSAGE_PROTOCOL_VERSION,
   extensionPageStatusSchema,
-  extensionRuntimeErrorResponseSchema,
-  investigateNowOutputSchema,
-  viewPostOutputSchema,
   type ExtensionSkippedReason,
   type Platform,
   type PlatformContent,
@@ -12,17 +9,16 @@ import {
   type ViewPostOutput,
 } from "@openerrata/shared";
 import browser from "webextension-polyfill";
-import { ExtensionRuntimeError, isExtensionContextInvalidatedError } from "../lib/runtime-error.js";
+import { isExtensionContextInvalidatedError } from "../lib/runtime-error.js";
+import {
+  parseInvestigateNowResponse,
+  parseViewPostResponse,
+  throwIfRuntimeError,
+} from "../lib/sync-response.js";
 
 export type ParsedExtensionPageStatus = ReturnType<typeof extensionPageStatusSchema.parse>;
 
 type CachedStatusListener = () => void;
-
-function throwIfRuntimeError(response: unknown): void {
-  const parsedError = extensionRuntimeErrorResponseSchema.safeParse(response);
-  if (!parsedError.success) return;
-  throw new ExtensionRuntimeError(parsedError.data.error, parsedError.data.errorCode);
-}
 
 export class ContentSyncClient {
   sendPageReset(tabSessionId: number): void {
@@ -71,8 +67,7 @@ export class ContentSyncClient {
       },
     });
 
-    throwIfRuntimeError(response);
-    return viewPostOutputSchema.parse(response);
+    return parseViewPostResponse(response);
   }
 
   async requestInvestigation(
@@ -88,8 +83,7 @@ export class ContentSyncClient {
       },
     });
 
-    throwIfRuntimeError(response);
-    return investigateNowOutputSchema.parse(response);
+    return parseInvestigateNowResponse(response);
   }
 
   async getCachedStatus(): Promise<ParsedExtensionPageStatus | null> {

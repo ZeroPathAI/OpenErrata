@@ -204,6 +204,14 @@ function requireSetIconCall(call: unknown): { tabId: number; path: Record<string
   };
 }
 
+function assertIconPathMatches(path: string | undefined, pattern: RegExp): void {
+  assert.equal(typeof path, "string");
+  if (typeof path !== "string") {
+    throw new Error("Expected icon path string");
+  }
+  assert.match(path, pattern);
+}
+
 function requireSetBadgeColorCall(call: unknown): { tabId: number; color: string } {
   assert.equal(typeof call, "object");
   assert.notEqual(call, null);
@@ -236,8 +244,8 @@ test("updateToolbarBadge animates investigating state and clears badge when inve
 
     const firstIconCall = requireSetIconCall(calls.setIcon[0]);
     assert.equal(firstIconCall.tabId, 10);
-    assert.match(firstIconCall.path["16"] ?? "", /^icons\/frame-\d+-16\.png$/);
-    assert.match(firstIconCall.path["48"] ?? "", /^icons\/frame-\d+-48\.png$/);
+    assertIconPathMatches(firstIconCall.path["16"], /icons\/frame-\d+-16\.png$/);
+    assertIconPathMatches(firstIconCall.path["48"], /icons\/frame-\d+-48\.png$/);
 
     const firstBadgeColorCall = requireSetBadgeColorCall(calls.setBadgeBackgroundColor[0]);
     assert.equal(firstBadgeColorCall.tabId, 10);
@@ -254,17 +262,17 @@ test("updateToolbarBadge animates investigating state and clears badge when inve
     await flushAsyncQueue();
     const animatedIconCall = requireSetIconCall(calls.setIcon[1]);
     assert.equal(animatedIconCall.tabId, 10);
-    assert.match(animatedIconCall.path["16"] ?? "", /^icons\/frame-\d+-16\.png$/);
-    assert.match(animatedIconCall.path["48"] ?? "", /^icons\/frame-\d+-48\.png$/);
+    assertIconPathMatches(animatedIconCall.path["16"], /icons\/frame-\d+-16\.png$/);
+    assertIconPathMatches(animatedIconCall.path["48"], /icons\/frame-\d+-48\.png$/);
     assert.notEqual(animatedIconCall.path["16"], firstIconCall.path["16"]);
 
     updateToolbarBadge(10, createPostStatus("NOT_INVESTIGATED"));
     await flushAsyncQueue();
     const staticIconCall = requireSetIconCall(calls.setIcon[2]);
     assert.equal(staticIconCall.tabId, 10);
-    assert.match(staticIconCall.path["16"] ?? "", /^icons\/icon-\d+\.png$/);
-    assert.match(staticIconCall.path["48"] ?? "", /^icons\/icon-\d+\.png$/);
-    assert.match(staticIconCall.path["128"] ?? "", /^icons\/icon-\d+\.png$/);
+    assertIconPathMatches(staticIconCall.path["16"], /icons\/icon-\d+\.png$/);
+    assertIconPathMatches(staticIconCall.path["48"], /icons\/icon-\d+\.png$/);
+    assertIconPathMatches(staticIconCall.path["128"], /icons\/icon-\d+\.png$/);
     assert.deepEqual(calls.setBadgeText[1], {
       tabId: 10,
       text: "",
