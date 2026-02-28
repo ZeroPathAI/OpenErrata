@@ -250,6 +250,17 @@ function describeSchemaError(error: { message: string }): string {
   return `Invalid extension message payload: ${error.message}`;
 }
 
+function parseInvestigationStatusSnapshot(value: unknown): InvestigationStatusOutput {
+  const parsed = investigationStatusOutputSchema.safeParse(value);
+  if (parsed.success) {
+    return parsed.data;
+  }
+
+  throw new ApiClientError(`Malformed GET_STATUS response from API: ${parsed.error.message}`, {
+    errorCode: "INVALID_EXTENSION_MESSAGE",
+  });
+}
+
 function toRuntimeErrorResponse(error: unknown): ExtensionRuntimeErrorResponse {
   const errorCode = error instanceof ApiClientError ? error.errorCode : undefined;
   return extensionRuntimeErrorResponseSchema.parse({
@@ -484,7 +495,7 @@ function stopInvestigationPolling(tabId: number): void {
   const existing = backgroundInvestigationState.getPoller(tabId);
   if (!existing) return;
 
-  if (existing.timer) {
+  if (existing.timer !== null) {
     clearInterval(existing.timer);
   }
   backgroundInvestigationState.clearPoller(tabId);
@@ -975,13 +986,13 @@ async function handleGetStatus(
   await clearUpgradeRequiredState();
 
   const { checkedAt: _checkedAt, ...response } = result;
-  investigationStatusOutputSchema.parse(response);
+  const parsedResponse = parseInvestigationStatusSnapshot(response);
 
   if (sender.tab?.id !== undefined) {
     const existing = await getActivePostStatus(sender.tab.id);
     if (existing) {
       if (tabSessionId !== undefined && tabSessionId !== existing.tabSessionId) {
-        return response;
+        return parsedResponse;
       }
 
       await cachePostStatus(
@@ -992,14 +1003,14 @@ async function handleGetStatus(
           externalId: existing.externalId,
           pageUrl: existing.pageUrl,
           investigationId: payload.investigationId,
-          ...response,
+          ...parsedResponse,
         }),
         { setActive: false },
       );
     }
   }
 
-  return response;
+  return parsedResponse;
 }
 
 async function handleInvestigateNow(

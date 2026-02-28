@@ -2,8 +2,8 @@
   "extends": "../tsconfig.base.json",
   "compilerOptions": {
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "types": ["chrome", "node", "@playwright/test"],
+    "types": ["chrome", "webextension-polyfill"],
     "noEmit": true
   },
-  "include": ["src", "test"]
+  "include": ["src"]
 }

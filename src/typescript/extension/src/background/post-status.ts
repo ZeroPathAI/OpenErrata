@@ -51,6 +51,18 @@ type PostStatusInput =
 
 type InvestigationSnapshot = InvestigationStatusOutput | ViewPostOutput;
 
+const fallbackFailureState = { investigationState: "FAILED" as const };
+const failureStateByErrorCode = {
+  CONTENT_MISMATCH: { investigationState: "CONTENT_MISMATCH" },
+  PAYLOAD_TOO_LARGE: fallbackFailureState,
+  UPGRADE_REQUIRED: fallbackFailureState,
+  INVALID_EXTENSION_MESSAGE: fallbackFailureState,
+  UNSUPPORTED_PROTOCOL_VERSION: fallbackFailureState,
+} as const satisfies Record<
+  ExtensionRuntimeErrorCode,
+  { investigationState: "CONTENT_MISMATCH" } | { investigationState: "FAILED" }
+>;
+
 function toPostStatusBase(input: PostStatusIdentity): {
   kind: "POST";
   tabSessionId: number;
@@ -177,14 +189,11 @@ export function createPostStatusFromInvestigation(
 function apiErrorToFailureState(
   errorCode: ExtensionRuntimeErrorCode | undefined,
 ): { investigationState: "CONTENT_MISMATCH" } | { investigationState: "FAILED" } {
-  if (errorCode === "CONTENT_MISMATCH") {
-    return {
-      investigationState: "CONTENT_MISMATCH",
-    };
+  if (errorCode === undefined) {
+    return fallbackFailureState;
   }
-  return {
-    investigationState: "FAILED",
-  };
+
+  return failureStateByErrorCode[errorCode];
 }
 export function apiErrorToPostStatus(input: {
   error: unknown;

@@ -128,6 +128,15 @@ const typeAwarePresetConfigs = [
   ignores: typeAwareTsIgnores,
 }));
 
+const extensionRuntimeBoundaryFiles = [
+  "extension/src/background/api-client.ts",
+  "extension/src/background/index.ts",
+  "extension/src/content/sync.ts",
+  "extension/src/lib/protocol-version.ts",
+  "extension/src/lib/sync-response.ts",
+  "extension/src/lib/view-post-input.ts",
+];
+
 export default [
   {
     ignores: [
@@ -268,15 +277,15 @@ export default [
     },
   },
   {
-    files: ["extension/src/background/api-client.ts", "extension/src/content/sync.ts"],
+    files: extensionRuntimeBoundaryFiles,
     rules: {
       "no-restricted-syntax": [
         "error",
         {
           selector:
-            "CallExpression[callee.property.name='parse'][callee.object.type='Identifier'][callee.object.name=/Schema$/]",
+            "CallExpression[callee.property.name='parse'][callee.object.type='Identifier'][callee.object.name=/Schema$/][arguments.0.type!='ObjectExpression']",
           message:
-            "Do not call schema.parse(...) in extension runtime boundary adapters. Use safeParse(...) and map failures to INVALID_EXTENSION_MESSAGE.",
+            "Do not call schema.parse(...) on non-literal boundary data in extension runtime adapters. Use safeParse(...) and map failures to INVALID_EXTENSION_MESSAGE.",
         },
       ],
     },
