@@ -1,9 +1,7 @@
-import { getEnv } from "$lib/config/env.js";
-
-async function computeHmac(body: string): Promise<string> {
+async function computeHmac(secret: string, body: string): Promise<string> {
   const key = await crypto.subtle.importKey(
     "raw",
-    new TextEncoder().encode(getEnv().HMAC_SECRET),
+    new TextEncoder().encode(secret),
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"],
@@ -14,8 +12,12 @@ async function computeHmac(body: string): Promise<string> {
     .join("");
 }
 
-export async function verifyHmac(body: string, signature: string): Promise<boolean> {
-  const expected = await computeHmac(body);
+export async function verifyHmac(
+  secret: string,
+  body: string,
+  signature: string,
+): Promise<boolean> {
+  const expected = await computeHmac(secret, body);
   // Constant-time comparison
   if (expected.length !== signature.length) return false;
   let result = 0;

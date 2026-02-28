@@ -1,6 +1,6 @@
 import type { RequestEvent } from "@sveltejs/kit";
 import { getPrisma, type PrismaClient } from "$lib/db/client";
-import { MINIMUM_SUPPORTED_EXTENSION_VERSION } from "$lib/config/env.js";
+import { getEnv, MINIMUM_SUPPORTED_EXTENSION_VERSION } from "$lib/config/env.js";
 import { hashContent, trimToOptionalNonEmpty } from "@openerrata/shared";
 import { verifyHmac } from "$lib/services/hmac.js";
 import { deriveIpRangePrefix } from "$lib/network/ip.js";
@@ -34,7 +34,7 @@ export async function createContext(event: RequestEvent): Promise<Context> {
     {
       hashContent,
       deriveIpRangePrefix,
-      verifyHmac,
+      verifyHmac: (body, signature) => verifyHmac(getEnv().HMAC_SECRET, body, signature),
       findActiveInstanceApiKeyHash: async (apiKey) => findActiveInstanceApiKeyHash(prisma, apiKey),
     },
   );
