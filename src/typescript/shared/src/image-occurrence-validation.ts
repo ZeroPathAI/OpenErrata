@@ -1,7 +1,7 @@
-type IndexedImageOccurrence = {
+interface IndexedImageOccurrence {
   originalIndex: number;
   normalizedTextOffset: number;
-};
+}
 
 type ImageOccurrenceValidationIssue =
   | {

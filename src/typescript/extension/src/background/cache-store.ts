@@ -1,4 +1,8 @@
-import { extensionPostStatusSchema, extensionSkippedStatusSchema } from "@openerrata/shared";
+import {
+  extensionPostStatusSchema,
+  extensionSkippedStatusSchema,
+  isNonNullObject,
+} from "@openerrata/shared";
 import type {
   ExtensionPageStatus,
   ExtensionPostStatus,
@@ -12,7 +16,7 @@ interface TabCacheRecord {
 
 type StorageRecord = Record<string, unknown>;
 
-export type CacheBrowserApi = {
+export interface CacheBrowserApi {
   storage: {
     local: {
       get: (key: string) => Promise<StorageRecord>;
@@ -21,17 +25,17 @@ export type CacheBrowserApi = {
     };
   };
   tabs: {
-    query: () => Promise<Array<{ id?: number }>>;
+    query: () => Promise<{ id?: number }[]>;
   };
-};
+}
 
-type CacheStoreDeps = {
+interface CacheStoreDeps {
   browserApi: CacheBrowserApi;
   updateBadge: (tabId: number, status: ExtensionPostStatus | null) => void;
   warn: (message?: unknown, ...optionalParams: unknown[]) => void;
-};
+}
 
-type TabStatusCacheStore = {
+interface TabStatusCacheStore {
   cachePostStatus: (
     tabId: number | undefined,
     status: ExtensionPostStatus,
@@ -43,14 +47,10 @@ type TabStatusCacheStore = {
   getActivePostStatus: (tabId: number) => Promise<ExtensionPostStatus | null>;
   clearCache: (tabId: number) => void;
   syncToolbarBadgesForOpenTabs: () => Promise<void>;
-};
+}
 
 function storageKey(tabId: number): string {
   return `tab:${tabId.toString()}`;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function emptyRecord(): TabCacheRecord {
@@ -61,7 +61,7 @@ function emptyRecord(): TabCacheRecord {
 }
 
 function parseStoredRecord(stored: unknown): TabCacheRecord | null {
-  if (!isRecord(stored)) return null;
+  if (!isNonNullObject(stored)) return null;
 
   const skippedStatusParsed = extensionSkippedStatusSchema.safeParse(stored["skippedStatus"]);
   const skippedStatus: ExtensionSkippedStatus | null = skippedStatusParsed.success

@@ -34,6 +34,7 @@ test("validateOpenAiApiKeyForSettingsWithReachability maps known OpenAI status c
   const invalidResult = await validateOpenAiApiKeyForSettingsWithReachability(
     "sk-invalid-test-key-abcdefghijklmnopqrstuvwxyz",
     async () => {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub with additional status property
       const error = new Error("unauthorized") as Error & { status: number };
       error.status = 401;
       throw error;
@@ -47,6 +48,7 @@ test("validateOpenAiApiKeyForSettingsWithReachability maps known OpenAI status c
   const restrictedResult = await validateOpenAiApiKeyForSettingsWithReachability(
     "sk-restricted-test-key-abcdefghijklmnopqrstuvwxyz",
     async () => {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub with additional status property
       const error = new Error("forbidden") as Error & { status: number };
       error.status = 403;
       throw error;

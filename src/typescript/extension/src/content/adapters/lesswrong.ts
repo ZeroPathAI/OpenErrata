@@ -1,6 +1,7 @@
 import { normalizeContent } from "@openerrata/shared";
 import { isLikelyVisible, type AdapterExtractionResult, type PlatformAdapter } from "./model";
 import {
+  cloneElement,
   extractContentWithImageOccurrencesFromRoot,
   readFirstMetaDateAsIso,
   readFirstTimeDateAsIso,
@@ -39,7 +40,7 @@ type RootSelectionResult =
 
 function parseAuthorSlug(href: string | null): string | null {
   if (href === null || href.length === 0) return null;
-  const match = href.match(/\/users\/([^/?#]+)/);
+  const match = /\/users\/([^/?#]+)/.exec(href);
   return match?.[1] ?? null;
 }
 
@@ -63,10 +64,10 @@ function findPostAuthorLink(scope: ParentNode): HTMLAnchorElement | null {
 }
 
 function toCanonicalVersioningHtml(canonicalRoot: Element): string {
-  const clone = canonicalRoot.cloneNode(true) as Element;
+  const clone = cloneElement(canonicalRoot);
   removeLinkPostCallouts(clone);
 
-  return (clone as HTMLElement).innerHTML;
+  return clone.innerHTML;
 }
 
 function removeLinkPostCallouts(root: Element): void {
@@ -78,7 +79,7 @@ function removeLinkPostCallouts(root: Element): void {
 }
 
 function extractPostIdFromUrl(url: string): string | null {
-  const match = url.match(POST_URL_REGEX);
+  const match = POST_URL_REGEX.exec(url);
   return match?.[1] ?? null;
 }
 
@@ -289,7 +290,7 @@ export const lesswrongAdapter: PlatformAdapter = {
 
   extract(document: Document): AdapterExtractionResult {
     const url = window.location.href;
-    const match = url.match(POST_URL_REGEX);
+    const match = POST_URL_REGEX.exec(url);
     const externalId = match?.[1];
     if (externalId === undefined || externalId.length === 0) {
       return {
@@ -313,7 +314,7 @@ export const lesswrongAdapter: PlatformAdapter = {
       };
     }
     const canonicalVersioningHtml = toCanonicalVersioningHtml(canonicalRoot);
-    const canonicalExtractionRoot = canonicalRoot.cloneNode(true) as Element;
+    const canonicalExtractionRoot = cloneElement(canonicalRoot);
     removeLinkPostCallouts(canonicalExtractionRoot);
     const extractedContent = extractContentWithImageOccurrencesFromRoot(
       canonicalExtractionRoot,

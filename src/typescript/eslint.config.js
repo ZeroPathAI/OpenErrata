@@ -5,11 +5,14 @@ import globals from "globals";
 import prettier from "eslint-config-prettier";
 
 /**
- * Type-aware rules for .ts files only (require projectService).
+ * Type-aware rule overrides for .ts files only (require projectService).
+ * We layer strictTypeChecked + stylisticTypeChecked, then pin project-specific
+ * expectations here to avoid accidental strictness drift.
+ *
  * NOT enabled for .svelte — svelte-eslint-parser + projectService is too slow.
  * svelte-check covers type errors in .svelte instead.
  */
-const typeAwareRules = {
+const typeAwareRuleOverrides = {
   // ── Async safety ──────────────────────────────────────────────
   "@typescript-eslint/no-floating-promises": "error",
   "@typescript-eslint/no-misused-promises": "error",
@@ -25,6 +28,7 @@ const typeAwareRules = {
   "@typescript-eslint/no-unsafe-argument": "error",
   "@typescript-eslint/no-unsafe-enum-comparison": "error",
   "@typescript-eslint/no-unsafe-declaration-merging": "error",
+  "@typescript-eslint/no-unsafe-type-assertion": "error",
 
   // ── Operator/template strictness ──────────────────────────────
   "@typescript-eslint/restrict-plus-operands": "error",
@@ -106,6 +110,24 @@ const typeAwareRules = {
   "@typescript-eslint/dot-notation": "error",
 };
 
+const typeAwareTsFiles = ["**/*.ts"];
+
+const typeAwareTsIgnores = [
+  "**/*.d.ts",
+  "**/vite.config.ts",
+  "**/svelte.config.js",
+  "extension/playwright.config.ts",
+];
+
+const typeAwarePresetConfigs = [
+  ...ts.configs.strictTypeChecked,
+  ...ts.configs.stylisticTypeChecked,
+].map((config) => ({
+  ...config,
+  files: typeAwareTsFiles,
+  ignores: typeAwareTsIgnores,
+}));
+
 export default [
   {
     ignores: [
@@ -153,7 +175,9 @@ export default [
         {
           "ts-ignore": true,
           "ts-nocheck": true,
-          "ts-expect-error": "allow-with-description",
+          "ts-expect-error": {
+            descriptionFormat: "^(?:[A-Z]{2,}-\\d+|https?://\\S+)\\s+-\\s+.+$",
+          },
           "ts-check": false,
           minimumDescriptionLength: 12,
         },
@@ -169,7 +193,39 @@ export default [
     },
   },
   {
-    files: ["extension/**/*.{js,ts,svelte}"],
+    files: ["api/src/**/*.ts"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector:
+            "Program > VariableDeclaration > VariableDeclarator[init.type='CallExpression'][init.callee.name='getEnv']",
+          message:
+            "Do not read getEnv() in top-level module initializers. Resolve env lazily inside functions so imports stay side-effect free.",
+        },
+        {
+          selector:
+            "Program > VariableDeclaration > VariableDeclarator[init.type='MemberExpression'][init.object.type='CallExpression'][init.object.callee.name='getEnv']",
+          message:
+            "Do not read getEnv() in top-level module initializers. Resolve env lazily inside functions so imports stay side-effect free.",
+        },
+        {
+          selector:
+            "Program > ExportNamedDeclaration > VariableDeclaration > VariableDeclarator[init.type='CallExpression'][init.callee.name='getEnv']",
+          message:
+            "Do not read getEnv() in top-level module initializers. Resolve env lazily inside functions so imports stay side-effect free.",
+        },
+        {
+          selector:
+            "Program > ExportNamedDeclaration > VariableDeclaration > VariableDeclarator[init.type='MemberExpression'][init.object.type='CallExpression'][init.object.callee.name='getEnv']",
+          message:
+            "Do not read getEnv() in top-level module initializers. Resolve env lazily inside functions so imports stay side-effect free.",
+        },
+      ],
+    },
+  },
+  {
+    files: ["extension/src/**/*.{js,ts,svelte}"],
     languageOptions: {
       globals: {
         ...globals.browser,
@@ -178,14 +234,18 @@ export default [
     },
   },
   {
+    files: ["extension/scripts/**/*.{js,mjs,cjs,ts}"],
+    languageOptions: {
+      globals: {
+        ...globals.node,
+      },
+    },
+  },
+  ...typeAwarePresetConfigs,
+  {
     // Type-aware linting for .ts files only, including extension code.
-    files: ["**/*.ts"],
-    ignores: [
-      "**/*.d.ts",
-      "**/vite.config.ts",
-      "**/svelte.config.js",
-      "extension/playwright.config.ts",
-    ],
+    files: typeAwareTsFiles,
+    ignores: typeAwareTsIgnores,
     languageOptions: {
       parserOptions: {
         projectService: true,
@@ -194,7 +254,7 @@ export default [
       },
     },
     rules: {
-      ...typeAwareRules,
+      ...typeAwareRuleOverrides,
       // Disable base ESLint rules superseded by TS-aware equivalents
       "no-throw-literal": "off",
       "require-await": "off",
@@ -208,11 +268,46 @@ export default [
     },
   },
   {
+    files: ["extension/src/background/api-client.ts", "extension/src/content/sync.ts"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector:
+            "CallExpression[callee.property.name='parse'][callee.object.type='Identifier'][callee.object.name=/Schema$/]",
+          message:
+            "Do not call schema.parse(...) in extension runtime boundary adapters. Use safeParse(...) and map failures to INVALID_EXTENSION_MESSAGE.",
+        },
+      ],
+    },
+  },
+  {
     // Node's `test(...)` registration calls are intentionally un-awaited.
     files: ["**/test/**/*.ts", "**/*.test.ts"],
     rules: {
-      "@typescript-eslint/no-floating-promises": "off",
+      "@typescript-eslint/no-floating-promises": [
+        "error",
+        {
+          allowForKnownSafeCalls: [
+            {
+              from: "package",
+              package: "node:test",
+              name: [
+                "test",
+                "describe",
+                "it",
+                "before",
+                "beforeEach",
+                "after",
+                "afterEach",
+                "suite",
+              ],
+            },
+          ],
+        },
+      ],
       "@typescript-eslint/require-await": "off",
+      "@typescript-eslint/no-empty-function": "off",
     },
   },
   {

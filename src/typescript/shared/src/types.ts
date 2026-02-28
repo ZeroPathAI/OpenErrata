@@ -144,9 +144,6 @@ export type ExtensionApiQueryPath = {
 export type ExtensionApiInput<P extends ExtensionApiProcedurePath> =
   ExtensionApiProcedureContract[P]["input"];
 
-export type ExtensionApiOutput<P extends ExtensionApiProcedurePath> =
-  ExtensionApiProcedureContract[P]["output"];
-
 // ── Extension cache/status shapes ─────────────────────────────────────────
 
 export type ExtensionPostStatus = z.infer<typeof import("./schemas.js").extensionPostStatusSchema>;

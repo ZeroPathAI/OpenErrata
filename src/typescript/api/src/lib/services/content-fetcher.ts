@@ -30,7 +30,7 @@ export type CanonicalContentFetchResult =
       fetchFailureReason: string;
     };
 
-type WikipediaCanonicalFetchInput = {
+interface WikipediaCanonicalFetchInput {
   platform: "WIKIPEDIA";
   url: string;
   metadata: {
@@ -38,7 +38,7 @@ type WikipediaCanonicalFetchInput = {
     title: string;
     revisionId: string;
   };
-};
+}
 
 export type CanonicalFetchInput =
   | {
@@ -285,7 +285,7 @@ const WIKIPEDIA_BLOCK_TAGS = new Set([
 ]);
 
 function headingLevelFromTag(tagName: string): number | null {
-  const match = tagName.match(/^h([2-6])$/i);
+  const match = /^h([2-6])$/i.exec(tagName);
   if (match?.[1] === undefined || match[1].length === 0) {
     return null;
   }
@@ -301,10 +301,10 @@ function shouldSkipWikipediaElement(node: DefaultTreeAdapterMap["element"]): boo
 
 function wikipediaHtmlToTextContent(html: string): string {
   const fragment = parseFragment(html);
-  const stack: Array<{
+  const stack: {
     node: DefaultTreeAdapterMap["node"];
     phase: "enter" | "exit";
-  }> = [];
+  }[] = [];
   for (let index = fragment.childNodes.length - 1; index >= 0; index -= 1) {
     const child = fragment.childNodes[index];
     if (child !== undefined) {

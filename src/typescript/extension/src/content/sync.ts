@@ -1,6 +1,5 @@
 import {
   EXTENSION_MESSAGE_PROTOCOL_VERSION,
-  extensionPageStatusSchema,
   type ExtensionSkippedReason,
   type Platform,
   type PlatformContent,
@@ -9,14 +8,17 @@ import {
   type ViewPostOutput,
 } from "@openerrata/shared";
 import browser from "webextension-polyfill";
-import { isExtensionContextInvalidatedError } from "../lib/runtime-error.js";
 import {
+  isExtensionContextInvalidatedError,
+  UPGRADE_REQUIRED_STORAGE_KEY,
+} from "../lib/runtime-error.js";
+import {
+  parseCachedStatusResponse,
   parseInvestigateNowResponse,
   parseViewPostResponse,
-  throwIfRuntimeError,
 } from "../lib/sync-response.js";
 
-export type ParsedExtensionPageStatus = ReturnType<typeof extensionPageStatusSchema.parse>;
+export type ParsedExtensionPageStatus = Exclude<ReturnType<typeof parseCachedStatusResponse>, null>;
 
 type CachedStatusListener = () => void;
 
@@ -91,9 +93,7 @@ export class ContentSyncClient {
       v: EXTENSION_MESSAGE_PROTOCOL_VERSION,
       type: "GET_CACHED",
     });
-    throwIfRuntimeError(response);
-    if (response === null) return null;
-    return extensionPageStatusSchema.parse(response);
+    return parseCachedStatusResponse(response);
   }
 
   installCachedStatusListener(listener: CachedStatusListener): () => void {
@@ -102,7 +102,13 @@ export class ContentSyncClient {
       areaName,
     ) => {
       if (areaName !== "local") return;
-      if (!Object.keys(changes).some((key) => key.startsWith("tab:"))) return;
+      if (
+        !Object.keys(changes).some(
+          (key) => key.startsWith("tab:") || key === UPGRADE_REQUIRED_STORAGE_KEY,
+        )
+      ) {
+        return;
+      }
       listener();
     };
 

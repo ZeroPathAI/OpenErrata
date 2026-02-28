@@ -4,14 +4,14 @@ import type { ExtensionPostStatus, ExtensionSkippedStatus } from "@openerrata/sh
 
 type CacheModule = typeof import("../../src/background/cache");
 
-type CacheChromeState = {
+interface CacheChromeState {
   storageData: Record<string, unknown>;
-  tabsResult: Array<{ id?: number }>;
+  tabsResult: { id?: number }[];
   getCalls: unknown[];
   setCalls: unknown[];
   removeCalls: unknown[];
   queryCalls: unknown[];
-};
+}
 
 const cacheChromeState: CacheChromeState = {
   storageData: {},
@@ -24,6 +24,7 @@ const cacheChromeState: CacheChromeState = {
 
 function maybeCallback<T>(callback: unknown, value: T): Promise<T> {
   if (typeof callback === "function") {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- callback type narrowed for mock dispatch
     (callback as (input: T) => void)(value);
   }
   return Promise.resolve(value);
@@ -61,7 +62,7 @@ const cacheChromeMock = {
     },
   },
   tabs: {
-    query: (queryInfo: unknown, callback?: (tabs: Array<{ id?: number }>) => void) => {
+    query: (queryInfo: unknown, callback?: (tabs: { id?: number }[]) => void) => {
       cacheChromeState.queryCalls.push(queryInfo);
       return maybeCallback(callback, cacheChromeState.tabsResult);
     },
@@ -71,12 +72,13 @@ const cacheChromeMock = {
     setBadgeText: (_details: unknown, callback?: () => void) => maybeCallback(callback, undefined),
     setBadgeBackgroundColor: (_details: unknown, callback?: () => void) =>
       maybeCallback(callback, undefined),
+    setTitle: (_details: unknown, callback?: () => void) => maybeCallback(callback, undefined),
   },
 };
 
 (globalThis as { chrome?: unknown }).chrome = cacheChromeMock;
 
-function resetCacheChromeState(input: { tabsResult?: Array<{ id?: number }> } = {}): void {
+function resetCacheChromeState(input: { tabsResult?: { id?: number }[] } = {}): void {
   cacheChromeState.storageData = {};
   cacheChromeState.tabsResult = input.tabsResult ?? [];
   cacheChromeState.getCalls.length = 0;
@@ -86,7 +88,9 @@ function resetCacheChromeState(input: { tabsResult?: Array<{ id?: number }> } = 
 }
 
 function createPostStatus(tabSessionId: number): ExtensionPostStatus {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- branded type from plain value in test factory
   const sessionId = tabSessionId as ExtensionPostStatus["tabSessionId"];
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- branded type from plain value in test factory
   const externalId = "post-123" as ExtensionPostStatus["externalId"];
   const status: ExtensionPostStatus = {
     kind: "POST",
@@ -102,7 +106,9 @@ function createPostStatus(tabSessionId: number): ExtensionPostStatus {
 }
 
 function createSkippedStatus(tabSessionId: number): ExtensionSkippedStatus {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- branded type from plain value in test factory
   const sessionId = tabSessionId as ExtensionSkippedStatus["tabSessionId"];
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- branded type from plain value in test factory
   const externalId = "post-123" as ExtensionSkippedStatus["externalId"];
   const skippedStatus: ExtensionSkippedStatus = {
     kind: "SKIPPED",
@@ -116,6 +122,7 @@ function createSkippedStatus(tabSessionId: number): ExtensionSkippedStatus {
 }
 
 async function importCacheModule(): Promise<CacheModule> {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- dynamic import returns module as any
   return (await import(
     `../../src/background/cache.ts?test=${Date.now().toString()}-${Math.random().toString()}`
   )) as CacheModule;

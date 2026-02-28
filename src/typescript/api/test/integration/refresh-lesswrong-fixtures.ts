@@ -3,11 +3,11 @@ import {
   resolveLesswrongFixtureDefinition,
 } from "./lesswrong-fixtures.js";
 
-type RefreshMode = {
+interface RefreshMode {
   fixtureKey: string;
   externalId: string;
   postUrl: string;
-};
+}
 
 function readInputFixtureKeys(): RefreshMode[] {
   const raw = (process.env["LESSWRONG_FIXTURE_KEYS"] ?? "").trim();

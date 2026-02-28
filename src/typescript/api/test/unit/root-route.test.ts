@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { GET } from "../../src/routes/+server.js";
 
 test("root route returns a JSON welcome payload", async () => {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- SvelteKit route handler narrowed to test-compatible signature
   const routeGet = GET as (event: { request: Request }) => Promise<Response>;
   const response = await routeGet({
     request: new Request("http://localhost/"),
@@ -11,6 +12,7 @@ test("root route returns a JSON welcome payload", async () => {
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("content-type"), "application/json");
 
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- response.json() returns any; assertion checked by subsequent asserts
   const payload = (await response.json()) as { message?: unknown };
   const message = payload.message;
   assert.equal(typeof message, "string");

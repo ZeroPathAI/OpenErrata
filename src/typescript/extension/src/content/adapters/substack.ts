@@ -1,4 +1,4 @@
-import { normalizeContent } from "@openerrata/shared";
+import { normalizeContent, isNonNullObject } from "@openerrata/shared";
 import type { AdapterExtractionResult, PlatformAdapter } from "./model";
 import {
   extractContentWithImageOccurrencesFromRoot,
@@ -99,7 +99,7 @@ function decodeCandidates(raw: string): string[] {
 
 function extractSubstackPostId(value: string): string | null {
   for (const candidate of decodeCandidates(value)) {
-    const match = candidate.match(SUBSTACK_POST_PREVIEW_ID_REGEX);
+    const match = SUBSTACK_POST_PREVIEW_ID_REGEX.exec(candidate);
     if (match?.[1] !== undefined && match[1].length > 0) {
       return match[1];
     }
@@ -110,7 +110,7 @@ function extractSubstackPostId(value: string): string | null {
 
 function extractPublicationSubdomainFromValue(value: string): string | null {
   for (const candidate of decodeCandidates(value)) {
-    const match = candidate.match(SUBSTACK_PUBLICATION_REGEX);
+    const match = SUBSTACK_PUBLICATION_REGEX.exec(candidate);
     if (match?.[1] !== undefined && match[1].length > 0) {
       return match[1].toLowerCase();
     }
@@ -166,25 +166,21 @@ function extractInteractionCounts(document: Document): {
       return;
     }
 
-    if (typeof node !== "object") return;
+    if (!isNonNullObject(node)) return;
 
-    const record = node as Record<string, unknown>;
-    const interactionStatistic = record["interactionStatistic"];
+    const interactionStatistic = node["interactionStatistic"];
     if (interactionStatistic !== undefined) {
       visit(interactionStatistic, depth + 1);
     }
 
-    const interactionType = record["interactionType"];
-    const userInteractionCount = record["userInteractionCount"];
+    const interactionType = node["interactionType"];
+    const userInteractionCount = node["userInteractionCount"];
     if (typeof userInteractionCount === "number") {
       const typeName =
         typeof interactionType === "string"
           ? interactionType
-          : typeof interactionType === "object" &&
-              interactionType !== null &&
-              "@type" in interactionType &&
-              typeof (interactionType as { "@type": unknown })["@type"] === "string"
-            ? String((interactionType as { "@type": unknown })["@type"])
+          : isNonNullObject(interactionType) && typeof interactionType["@type"] === "string"
+            ? interactionType["@type"]
             : "";
 
       if (/likeaction/i.test(typeName)) {
@@ -195,7 +191,7 @@ function extractInteractionCounts(document: Document): {
       }
     }
 
-    for (const nested of Object.values(record)) {
+    for (const nested of Object.values(node)) {
       visit(nested, depth + 1);
     }
   };
@@ -222,7 +218,7 @@ function extractAuthorHandle(document: Document): string | undefined {
 }
 
 function parseSlug(url: URL): string | null {
-  const match = url.pathname.match(SUBSTACK_POST_PATH_REGEX);
+  const match = SUBSTACK_POST_PATH_REGEX.exec(url.pathname);
   if (match?.[1] === undefined || match[1].length === 0) return null;
   const slug = normalizeContent(match[1]);
   return slug.length > 0 ? slug : null;

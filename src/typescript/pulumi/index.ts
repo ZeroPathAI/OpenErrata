@@ -14,15 +14,15 @@ const namespaceName =
 const nameOverride = config.get("nameOverride") ?? undefined;
 const fullnameOverride = config.get("fullnameOverride") ?? undefined;
 
-type ImageConfig = {
+interface ImageConfig {
   repository: string;
   tag: string;
   digest: string | undefined;
-};
+}
 
 type BlobStorageProvider = "aws" | "s3_compatible";
 
-type BlobStorageConfigBase = {
+interface BlobStorageConfigBase {
   mode: "manual" | "managed_aws";
   provider: BlobStorageProvider;
   region: string;
@@ -30,7 +30,7 @@ type BlobStorageConfigBase = {
   publicUrlPrefix: pulumi.Input<string>;
   accessKeyId: pulumi.Input<string>;
   secretAccessKey: pulumi.Input<string>;
-};
+}
 
 type AwsBlobStorageConfig = BlobStorageConfigBase & {
   provider: "aws";
@@ -44,11 +44,11 @@ type S3CompatibleBlobStorageConfig = BlobStorageConfigBase & {
 
 type BlobStorageConfig = AwsBlobStorageConfig | S3CompatibleBlobStorageConfig;
 
-type DatabaseConfig = {
+interface DatabaseConfig {
   mode: "manual" | "managed_aws_rds";
   databaseUrl: pulumi.Input<string>;
   endpoint: pulumi.Input<string>;
-};
+}
 
 type ApiIngressConfig =
   | {
@@ -570,32 +570,36 @@ function resolveDns(input: pulumi.Config): DnsConfig {
   );
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 function resolveIngressLoadBalancerTarget(status: unknown): string {
-  if (typeof status !== "object" || status === null) {
+  if (!isRecord(status)) {
     throw new Error(
       "Ingress status is unavailable. Set cloudflareRecordTarget explicitly or wait for ingress to receive a load balancer address.",
     );
   }
 
-  const ingressEntries =
-    (status as { loadBalancer?: { ingress?: Array<{ hostname?: string; ip?: string }> } })
-      .loadBalancer?.ingress ?? [];
+  const loadBalancer = isRecord(status["loadBalancer"]) ? status["loadBalancer"] : null;
+  const ingress =
+    loadBalancer !== null && Array.isArray(loadBalancer["ingress"]) ? loadBalancer["ingress"] : [];
 
-  if (!Array.isArray(ingressEntries) || ingressEntries.length === 0) {
+  if (ingress.length === 0) {
     throw new Error(
       "Ingress has no load balancer address yet. Set cloudflareRecordTarget explicitly or rerun deploy after ingress reconciliation.",
     );
   }
 
-  for (const ingressEntry of ingressEntries) {
-    if (typeof ingressEntry.hostname === "string" && ingressEntry.hostname.length > 0) {
-      return ingressEntry.hostname;
+  for (const entry of ingress) {
+    if (isRecord(entry) && typeof entry["hostname"] === "string" && entry["hostname"].length > 0) {
+      return entry["hostname"];
     }
   }
 
-  for (const ingressEntry of ingressEntries) {
-    if (typeof ingressEntry.ip === "string" && ingressEntry.ip.length > 0) {
-      return ingressEntry.ip;
+  for (const entry of ingress) {
+    if (isRecord(entry) && typeof entry["ip"] === "string" && entry["ip"].length > 0) {
+      return entry["ip"];
     }
   }
 

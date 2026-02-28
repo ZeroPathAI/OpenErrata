@@ -11,25 +11,25 @@ type PublicInvestigationOrigin =
       fetchFailureReason: string;
     };
 
-type PublicTrustSignals = {
+interface PublicTrustSignals {
   origin: PublicInvestigationOrigin;
   corroborationCount: number;
-};
+}
 
-type PublicClaimSource = {
+interface PublicClaimSource {
   url: string;
   title: string;
   snippet: string;
-};
+}
 
-type PublicClaim = {
+interface PublicClaim {
   id: string;
   text: string;
   context: string;
   summary: string;
   reasoning: string;
   sources: PublicClaimSource[];
-};
+}
 
 type PublicInvestigation = PublicTrustSignals & {
   id: string;
@@ -39,17 +39,17 @@ type PublicInvestigation = PublicTrustSignals & {
   model: string;
 };
 
-type PublicPost = {
+interface PublicPost {
   platform: Platform;
   externalId: string;
   url: string;
-};
+}
 
-type PublicInvestigationResult = {
+interface PublicInvestigationResult {
   investigation: PublicInvestigation;
   post: PublicPost;
   claims: PublicClaim[];
-};
+}
 
 type PublicPostInvestigationSummary = PublicTrustSignals & {
   id: string;
@@ -58,10 +58,10 @@ type PublicPostInvestigationSummary = PublicTrustSignals & {
   claimCount: number;
 };
 
-type PublicPostInvestigationsResult = {
+interface PublicPostInvestigationsResult {
   post: PublicPost | null;
   investigations: PublicPostInvestigationSummary[];
-};
+}
 
 type PublicSearchInvestigationSummary = PublicTrustSignals & {
   id: string;
@@ -73,29 +73,29 @@ type PublicSearchInvestigationSummary = PublicTrustSignals & {
   claimCount: number;
 };
 
-type PublicSearchInvestigationsResult = {
+interface PublicSearchInvestigationsResult {
   investigations: PublicSearchInvestigationSummary[];
-};
+}
 
-type PublicMetricsResult = {
+interface PublicMetricsResult {
   totalInvestigatedPosts: number;
   investigatedPostsWithFlags: number;
   factCheckIncidence: number;
-};
+}
 
-type PublicMetricsInput = {
+interface PublicMetricsInput {
   platform?: Platform | undefined;
   authorId?: string | undefined;
   windowStart?: string | undefined;
   windowEnd?: string | undefined;
-};
+}
 
-type PublicSearchInvestigationsInput = {
+interface PublicSearchInvestigationsInput {
   query?: string | undefined;
   platform?: Platform | undefined;
   limit: number;
   offset: number;
-};
+}
 
 function parsePlatform(value: string): Platform {
   return platformSchema.parse(value);
@@ -481,10 +481,10 @@ export async function getPublicMetrics(
   const conditions = publicMetricsConditions(input);
 
   const result = await prisma.$queryRaw<
-    Array<{
+    {
       total_investigated: number;
       with_flags: number;
-    }>
+    }[]
   >`
     SELECT
       COUNT(DISTINCT pv."postId")::int AS total_investigated,

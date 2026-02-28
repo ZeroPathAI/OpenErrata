@@ -1,8 +1,8 @@
 import browser from "webextension-polyfill";
 
-type PageIdentity = {
+interface PageIdentity {
   pageLabel: string;
-};
+}
 
 type StylesheetBootstrapOptions = PageIdentity & {
   stylesheetAsset: string;

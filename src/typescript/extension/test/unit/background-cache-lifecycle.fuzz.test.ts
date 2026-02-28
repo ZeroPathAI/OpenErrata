@@ -11,10 +11,10 @@ import { extensionPostStatusSchema, extensionSkippedStatusSchema } from "@opener
 import { createTabStatusCacheStore } from "../../src/background/cache-store";
 import { createDeterministicRandom, randomChance, randomInt } from "../helpers/fuzz-utils";
 
-type ModelRecord = {
+interface ModelRecord {
   activePostStatus: ExtensionPostStatus | null;
   skippedStatus: ExtensionSkippedStatus | null;
-};
+}
 
 function emptyModelRecord(): ModelRecord {
   return {

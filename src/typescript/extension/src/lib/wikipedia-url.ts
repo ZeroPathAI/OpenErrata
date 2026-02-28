@@ -36,7 +36,7 @@ const NON_ARTICLE_NAMESPACE_PREFIXES = new Set([
 ]);
 
 function parseLanguageFromHost(hostname: string): string | null {
-  const match = hostname.toLowerCase().match(WIKIPEDIA_HOST_REGEX);
+  const match = WIKIPEDIA_HOST_REGEX.exec(hostname.toLowerCase());
   return match?.[1] ?? null;
 }
 
@@ -110,13 +110,13 @@ export function wikipediaExternalIdFromPageId(language: string, pageId: string):
   return `${language}:${pageId}`;
 }
 
-type ParsedWikipediaIdentity = {
+interface ParsedWikipediaIdentity {
   language: string;
   title: string | null;
   pageId: string | null;
   identityKind: "TITLE" | "PAGE_ID";
   externalId: string;
-};
+}
 
 export function parseWikipediaIdentity(url: string): ParsedWikipediaIdentity | null {
   let parsedUrl: URL;

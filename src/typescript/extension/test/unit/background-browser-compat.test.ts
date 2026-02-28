@@ -3,14 +3,14 @@ import { test } from "node:test";
 
 type BrowserCompatModule = typeof import("../../src/background/browser-compat");
 
-type NavigationDetails = {
+interface NavigationDetails {
   frameId: number;
   tabId: number;
   url: string;
-};
+}
 
 function createNavigationEventMock() {
-  const listeners: Array<(details: NavigationDetails) => void> = [];
+  const listeners: ((details: NavigationDetails) => void)[] = [];
   return {
     listeners,
     addListener(listener: (details: NavigationDetails) => void) {
@@ -27,7 +27,7 @@ function createNavigationEventMock() {
 }
 
 const browserCompatState: {
-  executeScriptResult: Array<{ result?: unknown }>;
+  executeScriptResult: { result?: unknown }[];
   executeScriptCalls: unknown[];
   insertCssCalls: unknown[];
 } = {
@@ -45,7 +45,7 @@ const chromeMock = {
     getURL: (asset: string) => `chrome-extension://test-extension/${asset}`,
   },
   scripting: {
-    executeScript: (details: unknown, callback?: (value: Array<{ result?: unknown }>) => void) => {
+    executeScript: (details: unknown, callback?: (value: { result?: unknown }[]) => void) => {
       browserCompatState.executeScriptCalls.push(details);
       if (typeof callback === "function") {
         callback(browserCompatState.executeScriptResult);
@@ -70,7 +70,7 @@ const chromeMock = {
 
 (globalThis as { chrome?: unknown }).chrome = chromeMock;
 
-function installChromeMock(input: { executeScriptResult?: Array<{ result?: unknown }> }) {
+function installChromeMock(input: { executeScriptResult?: { result?: unknown }[] }) {
   browserCompatState.executeScriptResult = input.executeScriptResult ?? [{ result: undefined }];
   browserCompatState.executeScriptCalls.length = 0;
   browserCompatState.insertCssCalls.length = 0;
@@ -86,6 +86,7 @@ function installChromeMock(input: { executeScriptResult?: Array<{ result?: unkno
 }
 
 async function importBrowserCompat(): Promise<BrowserCompatModule> {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- dynamic import returns module as any
   return (await import(
     `../../src/background/browser-compat.ts?test=${Date.now().toString()}-${Math.random().toString()}`
   )) as BrowserCompatModule;
@@ -101,10 +102,11 @@ test("executeTabFunction returns script result and passes tab target", async () 
 
   assert.equal(result, "ok-result");
   assert.equal(mocks.executeScriptCalls.length, 1);
-  const [firstCall] = mocks.executeScriptCalls as Array<{
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- narrowing unknown call-log entries for test assertions
+  const [firstCall] = mocks.executeScriptCalls as {
     target: { tabId: number };
     func: unknown;
-  }>;
+  }[];
   if (firstCall === undefined) {
     throw new Error("Missing executeScript call");
   }

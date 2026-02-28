@@ -1,9 +1,9 @@
-export type InvestigationPoller = {
+export interface InvestigationPoller {
   tabSessionId: number;
   investigationId: string;
   inFlight: boolean;
   timer: ReturnType<typeof setInterval> | null;
-};
+}
 
 export class BackgroundInvestigationState {
   private readonly latestTabSessionByTab = new Map<number, number>();

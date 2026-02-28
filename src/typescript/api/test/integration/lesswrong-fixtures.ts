@@ -27,11 +27,11 @@ export const INTEGRATION_LESSWRONG_FIXTURE_KEYS = {
 type IntegrationLesswrongFixtureKey =
   (typeof INTEGRATION_LESSWRONG_FIXTURE_KEYS)[keyof typeof INTEGRATION_LESSWRONG_FIXTURE_KEYS];
 
-type LesswrongFixtureDefinition = {
+interface LesswrongFixtureDefinition {
   fixtureKey: string;
   externalId: string;
   postUrl: string;
-};
+}
 
 const INTEGRATION_LESSWRONG_FIXTURE_DEFINITIONS: Record<
   IntegrationLesswrongFixtureKey,
@@ -45,7 +45,7 @@ const INTEGRATION_LESSWRONG_FIXTURE_DEFINITIONS: Record<
   },
 };
 
-export type LesswrongFixture = {
+export interface LesswrongFixture {
   key: string;
   externalId: string;
   postUrl: string;
@@ -53,7 +53,7 @@ export type LesswrongFixture = {
   fetchedAt: string;
   htmlSha256: string;
   html: string;
-};
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -155,6 +155,7 @@ export function resolveLesswrongFixtureDefinition(fixtureKey: string): Lesswrong
     );
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- fixtureKey validated by hasOwn check above
   return INTEGRATION_LESSWRONG_FIXTURE_DEFINITIONS[fixtureKey as IntegrationLesswrongFixtureKey];
 }
 

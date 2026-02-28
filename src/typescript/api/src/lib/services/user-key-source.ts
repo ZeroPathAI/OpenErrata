@@ -6,10 +6,10 @@ import { getDatabaseEncryptionConfig } from "$lib/config/env.js";
 const OPENAI_KEY_SOURCE_TTL_MS = 30 * 60 * 1000;
 const AES_GCM_IV_BYTES = 12;
 
-type EncryptionConfig = {
+interface EncryptionConfig {
   keyId: string;
   keyBytes: Buffer;
-};
+}
 
 let cachedEncryptionConfig: EncryptionConfig | null = null;
 

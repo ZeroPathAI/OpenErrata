@@ -1,17 +1,17 @@
 import type { ContentProvenance } from "@openerrata/shared";
 import type { Investigation } from "$lib/generated/prisma/client";
 
-type RunRecoveryState = {
+interface RunRecoveryState {
   leaseOwner: string | null;
   leaseExpiresAt: Date | null;
   recoverAfterAt: Date | null;
-};
+}
 
-type InvestigationRunTiming = {
+interface InvestigationRunTiming {
   queuedAt: Date | null;
   startedAt: Date | null;
   heartbeatAt: Date | null;
-};
+}
 
 export function serverVerifiedAtForProvenance(
   provenance: ContentProvenance,

@@ -4,6 +4,7 @@ import { after, afterEach, test } from "node:test";
 import type { RequestEvent } from "@sveltejs/kit";
 import type { InvestigatorInput } from "../../src/lib/investigators/interface.js";
 import { hashContent, normalizeContent, WORD_COUNT_LIMIT, type Platform } from "@openerrata/shared";
+import { MINIMUM_SUPPORTED_EXTENSION_VERSION } from "../../src/lib/config/env.js";
 import {
   createDeterministicRandom,
   randomChance,
@@ -66,14 +67,15 @@ const [
 
 const prisma = getPrisma();
 
-type CallerOptions = {
+interface CallerOptions {
   isAuthenticated?: boolean;
   userOpenAiApiKey?: string | null;
   viewerKey?: string;
   ipRangeKey?: string;
-};
+  extensionVersion?: string | null;
+}
 
-type SeededPost = {
+interface SeededPost {
   id: string;
   platform: Platform;
   externalId: string;
@@ -82,7 +84,7 @@ type SeededPost = {
   contentHash: string;
   versionHash: string;
   postVersionId: string;
-};
+}
 
 type RawAppCaller = ReturnType<typeof appRouter.createCaller>;
 type ViewPostInput = Parameters<RawAppCaller["post"]["registerObservedVersion"]>[0];
@@ -127,6 +129,7 @@ function createCaller(options: CallerOptions = {}): AppCaller {
   const userOpenAiApiKey = options.userOpenAiApiKey ?? null;
 
   const caller = appRouter.createCaller({
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- tRPC caller test harness bypasses SvelteKit event
     event: null as unknown as RequestEvent,
     prisma,
     viewerKey: options.viewerKey ?? "integration-viewer",
@@ -135,6 +138,8 @@ function createCaller(options: CallerOptions = {}): AppCaller {
     canInvestigate: isAuthenticated || userOpenAiApiKey !== null,
     userOpenAiApiKey,
     hasValidAttestation: false,
+    extensionVersion: options.extensionVersion ?? MINIMUM_SUPPORTED_EXTENSION_VERSION,
+    minimumSupportedExtensionVersion: MINIMUM_SUPPORTED_EXTENSION_VERSION,
   });
 
   return {
@@ -156,14 +161,14 @@ function createCaller(options: CallerOptions = {}): AppCaller {
   };
 }
 
-type GraphqlError = {
+interface GraphqlError {
   message: string;
-};
+}
 
-type GraphqlEnvelope<TData> = {
+interface GraphqlEnvelope<TData> {
   data?: TData;
   errors?: GraphqlError[];
-};
+}
 
 type GraphqlRequestEvent = Parameters<typeof graphqlPost>[0];
 
@@ -172,6 +177,7 @@ async function queryPublicGraphql<TData>(
   variables?: Record<string, unknown>,
 ): Promise<TData> {
   const requestBody = JSON.stringify(variables === undefined ? { query } : { query, variables });
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- minimal SvelteKit request event stub for GraphQL route
   const response = await graphqlPost({
     request: new Request("http://localhost/graphql", {
       method: "POST",
@@ -184,6 +190,7 @@ async function queryPublicGraphql<TData>(
 
   assert.equal(response instanceof Response, true);
   assert.equal(response.status, 200);
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- integration test deserializing GraphQL JSON response
   const payload = (await response.json()) as GraphqlEnvelope<TData>;
   if (payload.errors !== undefined && payload.errors.length > 0) {
     assert.fail(`GraphQL errors: ${payload.errors.map((error) => error.message).join("; ")}`);
@@ -196,6 +203,7 @@ async function queryPublicGraphql<TData>(
 }
 
 function createMockRequestEvent(headers?: HeadersInit): RequestEvent {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- minimal SvelteKit request event stub for tRPC route
   return {
     request: new Request("http://localhost/trpc/post.validateSettings", {
       method: "POST",
@@ -326,7 +334,7 @@ async function assertIntegrationDatabaseInvariants(): Promise<void> {
   const integrationExternalIdPrefix = `${INTEGRATION_DATA_PREFIX}%`;
 
   const claimsOnNonCompleteInvestigations = await prisma.$queryRaw<
-    Array<{ investigationId: string; status: string }>
+    { investigationId: string; status: string }[]
   >`
     SELECT DISTINCT i."id" AS "investigationId", i."status"::text AS "status"
     FROM "Investigation" i
@@ -343,9 +351,7 @@ async function assertIntegrationDatabaseInvariants(): Promise<void> {
     `invariant failed: only COMPLETE investigations may have claims: ${JSON.stringify(claimsOnNonCompleteInvestigations)}`,
   );
 
-  const processingInvestigationsWithoutRun = await prisma.$queryRaw<
-    Array<{ investigationId: string }>
-  >`
+  const processingInvestigationsWithoutRun = await prisma.$queryRaw<{ investigationId: string }[]>`
     SELECT i."id" AS "investigationId"
     FROM "Investigation" i
     JOIN "PostVersion" pv ON pv."id" = i."postVersionId"
@@ -362,7 +368,7 @@ async function assertIntegrationDatabaseInvariants(): Promise<void> {
     `invariant failed: PROCESSING investigations must have runs: ${JSON.stringify(processingInvestigationsWithoutRun)}`,
   );
 
-  const orphanSources = await prisma.$queryRaw<Array<{ sourceId: string; claimId: string }>>`
+  const orphanSources = await prisma.$queryRaw<{ sourceId: string; claimId: string }[]>`
     SELECT s."id" AS "sourceId", s."claimId"
     FROM "Source" s
     LEFT JOIN "Claim" c ON c."id" = s."claimId"
@@ -948,10 +954,14 @@ afterEach(async () => {
 });
 
 void test("GET /health returns ok", async () => {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- health route test bypasses SvelteKit event
   const requestEvent = null as unknown as Parameters<typeof healthGet>[0];
   const response = await healthGet(requestEvent);
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { status: "ok" });
+  assert.deepEqual(await response.json(), {
+    status: "ok",
+    minimumSupportedExtensionVersion: MINIMUM_SUPPORTED_EXTENSION_VERSION,
+  });
 });
 
 void test("post.recordViewAndGetStatus stores content and reports not investigated without matching investigation", async () => {
@@ -1065,6 +1075,21 @@ void test("post.recordViewAndGetStatus rejects canonical hash mismatches for ser
   });
 
   assert.equal(post, null);
+});
+
+void test("post.registerObservedVersion rejects extension clients below minimum supported version", async () => {
+  const caller = createCaller({
+    extensionVersion: "0.1.4",
+  });
+  const input = buildXViewInput({
+    externalId: "view-post-upgrade-required-1",
+    observedContentText: "Version-gated content.",
+  });
+
+  await assert.rejects(
+    async () => caller.post.registerObservedVersion(input),
+    /minimum supported version is 0\.2\.0/i,
+  );
 });
 
 void test("post.recordViewAndGetStatus applies strict hash lookup and does not reuse stale investigations", async () => {
@@ -3250,7 +3275,7 @@ void test("public.getInvestigation returns complete investigation and trust sign
         platform: Platform;
         externalId: string;
       };
-      claims: Array<{ id: string }>;
+      claims: { id: string }[];
     } | null;
   }>(
     `
@@ -3454,7 +3479,7 @@ void test("public.getPostInvestigations lists all complete investigations for a 
 
   const graphqlResult = await queryPublicGraphql<{
     postInvestigations: {
-      investigations: Array<{
+      investigations: {
         id: string;
         origin:
           | {
@@ -3468,7 +3493,7 @@ void test("public.getPostInvestigations lists all complete investigations for a 
               fetchFailureReason: string;
             };
         corroborationCount: number;
-      }>;
+      }[];
     };
   }>(
     `
@@ -3571,7 +3596,7 @@ void test("public.searchInvestigations filters by query/platform and includes fa
 
   const graphqlResult = await queryPublicGraphql<{
     searchInvestigations: {
-      investigations: Array<{
+      investigations: {
         id: string;
         origin:
           | {
@@ -3584,7 +3609,7 @@ void test("public.searchInvestigations filters by query/platform and includes fa
               provenance: "CLIENT_FALLBACK";
               fetchFailureReason: string;
             };
-      }>;
+      }[];
     };
   }>(
     `

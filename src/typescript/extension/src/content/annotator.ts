@@ -257,9 +257,10 @@ function applyThemeClass(element: HTMLElement, theme: ThemeMode): void {
 }
 
 function parseCssColor(value: string): [number, number, number, number] | null {
-  const rgbaMatch = value.match(
-    /^rgba?\(\s*([0-9]{1,3})\s*,\s*([0-9]{1,3})\s*,\s*([0-9]{1,3})(?:\s*,\s*([0-9]*\.?[0-9]+))?\s*\)$/i,
-  );
+  const rgbaMatch =
+    /^rgba?\(\s*([0-9]{1,3})\s*,\s*([0-9]{1,3})\s*,\s*([0-9]{1,3})(?:\s*,\s*([0-9]*\.?[0-9]+))?\s*\)$/i.exec(
+      value,
+    );
   if (!rgbaMatch) return null;
 
   const red = Number.parseInt(rgbaMatch[1] ?? "", 10);
@@ -377,7 +378,9 @@ function highlightFragments(range: Range, claim: InvestigationClaim): void {
   const walker = document.createTreeWalker(range.commonAncestorContainer, NodeFilter.SHOW_TEXT);
 
   while (walker.nextNode()) {
-    const node = walker.currentNode as Text;
+    const current = walker.currentNode;
+    if (!(current instanceof Text)) continue;
+    const node = current;
     if (range.intersectsNode(node)) {
       textNodes.push(node);
     }

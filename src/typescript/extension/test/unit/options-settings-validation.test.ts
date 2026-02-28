@@ -9,6 +9,7 @@ function installChromeRuntimeOnly(): void {
     runtime: {
       id: "test-extension",
       getURL: (asset: string) => `chrome-extension://test-extension/${asset}`,
+      getManifest: () => ({ version: "0.1.4" }),
     },
   };
 }
@@ -21,6 +22,7 @@ function abortError(message: string): Error {
 
 async function importSettingsValidationModule(): Promise<SettingsValidationModule> {
   installChromeRuntimeOnly();
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- dynamic import returns module as any
   return (await import(
     `../../src/options/settings-validation.ts?test=${Date.now().toString()}-${Math.random().toString()}`
   )) as SettingsValidationModule;
@@ -188,12 +190,13 @@ test("probeSettingsConfiguration reports network reachability failures for healt
 test("probeSettingsConfiguration returns ok when health and validation succeed", async () => {
   const { probeSettingsConfiguration } = await importSettingsValidationModule();
   const originalFetch = globalThis.fetch;
-  const fetchCalls: Array<{ url: string; method: string }> = [];
+  const fetchCalls: { url: string; method: string; headers: Headers }[] = [];
   globalThis.fetch = (async (input, init) => {
     const url = requestUrlString(input);
     fetchCalls.push({
       url,
       method: init?.method ?? "GET",
+      headers: new Headers(init?.headers),
     });
 
     if (url.endsWith("/health")) {
@@ -231,11 +234,16 @@ test("probeSettingsConfiguration returns ok when health and validation succeed",
       },
     });
     assert.equal(fetchCalls.length, 2);
-    assert.equal(fetchCalls[0]?.url, "https://api.openerrata.example/health");
+    const healthRequest = fetchCalls[0];
+    const validateSettingsRequest = fetchCalls[1];
+    assert.ok(healthRequest);
+    assert.ok(validateSettingsRequest);
+    assert.equal(healthRequest.url, "https://api.openerrata.example/health");
     assert.equal(
-      fetchCalls[1]?.url,
+      validateSettingsRequest.url,
       `https://api.openerrata.example/trpc/${EXTENSION_TRPC_PATH.VALIDATE_SETTINGS}`,
     );
+    assert.equal(validateSettingsRequest.headers.get("x-openerrata-extension-version"), "0.1.4");
   } finally {
     globalThis.fetch = originalFetch;
   }

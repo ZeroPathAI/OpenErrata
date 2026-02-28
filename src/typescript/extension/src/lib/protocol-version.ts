@@ -5,10 +5,10 @@ import {
 
 type ExtensionRuntimeErrorResponse = ReturnType<typeof extensionRuntimeErrorResponseSchema.parse>;
 
-type ProtocolMessageEnvelope = {
+interface ProtocolMessageEnvelope {
   type: unknown;
   v: unknown;
-};
+}
 
 function isProtocolMessageEnvelope(message: unknown): message is ProtocolMessageEnvelope {
   return typeof message === "object" && message !== null && "type" in message && "v" in message;

@@ -10,12 +10,12 @@ const yoga = createYoga<PublicGraphqlContext>({
   context: () => ({ prisma: getPrisma() }),
 });
 
-type ResponseLike = {
+interface ResponseLike {
   body: BodyInit | null;
   status: number;
   statusText: string;
   headers: HeadersInit;
-};
+}
 
 function toNativeResponse(response: ResponseLike): Response {
   if (response instanceof Response) {
@@ -31,6 +31,6 @@ function toNativeResponse(response: ResponseLike): Response {
 }
 
 export const POST: RequestHandler = async ({ request }) => {
-  const response = (await yoga.fetch(request)) as ResponseLike;
+  const response = await yoga.fetch(request);
   return toNativeResponse(response);
 };

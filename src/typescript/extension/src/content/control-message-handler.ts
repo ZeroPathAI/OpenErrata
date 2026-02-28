@@ -1,13 +1,13 @@
 import { contentControlMessageSchema } from "@openerrata/shared";
 import { unsupportedProtocolVersionResponse } from "../lib/protocol-version.js";
 
-type ContentControlController = {
+interface ContentControlController {
   requestInvestigation: () => unknown;
   showAnnotations: () => unknown;
   hideAnnotations: () => unknown;
   getAnnotationVisibility: () => unknown;
   focusClaim: (claimId: string) => unknown;
-};
+}
 
 export function handleContentControlMessage(
   controller: ContentControlController,

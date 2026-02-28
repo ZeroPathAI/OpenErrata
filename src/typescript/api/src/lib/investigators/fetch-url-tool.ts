@@ -18,7 +18,7 @@ const fetchUrlToolArgumentsSchema = z.object({
   ),
 });
 
-type FetchUrlToolSuccess = {
+interface FetchUrlToolSuccess {
   ok: true;
   requestedUrl: string;
   finalUrl: string;
@@ -28,21 +28,21 @@ type FetchUrlToolSuccess = {
   contentText: string;
   truncated: boolean;
   retrievedAt: string;
-};
+}
 
-type FetchUrlToolParseFailure = {
+interface FetchUrlToolParseFailure {
   ok: false;
   errorKind: "INVALID_ARGUMENTS";
   requestedUrl: null;
   error: string;
-};
+}
 
-type FetchUrlToolRequestFailure = {
+interface FetchUrlToolRequestFailure {
   ok: false;
   errorKind: "FETCH_FAILED";
   requestedUrl: string;
   error: string;
-};
+}
 
 type FetchUrlToolFailure = FetchUrlToolParseFailure | FetchUrlToolRequestFailure;
 type FetchUrlToolOutput = FetchUrlToolSuccess | FetchUrlToolFailure;

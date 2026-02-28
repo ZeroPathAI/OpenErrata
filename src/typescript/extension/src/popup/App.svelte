@@ -13,6 +13,7 @@
   import { computePostView, type PopupClaim, type PostPopupView } from "./post-view";
   import { isSubstackPostPathUrl, statusMatchesIdentity } from "./status-identity";
   import { loadExtensionSettings } from "../lib/settings";
+  import { UPGRADE_REQUIRED_STORAGE_KEY } from "../lib/runtime-error";
 
   // ── View model ────────────────────────────────────────────────────────────
   //
@@ -24,6 +25,7 @@
   type PopupView =
     | { kind: "loading" }
     | { kind: "error"; message: string }
+    | { kind: "upgrade_required"; message: string }
     | { kind: "unsupported" }
     | { kind: "awaiting_status" }
     | { kind: "skipped"; message: string }
@@ -126,6 +128,14 @@
       });
       const runtimeError = extensionRuntimeErrorResponseSchema.safeParse(response);
       if (runtimeError.success) {
+        if (runtimeError.data.errorCode === "UPGRADE_REQUIRED") {
+          pageTitle = title;
+          view = {
+            kind: "upgrade_required",
+            message: runtimeError.data.error,
+          };
+          return;
+        }
         throw new Error(runtimeError.data.error);
       }
       const parsed = extensionPageStatusSchema.safeParse(response);
@@ -273,6 +283,8 @@
         !Object.keys(changes).some(
           (key) =>
             key.startsWith("tab:") ||
+            key === UPGRADE_REQUIRED_STORAGE_KEY ||
+            key === "apiBaseUrl" ||
             key === "apiKey" ||
             key === "openaiApiKey" ||
             key === "autoInvestigate",
@@ -328,6 +340,12 @@
           <span class="spinner"></span>
           <p class="state-title">Checking This Page</p>
           <p class="state-subtitle">Checking this page&apos;s investigation status...</p>
+        </section>
+      {:else if view.kind === "upgrade_required"}
+        <section class="state-panel error-panel">
+          <p class="state-title">Update Required</p>
+          <p class="state-subtitle">{view.message}</p>
+          <p class="state-subtitle">Update the extension, then reload this tab.</p>
         </section>
       {:else if view.kind === "unsupported"}
         <section class="state-panel">

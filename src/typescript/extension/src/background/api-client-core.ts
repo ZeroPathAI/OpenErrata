@@ -5,18 +5,19 @@ import { ApiClientError } from "./api-client-error.js";
 
 export const BUNDLED_ATTESTATION_SECRET = "openerrata-attestation-v1";
 export const TRPC_REQUEST_BODY_LIMIT_BYTES = 512 * 1024;
+export const EXTENSION_VERSION_HEADER_NAME = "x-openerrata-extension-version";
 
 type ApiClientSettings = Pick<
   ExtensionSettings,
   "apiBaseUrl" | "apiKey" | "openaiApiKey" | "hmacSecret"
 >;
 
-type TrpcFetchInit = {
+interface TrpcFetchInit {
   headers?: HeadersInit;
   method?: string;
   body?: BodyInit | null | undefined;
   signal?: AbortSignal | null | undefined;
-};
+}
 
 function utf8ByteLength(value: string): number {
   return new TextEncoder().encode(value).byteLength;
@@ -47,6 +48,7 @@ export async function buildTrpcRequestInit(input: {
   init: TrpcFetchInit | undefined;
   settings: ApiClientSettings;
   includeUserOpenAiHeader: boolean;
+  extensionVersion: string;
   computeHmac: (secret: string, body: string) => Promise<string>;
   utf8Length?: (value: string) => number;
 }): Promise<RequestInit> {
@@ -58,6 +60,10 @@ export async function buildTrpcRequestInit(input: {
   const userOpenAiApiKey = input.settings.openaiApiKey.trim();
   if (input.includeUserOpenAiHeader && userOpenAiApiKey.length > 0) {
     headers.set("x-openai-api-key", userOpenAiApiKey);
+  }
+  const trimmedExtensionVersion = input.extensionVersion.trim();
+  if (trimmedExtensionVersion.length > 0) {
+    headers.set(EXTENSION_VERSION_HEADER_NAME, trimmedExtensionVersion);
   }
 
   if (typeof input.init?.body === "string" && input.init.body.length > 0) {

@@ -5,7 +5,7 @@ import {
   shouldExcludeWikipediaElement,
 } from "@openerrata/shared";
 import type { AdapterExtractionResult, PlatformAdapter } from "./model";
-import { extractContentWithImageOccurrencesFromRoot } from "./utils";
+import { cloneElement, extractContentWithImageOccurrencesFromRoot } from "./utils";
 import {
   normalizeWikipediaTitleToken,
   parseWikipediaIdentity,
@@ -51,7 +51,7 @@ function toIsoDate(value: unknown): string | null {
     return null;
   }
 
-  const timestampMatch = value.match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/);
+  const timestampMatch = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/.exec(value);
   if (timestampMatch) {
     const [, year, month, day, hour, minute, second] = timestampMatch;
     const iso = new Date(
@@ -74,7 +74,7 @@ function toIsoDate(value: unknown): string | null {
 }
 
 function headingLevel(tagName: string): number | null {
-  const match = tagName.match(/^H([2-6])$/i);
+  const match = /^H([2-6])$/i.exec(tagName);
   if (match?.[1] === undefined || match[1].length === 0) {
     return null;
   }
@@ -112,7 +112,7 @@ function removeSectionFromHeading(heading: HTMLElement): void {
 }
 
 function pruneWikipediaContent(root: Element): Element {
-  const clone = root.cloneNode(true) as Element;
+  const clone = cloneElement(root);
 
   for (const node of clone.querySelectorAll<HTMLElement>("*")) {
     if (

@@ -16,14 +16,14 @@ type PriorInvestigationResult = NonNullable<
   >["priorInvestigationResult"]
 >;
 
-type PostStatusIdentity = {
+interface PostStatusIdentity {
   tabSessionId: number;
   platform: ViewPostInput["platform"];
   externalId: string;
   pageUrl: string;
   investigationId?: string;
   provenance?: ContentProvenance;
-};
+}
 
 type PostStatusInput =
   | (PostStatusIdentity & {

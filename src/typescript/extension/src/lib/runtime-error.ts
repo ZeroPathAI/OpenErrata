@@ -1,5 +1,7 @@
 import type { ExtensionRuntimeErrorCode } from "@openerrata/shared";
 
+export const UPGRADE_REQUIRED_STORAGE_KEY = "runtime:upgrade-required";
+
 export class ExtensionRuntimeError extends Error {
   readonly errorCode: ExtensionRuntimeErrorCode | undefined;
 
@@ -16,6 +18,10 @@ export function isContentMismatchRuntimeError(error: unknown): boolean {
 
 export function isPayloadTooLargeRuntimeError(error: unknown): boolean {
   return error instanceof ExtensionRuntimeError && error.errorCode === "PAYLOAD_TOO_LARGE";
+}
+
+export function isUpgradeRequiredRuntimeError(error: unknown): boolean {
+  return error instanceof ExtensionRuntimeError && error.errorCode === "UPGRADE_REQUIRED";
 }
 
 export function isInvalidExtensionMessageRuntimeError(error: unknown): boolean {

@@ -1,14 +1,14 @@
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getEnv } from "$lib/config/env.js";
 
-type BlobStorageConfigBase = {
+interface BlobStorageConfigBase {
   provider: "aws" | "s3_compatible";
   region: string;
   bucket: string;
   accessKeyId: string;
   secretAccessKey: string;
   publicUrlPrefix: string;
-};
+}
 
 type AwsBlobStorageConfig = BlobStorageConfigBase & {
   provider: "aws";

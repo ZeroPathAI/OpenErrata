@@ -4,10 +4,10 @@ import { requireOpenAiApiKey } from "./env.js";
 
 type StartupComponent = "api" | "worker" | "selector";
 
-type StartupCheckPolicy = {
+interface StartupCheckPolicy {
   checkDatabase: boolean;
   checkOpenAiCredentials: boolean;
-};
+}
 
 const startupCheckPolicyByComponent: Record<StartupComponent, StartupCheckPolicy> = {
   api: { checkDatabase: true, checkOpenAiCredentials: false },

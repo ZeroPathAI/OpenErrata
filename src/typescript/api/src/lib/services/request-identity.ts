@@ -1,20 +1,20 @@
-type RequestIdentityInput = {
+interface RequestIdentityInput {
   clientAddress: string;
   userAgent: string;
   instanceApiKey: string | null | undefined;
   userOpenAiApiKey: string | null | undefined;
   attestationSignature: string | null | undefined;
   attestationBody: string | null;
-};
+}
 
-type RequestIdentityDependencies = {
+interface RequestIdentityDependencies {
   hashContent: (value: string) => Promise<string>;
   findActiveInstanceApiKeyHash: (apiKey: string) => Promise<string | null>;
   deriveIpRangePrefix: (ipAddress: string) => string;
   verifyHmac: (body: string, signature: string) => Promise<boolean>;
-};
+}
 
-type RequestIdentity = {
+interface RequestIdentity {
   authenticatedApiKeyHash: string | null;
   viewerKey: string;
   ipRangeKey: string;
@@ -22,7 +22,7 @@ type RequestIdentity = {
   isAuthenticated: boolean;
   canInvestigate: boolean;
   hasValidAttestation: boolean;
-};
+}
 
 function trimToOptional(value: string | null | undefined): string | null {
   const trimmed = value?.trim();

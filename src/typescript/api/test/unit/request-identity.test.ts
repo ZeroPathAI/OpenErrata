@@ -4,7 +4,7 @@ import { deriveRequestIdentity } from "../../src/lib/services/request-identity.j
 
 test("deriveRequestIdentity uses authenticated viewer key path when api key is active", async () => {
   const lookedUpApiKeys: string[] = [];
-  const verifiedSignatures: Array<{ body: string; signature: string }> = [];
+  const verifiedSignatures: { body: string; signature: string }[] = [];
 
   const identity = await deriveRequestIdentity(
     {

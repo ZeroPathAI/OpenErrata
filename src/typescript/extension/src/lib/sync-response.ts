@@ -1,4 +1,5 @@
 import {
+  extensionPageStatusSchema,
   extensionRuntimeErrorResponseSchema,
   investigateNowOutputSchema,
   viewPostOutputSchema,
@@ -7,7 +8,7 @@ import {
 } from "@openerrata/shared";
 import { ExtensionRuntimeError } from "./runtime-error.js";
 
-export function throwIfRuntimeError(response: unknown): void {
+function throwIfRuntimeError(response: unknown): void {
   const parsedError = extensionRuntimeErrorResponseSchema.safeParse(response);
   if (!parsedError.success) return;
   throw new ExtensionRuntimeError(parsedError.data.error, parsedError.data.errorCode);
@@ -46,4 +47,23 @@ export function parseInvestigateNowResponse(response: unknown): InvestigateNowOu
     response,
     parse: (value) => investigateNowOutputSchema.safeParse(value),
   });
+}
+
+export function parseCachedStatusResponse(
+  response: unknown,
+): ReturnType<typeof extensionPageStatusSchema.parse> | null {
+  throwIfRuntimeError(response);
+  if (response === null) {
+    return null;
+  }
+
+  const parsed = extensionPageStatusSchema.safeParse(response);
+  if (parsed.success) {
+    return parsed.data;
+  }
+
+  throw new ExtensionRuntimeError(
+    `Malformed GET_CACHED response from background: ${parsed.error.message}`,
+    "INVALID_EXTENSION_MESSAGE",
+  );
 }

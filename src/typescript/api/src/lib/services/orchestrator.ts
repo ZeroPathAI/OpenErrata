@@ -104,21 +104,21 @@ const runContextInclude = {
 type InvestigationRunWithContext = Prisma.InvestigationRunGetPayload<{
   include: typeof runContextInclude;
 }>;
-type PromptImageOccurrence = {
+interface PromptImageOccurrence {
   originalIndex: number;
   normalizedTextOffset: number;
   sourceUrl: string;
   captionText?: string;
-};
+}
 
-type PromptPostContext = {
+interface PromptPostContext {
   platform: Platform;
   url: string;
   authorName?: string;
   postPublishedAt?: string;
   imageOccurrences: PromptImageOccurrence[];
   hasVideo?: boolean;
-};
+}
 
 type UnwrappedError = Error | Record<string, unknown> | string;
 
@@ -226,7 +226,9 @@ function toPromptPostContext(postVersion: InvestigationVersionContext): PromptPo
 function unwrapError(error: unknown): UnwrappedError {
   const root = error instanceof InvestigatorExecutionError ? (error.cause ?? error) : error;
   if (root instanceof Error) return root;
-  if (typeof root === "object" && root !== null) {
+  if (root !== null && typeof root === "object" && !Array.isArray(root)) {
+    // After Error check, a non-null non-array object satisfies Record<string, unknown>.
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- narrowed by typeof+null guards above
     return root as Record<string, unknown>;
   }
   return String(root);

@@ -20,6 +20,8 @@ import {
   type ExtensionRuntimeErrorCode,
   type PlatformMetadataByPlatform,
   type ViewPostInput,
+  isExtensionVersionAtLeast,
+  trimToOptionalNonEmpty,
 } from "@openerrata/shared";
 import {
   fetchCanonicalContent,
@@ -65,7 +67,7 @@ type UpsertPostInput = {
   };
 }[Platform];
 
-type ResolvedPostVersion = {
+interface ResolvedPostVersion {
   id: string;
   postId: string;
   versionHash: string;
@@ -81,9 +83,10 @@ type ResolvedPostVersion = {
     externalId: string;
     url: string;
   };
-};
+}
 
 const CONTENT_MISMATCH_ERROR_CODE: ExtensionRuntimeErrorCode = "CONTENT_MISMATCH";
+const UPGRADE_REQUIRED_ERROR_CODE: ExtensionRuntimeErrorCode = "UPGRADE_REQUIRED";
 const WIKIPEDIA_HOST_REGEX = /^([a-z0-9-]+)(?:\.m)?\.wikipedia\.org$/i;
 const WIKIPEDIA_ARTICLE_PATH_PREFIX = "/wiki/";
 const WIKIPEDIA_INDEX_PATH_REGEX = /^\/w\/index\.php(?:[/?#]|$)/i;
@@ -114,9 +117,57 @@ function contentMismatchError(): TRPCError {
   });
 }
 
-function trimToOptionalNonEmpty(value: string | null | undefined): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed !== undefined && trimmed.length > 0 ? trimmed : undefined;
+function upgradeRequiredError(input: {
+  minimumVersion: string;
+  currentVersion: string | null;
+}): TRPCError {
+  return new TRPCError({
+    code: "PRECONDITION_FAILED",
+    message: `Extension upgrade required: minimum supported version is ${input.minimumVersion}; received ${input.currentVersion ?? "missing"}.`,
+    cause: {
+      openerrataCode: UPGRADE_REQUIRED_ERROR_CODE,
+      minimumSupportedExtensionVersion: input.minimumVersion,
+      receivedExtensionVersion: input.currentVersion,
+    },
+  });
+}
+
+/**
+ * Validates that the client extension version meets the minimum required
+ * version. Returns the validated version string on success so callers can
+ * narrow the context type from `string | null` to `string`.
+ */
+function assertSupportedExtensionVersion(input: {
+  minimumSupportedExtensionVersion: string;
+  extensionVersion: string | null;
+}): string {
+  const minimumVersion = input.minimumSupportedExtensionVersion;
+  const currentVersion = input.extensionVersion;
+
+  if (currentVersion === null) {
+    throw upgradeRequiredError({
+      minimumVersion,
+      currentVersion: null,
+    });
+  }
+
+  const atLeastMinimum = isExtensionVersionAtLeast(currentVersion, minimumVersion);
+  if (atLeastMinimum === true) {
+    return currentVersion;
+  }
+
+  if (atLeastMinimum === null) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `Malformed extension version header: "${currentVersion}"`,
+      cause: { openerrataCode: UPGRADE_REQUIRED_ERROR_CODE },
+    });
+  }
+
+  throw upgradeRequiredError({
+    minimumVersion,
+    currentVersion,
+  });
 }
 
 function sha256(input: string): string {
@@ -179,7 +230,7 @@ function parseWikipediaIdentityFromUrl(url: string): {
     return null;
   }
 
-  const hostMatch = parsedUrl.hostname.match(WIKIPEDIA_HOST_REGEX);
+  const hostMatch = WIKIPEDIA_HOST_REGEX.exec(parsedUrl.hostname);
   const language = hostMatch?.[1]?.toLowerCase();
   if (language === undefined || language.length === 0) {
     return null;
@@ -605,12 +656,12 @@ function normalizedOccurrenceToData(
 }
 
 function hasSameNormalizedOccurrences(
-  stored: Array<{
+  stored: {
     originalIndex: number;
     normalizedTextOffset: number;
     sourceUrl: string;
     captionText: string | null;
-  }>,
+  }[],
   normalized: NonNullable<ViewPostInput["observedImageOccurrences"]>,
 ): boolean {
   if (stored.length !== normalized.length) {
@@ -1040,14 +1091,14 @@ function toPriorInvestigationResult(
 }
 
 function formatClaims(
-  claims: Array<{
+  claims: {
     id: string;
     text: string;
     context: string;
     summary: string;
     reasoning: string;
-    sources: Array<{ url: string; title: string; snippet: string }>;
-  }>,
+    sources: { url: string; title: string; snippet: string }[];
+  }[],
 ): InvestigationClaim[] {
   return claims.map((c) => ({
     id: claimIdSchema.parse(c.id),
@@ -1193,8 +1244,13 @@ async function registerObservedVersion(
   });
 }
 
+const extensionProcedure = publicProcedure.use(async ({ ctx, next }) => {
+  const extensionVersion = assertSupportedExtensionVersion(ctx);
+  return next({ ctx: { extensionVersion } });
+});
+
 export const postRouter = router({
-  registerObservedVersion: publicProcedure
+  registerObservedVersion: extensionProcedure
     .input(registerObservedVersionInputSchema)
     .output(registerObservedVersionOutputSchema)
     .mutation(async ({ input, ctx }) => {
@@ -1209,7 +1265,7 @@ export const postRouter = router({
       };
     }),
 
-  recordViewAndGetStatus: publicProcedure
+  recordViewAndGetStatus: extensionProcedure
     .input(recordViewAndGetStatusInputSchema)
     .output(viewPostOutputSchema)
     .mutation(async ({ input, ctx }) => {
@@ -1271,7 +1327,7 @@ export const postRouter = router({
       };
     }),
 
-  getInvestigation: publicProcedure
+  getInvestigation: extensionProcedure
     .input(getInvestigationInputSchema)
     .output(getInvestigationOutputSchema)
     .query(async ({ input, ctx }) => {
@@ -1324,7 +1380,7 @@ export const postRouter = router({
       }
     }),
 
-  investigateNow: publicProcedure
+  investigateNow: extensionProcedure
     .input(investigateNowInputSchema)
     .output(investigateNowOutputSchema)
     .mutation(async ({ input, ctx }) => {
@@ -1418,7 +1474,7 @@ export const postRouter = router({
       }
     }),
 
-  validateSettings: publicProcedure
+  validateSettings: extensionProcedure
     .output(settingsValidationOutputSchema)
     .query(async ({ ctx }) => {
       const openaiValidation = await validateOpenAiApiKeyForSettings(ctx.userOpenAiApiKey);
@@ -1429,7 +1485,7 @@ export const postRouter = router({
       });
     }),
 
-  batchStatus: publicProcedure
+  batchStatus: extensionProcedure
     .input(batchStatusInputSchema)
     .output(batchStatusOutputSchema)
     .query(async ({ input, ctx }) => {

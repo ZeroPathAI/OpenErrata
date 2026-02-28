@@ -1,4 +1,20 @@
-import { normalizeContent, type ObservedImageOccurrence } from "@openerrata/shared";
+import {
+  normalizeContent,
+  isNonNullObject,
+  type ObservedImageOccurrence,
+} from "@openerrata/shared";
+
+/**
+ * Clone an Element node. The DOM spec guarantees `cloneNode(true)` on an
+ * Element returns an Element, but the TS return type is the wider `Node`.
+ */
+export function cloneElement(element: Element): Element {
+  const clone = element.cloneNode(true);
+  if (!(clone instanceof Element)) {
+    throw new Error("cloneNode(true) on Element did not return Element");
+  }
+  return clone;
+}
 
 const JSON_LD_SELECTOR = 'script[type="application/ld+json"]';
 const MAX_JSON_LD_DEPTH = 8;
@@ -47,8 +63,8 @@ function findDateInJsonLd(
     return null;
   }
 
-  if (typeof value !== "object") return null;
-  const record = value as Record<string, unknown>;
+  if (!isNonNullObject(value)) return null;
+  const record = value;
 
   // Preserve caller-specified key priority (e.g. datePublished before dateCreated).
   for (const key of candidateKeys) {
@@ -86,7 +102,7 @@ export function readPublishedDateFromJsonLd(
 }
 
 function uniqueNormalizedUrls(
-  values: ReadonlyArray<string | null | undefined>,
+  values: readonly (string | null | undefined)[],
   baseUrl: string,
 ): string[] {
   const uniqueUrls = new Set<string>();
@@ -142,11 +158,21 @@ function readOptionalCaption(image: HTMLImageElement): string | undefined {
   return undefined;
 }
 
-type ExtractedContentWithImageOccurrences = {
+interface ExtractedContentWithImageOccurrences {
   contentText: string;
   imageUrls: string[];
   imageOccurrences: ObservedImageOccurrence[];
-};
+}
+
+function isDocumentRoot(root: ParentNode): root is Document {
+  return "createTreeWalker" in root && "defaultView" in root;
+}
+
+function hasOwnerDocument(
+  root: ParentNode,
+): root is ParentNode & { ownerDocument: Document | null } {
+  return "ownerDocument" in root;
+}
 
 export function extractContentWithImageOccurrencesFromRoot(
   root: ParentNode,
@@ -159,16 +185,13 @@ export function extractContentWithImageOccurrencesFromRoot(
 
   const uniqueImageUrls: string[] = [];
   const seenImageUrls = new Set<string>();
-  const rawOccurrences: Array<{
+  const rawOccurrences: {
     rawOffset: number;
     sourceUrl: string;
     captionText?: string;
-  }> = [];
+  }[] = [];
 
-  const maybeNode = root as Node;
-  const document =
-    maybeNode.ownerDocument ??
-    (typeof (root as Document).createTreeWalker === "function" ? (root as Document) : null);
+  const document = isDocumentRoot(root) ? root : hasOwnerDocument(root) ? root.ownerDocument : null;
   if (document === null) {
     throw new Error("Image occurrence extraction requires an owner document");
   }

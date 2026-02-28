@@ -1,8 +1,8 @@
-type PageObserverConfig = {
+interface PageObserverConfig {
   mutationDebounceMs: number;
   onNavigation: () => void;
   onMutationSettled: () => void;
-};
+}
 
 export class PageObserver {
   readonly #config: PageObserverConfig;

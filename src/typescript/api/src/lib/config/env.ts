@@ -1,6 +1,14 @@
 import { config as loadDotenv } from "dotenv";
 import { z } from "zod";
 
+/**
+ * The minimum extension version the API will accept. Extensions older than this
+ * receive UPGRADE_REQUIRED errors. This is a property of the API code — when
+ * the API changes in a way that breaks older extensions, bump this constant
+ * alongside that change.
+ */
+export const MINIMUM_SUPPORTED_EXTENSION_VERSION = "0.2.0";
+
 const positiveIntegerFromEnv = z.preprocess((value) => {
   if (value === undefined || value === null || value === "") return undefined;
   if (typeof value === "number") return value;

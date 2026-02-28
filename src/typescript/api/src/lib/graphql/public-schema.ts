@@ -5,6 +5,7 @@ import {
   getMetricsInputSchema,
   getPostInvestigationsInputSchema,
   getPublicInvestigationInputSchema,
+  isNonNullObject,
   searchInvestigationsInputSchema,
   type Platform,
 } from "@openerrata/shared";
@@ -16,9 +17,9 @@ import {
   searchPublicInvestigations,
 } from "$lib/services/public-read-model.js";
 
-export type PublicGraphqlContext = {
+export interface PublicGraphqlContext {
   prisma: PrismaClient;
-};
+}
 
 const typeDefs = /* GraphQL */ `
   scalar DateTime
@@ -352,26 +353,26 @@ function toDateTimeInput(value: Date | string | null | undefined): string | unde
   return value;
 }
 
-type SearchInvestigationsArgs = {
+interface SearchInvestigationsArgs {
   query?: string;
   platform?: Platform;
   limit?: number;
   offset?: number;
-};
+}
 
-type PublicMetricsArgs = {
+interface PublicMetricsArgs {
   platform?: Platform;
   authorId?: string;
   windowStart?: Date | string;
   windowEnd?: Date | string;
-};
+}
 
-type PublicReadModel = {
+interface PublicReadModel {
   getPublicInvestigationById: typeof getPublicInvestigationById;
   getPublicPostInvestigations: typeof getPublicPostInvestigations;
   searchPublicInvestigations: typeof searchPublicInvestigations;
   getPublicMetrics: typeof getPublicMetrics;
-};
+}
 
 const defaultPublicReadModel: PublicReadModel = {
   getPublicInvestigationById,
@@ -385,10 +386,9 @@ function createResolvers(publicReadModel: PublicReadModel) {
     DateTime: DateTimeResolver,
     InvestigationOrigin: {
       __resolveType: (value: unknown): "ServerVerifiedOrigin" | "ClientFallbackOrigin" | null => {
-        if (value === null || typeof value !== "object") return null;
-        const origin = value as { provenance?: string };
-        if (origin.provenance === "SERVER_VERIFIED") return "ServerVerifiedOrigin";
-        if (origin.provenance === "CLIENT_FALLBACK") return "ClientFallbackOrigin";
+        if (!isNonNullObject(value)) return null;
+        if (value["provenance"] === "SERVER_VERIFIED") return "ServerVerifiedOrigin";
+        if (value["provenance"] === "CLIENT_FALLBACK") return "ClientFallbackOrigin";
         return null;
       },
     },

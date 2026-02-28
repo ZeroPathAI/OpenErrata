@@ -3,10 +3,10 @@ export interface OpenErrataControllerLifecycle {
   dispose(): void;
 }
 
-export type OpenErrataBootstrapTarget<TController extends OpenErrataControllerLifecycle> = {
+export interface OpenErrataBootstrapTarget<TController extends OpenErrataControllerLifecycle> {
   __openerrata_loaded?: boolean;
   __openerrata_controller?: TController;
-};
+}
 
 export function bootOpenErrataController<TController extends OpenErrataControllerLifecycle>(
   target: OpenErrataBootstrapTarget<TController>,

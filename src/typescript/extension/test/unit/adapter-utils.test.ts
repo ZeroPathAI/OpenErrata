@@ -10,6 +10,7 @@ import {
 } from "../../src/content/adapters/utils";
 
 function makeMetaElement(content: string | null): Element {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- partial DOM stub for unit testing
   return {
     getAttribute(name: string) {
       return name === "content" ? content : null;
@@ -18,6 +19,7 @@ function makeMetaElement(content: string | null): Element {
 }
 
 function makeTimeElement(datetime: string | null): Element {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- partial DOM stub for unit testing
   return {
     getAttribute(name: string) {
       return name === "datetime" ? datetime : null;
@@ -30,6 +32,7 @@ function makeDocumentStub(input: {
   scripts?: string[];
   timeDateTime?: string | null;
 }): Document {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- partial DOM stub for unit testing
   return {
     querySelector(selector: string) {
       if (selector === "time[datetime]") {
@@ -41,16 +44,19 @@ function makeDocumentStub(input: {
     },
     querySelectorAll(selector: string) {
       if (selector === 'script[type="application/ld+json"]') {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- partial DOM stub for unit testing
         return (input.scripts ?? []).map((text) => ({
           textContent: text,
         })) as unknown as NodeListOf<HTMLScriptElement>;
       }
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- partial DOM stub for unit testing
       return [] as unknown as NodeListOf<Element>;
     },
   } as unknown as Document;
 }
 
 function makeTimeRoot(datetime: string | null | undefined): ParentNode {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- partial DOM stub for unit testing
   return {
     querySelector(selector: string) {
       if (selector !== "time[datetime]" || datetime === undefined) return null;
@@ -60,12 +66,14 @@ function makeTimeRoot(datetime: string | null | undefined): ParentNode {
 }
 
 function makeImageRoot(
-  srcValues: Array<string | null | undefined>,
+  srcValues: (string | null | undefined)[],
   expectedSelector = "img[src]",
 ): ParentNode {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- partial DOM stub for unit testing
   return {
     querySelectorAll(selector: string) {
       assert.equal(selector, expectedSelector);
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- partial DOM stub for unit testing
       return srcValues.map((src) => ({
         getAttribute(name: string) {
           return name === "src" ? (src ?? null) : null;

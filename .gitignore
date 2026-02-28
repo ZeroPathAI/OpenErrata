@@ -25,3 +25,6 @@ Thumbs.db
 
 # Docker
 pgdata/
+
+# Tooling cache
+**/.eslintcache

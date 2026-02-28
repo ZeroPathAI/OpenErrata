@@ -4,11 +4,11 @@ import { getAdapter } from "../../src/content/adapters/index";
 import { isSupportedPostUrl, parseSupportedPageIdentity } from "../../src/lib/post-identity";
 import { isSubstackPostPathUrl } from "../../src/popup/status-identity";
 
-type SupportedCase = {
+interface SupportedCase {
   url: string;
   platform: "LESSWRONG" | "X" | "SUBSTACK" | "WIKIPEDIA";
   externalId: string;
-};
+}
 
 const supportedCases: SupportedCase[] = [
   {

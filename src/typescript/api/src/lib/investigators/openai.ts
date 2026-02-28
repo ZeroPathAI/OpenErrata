@@ -119,6 +119,7 @@ function buildUpdateInvestigationResultSchema(oldClaimIds: [string, ...string[]]
           z
             .object({
               type: z.literal("carry"),
+              // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- guarded by oldClaimIds.length > 0 above
               id: z.enum(oldClaimIds as [string, ...string[]]),
             })
             .strict(),
@@ -131,17 +132,17 @@ function buildUpdateInvestigationResultSchema(oldClaimIds: [string, ...string[]]
 
 type StageOneClaim = InvestigationResult["claims"][number];
 
-type PendingFunctionToolCall = {
+interface PendingFunctionToolCall {
   callId: string;
   name: string;
   argumentsJson: string;
-};
+}
 
-type FunctionCallOutput = {
+interface FunctionCallOutput {
   type: "function_call_output";
   call_id: string;
   output: string;
-};
+}
 
 function buildTwoStepRequestInputAudit(userPrompt: string, validationPrompt: string): string {
   return `=== Stage 1: Fact-check input ===
@@ -151,20 +152,11 @@ ${userPrompt}
 ${validationPrompt}`;
 }
 
-function appendTextInputPart(
-  contentParts: Array<
-    | {
-        type: "input_text";
-        text: string;
-      }
-    | {
-        type: "input_image";
-        detail: "auto";
-        image_url: string;
-      }
-  >,
-  text: string,
-): void {
+type ContentInputPart =
+  | { type: "input_text"; text: string }
+  | { type: "input_image"; detail: "auto"; image_url: string };
+
+function appendTextInputPart(contentParts: ContentInputPart[], text: string): void {
   if (text.length === 0) return;
   contentParts.push({
     type: "input_text",
@@ -249,17 +241,7 @@ function buildInitialInput(
     );
   }
 
-  const contentParts: Array<
-    | {
-        type: "input_text";
-        text: string;
-      }
-    | {
-        type: "input_image";
-        detail: "auto";
-        image_url: string;
-      }
-  > = [];
+  const contentParts: ContentInputPart[] = [];
   appendTextInputPart(contentParts, userPrompt.slice(0, postTextStart));
 
   const seenResolvedContentHashes = new Set<string>();
@@ -358,7 +340,12 @@ function sanitizeJsonValue(value: unknown, depth = 0): InvestigatorJsonValue {
 }
 
 function sanitizeJsonRecord(value: unknown): Record<string, InvestigatorJsonValue> {
-  return isRecord(value) ? (sanitizeJsonValue(value) as Record<string, InvestigatorJsonValue>) : {};
+  if (!isRecord(value)) return {};
+  const sanitized: Record<string, InvestigatorJsonValue> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    sanitized[key] = sanitizeJsonValue(entry, 1);
+  }
+  return sanitized;
 }
 
 function readString(value: unknown): string | null {
@@ -851,12 +838,12 @@ export class InvestigatorExecutionError extends Error {
   }
 }
 
-type PerClaimValidationResult = {
+interface PerClaimValidationResult {
   claimIndex: number;
   approved: boolean;
   responseAudit: InvestigatorResponseAudit | null;
   error: Error | null;
-};
+}
 
 async function validateClaim(
   client: OpenAI,
@@ -962,6 +949,7 @@ export class OpenAIInvestigator implements Investigator {
       effort: DEFAULT_REASONING_EFFORT as "low" | "medium" | "high",
       summary: DEFAULT_REASONING_SUMMARY as "auto" | "concise" | "detailed",
     };
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- tuple shape mirrors input.oldClaims array
     const oldClaimIds = (input.oldClaims ?? []).map((c) => c.id) as [string, ...string[]] | [];
     const stageOneFormat =
       input.isUpdate === true
@@ -1152,12 +1140,12 @@ export class OpenAIInvestigator implements Investigator {
       );
     }
 
-    const claimDispositions: Array<{
+    const claimDispositions: {
       index: number;
       claim: StageOneClaim;
       needsValidation: boolean;
       validationDescription: string;
-    }> = [];
+    }[] = [];
 
     if (input.isUpdate !== true) {
       let factCheckResult: ReturnType<typeof investigationResultSchema.parse>;

@@ -4,5 +4,8 @@ export * from "./schemas.js";
 export * from "./normalize.js";
 export * from "./wikipedia-canonicalization.js";
 export * from "./image-occurrence-validation.js";
+export * from "./optional-non-empty.js";
 export * from "./constants.js";
 export * from "./trpc-paths.js";
+export * from "./extension-version.js";
+export * from "./type-guards.js";

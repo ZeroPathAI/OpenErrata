@@ -1,12 +1,20 @@
 import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
-import type {
-  AdapterExtractionResult,
-  AdapterNotReadyReason,
-} from "../../src/content/adapters/model.js";
 
-type GlobalWindowScope = typeof globalThis & {
-  window?: Window & typeof globalThis;
+type AdapterExtractionResult =
+  import("../../src/content/adapters/model.js").AdapterExtractionResult;
+type AdapterNotReadyReason = import("../../src/content/adapters/model.js").AdapterNotReadyReason;
+
+type GlobalWindowScope = Omit<
+  typeof globalThis,
+  "window" | "document" | "Document" | "Element" | "Node" | "NodeFilter"
+> & {
+  window?: unknown;
+  document?: unknown;
+  Document?: unknown;
+  Element?: unknown;
+  Node?: unknown;
+  NodeFilter?: unknown;
 };
 
 /**
@@ -33,16 +41,65 @@ export function withWindow<T>(
   }
 
   const scope = globalThis as GlobalWindowScope;
-  const hasWindowProperty = Object.prototype.hasOwnProperty.call(scope, "window");
+
+  const hadWindowProperty = Object.prototype.hasOwnProperty.call(scope, "window");
+  const hadDocumentProperty = Object.prototype.hasOwnProperty.call(scope, "document");
+  const hadDocumentCtorProperty = Object.prototype.hasOwnProperty.call(scope, "Document");
+  const hadElementCtorProperty = Object.prototype.hasOwnProperty.call(scope, "Element");
+  const hadNodeCtorProperty = Object.prototype.hasOwnProperty.call(scope, "Node");
+  const hadNodeFilterCtorProperty = Object.prototype.hasOwnProperty.call(scope, "NodeFilter");
+
   const previousWindow = scope.window;
-  scope.window = dom.window as unknown as Window & typeof globalThis;
+  const previousDocument = scope.document;
+  const previousDocumentCtor = scope.Document;
+  const previousElementCtor = scope.Element;
+  const previousNodeCtor = scope.Node;
+  const previousNodeFilterCtor = scope.NodeFilter;
+
+  scope.window = dom.window;
+  scope.document = dom.window.document;
+  scope.Document = dom.window.Document;
+  scope.Element = dom.window.Element;
+  scope.Node = dom.window.Node;
+  scope.NodeFilter = dom.window.NodeFilter;
+
   try {
     return run(dom.window.document);
   } finally {
-    if (!hasWindowProperty) {
+    if (!hadWindowProperty) {
       delete scope.window;
     } else {
       scope.window = previousWindow;
+    }
+
+    if (!hadDocumentProperty) {
+      delete scope.document;
+    } else {
+      scope.document = previousDocument;
+    }
+
+    if (!hadDocumentCtorProperty) {
+      delete scope.Document;
+    } else {
+      scope.Document = previousDocumentCtor;
+    }
+
+    if (!hadElementCtorProperty) {
+      delete scope.Element;
+    } else {
+      scope.Element = previousElementCtor;
+    }
+
+    if (!hadNodeCtorProperty) {
+      delete scope.Node;
+    } else {
+      scope.Node = previousNodeCtor;
+    }
+
+    if (!hadNodeFilterCtorProperty) {
+      delete scope.NodeFilter;
+    } else {
+      scope.NodeFilter = previousNodeFilterCtor;
     }
   }
 }

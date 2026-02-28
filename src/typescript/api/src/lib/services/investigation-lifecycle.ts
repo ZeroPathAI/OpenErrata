@@ -193,7 +193,7 @@ async function ensureInvestigationRunRecord(
   return { run, created };
 }
 
-type EnsureInvestigationInput = {
+interface EnsureInvestigationInput {
   prisma: PrismaClient;
   postVersionId: string;
   promptId: string;
@@ -207,7 +207,7 @@ type EnsureInvestigationInput = {
     investigation: Investigation;
     run: InvestigationRun;
   }) => Promise<void>;
-};
+}
 
 async function ensureInvestigationRecord(input: EnsureInvestigationInput): Promise<{
   investigation: Investigation;

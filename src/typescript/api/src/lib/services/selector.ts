@@ -12,7 +12,7 @@ export async function runSelector(): Promise<number> {
   // Consider the most recently seen version for each post and enqueue
   // investigations that are missing or in recoverable pending/processing states.
   const candidates = await prisma.$queryRaw<
-    Array<{
+    {
       postVersionId: string;
       investigationId: string | null;
       investigationStatus: "PENDING" | "PROCESSING" | "COMPLETE" | "FAILED" | null;
@@ -20,7 +20,7 @@ export async function runSelector(): Promise<number> {
       leaseOwner: string | null;
       leaseExpiresAt: Date | null;
       recoverAfterAt: Date | null;
-    }>
+    }[]
   >`
     WITH latest_versions AS (
       SELECT DISTINCT ON (pv."postId")

@@ -3,12 +3,12 @@ import { test } from "node:test";
 
 type SettingsModule = typeof import("../../src/lib/settings");
 
-type SettingsChromeMocks = {
+interface SettingsChromeMocks {
   getCalls: unknown[];
   setCalls: unknown[];
   containsCalls: unknown[];
   requestCalls: unknown[];
-};
+}
 
 const settingsChromeState: {
   stored: Record<string, unknown>;
@@ -108,6 +108,7 @@ function installSettingsChromeMock(input: {
 }
 
 async function importSettingsModule(): Promise<SettingsModule> {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- dynamic import returns module as any
   return (await import(
     `../../src/lib/settings.ts?test=${Date.now().toString()}-${Math.random().toString()}`
   )) as SettingsModule;

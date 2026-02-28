@@ -593,6 +593,7 @@ export const annotationVisibilityResponseSchema = z
 export const extensionRuntimeErrorCodeSchema = z.enum([
   "CONTENT_MISMATCH",
   "PAYLOAD_TOO_LARGE",
+  "UPGRADE_REQUIRED",
   "INVALID_EXTENSION_MESSAGE",
   "UNSUPPORTED_PROTOCOL_VERSION",
 ]);

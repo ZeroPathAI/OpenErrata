@@ -1,10 +1,10 @@
 import type { ViewPostInput } from "@openerrata/shared";
 import type { CanonicalContentFetchResult, CanonicalFetchInput } from "./content-fetcher.js";
 
-export type ObservedContentVersion = {
+export interface ObservedContentVersion {
   contentText: string;
   contentHash: string;
-};
+}
 
 export type CanonicalContentVersion =
   | (ObservedContentVersion & {

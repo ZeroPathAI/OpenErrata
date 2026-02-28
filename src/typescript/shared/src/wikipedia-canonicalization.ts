@@ -21,10 +21,8 @@ const WIKIPEDIA_EXCLUDED_CLASS_TOKENS = [
   "catlinks",
 ] as const;
 
-const WIKIPEDIA_EXCLUDED_SECTION_TITLE_SET: Set<string> = new Set(
-  WIKIPEDIA_EXCLUDED_SECTION_TITLES,
-);
-const WIKIPEDIA_EXCLUDED_CLASS_TOKEN_SET: Set<string> = new Set(WIKIPEDIA_EXCLUDED_CLASS_TOKENS);
+const WIKIPEDIA_EXCLUDED_SECTION_TITLE_SET = new Set<string>(WIKIPEDIA_EXCLUDED_SECTION_TITLES);
+const WIKIPEDIA_EXCLUDED_CLASS_TOKEN_SET = new Set<string>(WIKIPEDIA_EXCLUDED_CLASS_TOKENS);
 
 export function normalizeWikipediaSectionTitle(value: string): string {
   return normalizeContent(value).toLowerCase();

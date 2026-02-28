@@ -6,6 +6,7 @@ import { resolveCanonicalContentVersion } from "../../src/lib/services/canonical
 import type { CanonicalFetchInput } from "../../src/lib/services/content-fetcher.js";
 
 function buildXViewInput(observedContentText: string): Extract<ViewPostInput, { platform: "X" }> {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- Zod parse validates the shape; Extract narrows the discriminated union
   return viewPostInputSchema.parse({
     platform: "X",
     externalId: "unit-test-post-x-1",
@@ -23,6 +24,7 @@ function buildXViewInput(observedContentText: string): Extract<ViewPostInput, { 
 function buildWikipediaViewInput(
   observedContentText: string,
 ): Extract<ViewPostInput, { platform: "WIKIPEDIA" }> {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- Zod parse validates the shape; Extract narrows the discriminated union
   return viewPostInputSchema.parse({
     platform: "WIKIPEDIA",
     url: "https://en.wikipedia.org/wiki/OpenErrata",

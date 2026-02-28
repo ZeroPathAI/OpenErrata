@@ -193,12 +193,12 @@ async function findOrCreateImageBlob(input: {
   }
 }
 
-export type ResolvedDownloadedImage = {
+export interface ResolvedDownloadedImage {
   blob: ImageBlob;
   bytes: Uint8Array;
   mimeType: string;
   contentHash: string;
-};
+}
 
 type ImageDownloadResolution =
   | {

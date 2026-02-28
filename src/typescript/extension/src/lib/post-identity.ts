@@ -14,7 +14,7 @@ export interface SupportedPageIdentity {
 }
 
 export function parseSupportedPageIdentity(url: string): SupportedPageIdentity | null {
-  const lesswrongMatch = url.match(LESSWRONG_EXTERNAL_ID_RE);
+  const lesswrongMatch = LESSWRONG_EXTERNAL_ID_RE.exec(url);
   const lesswrongExternalId = lesswrongMatch?.[1];
   if (lesswrongExternalId !== undefined && lesswrongExternalId.length > 0) {
     return {
@@ -23,7 +23,7 @@ export function parseSupportedPageIdentity(url: string): SupportedPageIdentity |
     };
   }
 
-  const xHandleMatch = url.match(X_HANDLE_STATUS_RE);
+  const xHandleMatch = X_HANDLE_STATUS_RE.exec(url);
   const xHandleExternalId = xHandleMatch?.[1];
   if (xHandleExternalId !== undefined && xHandleExternalId.length > 0) {
     return {
@@ -32,7 +32,7 @@ export function parseSupportedPageIdentity(url: string): SupportedPageIdentity |
     };
   }
 
-  const xWebMatch = url.match(X_WEB_STATUS_RE);
+  const xWebMatch = X_WEB_STATUS_RE.exec(url);
   const xWebExternalId = xWebMatch?.[1];
   if (xWebExternalId !== undefined && xWebExternalId.length > 0) {
     return {
@@ -41,7 +41,7 @@ export function parseSupportedPageIdentity(url: string): SupportedPageIdentity |
     };
   }
 
-  const xIStatusMatch = url.match(X_I_STATUS_RE);
+  const xIStatusMatch = X_I_STATUS_RE.exec(url);
   const xIStatusExternalId = xIStatusMatch?.[1];
   if (xIStatusExternalId !== undefined && xIStatusExternalId.length > 0) {
     return {
@@ -50,7 +50,7 @@ export function parseSupportedPageIdentity(url: string): SupportedPageIdentity |
     };
   }
 
-  const substackMatch = url.match(SUBSTACK_POST_RE);
+  const substackMatch = SUBSTACK_POST_RE.exec(url);
   const substackExternalId = substackMatch?.[1];
   if (substackExternalId !== undefined && substackExternalId.length > 0) {
     return {

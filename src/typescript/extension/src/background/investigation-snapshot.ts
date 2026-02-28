@@ -1,4 +1,5 @@
 import {
+  isNonNullObject,
   priorInvestigationResultSchema,
   type ExtensionPostStatus,
   type InvestigationStatusOutput,
@@ -53,11 +54,9 @@ export function snapshotFromInvestigateNowResult(
 }
 
 function readPriorInvestigationResult(snapshot: unknown): UpdateInterimClaims | null {
-  if (typeof snapshot !== "object" || snapshot === null) return null;
+  if (!isNonNullObject(snapshot)) return null;
   if (!("priorInvestigationResult" in snapshot)) return null;
-  const result = priorInvestigationResultSchema.safeParse(
-    (snapshot as Record<string, unknown>)["priorInvestigationResult"],
-  );
+  const result = priorInvestigationResultSchema.safeParse(snapshot["priorInvestigationResult"]);
   return result.success ? result.data : null;
 }
 

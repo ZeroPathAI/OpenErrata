@@ -49,7 +49,7 @@ function parseStatusFromPath(pathname: string): {
   tweetId: string;
   authorHandle: string | null;
 } | null {
-  const webMatch = pathname.match(WEB_STATUS_PATH_REGEX);
+  const webMatch = WEB_STATUS_PATH_REGEX.exec(pathname);
   if (webMatch?.[1] !== undefined && webMatch[1].length > 0) {
     return {
       tweetId: webMatch[1],
@@ -57,7 +57,7 @@ function parseStatusFromPath(pathname: string): {
     };
   }
 
-  const iStatusMatch = pathname.match(I_STATUS_PATH_REGEX);
+  const iStatusMatch = I_STATUS_PATH_REGEX.exec(pathname);
   if (iStatusMatch?.[1] !== undefined && iStatusMatch[1].length > 0) {
     return {
       tweetId: iStatusMatch[1],
@@ -65,7 +65,7 @@ function parseStatusFromPath(pathname: string): {
     };
   }
 
-  const handleMatch = pathname.match(HANDLE_STATUS_PATH_REGEX);
+  const handleMatch = HANDLE_STATUS_PATH_REGEX.exec(pathname);
   if (handleMatch?.[2] !== undefined && handleMatch[2].length > 0) {
     return {
       tweetId: handleMatch[2],
@@ -263,7 +263,7 @@ function inferAuthorHandle(
   ];
   for (const candidate of handleTextCandidates) {
     const normalized = normalizeContent(candidate.textContent);
-    const match = normalized.match(HANDLE_TEXT_REGEX);
+    const match = HANDLE_TEXT_REGEX.exec(normalized);
     if (match?.[1] === undefined || match[1].length === 0) continue;
     const handleFromText = normalizeAuthorHandle(match[1]);
     if (handleFromText !== null && handleFromText.length > 0) return handleFromText;

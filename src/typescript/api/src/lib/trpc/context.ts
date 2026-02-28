@@ -1,12 +1,13 @@
 import type { RequestEvent } from "@sveltejs/kit";
 import { getPrisma, type PrismaClient } from "$lib/db/client";
-import { hashContent } from "@openerrata/shared";
+import { MINIMUM_SUPPORTED_EXTENSION_VERSION } from "$lib/config/env.js";
+import { hashContent, trimToOptionalNonEmpty } from "@openerrata/shared";
 import { verifyHmac } from "$lib/services/hmac.js";
 import { deriveIpRangePrefix } from "$lib/network/ip.js";
 import { findActiveInstanceApiKeyHash } from "$lib/services/instance-api-key.js";
 import { deriveRequestIdentity } from "$lib/services/request-identity.js";
 
-export type Context = {
+export interface Context {
   event: RequestEvent;
   prisma: PrismaClient;
   viewerKey: string;
@@ -15,7 +16,9 @@ export type Context = {
   canInvestigate: boolean;
   userOpenAiApiKey: string | null;
   hasValidAttestation: boolean;
-};
+  extensionVersion: string | null;
+  minimumSupportedExtensionVersion: string;
+}
 
 export async function createContext(event: RequestEvent): Promise<Context> {
   const prisma = getPrisma();
@@ -45,6 +48,9 @@ export async function createContext(event: RequestEvent): Promise<Context> {
     canInvestigate: identity.canInvestigate,
     userOpenAiApiKey: identity.userOpenAiApiKey,
     hasValidAttestation: identity.hasValidAttestation,
+    extensionVersion:
+      trimToOptionalNonEmpty(event.request.headers.get("x-openerrata-extension-version")) ?? null,
+    minimumSupportedExtensionVersion: MINIMUM_SUPPORTED_EXTENSION_VERSION,
   };
 }
 

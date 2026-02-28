@@ -1,9 +1,10 @@
-import type { SettingsValidationOutput } from "@openerrata/shared";
 import {
   EXTENSION_TRPC_PATH,
+  isNonNullObject,
   openaiApiKeyFormatSchema,
   OPENAI_KEY_VALIDATION_TIMEOUT_MS,
   settingsValidationOutputSchema,
+  type SettingsValidationOutput,
 } from "@openerrata/shared";
 import {
   TRPCClientError,
@@ -17,24 +18,22 @@ import {
   normalizeApiBaseUrl,
   normalizeOpenaiApiKey,
 } from "../lib/settings.js";
+import { EXTENSION_VERSION_HEADER_NAME } from "../background/api-client-core.js";
+import { EXTENSION_VERSION } from "../lib/extension-version.js";
 
 const SETTINGS_PROBE_TIMEOUT_MS = OPENAI_KEY_VALIDATION_TIMEOUT_MS + 1_000;
 
 type TrpcClient = TRPCUntypedClient<never>;
 
-type SettingsProbeInput = {
+interface SettingsProbeInput {
   apiBaseUrl: string;
   apiKey: string;
   openaiApiKey: string;
-};
+}
 
 type SettingsProbeResult =
   | { status: "ok"; validation: SettingsValidationOutput }
   | { status: "error"; message: string };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function describeError(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -89,7 +88,7 @@ async function checkHealthEndpoint(apiBaseUrl: string): Promise<string | null> {
       return "Health check response was not valid JSON.";
     }
 
-    if (!isRecord(payload) || payload["status"] !== "ok") {
+    if (!isNonNullObject(payload) || payload["status"] !== "ok") {
       return "Health check response did not match the OpenErrata API contract.";
     }
 
@@ -123,6 +122,9 @@ function createSettingsProbeClient(input: {
           if (normalizedOpenaiApiKey.length > 0) {
             headers.set("x-openai-api-key", normalizedOpenaiApiKey);
           }
+          if (EXTENSION_VERSION.length > 0) {
+            headers.set(EXTENSION_VERSION_HEADER_NAME, EXTENSION_VERSION);
+          }
 
           const requestInit: RequestInit = { headers };
           if (init?.method !== undefined) {
@@ -144,12 +146,12 @@ function createSettingsProbeClient(input: {
   return client;
 }
 
-function isMissingValidateSettingsProcedure(error: Error): boolean {
-  const message = error.message.toLowerCase();
-  return (
-    message.includes(EXTENSION_TRPC_PATH.VALIDATE_SETTINGS.toLowerCase()) &&
-    message.includes("procedure")
-  );
+function isMissingProcedureError(error: Error): boolean {
+  if (!("data" in error)) {
+    return false;
+  }
+  const data: unknown = error.data;
+  return isNonNullObject(data) && data["code"] === "NOT_FOUND";
 }
 
 export function getOpenaiApiKeyFormatError(rawOpenaiApiKey: string): string | null {
@@ -199,7 +201,7 @@ export async function probeSettingsConfiguration(
       validation: parsed.data,
     };
   } catch (error) {
-    if (error instanceof TRPCClientError && isMissingValidateSettingsProcedure(error)) {
+    if (error instanceof TRPCClientError && isMissingProcedureError(error)) {
       return {
         status: "error",
         message: `Server is reachable but missing ${EXTENSION_TRPC_PATH.VALIDATE_SETTINGS}. Confirm this is the OpenErrata API server.`,

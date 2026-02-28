@@ -4,6 +4,7 @@ import { EXTENSION_TRPC_PATH } from "@openerrata/shared";
 import { ApiClientError } from "../../src/background/api-client-error";
 import {
   BUNDLED_ATTESTATION_SECRET,
+  EXTENSION_VERSION_HEADER_NAME,
   TRPC_REQUEST_BODY_LIMIT_BYTES,
   assertTrpcResponseAccepted,
   attestationSecretFor,
@@ -59,7 +60,7 @@ test("shouldIncludeUserOpenAiKeyHeader only enables user OpenAI key for investig
 
 test("buildTrpcRequestInit signs string body and adds API headers", async () => {
   const abortController = new AbortController();
-  const calls: Array<{ secret: string; body: string }> = [];
+  const calls: { secret: string; body: string }[] = [];
   const body = '{"foo":"bar"}';
   const requestInit = await buildTrpcRequestInit({
     init: {
@@ -76,6 +77,7 @@ test("buildTrpcRequestInit signs string body and adds API headers", async () => 
       openaiApiKey: "  sk-user-1  ",
     },
     includeUserOpenAiHeader: true,
+    extensionVersion: "0.1.4",
     computeHmac: async (secret, requestBody) => {
       calls.push({ secret, body: requestBody });
       return "sig-123";
@@ -86,6 +88,7 @@ test("buildTrpcRequestInit signs string body and adds API headers", async () => 
   assert.equal(headers.get("content-type"), "application/json");
   assert.equal(headers.get("x-api-key"), "api-key-1");
   assert.equal(headers.get("x-openai-api-key"), "sk-user-1");
+  assert.equal(headers.get(EXTENSION_VERSION_HEADER_NAME), "0.1.4");
   assert.equal(headers.get("x-openerrata-signature"), "sig-123");
 
   assert.equal(requestInit.method, "POST");
@@ -112,6 +115,7 @@ test("buildTrpcRequestInit omits signature and OpenAI header when body or flags 
       openaiApiKey: "sk-user-2",
     },
     includeUserOpenAiHeader: false,
+    extensionVersion: "0.1.4",
     computeHmac: async () => {
       computeCalled = true;
       return "sig-ignored";
@@ -121,8 +125,35 @@ test("buildTrpcRequestInit omits signature and OpenAI header when body or flags 
   const headers = new Headers(requestInit.headers);
   assert.equal(headers.get("x-api-key"), "api-key-2");
   assert.equal(headers.get("x-openai-api-key"), null);
+  assert.equal(headers.get(EXTENSION_VERSION_HEADER_NAME), "0.1.4");
   assert.equal(headers.get("x-openerrata-signature"), null);
   assert.equal(computeCalled, false);
+});
+
+test("buildTrpcRequestInit omits extension version header when extensionVersion is empty", async () => {
+  const requestInit = await buildTrpcRequestInit({
+    init: { method: "GET" },
+    settings: BASE_SETTINGS,
+    includeUserOpenAiHeader: false,
+    extensionVersion: "",
+    computeHmac: async () => "sig-never",
+  });
+
+  const headers = new Headers(requestInit.headers);
+  assert.equal(headers.get(EXTENSION_VERSION_HEADER_NAME), null);
+});
+
+test("buildTrpcRequestInit omits extension version header when extensionVersion is whitespace-only", async () => {
+  const requestInit = await buildTrpcRequestInit({
+    init: { method: "GET" },
+    settings: BASE_SETTINGS,
+    includeUserOpenAiHeader: false,
+    extensionVersion: "   ",
+    computeHmac: async () => "sig-never",
+  });
+
+  const headers = new Headers(requestInit.headers);
+  assert.equal(headers.get(EXTENSION_VERSION_HEADER_NAME), null);
 });
 
 test("buildTrpcRequestInit rejects oversized payloads with PAYLOAD_TOO_LARGE", async () => {
@@ -134,6 +165,7 @@ test("buildTrpcRequestInit rejects oversized payloads with PAYLOAD_TOO_LARGE", a
       },
       settings: BASE_SETTINGS,
       includeUserOpenAiHeader: false,
+      extensionVersion: "0.1.4",
       computeHmac: async () => "sig-never",
       utf8Length: () => TRPC_REQUEST_BODY_LIMIT_BYTES + 1,
     }),

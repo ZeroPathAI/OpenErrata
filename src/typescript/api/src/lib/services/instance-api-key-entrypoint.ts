@@ -10,28 +10,28 @@ loadDotenv();
 type Command = "list" | "activate" | "revoke";
 type StatusFilter = "all" | "active" | "revoked";
 
-type ParsedArguments = {
+interface ParsedArguments {
   command: Command;
   options: Map<string, string>;
-};
+}
 
-type InstanceApiKeyRow = {
+interface InstanceApiKeyRow {
   id: string;
   name: string;
   keyHash: string;
   revokedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
-};
+}
 
-type SerializedInstanceApiKey = {
+interface SerializedInstanceApiKey {
   id: string;
   name: string;
   keyHash: string;
   revokedAt: string | null;
   createdAt: string;
   updatedAt: string;
-};
+}
 
 const instanceApiKeySelect = {
   id: true,

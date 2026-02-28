@@ -3,10 +3,10 @@ import ipaddr from "ipaddr.js";
 
 type IpFamily = 4 | 6;
 
-type ResolvedAddress = {
+interface ResolvedAddress {
   address: string;
   family: IpFamily;
-};
+}
 
 const PRIVATE_IPV4_SUBNETS: Record<string, [ipaddr.IPv4, number] | [ipaddr.IPv4, number][]> = {
   unspecified: [[ipaddr.IPv4.parse("0.0.0.0"), 8]],

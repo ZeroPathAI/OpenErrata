@@ -107,7 +107,7 @@ function appendNormalizedSegment(
   const rawSegment = rawCodePoints.map((codePoint) => codePoint.value).join("");
   const nfcCodePoints = Array.from(rawSegment.normalize("NFC"));
 
-  const rawNfdTokens: Array<{ token: string; rawIndex: number }> = [];
+  const rawNfdTokens: { token: string; rawIndex: number }[] = [];
   for (const codePoint of rawCodePoints) {
     for (const token of Array.from(codePoint.value.normalize("NFD"))) {
       rawNfdTokens.push({ token, rawIndex: codePoint.rawIndex });
@@ -149,12 +149,9 @@ function appendNormalizedSegment(
       mappedRawIndex = fallbackCodePoint.rawIndex;
     }
 
-    for (let j = 0; j < codePoint.length; j++) {
-      const codeUnit = codePoint[j];
-      if (codeUnit === undefined) {
-        throw new Error("Unicode code unit mapping is out of bounds");
-      }
-      normalizedChars.push(codeUnit);
+    for (let codeUnitIndex = 0; codeUnitIndex < codePoint.length; codeUnitIndex += 1) {
+      // Index by UTF-16 code unit so normalizedToRaw aligns with string offsets.
+      normalizedChars.push(codePoint.charAt(codeUnitIndex));
       normalizedToRaw.push(mappedRawIndex);
     }
   }
@@ -244,7 +241,9 @@ function createRangeFromTextOffset(root: Element, offset: number, length: number
   let endOffset = 0;
 
   while (walker.nextNode()) {
-    const textNode = walker.currentNode as Text;
+    const node = walker.currentNode;
+    if (!(node instanceof Text)) continue;
+    const textNode = node;
     const nodeLen = textNode.length;
 
     // Find start node

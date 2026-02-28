@@ -81,7 +81,7 @@ Your task is to determine whether this candidate claim is a well-supported true 
 
 Return {"approved": true} to keep the claim, or {"approved": false} to reject it.`;
 
-type UserPromptInput = {
+interface UserPromptInput {
   contentText: string;
   platform: Platform;
   url: string;
@@ -89,26 +89,26 @@ type UserPromptInput = {
   postPublishedAt?: string;
   hasVideo?: boolean;
   isUpdate?: boolean;
-  oldClaims?: Array<{
+  oldClaims?: {
     id: string;
     text: string;
     context: string;
     summary: string;
     reasoning: string;
-    sources: Array<{
+    sources: {
       url: string;
       title: string;
       snippet: string;
-    }>;
-  }>;
+    }[];
+  }[];
   contentDiff?: string;
-};
+}
 
-type ValidationPromptInput = {
+interface ValidationPromptInput {
   currentPostText: string;
   candidateClaim: InvestigationResult["claims"][number];
   imageContextNotes?: string;
-};
+}
 
 function renderJsonSection(title: string, payload: unknown): string {
   return `## ${title} (JSON)

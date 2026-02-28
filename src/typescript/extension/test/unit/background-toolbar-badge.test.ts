@@ -4,24 +4,29 @@ import type { ExtensionPostStatus, InvestigationClaim } from "@openerrata/shared
 
 type ToolbarBadgeModule = typeof import("../../src/background/toolbar-badge");
 
-type ActionCallLog = {
+interface ActionCallLog {
   setIcon: unknown[];
   setBadgeText: unknown[];
   setBadgeBackgroundColor: unknown[];
-};
+  setTitle: unknown[];
+}
 
 const toolbarActionState: ActionCallLog = {
   setIcon: [],
   setBadgeText: [],
   setBadgeBackgroundColor: [],
+  setTitle: [],
 };
 
 function createPostStatus(
   state: "NOT_INVESTIGATED" | "INVESTIGATING" | "FAILED" | "CONTENT_MISMATCH" | "INVESTIGATED",
   options: { claimCount?: number } = {},
 ): ExtensionPostStatus {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- branded type from plain value in test factory
   const sessionId = 1 as ExtensionPostStatus["tabSessionId"];
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- branded type from plain value in test factory
   const externalId = "123" as ExtensionPostStatus["externalId"];
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- branded type from plain value in test factory
   const claimId = (value: string): InvestigationClaim["id"] => value as InvestigationClaim["id"];
 
   const base = {
@@ -130,6 +135,14 @@ const toolbarChromeMock = {
       }
       return Promise.resolve();
     },
+    setTitle: (details: unknown, callback?: () => void) => {
+      toolbarActionState.setTitle.push(details);
+      if (typeof callback === "function") {
+        callback();
+        return;
+      }
+      return Promise.resolve();
+    },
   },
 };
 
@@ -139,6 +152,7 @@ function installChromeActionMock(): ActionCallLog {
   toolbarActionState.setIcon.length = 0;
   toolbarActionState.setBadgeText.length = 0;
   toolbarActionState.setBadgeBackgroundColor.length = 0;
+  toolbarActionState.setTitle.length = 0;
   return toolbarActionState;
 }
 
@@ -148,14 +162,18 @@ function installIntervalMocks() {
   const originalClearInterval = globalThis.clearInterval;
   let nextTimerId = 1;
 
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- timer mock installation requires type casting
   globalThis.setInterval = ((handler: TimerHandler) => {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- timer mock installation requires type casting
     const callback = handler as () => void;
     const timerId = nextTimerId;
     nextTimerId += 1;
     intervalCallbacks.set(timerId, callback);
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- timer mock installation requires type casting
     return timerId as unknown as ReturnType<typeof setInterval>;
   }) as unknown as typeof setInterval;
 
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- timer mock installation requires type casting
   globalThis.clearInterval = ((timerId: ReturnType<typeof setInterval>) => {
     intervalCallbacks.delete(Number(timerId));
   }) as unknown as typeof clearInterval;
@@ -177,6 +195,7 @@ async function flushAsyncQueue(): Promise<void> {
 }
 
 async function importToolbarBadgeModule(): Promise<ToolbarBadgeModule> {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- dynamic import returns module as any
   return (await import(
     `../../src/background/toolbar-badge.ts?test=${Date.now().toString()}-${Math.random().toString()}`
   )) as ToolbarBadgeModule;
@@ -185,6 +204,7 @@ async function importToolbarBadgeModule(): Promise<ToolbarBadgeModule> {
 function requireSetIconCall(call: unknown): { tabId: number; path: Record<string, string> } {
   assert.equal(typeof call, "object");
   assert.notEqual(call, null);
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- narrowing unknown call-log entries for test assertions
   const maybeCall = call as { tabId?: unknown; path?: unknown };
   const tabId = maybeCall.tabId;
   assert.equal(typeof tabId, "number");
@@ -200,6 +220,7 @@ function requireSetIconCall(call: unknown): { tabId: number; path: Record<string
 
   return {
     tabId,
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- narrowing unknown call-log entries for test assertions
     path: path as Record<string, string>,
   };
 }
@@ -215,6 +236,7 @@ function assertIconPathMatches(path: string | undefined, pattern: RegExp): void 
 function requireSetBadgeColorCall(call: unknown): { tabId: number; color: string } {
   assert.equal(typeof call, "object");
   assert.notEqual(call, null);
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- narrowing unknown call-log entries for test assertions
   const maybeCall = call as { tabId?: unknown; color?: unknown };
   const tabId = maybeCall.tabId;
   const color = maybeCall.color;
@@ -326,6 +348,42 @@ test("updateToolbarBadge renders count/success/failure/content-mismatch badge st
       { tabId: 22, text: "!" },
       { tabId: 23, text: "!" },
     ]);
+  } finally {
+    intervals.restore();
+  }
+});
+
+test("setToolbarUpgradeRequiredState overrides badge and title until cleared", async () => {
+  const calls = installChromeActionMock();
+  const intervals = installIntervalMocks();
+
+  try {
+    const { updateToolbarBadge, setToolbarUpgradeRequiredState } = await importToolbarBadgeModule();
+    setToolbarUpgradeRequiredState({
+      active: true,
+      message: "Extension upgrade required (minimum 0.2.0).",
+    });
+
+    updateToolbarBadge(30, createPostStatus("INVESTIGATED", { claimCount: 2 }));
+    await flushAsyncQueue();
+
+    assert.deepEqual(calls.setBadgeText[0], { tabId: 30, text: "!" });
+    const colorCall = requireSetBadgeColorCall(calls.setBadgeBackgroundColor[0]);
+    assert.equal(colorCall.color, "#dc2626");
+    assert.deepEqual(calls.setTitle[0], {
+      tabId: 30,
+      title: "Extension upgrade required (minimum 0.2.0).",
+    });
+
+    setToolbarUpgradeRequiredState({ active: false });
+    updateToolbarBadge(30, createPostStatus("INVESTIGATED", { claimCount: 2 }));
+    await flushAsyncQueue();
+
+    assert.deepEqual(calls.setBadgeText[1], { tabId: 30, text: "2" });
+    assert.deepEqual(calls.setTitle[1], {
+      tabId: 30,
+      title: "OpenErrata",
+    });
   } finally {
     intervals.restore();
   }

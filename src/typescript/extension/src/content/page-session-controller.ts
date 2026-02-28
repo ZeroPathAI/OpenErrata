@@ -19,6 +19,7 @@ import {
   isExtensionContextInvalidatedError,
   isInvalidExtensionMessageRuntimeError,
   isPayloadTooLargeRuntimeError,
+  isUpgradeRequiredRuntimeError,
 } from "../lib/runtime-error";
 import { toViewPostInput } from "../lib/view-post-input";
 import { AnnotationController } from "./annotations";
@@ -114,7 +115,7 @@ function inferIdentityForSkippedPage(
 
   try {
     const parsed = new URL(url);
-    const match = parsed.pathname.match(SUBSTACK_POST_PATH_REGEX);
+    const match = SUBSTACK_POST_PATH_REGEX.exec(parsed.pathname);
     if (match?.[1] === undefined || match[1].length === 0) {
       return null;
     }
@@ -624,6 +625,16 @@ export class PageSessionController {
         this.#annotations.clearAll();
         this.#syncCachedFailureStatus();
         console.warn("Page content request exceeded API body size limit; skipping retries.", error);
+        return;
+      }
+      if (isUpgradeRequiredRuntimeError(error)) {
+        this.#resetSyncRetryState();
+        this.#annotations.clearAll();
+        this.#syncCachedFailureStatus();
+        console.warn(
+          "Extension upgrade required by API compatibility policy; skipping retries.",
+          error,
+        );
         return;
       }
       if (isInvalidExtensionMessageRuntimeError(error)) {

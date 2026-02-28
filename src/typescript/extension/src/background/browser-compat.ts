@@ -1,38 +1,69 @@
+import { isNonNullObject } from "@openerrata/shared";
 import browser from "webextension-polyfill";
 
-type NavigationDetails = {
+interface NavigationDetails {
   frameId: number;
   tabId: number;
   url: string;
-};
+}
 
-type ScriptingApi = {
+interface ScriptingApi {
   executeScript: (details: {
     target: { tabId: number };
     func?: () => unknown;
     files?: string[];
-  }) => Promise<Array<{ result?: unknown }>>;
+  }) => Promise<{ result?: unknown }[]>;
   insertCSS: (details: { target: { tabId: number }; files: string[] }) => Promise<void>;
-};
+}
+
+interface WebNavigationEvent {
+  addListener: (listener: (details: NavigationDetails) => void) => void;
+}
+
+interface WebNavigationApi {
+  onDOMContentLoaded: WebNavigationEvent;
+  onHistoryStateUpdated: WebNavigationEvent;
+}
+
+function isScriptingApi(value: unknown): value is ScriptingApi {
+  if (!isNonNullObject(value)) {
+    return false;
+  }
+
+  return typeof value["executeScript"] === "function" && typeof value["insertCSS"] === "function";
+}
+
+function isWebNavigationEvent(value: unknown): value is WebNavigationEvent {
+  return isNonNullObject(value) && typeof value["addListener"] === "function";
+}
+
+function isWebNavigationApi(value: unknown): value is WebNavigationApi {
+  if (!isNonNullObject(value)) {
+    return false;
+  }
+
+  return (
+    isWebNavigationEvent(value["onDOMContentLoaded"]) &&
+    isWebNavigationEvent(value["onHistoryStateUpdated"])
+  );
+}
 
 function getScriptingApi(): ScriptingApi {
-  const runtimeBrowser = browser as unknown as { scripting?: ScriptingApi };
-  if (runtimeBrowser.scripting === undefined) {
+  const scripting: unknown = Reflect.get(browser as object, "scripting");
+  if (!isScriptingApi(scripting)) {
     throw new Error(
       "browser.scripting is unavailable in this runtime; OpenErrata requires the WebExtensions scripting API.",
     );
   }
-  return runtimeBrowser.scripting;
+  return scripting;
 }
 
-function getWebNavigationApi(): typeof browser.webNavigation | null {
-  const runtimeBrowser = browser as unknown as {
-    webNavigation?: typeof browser.webNavigation;
-  };
-  if (runtimeBrowser.webNavigation === undefined) {
+function getWebNavigationApi(): WebNavigationApi | null {
+  const webNavigation: unknown = Reflect.get(browser as object, "webNavigation");
+  if (!isWebNavigationApi(webNavigation)) {
     return null;
   }
-  return runtimeBrowser.webNavigation;
+  return webNavigation;
 }
 
 export async function executeTabFunction<TResult>(
@@ -43,6 +74,7 @@ export async function executeTabFunction<TResult>(
     target: { tabId },
     func,
   });
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- executeScript returns unknown; callers own the type contract
   return probeResult?.result as TResult | undefined;
 }
 
