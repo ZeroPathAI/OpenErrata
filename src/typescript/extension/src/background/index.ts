@@ -574,8 +574,7 @@ async function startInvestigationPolling(input: {
     try {
       const existing = await getActivePostStatus(input.tabId);
       if (
-        existing === null ||
-        existing.tabSessionId !== input.tabSessionId ||
+        existing?.tabSessionId !== input.tabSessionId ||
         existing.platform !== input.platform ||
         existing.externalId !== input.externalId
       ) {
@@ -623,9 +622,6 @@ async function startInvestigationPolling(input: {
             pageUrl: existingStatus.pageUrl,
             investigationId: input.investigationId,
             stopPolling: true,
-            ...(existingStatus.provenance === undefined
-              ? {}
-              : { provenance: existingStatus.provenance }),
           });
         } else {
           stopInvestigationPolling(input.tabId);
