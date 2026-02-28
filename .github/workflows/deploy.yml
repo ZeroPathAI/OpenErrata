@@ -26,6 +26,7 @@ permissions:
 jobs:
   resolve-target:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       deploy_environment: ${{ steps.target.outputs.deploy_environment }}
     steps:
@@ -55,6 +56,7 @@ jobs:
     needs: resolve-target
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       actions: read
@@ -139,6 +141,7 @@ jobs:
     needs: [resolve-target, detect-changes]
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       should_deploy: ${{ steps.decide.outputs.should_deploy }}
     steps:
@@ -164,14 +167,32 @@ jobs:
 
           echo "should_deploy=$should_deploy" >> "$GITHUB_OUTPUT"
 
-  # Quality gate: four parallel jobs replacing the former sequential quality-gate.
-  # Only the test job needs a real Postgres; the others use a dummy DATABASE_URL
-  # just so `prisma generate` can parse the schema without connecting.
+  # Quality gate: six parallel jobs.
+
+  helm-lint:
+    needs: [resolve-target, decide-deploy]
+    if: needs.decide-deploy.outputs.should_deploy == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+
+      - name: Lint chart
+        shell: bash
+        run: |
+          set -euo pipefail
+          helm lint src/helm/openerrata -f src/helm/openerrata/ci-values.yaml
+          helm template openerrata src/helm/openerrata -f src/helm/openerrata/ci-values.yaml > /dev/null
 
   typecheck:
     needs: [resolve-target, decide-deploy]
     if: needs.decide-deploy.outputs.should_deploy == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: src/typescript
@@ -181,29 +202,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install pnpm
-        shell: bash
-        run: |
-          set -euo pipefail
-          PNPM_VERSION="10.24.0"
-          curl -fsSL \
-            "https://github.com/pnpm/pnpm/releases/download/v${PNPM_VERSION}/pnpm-linux-x64" \
-            -o "$RUNNER_TEMP/pnpm"
-          chmod +x "$RUNNER_TEMP/pnpm"
-          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22.13.1"
-          cache: pnpm
-          cache-dependency-path: src/typescript/pnpm-lock.yaml
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Generate Prisma client
-        run: pnpm db:generate
+      - name: Setup TypeScript workspace
+        uses: ./.github/actions/setup-typescript-workspace
 
       - name: Typecheck
         run: pnpm typecheck
@@ -212,6 +212,7 @@ jobs:
     needs: [resolve-target, decide-deploy]
     if: needs.decide-deploy.outputs.should_deploy == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: src/typescript
@@ -221,37 +222,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install pnpm
-        shell: bash
-        run: |
-          set -euo pipefail
-          PNPM_VERSION="10.24.0"
-          curl -fsSL \
-            "https://github.com/pnpm/pnpm/releases/download/v${PNPM_VERSION}/pnpm-linux-x64" \
-            -o "$RUNNER_TEMP/pnpm"
-          chmod +x "$RUNNER_TEMP/pnpm"
-          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Setup TypeScript workspace
+        uses: ./.github/actions/setup-typescript-workspace
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22.13.1"
-          cache: pnpm
-          cache-dependency-path: src/typescript/pnpm-lock.yaml
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Generate Prisma client
-        run: pnpm db:generate
-
-      - name: Lint and dead-code checks
-        run: pnpm lint && pnpm knip
+      - name: Lint and static checks
+        run: pnpm lint:ci
 
   test:
     needs: [resolve-target, decide-deploy]
     if: needs.decide-deploy.outputs.should_deploy == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: src/typescript
@@ -273,40 +254,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install pnpm
-        shell: bash
-        run: |
-          set -euo pipefail
-          PNPM_VERSION="10.24.0"
-          curl -fsSL \
-            "https://github.com/pnpm/pnpm/releases/download/v${PNPM_VERSION}/pnpm-linux-x64" \
-            -o "$RUNNER_TEMP/pnpm"
-          chmod +x "$RUNNER_TEMP/pnpm"
-          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Setup TypeScript workspace
+        uses: ./.github/actions/setup-typescript-workspace
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22.13.1"
-          cache: pnpm
-          cache-dependency-path: src/typescript/pnpm-lock.yaml
+      - name: Run unit tests with coverage
+        run: pnpm run test:unit:coverage
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Install Playwright Chromium
-        run: pnpm --filter @openerrata/extension exec playwright install chromium
-
-      - name: Generate Prisma client
-        run: pnpm db:generate
-
-      - name: Run tests
-        run: xvfb-run -a pnpm test
+      - name: Run API integration tests
+        run: pnpm run test:integration:api
 
   build:
     needs: [resolve-target, decide-deploy]
     if: needs.decide-deploy.outputs.should_deploy == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: src/typescript
@@ -316,32 +277,53 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install pnpm
-        shell: bash
-        run: |
-          set -euo pipefail
-          PNPM_VERSION="10.24.0"
-          curl -fsSL \
-            "https://github.com/pnpm/pnpm/releases/download/v${PNPM_VERSION}/pnpm-linux-x64" \
-            -o "$RUNNER_TEMP/pnpm"
-          chmod +x "$RUNNER_TEMP/pnpm"
-          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22.13.1"
-          cache: pnpm
-          cache-dependency-path: src/typescript/pnpm-lock.yaml
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Generate Prisma client
-        run: pnpm db:generate
+      - name: Setup TypeScript workspace
+        uses: ./.github/actions/setup-typescript-workspace
 
       - name: Build workspace
         run: pnpm build
+
+      - name: Archive extension dist artifact
+        shell: bash
+        run: tar -C extension -czf "$RUNNER_TEMP/extension-dist.tgz" dist
+
+      - name: Upload extension dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: extension-dist-${{ github.sha }}
+          path: ${{ runner.temp }}/extension-dist.tgz
+          retention-days: 1
+
+  e2e:
+    needs: [resolve-target, decide-deploy, build]
+    if: needs.decide-deploy.outputs.should_deploy == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: src/typescript
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup TypeScript workspace
+        uses: ./.github/actions/setup-typescript-workspace
+        with:
+          generate-prisma: "false"
+          install-playwright-chromium: "true"
+
+      - name: Download extension dist artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: extension-dist-${{ github.sha }}
+          path: ${{ runner.temp }}
+
+      - name: Restore extension dist artifact
+        shell: bash
+        run: tar -C extension -xzf "$RUNNER_TEMP/extension-dist.tgz"
+
+      - name: Run extension e2e tests
+        run: pnpm run test:e2e:extension:ci
 
   # Docker image build runs in parallel with quality gate jobs.
   # The deploy job gates on both build-image AND all quality gate jobs,
@@ -350,6 +332,7 @@ jobs:
     needs: [resolve-target, decide-deploy]
     if: needs.decide-deploy.outputs.should_deploy == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: write
@@ -399,12 +382,14 @@ jobs:
             ${{ steps.meta.outputs.image_repository }}:${{ steps.meta.outputs.image_tag }}
           cache-from: type=registry,ref=${{ steps.meta.outputs.image_repository }}:${{ steps.meta.outputs.latest_tag }}
           cache-to: type=inline
-          provenance: false
+          provenance: true
+          sbom: true
 
   deploy:
-    needs: [resolve-target, decide-deploy, typecheck, lint, test, build, build-image]
+    needs: [resolve-target, decide-deploy, helm-lint, typecheck, lint, test, build, e2e, build-image]
     if: needs.decide-deploy.outputs.should_deploy == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     environment: ${{ needs.resolve-target.outputs.deploy_environment }}
     permissions:
       contents: read
@@ -416,26 +401,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install pnpm
-        shell: bash
-        run: |
-          set -euo pipefail
-          PNPM_VERSION="10.24.0"
-          curl -fsSL \
-            "https://github.com/pnpm/pnpm/releases/download/v${PNPM_VERSION}/pnpm-linux-x64" \
-            -o "$RUNNER_TEMP/pnpm"
-          chmod +x "$RUNNER_TEMP/pnpm"
-          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22.13.1"
-          cache: pnpm
-          cache-dependency-path: src/typescript/pnpm-lock.yaml
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+      - name: Setup TypeScript workspace
+        uses: ./.github/actions/setup-typescript-workspace
 
       - name: Install Pulumi CLI
         uses: pulumi/setup-pulumi@v2
@@ -735,6 +702,7 @@ jobs:
     needs: [resolve-target, decide-deploy, build-image, deploy]
     if: needs.decide-deploy.outputs.should_deploy == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       packages: write

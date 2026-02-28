@@ -16,6 +16,7 @@ concurrency:
 jobs:
   should-run:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       skip_all: ${{ steps.gate.outputs.skip_all }}
       has_relevant_changes: ${{ steps.changes.outputs.relevant }}
@@ -50,9 +51,26 @@ jobs:
             echo "skip_all=false" >> "$GITHUB_OUTPUT"
           fi
 
-  # Quality gate: four parallel jobs replacing the former sequential checks job.
-  # Only the test job needs a real Postgres; the others use a dummy DATABASE_URL
-  # just so `prisma generate` can parse the schema without connecting.
+  helm-lint:
+    needs: [should-run]
+    if: >-
+      needs.should-run.outputs.skip_all != 'true' &&
+      needs.should-run.outputs.has_relevant_changes == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+
+      - name: Lint chart
+        shell: bash
+        run: |
+          set -euo pipefail
+          helm lint src/helm/openerrata -f src/helm/openerrata/ci-values.yaml
+          helm template openerrata src/helm/openerrata -f src/helm/openerrata/ci-values.yaml > /dev/null
 
   typecheck:
     needs: [should-run]
@@ -60,6 +78,7 @@ jobs:
       needs.should-run.outputs.skip_all != 'true' &&
       needs.should-run.outputs.has_relevant_changes == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: src/typescript
@@ -69,23 +88,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10.24.0
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22.13.1"
-          cache: pnpm
-          cache-dependency-path: src/typescript/pnpm-lock.yaml
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Generate Prisma client
-        run: pnpm db:generate
+      - name: Setup TypeScript workspace
+        uses: ./.github/actions/setup-typescript-workspace
 
       - name: Typecheck
         run: pnpm typecheck
@@ -96,6 +100,7 @@ jobs:
       needs.should-run.outputs.skip_all != 'true' &&
       needs.should-run.outputs.has_relevant_changes == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: src/typescript
@@ -105,26 +110,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10.24.0
+      - name: Setup TypeScript workspace
+        uses: ./.github/actions/setup-typescript-workspace
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22.13.1"
-          cache: pnpm
-          cache-dependency-path: src/typescript/pnpm-lock.yaml
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Generate Prisma client
-        run: pnpm db:generate
-
-      - name: Lint and dead-code checks
-        run: pnpm lint && pnpm knip && pnpm format:check
+      - name: Lint and static checks
+        run: pnpm lint:ci
 
   test:
     needs: [should-run]
@@ -132,6 +122,7 @@ jobs:
       needs.should-run.outputs.skip_all != 'true' &&
       needs.should-run.outputs.has_relevant_changes == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: src/typescript
@@ -153,29 +144,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10.24.0
+      - name: Setup TypeScript workspace
+        uses: ./.github/actions/setup-typescript-workspace
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22.13.1"
-          cache: pnpm
-          cache-dependency-path: src/typescript/pnpm-lock.yaml
+      - name: Run unit tests with coverage
+        run: pnpm run test:unit:coverage
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Generate Prisma client
-        run: pnpm db:generate
-
-      - name: Run tests
-        run: pnpm test
-
-      - name: Run coverage checks
-        run: pnpm test:coverage
+      - name: Run API integration tests
+        run: pnpm run test:integration:api
 
   build:
     needs: [should-run]
@@ -183,6 +159,7 @@ jobs:
       needs.should-run.outputs.skip_all != 'true' &&
       needs.should-run.outputs.has_relevant_changes == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: src/typescript
@@ -192,26 +169,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10.24.0
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22.13.1"
-          cache: pnpm
-          cache-dependency-path: src/typescript/pnpm-lock.yaml
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Generate Prisma client
-        run: pnpm db:generate
+      - name: Setup TypeScript workspace
+        uses: ./.github/actions/setup-typescript-workspace
 
       - name: Build workspace
         run: pnpm build
+
+      - name: Archive extension dist artifact
+        shell: bash
+        run: tar -C extension -czf "$RUNNER_TEMP/extension-dist.tgz" dist
+
+      - name: Upload extension dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: extension-dist-${{ github.sha }}
+          path: ${{ runner.temp }}/extension-dist.tgz
+          retention-days: 1
 
       - name: Summarize extension bundle sizes
         shell: bash
@@ -245,20 +218,55 @@ jobs:
                 echo "| ${path} | ${size} | $(awk "BEGIN {printf \"%.2f\", ${size}/1024}") |" >> "$GITHUB_STEP_SUMMARY"
               done
 
+  e2e:
+    needs: [should-run, build]
+    if: >-
+      needs.should-run.outputs.skip_all != 'true' &&
+      needs.should-run.outputs.has_relevant_changes == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: src/typescript
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup TypeScript workspace
+        uses: ./.github/actions/setup-typescript-workspace
+        with:
+          generate-prisma: "false"
+          install-playwright-chromium: "true"
+
+      - name: Download extension dist artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: extension-dist-${{ github.sha }}
+          path: ${{ runner.temp }}
+
+      - name: Restore extension dist artifact
+        shell: bash
+        run: tar -C extension -xzf "$RUNNER_TEMP/extension-dist.tgz"
+
+      - name: Run extension e2e tests
+        run: pnpm run test:e2e:extension:ci
+
   no-relevant-changes:
     needs: [should-run]
     if: >-
       needs.should-run.outputs.skip_all != 'true' &&
       needs.should-run.outputs.has_relevant_changes != 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Skip informational step
         run: echo "No relevant files changed; skipping TypeScript checks."
 
   pr-ok:
-    needs: [should-run, typecheck, lint, test, build, no-relevant-changes]
+    needs: [should-run, helm-lint, typecheck, lint, test, build, e2e, no-relevant-changes]
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Final PR gate
         shell: bash
@@ -270,13 +278,15 @@ jobs:
             exit 0
           fi
 
+          HELM_LINT="${{ needs.helm-lint.result }}"
           TYPECHECK="${{ needs.typecheck.result }}"
           LINT="${{ needs.lint.result }}"
           TEST="${{ needs.test.result }}"
           BUILD="${{ needs.build.result }}"
+          E2E="${{ needs.e2e.result }}"
 
-          if [ "$TYPECHECK" = "success" ] && [ "$LINT" = "success" ] && \
-             [ "$TEST" = "success" ] && [ "$BUILD" = "success" ]; then
+          if [ "$HELM_LINT" = "success" ] && [ "$TYPECHECK" = "success" ] && [ "$LINT" = "success" ] && \
+             [ "$TEST" = "success" ] && [ "$BUILD" = "success" ] && [ "$E2E" = "success" ]; then
             echo "All quality gate jobs passed."
             exit 0
           fi
@@ -287,8 +297,10 @@ jobs:
           fi
 
           echo "PR checks did not pass."
+          echo "  helm-lint: $HELM_LINT"
           echo "  typecheck: $TYPECHECK"
           echo "  lint: $LINT"
           echo "  test: $TEST"
           echo "  build: $BUILD"
+          echo "  e2e: $E2E"
           exit 1

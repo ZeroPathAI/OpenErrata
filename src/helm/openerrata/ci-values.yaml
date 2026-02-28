@@ -1,0 +1,13 @@
+config:
+  blobStorageProvider: aws
+  blobStorageRegion: us-east-1
+  blobStorageBucket: openerrata-ci-bucket
+  blobStoragePublicUrlPrefix: https://example.test/openerrata
+
+secrets:
+  databaseUrl: postgresql://postgres:postgres@localhost:5432/openerrata
+  openaiApiKey: sk-ci-test-openai-key
+  hmacSecret: ci-hmac-secret
+  databaseEncryptionKey: ci-database-encryption-key
+  blobStorageAccessKeyId: ci-blob-access-key
+  blobStorageSecretAccessKey: ci-blob-secret

@@ -7,11 +7,16 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-extension-${{ github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     outputs:
       version: ${{ steps.version.outputs.version }}
     defaults:
@@ -35,41 +40,29 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
+      - name: Setup TypeScript workspace
+        uses: ./.github/actions/setup-typescript-workspace
         with:
-          version: 10.24.0
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22.13.1"
-          cache: pnpm
-          cache-dependency-path: src/typescript/pnpm-lock.yaml
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Install Playwright Chromium
-        run: pnpm --filter @openerrata/extension exec playwright install --with-deps chromium
-
-      - name: Generate Prisma client
-        run: pnpm db:generate
+          install-playwright-chromium: "true"
+          playwright-with-deps: "true"
 
       - name: Typecheck
         run: pnpm typecheck
 
-      - name: Lint and dead-code checks
-        run: pnpm lint && pnpm knip && pnpm format:check
+      - name: Lint and static checks
+        run: pnpm lint:ci
 
-      - name: Run full test suite
-        run: pnpm test
+      - name: Run unit tests with coverage
+        run: pnpm run test:unit:coverage
 
-      - name: Run coverage checks
-        run: pnpm test:coverage
+      - name: Run API integration tests
+        run: pnpm run test:integration:api
 
       - name: Build extension
         run: pnpm --filter @openerrata/extension build
+
+      - name: Run extension e2e tests
+        run: pnpm run test:e2e:extension:ci
 
       - name: Determine version
         id: version
@@ -131,6 +124,9 @@ jobs:
     needs: [build-and-test]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
     steps:
       - name: Download packaged zips
         uses: actions/download-artifact@v4
@@ -150,6 +146,7 @@ jobs:
     needs: [build-and-test, release]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     environment: extension-store-publish
     steps:
       - name: Download packaged zips

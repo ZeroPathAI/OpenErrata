@@ -1,0 +1,58 @@
+name: Setup TypeScript Workspace
+description: Install pnpm and Node.js dependencies for the TypeScript workspace
+
+inputs:
+  node-version:
+    description: Node.js version
+    default: "22.13.1"
+  pnpm-version:
+    description: pnpm version
+    default: "10.24.0"
+  generate-prisma:
+    description: Whether to run pnpm db:generate
+    default: "true"
+  install-playwright-chromium:
+    description: Whether to install Playwright Chromium
+    default: "false"
+  playwright-with-deps:
+    description: Whether to install Chromium with system dependencies
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Install pnpm
+      uses: pnpm/action-setup@v4
+      with:
+        version: ${{ inputs.pnpm-version }}
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: pnpm
+        cache-dependency-path: src/typescript/pnpm-lock.yaml
+
+    - name: Install dependencies
+      shell: bash
+      working-directory: src/typescript
+      run: pnpm install --frozen-lockfile
+
+    - name: Generate Prisma client
+      if: ${{ inputs.generate-prisma == 'true' }}
+      shell: bash
+      working-directory: src/typescript
+      run: pnpm db:generate
+
+    - name: Install Playwright Chromium
+      if: ${{ inputs.install-playwright-chromium == 'true' }}
+      shell: bash
+      working-directory: src/typescript
+      run: |
+        set -euo pipefail
+
+        if [ "${{ inputs.playwright-with-deps }}" = "true" ]; then
+          pnpm --filter @openerrata/extension exec playwright install --with-deps chromium
+        else
+          pnpm --filter @openerrata/extension exec playwright install chromium
+        fi
