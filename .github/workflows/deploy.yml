@@ -397,6 +397,8 @@ jobs:
     defaults:
       run:
         working-directory: src/typescript
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
     steps:
       - name: Checkout
         uses: actions/checkout@v4
