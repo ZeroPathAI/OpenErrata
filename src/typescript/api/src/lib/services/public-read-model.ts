@@ -160,9 +160,7 @@ function requireCompleteCheckedAt(input: {
   checkedAt: Date | null;
 }): Date {
   if (input.checkedAt === null) {
-    invariantViolation(
-      `Investigation ${input.investigationId} is COMPLETE with null checkedAt`,
-    );
+    invariantViolation(`Investigation ${input.investigationId} is COMPLETE with null checkedAt`);
   }
   return input.checkedAt;
 }

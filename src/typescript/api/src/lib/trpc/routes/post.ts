@@ -747,10 +747,7 @@ async function getOrCreateContentBlob(
   });
 }
 
-async function findImageOccurrenceSetByHash(
-  prisma: PrismaClient,
-  occurrencesHash: string,
-) {
+async function findImageOccurrenceSetByHash(prisma: PrismaClient, occurrencesHash: string) {
   return prisma.imageOccurrenceSet.findUnique({
     where: { occurrencesHash },
     include: {

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { claimIdSchema } from "@openerrata/shared";
 import {
   buildInvestigationPromptBundleText,
   buildUserPrompt,
@@ -80,7 +81,7 @@ test("buildUserPrompt update mode includes carry/new contract and collision-safe
     isUpdate: true,
     oldClaims: [
       {
-        id: "claim_old_1",
+        id: claimIdSchema.parse("claim_old_1"),
         text: "Old claim text",
         context: "Old context",
         summary: "Old summary",

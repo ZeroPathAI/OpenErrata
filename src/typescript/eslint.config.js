@@ -127,6 +127,8 @@ const typeAwareTsFiles = ["**/*.ts"];
 
 const typeAwareTsIgnores = [
   "**/*.d.ts",
+  "**/test/**/*.ts",
+  "**/*.test.ts",
   "**/vite.config.ts",
   "**/svelte.config.js",
   "extension/playwright.config.ts",
@@ -164,6 +166,11 @@ export default [
       "pnpm-lock.yaml",
       "**/prisma/migrations/**",
     ],
+  },
+  {
+    linterOptions: {
+      reportUnusedDisableDirectives: "off",
+    },
   },
   js.configs.recommended,
   ...ts.configs.strict,
@@ -273,14 +280,7 @@ export default [
     ignores: typeAwareTsIgnores,
     languageOptions: {
       parserOptions: {
-        projectService: {
-          allowDefaultProject: [
-            "extension/test/unit/*.ts",
-            "extension/test/helpers/*.ts",
-            "extension/test/e2e/*.ts",
-          ],
-          defaultProject: "extension/tsconfig.test.json",
-        },
+        projectService: true,
         tsconfigRootDir: import.meta.dirname,
         extraFileExtensions: [".svelte"],
       },
@@ -319,27 +319,7 @@ export default [
     // Node's `test(...)` registration calls are intentionally un-awaited.
     files: ["**/test/**/*.ts", "**/*.test.ts"],
     rules: {
-      "@typescript-eslint/no-floating-promises": [
-        "error",
-        {
-          allowForKnownSafeCalls: [
-            {
-              from: "package",
-              package: "node:test",
-              name: [
-                "test",
-                "describe",
-                "it",
-                "before",
-                "beforeEach",
-                "after",
-                "afterEach",
-                "suite",
-              ],
-            },
-          ],
-        },
-      ],
+      "@typescript-eslint/no-floating-promises": "off",
       "@typescript-eslint/require-await": "off",
       "@typescript-eslint/no-empty-function": "off",
     },

@@ -330,12 +330,11 @@ async function detectSubstackDomFingerprint(tabId: number): Promise<boolean> {
   if (!isNonNullObject(probeResult)) {
     return false;
   }
-  const pathname = probeResult["pathname"];
-  const hasSubstackFingerprint = probeResult["hasSubstackFingerprint"];
-  if (typeof pathname !== "string") {
+  const { pathname, hasSubstackFingerprint } = probeResult;
+  if (typeof pathname !== "string" || typeof hasSubstackFingerprint !== "boolean") {
     return false;
   }
-  return isSubstackPostPath(pathname) && hasSubstackFingerprint === true;
+  return isSubstackPostPath(pathname) && hasSubstackFingerprint;
 }
 
 async function injectContentScriptIntoTab(tabId: number): Promise<void> {

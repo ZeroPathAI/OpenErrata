@@ -40,9 +40,9 @@ async function getCachedStatus(serviceWorker: Worker): Promise<unknown> {
 
     const [result] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
-      func: async (protocolVersion: number) => {
+      func: async (messageProtocolVersion: number) => {
         const response = (await chrome.runtime.sendMessage({
-          v: protocolVersion,
+          v: messageProtocolVersion,
           type: "GET_CACHED",
         })) as unknown;
         return response;

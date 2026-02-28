@@ -22,6 +22,7 @@ import browser from "webextension-polyfill";
 import {
   apiEndpointUrl,
   apiHostPermissionFor,
+  DEFAULT_EXTENSION_SETTINGS,
   loadExtensionSettings,
   type ExtensionSettings,
 } from "../lib/settings.js";

@@ -7,7 +7,8 @@ test("shouldIgnoreMetadataLessUpgradeRequiredRefresh ignores metadata-less refre
     shouldIgnoreMetadataLessUpgradeRequiredRefresh({
       state: {
         active: true,
-        message: "Update required: this API server now requires OpenErrata extension version 0.2.0 or newer.",
+        message:
+          "Update required: this API server now requires OpenErrata extension version 0.2.0 or newer.",
         apiBaseUrl: "https://api.openerrata.com",
       },
       apiBaseUrl: "https://api.openerrata.com",

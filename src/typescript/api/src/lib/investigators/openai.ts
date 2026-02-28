@@ -383,7 +383,9 @@ function requireCompletedOutputText(input: {
   }
 
   if (outputText.trim().length === 0) {
-    throw new InvestigatorStructuredOutputError(`${input.context} returned empty structured output`);
+    throw new InvestigatorStructuredOutputError(
+      `${input.context} returned empty structured output`,
+    );
   }
 
   return outputText;
@@ -988,17 +990,22 @@ export class OpenAIInvestigator implements Investigator {
       effort: DEFAULT_REASONING_EFFORT as "low" | "medium" | "high",
       summary: DEFAULT_REASONING_SUMMARY as "auto" | "concise" | "detailed",
     };
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- tuple shape mirrors input.oldClaims array
-    const oldClaimIds = input.isUpdate
-      ? (input.oldClaims.map((claim) => claim.id) as [string, ...string[]] | [])
-      : [];
-    const stageOneFormat =
-      input.isUpdate
-        ? zodTextFormat(
-            buildUpdateInvestigationResultSchema(oldClaimIds),
-            "investigation_update_result",
-          )
-        : zodTextFormat(providerStructuredInvestigationResultSchema, "investigation_result");
+    const oldClaimIds: [] | [string, ...string[]] = (() => {
+      if (input.isUpdate !== true) {
+        return [];
+      }
+      const [firstClaim, ...remainingClaims] = input.oldClaims;
+      if (firstClaim === undefined) {
+        return [];
+      }
+      return [firstClaim.id, ...remainingClaims.map((claim) => claim.id)];
+    })();
+    const stageOneFormat = input.isUpdate
+      ? zodTextFormat(
+          buildUpdateInvestigationResultSchema(oldClaimIds),
+          "investigation_update_result",
+        )
+      : zodTextFormat(providerStructuredInvestigationResultSchema, "investigation_result");
 
     const baseResponseRequest = {
       model: openAiModelId,
