@@ -101,8 +101,15 @@ function parsePlatform(value: string): Platform {
   return platformSchema.parse(value);
 }
 
-function reportPublicLifecycleInvariantViolation(message: string): void {
-  console.error(`Public read-model invariant violation: ${message}`);
+export class PublicReadModelInvariantError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PublicReadModelInvariantError";
+  }
+}
+
+function invariantViolation(message: string): never {
+  throw new PublicReadModelInvariantError(`Public read-model invariant violation: ${message}`);
 }
 
 function parsePublicOrigin(input: {
@@ -110,23 +117,21 @@ function parsePublicOrigin(input: {
   contentProvenance: string;
   serverVerifiedAt: Date | null;
   fetchFailureReason: string | null;
-}): PublicInvestigationOrigin | null {
+}): PublicInvestigationOrigin {
   let provenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK";
   try {
     provenance = contentProvenanceSchema.parse(input.contentProvenance);
   } catch {
-    reportPublicLifecycleInvariantViolation(
+    invariantViolation(
       `Investigation ${input.investigationId} has invalid contentProvenance ${input.contentProvenance}`,
     );
-    return null;
   }
 
   if (provenance === "SERVER_VERIFIED") {
     if (input.serverVerifiedAt === null) {
-      reportPublicLifecycleInvariantViolation(
+      invariantViolation(
         `Investigation ${input.investigationId} is SERVER_VERIFIED with null serverVerifiedAt`,
       );
-      return null;
     }
     return {
       provenance: "SERVER_VERIFIED",
@@ -135,16 +140,14 @@ function parsePublicOrigin(input: {
   }
 
   if (input.fetchFailureReason === null) {
-    reportPublicLifecycleInvariantViolation(
+    invariantViolation(
       `Investigation ${input.investigationId} is CLIENT_FALLBACK with null fetchFailureReason`,
     );
-    return null;
   }
   if (input.fetchFailureReason.trim().length === 0) {
-    reportPublicLifecycleInvariantViolation(
+    invariantViolation(
       `Investigation ${input.investigationId} is CLIENT_FALLBACK with empty fetchFailureReason`,
     );
-    return null;
   }
   return {
     provenance: "CLIENT_FALLBACK",
@@ -155,12 +158,11 @@ function parsePublicOrigin(input: {
 function requireCompleteCheckedAt(input: {
   investigationId: string;
   checkedAt: Date | null;
-}): Date | null {
+}): Date {
   if (input.checkedAt === null) {
-    reportPublicLifecycleInvariantViolation(
+    invariantViolation(
       `Investigation ${input.investigationId} is COMPLETE with null checkedAt`,
     );
-    return null;
   }
   return input.checkedAt;
 }
@@ -171,24 +173,18 @@ function parsePublicLifecycle(input: {
   serverVerifiedAt: Date | null;
   fetchFailureReason: string | null;
   checkedAt: Date | null;
-}): { origin: PublicInvestigationOrigin; checkedAt: Date } | null {
+}): { origin: PublicInvestigationOrigin; checkedAt: Date } {
   const origin = parsePublicOrigin({
     investigationId: input.investigationId,
     contentProvenance: input.contentProvenance,
     serverVerifiedAt: input.serverVerifiedAt,
     fetchFailureReason: input.fetchFailureReason,
   });
-  if (origin === null) {
-    return null;
-  }
 
   const checkedAt = requireCompleteCheckedAt({
     investigationId: input.investigationId,
     checkedAt: input.checkedAt,
   });
-  if (checkedAt === null) {
-    return null;
-  }
 
   return {
     origin,
@@ -252,9 +248,6 @@ export async function getPublicInvestigationById(
     fetchFailureReason: investigation.postVersion.fetchFailureReason,
     checkedAt: investigation.checkedAt,
   });
-  if (lifecycle === null) {
-    return null;
-  }
 
   return {
     investigation: {
@@ -347,7 +340,7 @@ export async function getPublicPostInvestigations(
       externalId: post.externalId,
       url: post.url,
     },
-    investigations: investigations.flatMap((investigation) => {
+    investigations: investigations.map((investigation) => {
       const lifecycle = parsePublicLifecycle({
         investigationId: investigation.id,
         contentProvenance: investigation.postVersion.contentProvenance,
@@ -355,20 +348,14 @@ export async function getPublicPostInvestigations(
         fetchFailureReason: investigation.postVersion.fetchFailureReason,
         checkedAt: investigation.checkedAt,
       });
-      if (lifecycle === null) {
-        return [];
-      }
-
-      return [
-        {
-          id: investigation.id,
-          contentHash: investigation.postVersion.contentBlob.contentHash,
-          origin: lifecycle.origin,
-          corroborationCount: investigation._count.corroborationCredits,
-          checkedAt: lifecycle.checkedAt,
-          claimCount: investigation._count.claims,
-        },
-      ];
+      return {
+        id: investigation.id,
+        contentHash: investigation.postVersion.contentBlob.contentHash,
+        origin: lifecycle.origin,
+        corroborationCount: investigation._count.corroborationCredits,
+        checkedAt: lifecycle.checkedAt,
+        claimCount: investigation._count.claims,
+      };
     }),
   };
 }
@@ -445,7 +432,7 @@ export async function searchPublicInvestigations(
   });
 
   return {
-    investigations: investigations.flatMap((investigation) => {
+    investigations: investigations.map((investigation) => {
       const lifecycle = parsePublicLifecycle({
         investigationId: investigation.id,
         contentProvenance: investigation.postVersion.contentProvenance,
@@ -453,23 +440,17 @@ export async function searchPublicInvestigations(
         fetchFailureReason: investigation.postVersion.fetchFailureReason,
         checkedAt: investigation.checkedAt,
       });
-      if (lifecycle === null) {
-        return [];
-      }
-
-      return [
-        {
-          id: investigation.id,
-          contentHash: investigation.postVersion.contentBlob.contentHash,
-          checkedAt: lifecycle.checkedAt,
-          platform: parsePlatform(investigation.postVersion.post.platform),
-          externalId: investigation.postVersion.post.externalId,
-          url: investigation.postVersion.post.url,
-          origin: lifecycle.origin,
-          corroborationCount: investigation._count.corroborationCredits,
-          claimCount: investigation._count.claims,
-        },
-      ];
+      return {
+        id: investigation.id,
+        contentHash: investigation.postVersion.contentBlob.contentHash,
+        checkedAt: lifecycle.checkedAt,
+        platform: parsePlatform(investigation.postVersion.post.platform),
+        externalId: investigation.postVersion.post.externalId,
+        url: investigation.postVersion.post.url,
+        origin: lifecycle.origin,
+        corroborationCount: investigation._count.corroborationCredits,
+        claimCount: investigation._count.claims,
+      };
     }),
   };
 }

@@ -46,7 +46,7 @@ type PostStatusInput =
   | (PostStatusIdentity & {
       investigationState: "INVESTIGATED";
       provenance: ContentProvenance;
-      claims?: NonNullable<InvestigationStatusOutput["claims"]>;
+      claims: NonNullable<InvestigationStatusOutput["claims"]>;
     });
 
 type InvestigationSnapshot = InvestigationStatusOutput | ViewPostOutput;
@@ -135,7 +135,7 @@ export function createPostStatus(input: PostStatusInput): ExtensionPostStatus {
       return extensionPostStatusSchema.parse({
         ...base,
         investigationState: "INVESTIGATED",
-        claims: input.claims ?? [],
+        claims: input.claims,
       });
   }
 }

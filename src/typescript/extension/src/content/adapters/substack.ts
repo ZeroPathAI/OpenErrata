@@ -6,6 +6,7 @@ import {
   readFirstTimeDateAsIso,
   readPublishedDateFromJsonLd,
 } from "./utils";
+import { extractSubstackPostSlug, isSubstackPostPath } from "../../lib/substack-url";
 
 const CONTENT_SELECTOR = ".body.markup";
 const TITLE_SELECTOR = "h1.post-title";
@@ -25,7 +26,6 @@ const SUBSTACK_FINGERPRINT_SELECTOR = [
   'meta[property="og:url"][content*=".substack.com"]',
   'meta[name="twitter:image"][content*="post_preview/"]',
 ].join(",");
-const SUBSTACK_POST_PATH_REGEX = /^\/p\/([^/?#]+)/i;
 const SUBSTACK_HOST_REGEX = /(^|\.)substack\.com$/i;
 const SUBSTACK_POST_PREVIEW_ID_REGEX = /post_preview\/(\d+)\/(?:twitter|facebook)\.(?:jpg|png)/i;
 const SUBSTACK_PUBLICATION_REGEX = /([a-z0-9-]+)\.substack\.com/i;
@@ -218,9 +218,9 @@ function extractAuthorHandle(document: Document): string | undefined {
 }
 
 function parseSlug(url: URL): string | null {
-  const match = SUBSTACK_POST_PATH_REGEX.exec(url.pathname);
-  if (match?.[1] === undefined || match[1].length === 0) return null;
-  const slug = normalizeContent(match[1]);
+  const rawSlug = extractSubstackPostSlug(url.pathname);
+  if (rawSlug === null) return null;
+  const slug = normalizeContent(rawSlug);
   return slug.length > 0 ? slug : null;
 }
 
@@ -259,7 +259,7 @@ function hasSubstackHost(url: URL): boolean {
 }
 
 function hasSubstackPostPath(pathname: string): boolean {
-  return SUBSTACK_POST_PATH_REGEX.test(pathname);
+  return isSubstackPostPath(pathname);
 }
 
 function hasPrivateOrGatedMarkers(document: Document): boolean {

@@ -6,6 +6,7 @@ import {
   DEFAULT_INVESTIGATION_MODEL,
   DEFAULT_INVESTIGATION_PROVIDER,
   investigationResultSchema,
+  isNonNullObject,
   validateAndSortImageOccurrences,
   type InvestigationResult,
 } from "@openerrata/shared";
@@ -316,9 +317,7 @@ export const openAiInvestigatorInternals = {
   buildValidationImageContextNotes,
 };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+const isRecord = isNonNullObject;
 
 function sanitizeJsonValue(value: unknown, depth = 0): InvestigatorJsonValue {
   if (depth > 8) return "[max-depth]";
@@ -347,12 +346,47 @@ function sanitizeJsonValue(value: unknown, depth = 0): InvestigatorJsonValue {
 }
 
 function sanitizeJsonRecord(value: unknown): Record<string, InvestigatorJsonValue> {
-  if (!isRecord(value)) return {};
+  const record = requireJsonObject(value, "OpenAI audit payload");
   const sanitized: Record<string, InvestigatorJsonValue> = {};
-  for (const [key, entry] of Object.entries(value)) {
+  for (const [key, entry] of Object.entries(record)) {
     sanitized[key] = sanitizeJsonValue(entry, 1);
   }
   return sanitized;
+}
+
+function describeJsonValueType(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
+}
+
+function requireJsonObject(value: unknown, context: string): Record<string, unknown> {
+  if (!isRecord(value)) {
+    throw new InvestigatorStructuredOutputError(
+      `${context} must be a JSON object (received ${describeJsonValueType(value)})`,
+    );
+  }
+  return value;
+}
+
+function requireCompletedOutputText(input: {
+  responseAudit: InvestigatorResponseAudit;
+  responseRecord: Record<string, unknown>;
+  context: string;
+}): string {
+  const outputText = input.responseAudit.responseOutputText;
+  if (outputText === null) {
+    const rawOutputTextType = describeJsonValueType(input.responseRecord["output_text"]);
+    throw new InvestigatorStructuredOutputError(
+      `${input.context} completed without output_text (responseId=${input.responseAudit.responseId ?? "unknown"}, output_text_type=${rawOutputTextType})`,
+    );
+  }
+
+  if (outputText.trim().length === 0) {
+    throw new InvestigatorStructuredOutputError(`${input.context} returned empty structured output`);
+  }
+
+  return outputText;
 }
 
 function readString(value: unknown): string | null {
@@ -896,15 +930,16 @@ async function validateClaim(
       });
     }
 
-    const outputText = responseAudit.responseOutputText ?? "";
-    if (outputText.trim().length === 0) {
-      throw new InvestigatorStructuredOutputError(
-        "Claim validation returned empty structured output",
-      );
-    }
+    const outputText = requireCompletedOutputText({
+      responseAudit,
+      responseRecord,
+      context: "Claim validation response",
+    });
 
     const parsed: unknown = JSON.parse(outputText);
-    const { approved } = claimValidationResultSchema.parse(parsed);
+    const { approved } = claimValidationResultSchema.parse(
+      requireJsonObject(parsed, "Claim validation structured output"),
+    );
     return { claimIndex, approved, responseAudit, error: null };
   } catch (caught) {
     return {
@@ -936,9 +971,13 @@ export class OpenAIInvestigator implements Investigator {
       ...(input.authorName !== undefined && { authorName: input.authorName }),
       ...(input.postPublishedAt !== undefined && { postPublishedAt: input.postPublishedAt }),
       ...(input.hasVideo !== undefined && { hasVideo: input.hasVideo }),
-      ...(input.isUpdate !== undefined && { isUpdate: input.isUpdate }),
-      ...(input.oldClaims !== undefined && { oldClaims: input.oldClaims }),
-      ...(input.contentDiff !== undefined && { contentDiff: input.contentDiff }),
+      ...(input.isUpdate
+        ? {
+            isUpdate: true as const,
+            oldClaims: input.oldClaims,
+            ...(input.contentDiff !== undefined && { contentDiff: input.contentDiff }),
+          }
+        : {}),
     });
     const initialInput = buildInitialInput(userPrompt, input.contentText, input.imageOccurrences);
     const validationImageContextNotes = buildValidationImageContextNotes(input.imageOccurrences);
@@ -950,9 +989,11 @@ export class OpenAIInvestigator implements Investigator {
       summary: DEFAULT_REASONING_SUMMARY as "auto" | "concise" | "detailed",
     };
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- tuple shape mirrors input.oldClaims array
-    const oldClaimIds = (input.oldClaims ?? []).map((c) => c.id) as [string, ...string[]] | [];
+    const oldClaimIds = input.isUpdate
+      ? (input.oldClaims.map((claim) => claim.id) as [string, ...string[]] | [])
+      : [];
     const stageOneFormat =
-      input.isUpdate === true
+      input.isUpdate
         ? zodTextFormat(
             buildUpdateInvestigationResultSchema(oldClaimIds),
             "investigation_update_result",
@@ -1113,16 +1154,21 @@ export class OpenAIInvestigator implements Investigator {
       );
     }
 
-    const outputText = factCheckResponseAudit.responseOutputText ?? "";
-    if (outputText.trim().length === 0) {
-      const cause = new InvestigatorStructuredOutputError("Model returned empty structured output");
+    let outputText: string;
+    try {
+      outputText = requireCompletedOutputText({
+        responseAudit: factCheckResponseAudit,
+        responseRecord: latestResponseRecord,
+        context: "Fact-check response",
+      });
+    } catch (error) {
       throw new InvestigatorExecutionError(
-        cause.message,
+        error instanceof Error ? error.message : "Model returned invalid structured output text",
         parseInvestigatorAttemptAudit({
           ...stageOneAttemptAudit,
-          error: buildErrorAudit(cause),
+          error: buildErrorAudit(error),
         }),
-        cause,
+        error,
       );
     }
 
@@ -1132,6 +1178,21 @@ export class OpenAIInvestigator implements Investigator {
     } catch (error) {
       throw new InvestigatorExecutionError(
         "Model returned invalid JSON structured output",
+        parseInvestigatorAttemptAudit({
+          ...stageOneAttemptAudit,
+          error: buildErrorAudit(error),
+        }),
+        error,
+      );
+    }
+    let parsedRecord: Record<string, unknown>;
+    try {
+      parsedRecord = requireJsonObject(parsed, "Fact-check structured output");
+    } catch (error) {
+      throw new InvestigatorExecutionError(
+        error instanceof Error
+          ? error.message
+          : "Model returned structured output with an invalid top-level type",
         parseInvestigatorAttemptAudit({
           ...stageOneAttemptAudit,
           error: buildErrorAudit(error),
@@ -1150,7 +1211,7 @@ export class OpenAIInvestigator implements Investigator {
     if (input.isUpdate !== true) {
       let factCheckResult: ReturnType<typeof investigationResultSchema.parse>;
       try {
-        factCheckResult = investigationResultSchema.parse(parsed);
+        factCheckResult = investigationResultSchema.parse(parsedRecord);
       } catch (error) {
         throw new InvestigatorExecutionError(
           "Model returned structured output that failed schema validation",
@@ -1174,7 +1235,7 @@ export class OpenAIInvestigator implements Investigator {
       const updateSchema = buildUpdateInvestigationResultSchema(oldClaimIds);
       let updateResult: z.infer<typeof updateSchema>;
       try {
-        updateResult = updateSchema.parse(parsed);
+        updateResult = updateSchema.parse(parsedRecord);
       } catch (error) {
         throw new InvestigatorExecutionError(
           "Model returned structured output that failed update schema validation",
@@ -1186,7 +1247,7 @@ export class OpenAIInvestigator implements Investigator {
         );
       }
 
-      const oldClaims = input.oldClaims ?? [];
+      const oldClaims = input.oldClaims;
       const oldClaimsById = new Map(oldClaims.map((claim) => [claim.id as string, claim] as const));
       const carriedClaimIds = new Set<string>();
 

@@ -689,6 +689,33 @@ function hasSameNormalizedOccurrences(
   return true;
 }
 
+async function createOrFindByUniqueConstraint<T>(input: {
+  findExisting: () => Promise<T | null>;
+  create: () => Promise<T>;
+  assertEquivalent: (existing: T) => void;
+}): Promise<T> {
+  const existing = await input.findExisting();
+  if (existing !== null) {
+    input.assertEquivalent(existing);
+    return existing;
+  }
+
+  try {
+    return await input.create();
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) {
+      throw error;
+    }
+
+    const raced = await input.findExisting();
+    if (raced === null) {
+      throw error;
+    }
+    input.assertEquivalent(raced);
+    return raced;
+  }
+}
+
 async function getOrCreateContentBlob(
   prisma: PrismaClient,
   input: {
@@ -696,45 +723,85 @@ async function getOrCreateContentBlob(
     contentText: string;
   },
 ) {
-  const existing = await prisma.contentBlob.findUnique({
-    where: { contentHash: input.contentHash },
+  return createOrFindByUniqueConstraint({
+    findExisting: () =>
+      prisma.contentBlob.findUnique({
+        where: { contentHash: input.contentHash },
+      }),
+    create: () =>
+      prisma.contentBlob.create({
+        data: {
+          contentHash: input.contentHash,
+          contentText: input.contentText,
+          wordCount: wordCount(input.contentText),
+        },
+      }),
+    assertEquivalent: (existing) => {
+      if (existing.contentText !== input.contentText) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: `contentHash collision for ${input.contentHash}`,
+        });
+      }
+    },
   });
-  if (existing !== null) {
-    if (existing.contentText !== input.contentText) {
-      throw new TRPCError({
-        code: "INTERNAL_SERVER_ERROR",
-        message: `contentHash collision for ${input.contentHash}`,
-      });
-    }
-    return existing;
-  }
+}
 
-  try {
-    return await prisma.contentBlob.create({
-      data: {
-        contentHash: input.contentHash,
-        contentText: input.contentText,
-        wordCount: wordCount(input.contentText),
+async function findImageOccurrenceSetByHash(
+  prisma: PrismaClient,
+  occurrencesHash: string,
+) {
+  return prisma.imageOccurrenceSet.findUnique({
+    where: { occurrencesHash },
+    include: {
+      occurrences: {
+        orderBy: [{ originalIndex: "asc" }],
       },
-    });
-  } catch (error) {
-    if (!isUniqueConstraintError(error)) {
-      throw error;
-    }
+    },
+  });
+}
 
-    const raced = await prisma.contentBlob.findUnique({
-      where: { contentHash: input.contentHash },
+async function createImageOccurrenceSet(input: {
+  prisma: PrismaClient;
+  occurrencesHash: string;
+  normalizedOccurrences: NonNullable<ViewPostInput["observedImageOccurrences"]>;
+}) {
+  return input.prisma.imageOccurrenceSet.create({
+    data: {
+      occurrencesHash: input.occurrencesHash,
+      ...(input.normalizedOccurrences.length === 0
+        ? {}
+        : {
+            occurrences: {
+              create: normalizedOccurrenceToData(input.normalizedOccurrences),
+            },
+          }),
+    },
+    include: {
+      occurrences: {
+        orderBy: [{ originalIndex: "asc" }],
+      },
+    },
+  });
+}
+
+function assertOccurrenceSetMatches(input: {
+  occurrencesHash: string;
+  normalizedOccurrences: NonNullable<ViewPostInput["observedImageOccurrences"]>;
+  existing: {
+    occurrences: {
+      originalIndex: number;
+      normalizedTextOffset: number;
+      sourceUrl: string;
+      captionText: string | null;
+    }[];
+  };
+}): void {
+  if (!hasSameNormalizedOccurrences(input.existing.occurrences, input.normalizedOccurrences)) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: `image occurrence hash collision for ${input.occurrencesHash}`,
     });
-    if (raced === null) {
-      throw error;
-    }
-    if (raced.contentText !== input.contentText) {
-      throw new TRPCError({
-        code: "INTERNAL_SERVER_ERROR",
-        message: `contentHash collision for ${input.contentHash}`,
-      });
-    }
-    return raced;
   }
 }
 
@@ -744,66 +811,21 @@ async function getOrCreateImageOccurrenceSet(
 ) {
   const occurrencesHash = imageOccurrencesHash(normalizedOccurrences);
 
-  const existing = await prisma.imageOccurrenceSet.findUnique({
-    where: { occurrencesHash },
-    include: {
-      occurrences: {
-        orderBy: [{ originalIndex: "asc" }],
-      },
-    },
-  });
-  if (existing !== null) {
-    if (!hasSameNormalizedOccurrences(existing.occurrences, normalizedOccurrences)) {
-      throw new TRPCError({
-        code: "INTERNAL_SERVER_ERROR",
-        message: `image occurrence hash collision for ${occurrencesHash}`,
-      });
-    }
-    return existing;
-  }
-
-  try {
-    return await prisma.imageOccurrenceSet.create({
-      data: {
+  return createOrFindByUniqueConstraint({
+    findExisting: () => findImageOccurrenceSetByHash(prisma, occurrencesHash),
+    create: () =>
+      createImageOccurrenceSet({
+        prisma,
         occurrencesHash,
-        ...(normalizedOccurrences.length === 0
-          ? {}
-          : {
-              occurrences: {
-                create: normalizedOccurrenceToData(normalizedOccurrences),
-              },
-            }),
-      },
-      include: {
-        occurrences: {
-          orderBy: [{ originalIndex: "asc" }],
-        },
-      },
-    });
-  } catch (error) {
-    if (!isUniqueConstraintError(error)) {
-      throw error;
-    }
-
-    const raced = await prisma.imageOccurrenceSet.findUnique({
-      where: { occurrencesHash },
-      include: {
-        occurrences: {
-          orderBy: [{ originalIndex: "asc" }],
-        },
-      },
-    });
-    if (raced === null) {
-      throw error;
-    }
-    if (!hasSameNormalizedOccurrences(raced.occurrences, normalizedOccurrences)) {
-      throw new TRPCError({
-        code: "INTERNAL_SERVER_ERROR",
-        message: `image occurrence hash collision for ${occurrencesHash}`,
-      });
-    }
-    return raced;
-  }
+        normalizedOccurrences,
+      }),
+    assertEquivalent: (existing) =>
+      assertOccurrenceSetMatches({
+        occurrencesHash,
+        normalizedOccurrences,
+        existing,
+      }),
+  });
 }
 
 async function upsertPostVersion(

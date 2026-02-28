@@ -55,10 +55,14 @@ import {
   injectTabAssets,
 } from "./browser-compat.js";
 import { EXTENSION_VERSION } from "../lib/extension-version.js";
+import { describeError } from "../lib/describe-error.js";
+import { isSubstackPostPath } from "../lib/substack-url.js";
 import { wikipediaExternalIdFromPageId } from "../lib/wikipedia-url.js";
 import { UPGRADE_REQUIRED_STORAGE_KEY } from "../lib/runtime-error.js";
 import { setToolbarUpgradeRequiredState } from "./toolbar-badge.js";
 import { DEFAULT_EXTENSION_SETTINGS, normalizeApiBaseUrl } from "../lib/settings-core.js";
+import { shouldIgnoreMetadataLessUpgradeRequiredRefresh } from "./upgrade-required-state.js";
+import type { UpgradeRequiredState } from "./upgrade-required-state.js";
 
 // Initialize API client on worker start, then restore persisted upgrade state.
 void init()
@@ -99,7 +103,6 @@ type ParsedBackgroundMessage = Extract<
 >;
 type ExtensionRuntimeErrorResponse = ReturnType<typeof extensionRuntimeErrorResponseSchema.parse>;
 
-const SUBSTACK_POST_PATH_REGEX = /^\/p\/[^/?#]+/i;
 const KNOWN_DECLARATIVE_DOMAINS = [
   "substack.com",
   "lesswrong.com",
@@ -116,18 +119,7 @@ interface StoredUpgradeRequiredState {
   apiBaseUrl: string;
 }
 
-type UpgradeRequiredState =
-  | { active: false }
-  | { active: true; message: string; apiBaseUrl: string };
-
 let upgradeRequiredState: UpgradeRequiredState = { active: false };
-
-function describeError(error: unknown): string {
-  if (error instanceof Error && error.message.length > 0) {
-    return error.message;
-  }
-  return String(error);
-}
 
 function isContentMismatchError(error: unknown): boolean {
   return error instanceof ApiClientError && error.errorCode === "CONTENT_MISMATCH";
@@ -210,8 +202,18 @@ async function markUpgradeRequiredFromError(error: unknown): Promise<void> {
     return;
   }
 
-  const message = upgradeRequiredMessageFromApiError(error);
   const apiBaseUrl = getCurrentApiBaseUrl();
+  if (
+    shouldIgnoreMetadataLessUpgradeRequiredRefresh({
+      state: upgradeRequiredState,
+      apiBaseUrl,
+      minimumSupportedExtensionVersion: error.minimumSupportedExtensionVersion,
+    })
+  ) {
+    return;
+  }
+
+  const message = upgradeRequiredMessageFromApiError(error);
   if (
     upgradeRequiredState.active &&
     upgradeRequiredState.message === message &&
@@ -304,12 +306,11 @@ function isKnownDeclarativeDomain(hostname: string): boolean {
 }
 
 function hasCandidateSubstackPath(url: URL): boolean {
-  return SUBSTACK_POST_PATH_REGEX.test(url.pathname);
+  return isSubstackPostPath(url.pathname);
 }
 
 async function detectSubstackDomFingerprint(tabId: number): Promise<boolean> {
   const probeResult = await executeTabFunction(tabId, () => {
-    const hasPostPath = /^\/p\/[^/?#]+/i.test(window.location.pathname);
     const hasSubstackFingerprint =
       document.querySelector(
         [
@@ -320,10 +321,21 @@ async function detectSubstackDomFingerprint(tabId: number): Promise<boolean> {
           'meta[name="twitter:image"][content*="post_preview/"]',
         ].join(","),
       ) !== null;
-    return hasPostPath && hasSubstackFingerprint;
+    return {
+      pathname: window.location.pathname,
+      hasSubstackFingerprint,
+    };
   });
 
-  return probeResult === true;
+  if (!isNonNullObject(probeResult)) {
+    return false;
+  }
+  const pathname = probeResult["pathname"];
+  const hasSubstackFingerprint = probeResult["hasSubstackFingerprint"];
+  if (typeof pathname !== "string") {
+    return false;
+  }
+  return isSubstackPostPath(pathname) && hasSubstackFingerprint === true;
 }
 
 async function injectContentScriptIntoTab(tabId: number): Promise<void> {

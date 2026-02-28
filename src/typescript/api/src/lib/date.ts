@@ -12,5 +12,9 @@ export function toOptionalDate(
 ): Date | null {
   if (value == null) return null;
   if (options?.strict === true) return toDate(value);
-  return new Date(value);
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.valueOf())) {
+    return null;
+  }
+  return parsed;
 }

@@ -20,7 +20,6 @@ import {
 import { createTRPCUntypedClient, httpLink, type TRPCUntypedClient } from "@trpc/client";
 import browser from "webextension-polyfill";
 import {
-  DEFAULT_EXTENSION_SETTINGS,
   apiEndpointUrl,
   apiHostPermissionFor,
   loadExtensionSettings,
@@ -29,6 +28,7 @@ import {
 import { extractApiErrorCode, extractMinimumSupportedExtensionVersion } from "./api-error-code.js";
 export { ApiClientError } from "./api-client-error.js";
 import { ApiClientError } from "./api-client-error.js";
+import { describeError } from "../lib/describe-error.js";
 import {
   assertTrpcResponseAccepted,
   buildTrpcRequestInit,
@@ -87,9 +87,8 @@ export async function init(): Promise<void> {
     await initPromise;
   } catch (err) {
     initPromise = null;
-    settings = { ...DEFAULT_EXTENSION_SETTINGS };
-    cachedClientsByKey.clear();
-    console.error("Failed to initialize extension API settings:", err);
+    console.error("Failed to initialize extension API settings; keeping last-known settings:", err);
+    throw err;
   }
 }
 
@@ -140,22 +139,16 @@ function getOrCreateTrpcClient(options: { includeUserOpenAiHeader: boolean }): T
   return client;
 }
 
-function describeError(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
-}
-
 async function withTrpcClient<Output>(
   path: ExtensionApiProcedurePath,
   operation: (client: TrpcClient) => Promise<Output>,
 ): Promise<Output> {
-  await init();
-  await assertApiHostPermissionGranted(settings.apiBaseUrl);
-
-  const client = getOrCreateTrpcClient({
-    includeUserOpenAiHeader: shouldIncludeUserOpenAiKeyHeader(path),
-  });
   try {
+    await init();
+    await assertApiHostPermissionGranted(settings.apiBaseUrl);
+    const client = getOrCreateTrpcClient({
+      includeUserOpenAiHeader: shouldIncludeUserOpenAiKeyHeader(path),
+    });
     return await operation(client);
   } catch (error) {
     const errorCode =

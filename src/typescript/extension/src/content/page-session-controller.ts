@@ -27,12 +27,12 @@ import { AnnotationController } from "./annotations";
 import { PageObserver } from "./observer";
 import { ContentSyncClient, type ParsedExtensionPageStatus } from "./sync";
 import { mapClaimsToDom } from "./dom-mapper";
+import { extractSubstackPostSlug } from "../lib/substack-url";
 
 const REFRESH_DEBOUNCE_MS = 200;
 const REAPPLY_DEBOUNCE_MS = 300;
 const SYNC_RETRY_INITIAL_MS = 1_000;
 const SYNC_RETRY_MAX_MS = 30_000;
-const SUBSTACK_POST_PATH_REGEX = /^\/p\/([^/?#]+)/i;
 const CLAIM_FOCUS_CLASS = "openerrata-focus-target";
 const CLAIM_FOCUS_DURATION_MS = 1_500;
 
@@ -116,13 +116,13 @@ function inferIdentityForSkippedPage(
 
   try {
     const parsed = new URL(url);
-    const match = SUBSTACK_POST_PATH_REGEX.exec(parsed.pathname);
-    if (match?.[1] === undefined || match[1].length === 0) {
+    const slug = extractSubstackPostSlug(parsed.pathname);
+    if (slug === null) {
       return null;
     }
     return {
       platform: "SUBSTACK",
-      externalId: match[1],
+      externalId: slug,
     };
   } catch {
     return null;

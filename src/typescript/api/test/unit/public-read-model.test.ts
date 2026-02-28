@@ -6,6 +6,7 @@ import {
   getPublicInvestigationById,
   getPublicMetrics,
   getPublicPostInvestigations,
+  PublicReadModelInvariantError,
   searchPublicInvestigations,
 } from "../../src/lib/services/public-read-model.js";
 
@@ -182,13 +183,7 @@ test("getPublicInvestigationById maps a complete SERVER_VERIFIED investigation",
   assert.equal(result.claims[0]?.sources.length, 1);
 });
 
-test("getPublicInvestigationById rejects invalid lifecycle provenance data", async () => {
-  const consoleErrors: string[] = [];
-  const originalError = console.error;
-  console.error = (...args: unknown[]) => {
-    consoleErrors.push(args.map(String).join(" "));
-  };
-
+test("getPublicInvestigationById throws on invalid lifecycle provenance data", async () => {
   const prisma = createMockPrisma({
     investigation: {
       findFirst: async () => ({
@@ -221,16 +216,15 @@ test("getPublicInvestigationById rejects invalid lifecycle provenance data", asy
     },
   });
 
-  try {
-    const result = await getPublicInvestigationById(prisma, "inv_invalid");
-    assert.equal(result, null);
-    assert.equal(consoleErrors.length > 0, true);
-  } finally {
-    console.error = originalError;
-  }
+  await assert.rejects(
+    getPublicInvestigationById(prisma, "inv_invalid"),
+    (error: unknown) =>
+      error instanceof PublicReadModelInvariantError &&
+      error.message.includes("invalid contentProvenance"),
+  );
 });
 
-test("getPublicPostInvestigations filters malformed lifecycle records", async () => {
+test("getPublicPostInvestigations throws when lifecycle invariants are broken", async () => {
   const prisma = createMockPrisma({
     post: {
       findUnique: async () => ({
@@ -278,18 +272,18 @@ test("getPublicPostInvestigations filters malformed lifecycle records", async ()
     },
   });
 
-  const result = await getPublicPostInvestigations(prisma, {
-    platform: "LESSWRONG",
-    externalId: "post_1",
-  });
-
-  assert.notEqual(result.post, null);
-  assert.equal(result.post?.platform, "LESSWRONG");
-  assert.equal(result.investigations.length, 1);
-  assert.equal(result.investigations[0]?.id, "inv_good");
+  await assert.rejects(
+    getPublicPostInvestigations(prisma, {
+      platform: "LESSWRONG",
+      externalId: "post_1",
+    }),
+    (error: unknown) =>
+      error instanceof PublicReadModelInvariantError &&
+      error.message.includes("empty fetchFailureReason"),
+  );
 });
 
-test("searchPublicInvestigations returns only lifecycle-valid investigations", async () => {
+test("searchPublicInvestigations throws when lifecycle invariants are broken", async () => {
   const prisma = createMockPrisma({
     investigation: {
       findFirst: async () => null,
@@ -340,19 +334,17 @@ test("searchPublicInvestigations returns only lifecycle-valid investigations", a
     },
   });
 
-  const result = await searchPublicInvestigations(prisma, {
-    query: "climate",
-    platform: "SUBSTACK" as Platform,
-    limit: 10,
-    offset: 0,
-  });
-
-  assert.equal(result.investigations.length, 1);
-  assert.equal(result.investigations[0]?.id, "inv_search_ok");
-  assert.deepEqual(result.investigations[0].origin, {
-    provenance: "CLIENT_FALLBACK",
-    fetchFailureReason: "canonical fetch timed out",
-  });
+  await assert.rejects(
+    searchPublicInvestigations(prisma, {
+      query: "climate",
+      platform: "SUBSTACK" as Platform,
+      limit: 10,
+      offset: 0,
+    }),
+    (error: unknown) =>
+      error instanceof PublicReadModelInvariantError &&
+      error.message.includes("null serverVerifiedAt"),
+  );
 });
 
 test("getPublicMetrics computes incidence and handles empty query rows", async () => {

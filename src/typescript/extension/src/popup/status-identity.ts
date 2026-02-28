@@ -1,13 +1,12 @@
 import type { ExtensionPageStatus } from "@openerrata/shared";
 import type { SupportedPageIdentity } from "../lib/post-identity";
+import { isSubstackPostPath } from "../lib/substack-url";
 import { parseWikipediaIdentity } from "../lib/wikipedia-url";
-
-const SUBSTACK_POST_PATH_REGEX = /^\/p\/[^/?#]+/i;
 
 export function isSubstackPostPathUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
-    return SUBSTACK_POST_PATH_REGEX.test(parsed.pathname);
+    return isSubstackPostPath(parsed.pathname);
   } catch {
     return false;
   }
@@ -60,7 +59,7 @@ export function statusMatchesIdentity(
       const tabParsed = new URL(tabUrl);
       const statusParsed = new URL(status.pageUrl);
       if (
-        !SUBSTACK_POST_PATH_REGEX.test(statusParsed.pathname) ||
+        !isSubstackPostPath(statusParsed.pathname) ||
         tabParsed.origin !== statusParsed.origin ||
         tabParsed.pathname !== statusParsed.pathname
       ) {

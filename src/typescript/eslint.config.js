@@ -273,7 +273,14 @@ export default [
     ignores: typeAwareTsIgnores,
     languageOptions: {
       parserOptions: {
-        projectService: true,
+        projectService: {
+          allowDefaultProject: [
+            "extension/test/unit/*.ts",
+            "extension/test/helpers/*.ts",
+            "extension/test/e2e/*.ts",
+          ],
+          defaultProject: "extension/tsconfig.test.json",
+        },
         tsconfigRootDir: import.meta.dirname,
         extraFileExtensions: [".svelte"],
       },

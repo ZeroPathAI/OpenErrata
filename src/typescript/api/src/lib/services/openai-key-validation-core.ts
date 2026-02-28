@@ -1,25 +1,11 @@
 import { openaiApiKeyFormatSchema } from "@openerrata/shared";
-import { classifyOpenAiKeyValidationStatus, readOpenAiStatusCode } from "$lib/openai/errors.js";
+import {
+  classifyOpenAiKeyValidationStatus,
+  readOpenAiStatusCode,
+  type OpenAiKeyValidationStatusOutcome,
+} from "$lib/openai/errors.js";
 
-export type OpenAiKeyValidationStatusOutcome =
-  | { openaiApiKeyStatus: "missing" }
-  | { openaiApiKeyStatus: "valid" }
-  | {
-      openaiApiKeyStatus: "format_invalid";
-      openaiApiKeyMessage: string;
-    }
-  | {
-      openaiApiKeyStatus: "authenticated_restricted";
-      openaiApiKeyMessage: string;
-    }
-  | {
-      openaiApiKeyStatus: "invalid";
-      openaiApiKeyMessage: string;
-    }
-  | {
-      openaiApiKeyStatus: "error";
-      openaiApiKeyMessage: string;
-    };
+export type { OpenAiKeyValidationStatusOutcome };
 
 type ValidateOpenAiKeyReachability = (openAiApiKey: string) => Promise<void>;
 

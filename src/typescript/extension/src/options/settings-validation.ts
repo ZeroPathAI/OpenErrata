@@ -18,6 +18,7 @@ import {
   normalizeApiBaseUrl,
   normalizeOpenaiApiKey,
 } from "../lib/settings.js";
+import { describeError } from "../lib/describe-error.js";
 import { EXTENSION_VERSION_HEADER_NAME } from "../background/api-client-core.js";
 import { EXTENSION_VERSION } from "../lib/extension-version.js";
 
@@ -34,11 +35,6 @@ interface SettingsProbeInput {
 type SettingsProbeResult =
   | { status: "ok"; validation: SettingsValidationOutput }
   | { status: "error"; message: string };
-
-function describeError(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
-}
 
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";

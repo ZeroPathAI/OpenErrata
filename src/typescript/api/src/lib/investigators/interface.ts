@@ -50,7 +50,7 @@ export type InvestigatorImageOccurrence =
       resolution: "missing" | "omitted";
     };
 
-export interface InvestigatorInput {
+interface InvestigatorInputBase {
   contentText: string;
   platform: Platform;
   url: string;
@@ -58,10 +58,18 @@ export interface InvestigatorInput {
   postPublishedAt?: string;
   imageOccurrences?: InvestigatorImageOccurrence[];
   hasVideo?: boolean;
-  isUpdate?: boolean;
-  oldClaims?: InvestigationClaim[];
   contentDiff?: string;
 }
+
+export type InvestigatorInput =
+  | (InvestigatorInputBase & {
+      isUpdate?: false | undefined;
+      oldClaims?: undefined;
+    })
+  | (InvestigatorInputBase & {
+      isUpdate: true;
+      oldClaims: InvestigationClaim[];
+    });
 
 export const investigatorRequestedToolAuditSchema = z.object({
   requestOrder: z.number().int().nonnegative(),

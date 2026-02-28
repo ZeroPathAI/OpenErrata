@@ -1,4 +1,5 @@
-import type { InvestigationResult, Platform } from "@openerrata/shared";
+import type { InvestigationResult } from "@openerrata/shared";
+import type { InvestigatorInput } from "./interface.js";
 
 export const INVESTIGATION_PROMPT_VERSION = "v1.11.0";
 
@@ -81,28 +82,7 @@ Your task is to determine whether this candidate claim is a well-supported true 
 
 Return {"approved": true} to keep the claim, or {"approved": false} to reject it.`;
 
-interface UserPromptInput {
-  contentText: string;
-  platform: Platform;
-  url: string;
-  authorName?: string;
-  postPublishedAt?: string;
-  hasVideo?: boolean;
-  isUpdate?: boolean;
-  oldClaims?: {
-    id: string;
-    text: string;
-    context: string;
-    summary: string;
-    reasoning: string;
-    sources: {
-      url: string;
-      title: string;
-      snippet: string;
-    }[];
-  }[];
-  contentDiff?: string;
-}
+type UserPromptInput = InvestigatorInput;
 
 interface ValidationPromptInput {
   currentPostText: string;
@@ -194,7 +174,7 @@ export function buildUserPrompt(input: UserPromptInput): string {
   if (input.isUpdate) {
     sections.push(
       renderJsonSection("Update metadata", {
-        oldClaims: input.oldClaims ?? [],
+        oldClaims: input.oldClaims,
       }),
     );
 

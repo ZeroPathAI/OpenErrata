@@ -1,5 +1,6 @@
 import {
   hashContent,
+  isNonNullObject,
   isExcludedWikipediaSectionTitle,
   normalizeContent,
   normalizeWikipediaSectionTitle,
@@ -58,8 +59,8 @@ export type CanonicalFetchInput =
     }
   | WikipediaCanonicalFetchInput;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
+function describeFetchError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /**
@@ -70,19 +71,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * CONTENT_MISMATCH for any post longer than that.
  */
 function extractLesswrongHtml(value: unknown): string | null {
-  if (!isRecord(value)) return null;
+  if (!isNonNullObject(value)) return null;
 
   const data = value["data"];
-  if (!isRecord(data)) return null;
+  if (!isNonNullObject(data)) return null;
 
   const post = data["post"];
-  if (!isRecord(post)) return null;
+  if (!isNonNullObject(post)) return null;
 
   const result = post["result"];
-  if (!isRecord(result)) return null;
+  if (!isNonNullObject(result)) return null;
 
   const contents = result["contents"];
-  if (!isRecord(contents)) return null;
+  if (!isNonNullObject(contents)) return null;
 
   const html = contents["html"];
   return typeof html === "string" ? html : null;
@@ -159,65 +160,74 @@ async function fetchServerVerifiedContent(
 export async function fetchCanonicalContent(
   input: CanonicalFetchInput,
 ): Promise<CanonicalContentFetchResult> {
-  try {
-    const fetched = await fetchServerVerifiedContent(input);
-    if (fetched === null) {
-      return {
-        provenance: "CLIENT_FALLBACK",
-        fetchFailureReason: `${input.platform} canonical server fetch unavailable`,
-      };
-    }
-    if (!fetched.success) {
-      return {
-        provenance: "CLIENT_FALLBACK",
-        fetchFailureReason: fetched.failureReason,
-      };
-    }
-    return {
-      provenance: "SERVER_VERIFIED",
-      contentText: fetched.contentText,
-      contentHash: fetched.contentHash,
-    };
-  } catch (error) {
+  const fetched = await fetchServerVerifiedContent(input);
+  if (fetched === null) {
     return {
       provenance: "CLIENT_FALLBACK",
-      fetchFailureReason: error instanceof Error ? error.message : "Unknown error",
+      fetchFailureReason: `${input.platform} canonical server fetch unavailable`,
     };
   }
+  if (!fetched.success) {
+    return {
+      provenance: "CLIENT_FALLBACK",
+      fetchFailureReason: fetched.failureReason,
+    };
+  }
+  return {
+    provenance: "SERVER_VERIFIED",
+    contentText: fetched.contentText,
+    contentHash: fetched.contentHash,
+  };
 }
 
 async function fetchLesswrongContent(
   input: Extract<CanonicalFetchInput, { platform: "LESSWRONG" }>,
 ): Promise<ServerFetchResult> {
   const postId = input.externalId;
-  const response = await fetch("https://www.lesswrong.com/graphql", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      query: `query GetPost($id: String!) {
-        post(input: { selector: { _id: $id } }) {
-          result {
-            _id
-            title
-            contents {
-              html
-            }
-            user {
-              displayName
-              slug
+  let response: Response;
+  try {
+    response = await fetch("https://www.lesswrong.com/graphql", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: `query GetPost($id: String!) {
+          post(input: { selector: { _id: $id } }) {
+            result {
+              _id
+              title
+              contents {
+                html
+              }
+              user {
+                displayName
+                slug
+              }
             }
           }
-        }
-      }`,
-      variables: { id: postId },
-    }),
-  });
+        }`,
+        variables: { id: postId },
+      }),
+    });
+  } catch (error) {
+    return {
+      success: false,
+      failureReason: `LW API request failed: ${describeFetchError(error)}`,
+    };
+  }
 
   if (!response.ok) {
     return { success: false, failureReason: `LW API returned ${response.status}` };
   }
 
-  const data: unknown = await response.json();
+  let data: unknown;
+  try {
+    data = await response.json();
+  } catch (error) {
+    return {
+      success: false,
+      failureReason: `LW API returned invalid JSON: ${describeFetchError(error)}`,
+    };
+  }
   const html = extractLesswrongHtml(data);
   if (html === null || html.length === 0) {
     return {
@@ -382,9 +392,9 @@ function extractWikipediaParsePayload(value: unknown): {
   html: string;
   revisionId: string;
 } | null {
-  if (!isRecord(value)) return null;
+  if (!isNonNullObject(value)) return null;
   const parse = value["parse"];
-  if (!isRecord(parse)) return null;
+  if (!isNonNullObject(parse)) return null;
 
   const text = parse["text"];
   const rawRevisionId = parse["revid"];
@@ -425,7 +435,15 @@ async function fetchWikipediaContent(
   endpoint.searchParams.set("prop", "text|revid");
   endpoint.searchParams.set("oldid", revisionId);
 
-  const response = await fetch(endpoint);
+  let response: Response;
+  try {
+    response = await fetch(endpoint);
+  } catch (error) {
+    return {
+      success: false,
+      failureReason: `Wikipedia parse request failed: ${describeFetchError(error)}`,
+    };
+  }
   if (!response.ok) {
     return {
       success: false,
@@ -433,7 +451,15 @@ async function fetchWikipediaContent(
     };
   }
 
-  const data: unknown = await response.json();
+  let data: unknown;
+  try {
+    data = await response.json();
+  } catch (error) {
+    return {
+      success: false,
+      failureReason: `Wikipedia parse API returned invalid JSON: ${describeFetchError(error)}`,
+    };
+  }
   const payload = extractWikipediaParsePayload(data);
   if (!payload) {
     return {

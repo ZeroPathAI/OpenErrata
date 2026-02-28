@@ -9,6 +9,7 @@
   } from "@openerrata/shared";
   import type { ClaimId, ExtensionMessage, ExtensionSkippedReason } from "@openerrata/shared";
   import browser from "webextension-polyfill";
+  import { describeError } from "../lib/describe-error";
   import { isSupportedPostUrl, parseSupportedPageIdentity } from "../lib/post-identity";
   import { computePostView, type PopupClaim, type PostPopupView } from "./post-view";
   import { isSubstackPostPathUrl, statusMatchesIdentity } from "./status-identity";
@@ -60,13 +61,6 @@
       return "OpenErrata could not extract this post. Try reloading the page or opening the canonical post URL.";
     }
     return "This post is not eligible for investigation.";
-  }
-
-  function describeError(error: unknown): string {
-    if (error instanceof Error && error.message.length > 0) {
-      return error.message;
-    }
-    return String(error);
   }
 
   type PopupContentControlMessage = Extract<

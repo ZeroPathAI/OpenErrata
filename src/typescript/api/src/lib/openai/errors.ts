@@ -1,6 +1,6 @@
 const NON_RETRYABLE_OPENAI_STATUS_CODES = new Set([400, 401, 403, 404, 422]);
 
-type OpenAiKeyValidationStatusOutcome =
+export type OpenAiKeyValidationStatusOutcome =
   | { openaiApiKeyStatus: "missing" }
   | { openaiApiKeyStatus: "valid" }
   | {
