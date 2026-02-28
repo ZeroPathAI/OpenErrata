@@ -120,9 +120,9 @@ function getOrCreateTrpcClient(options: { includeUserOpenAiHeader: boolean }): T
     links: [
       httpLink({
         url: apiEndpointUrl(settings.apiBaseUrl, "trpc"),
-        fetch: async (url, init) => {
+        fetch: async (url, requestInitInput) => {
           const requestInit = await buildTrpcRequestInit({
-            init,
+            init: requestInitInput,
             settings,
             includeUserOpenAiHeader: options.includeUserOpenAiHeader,
             extensionVersion: EXTENSION_VERSION,

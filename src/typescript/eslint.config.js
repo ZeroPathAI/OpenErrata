@@ -30,6 +30,19 @@ const typeAwareRuleOverrides = {
   "@typescript-eslint/no-unsafe-declaration-merging": "error",
   "@typescript-eslint/no-unsafe-type-assertion": "error",
 
+  // ── Binding safety ─────────────────────────────────────────────
+  "@typescript-eslint/no-shadow": "error",
+  "@typescript-eslint/no-use-before-define": [
+    "error",
+    {
+      functions: false,
+      classes: true,
+      variables: true,
+      typedefs: true,
+      allowNamedExports: false,
+    },
+  ],
+
   // ── Operator/template strictness ──────────────────────────────
   "@typescript-eslint/restrict-plus-operands": "error",
   "@typescript-eslint/restrict-template-expressions": ["error", { allowNumber: true }],
@@ -173,6 +186,9 @@ export default [
       "no-new-func": "error",
       // Correctness
       eqeqeq: ["error", "always", { null: "ignore" }],
+      "no-self-compare": "error",
+      "no-template-curly-in-string": "error",
+      "no-unmodified-loop-condition": "error",
       "no-useless-catch": "error",
       "prefer-const": "error",
       "no-var": "error",
@@ -267,6 +283,8 @@ export default [
       // Disable base ESLint rules superseded by TS-aware equivalents
       "no-throw-literal": "off",
       "require-await": "off",
+      "no-shadow": "off",
+      "no-use-before-define": "off",
       "@typescript-eslint/consistent-type-assertions": [
         "error",
         {

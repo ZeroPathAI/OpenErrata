@@ -50,6 +50,13 @@ ${INVESTIGATION_SYSTEM_PROMPT}
 === Stage 2: Validation instructions ===
 ${INVESTIGATION_VALIDATION_SYSTEM_PROMPT}`;
 
+export class InvestigatorStructuredOutputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvestigatorStructuredOutputError";
+  }
+}
+
 function getOpenAiModelId(): string {
   return getEnv().OPENAI_MODEL_ID;
 }
@@ -790,13 +797,6 @@ async function executeFunctionToolCall(call: PendingFunctionToolCall): Promise<F
       error: `Unknown function tool: ${call.name}`,
     }),
   };
-}
-
-export class InvestigatorStructuredOutputError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "InvestigatorStructuredOutputError";
-  }
 }
 
 class InvestigatorIncompleteResponseError extends Error {
