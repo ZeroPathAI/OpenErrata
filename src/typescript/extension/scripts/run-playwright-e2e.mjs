@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import process from "node:process";
 
 const PLAYWRIGHT_ARGS = ["exec", "playwright", "test", "-c", "playwright.config.ts"];
 
@@ -23,7 +24,9 @@ function runPlaywright() {
     return linuxResult;
   }
 
-  console.warn("[extension:e2e] xvfb-run not found on Linux; running without virtual display.");
+  process.stderr.write(
+    "[extension:e2e] xvfb-run not found on Linux; running without virtual display.\n",
+  );
   return run("pnpm", PLAYWRIGHT_ARGS);
 }
 
