@@ -363,7 +363,12 @@
         <ul class="claims">
           {#each view.claims as claim (claim.id)}
             <li>
-              <button class="claim-focus-btn" onclick={() => void focusClaim(claim.id)}>
+              <button
+                class="claim-focus-btn"
+                onclick={() => {
+                  focusClaim(claim.id);
+                }}
+              >
                 {claim.summary}
               </button>
             </li>

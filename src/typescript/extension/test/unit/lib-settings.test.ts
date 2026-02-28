@@ -108,7 +108,6 @@ function installSettingsChromeMock(input: {
 }
 
 async function importSettingsModule(): Promise<SettingsModule> {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- dynamic import returns module as any
   return (await import(
     `../../src/lib/settings.ts?test=${Date.now().toString()}-${Math.random().toString()}`
   )) as SettingsModule;

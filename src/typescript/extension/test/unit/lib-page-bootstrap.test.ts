@@ -34,7 +34,7 @@ function installDocument(html: string): () => void {
 
 async function importPageBootstrapModule(): Promise<PageBootstrapModule> {
   installChromeRuntime();
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- dynamic import returns module as any
+
   return (await import(
     `../../src/lib/page-bootstrap.ts?test=${Date.now().toString()}-${Math.random().toString()}`
   )) as PageBootstrapModule;

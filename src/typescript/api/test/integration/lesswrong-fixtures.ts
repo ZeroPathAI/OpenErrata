@@ -155,7 +155,6 @@ export function resolveLesswrongFixtureDefinition(fixtureKey: string): Lesswrong
     );
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- fixtureKey validated by hasOwn check above
   return INTEGRATION_LESSWRONG_FIXTURE_DEFINITIONS[fixtureKey as IntegrationLesswrongFixtureKey];
 }
 

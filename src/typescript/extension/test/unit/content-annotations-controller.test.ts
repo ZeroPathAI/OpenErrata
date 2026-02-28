@@ -43,7 +43,6 @@ function installDom(html: string): () => void {
 
 function createClaim(text: string): InvestigationClaim {
   return {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- branded type from plain value in test factory
     id: "claim-1" as InvestigationClaim["id"],
     text,
     context: text,
@@ -98,7 +97,7 @@ test("AnnotationController render + reapplyIfMissing map claims into the content
 
   try {
     controller.setClaims([claim]);
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- adapter stub narrowed via never for partial mock
+
     assert.equal(controller.render(adapter as never), true);
     assert.equal(document.querySelectorAll(".openerrata-annotation").length > 0, true);
 
@@ -108,7 +107,6 @@ test("AnnotationController render + reapplyIfMissing map claims into the content
     root.textContent = "Earth is round and orbits the sun.";
     assert.equal(document.querySelectorAll(".openerrata-annotation").length, 0);
 
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- adapter stub narrowed via never for partial mock
     controller.reapplyIfMissing(adapter as never);
     assert.equal(document.querySelectorAll(".openerrata-annotation").length > 0, true);
 
@@ -128,7 +126,7 @@ test("AnnotationController render returns false when content root cannot be reso
     const adapter = {
       getContentRoot: () => null,
     };
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- adapter stub narrowed via never for partial mock
+
     assert.equal(controller.render(adapter as never), false);
   } finally {
     restoreDom();

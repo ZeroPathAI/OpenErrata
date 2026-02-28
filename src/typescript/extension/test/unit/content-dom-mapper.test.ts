@@ -40,7 +40,6 @@ function installDom(html: string): () => void {
 
 function createClaim(text: string, context: string): InvestigationClaim {
   return {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- branded type from plain value in test factory
     id: "claim-dom-1" as InvestigationClaim["id"],
     text,
     context,

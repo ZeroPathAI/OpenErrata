@@ -86,7 +86,6 @@ function installChromeMock(input: { executeScriptResult?: { result?: unknown }[]
 }
 
 async function importBrowserCompat(): Promise<BrowserCompatModule> {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- dynamic import returns module as any
   return (await import(
     `../../src/background/browser-compat.ts?test=${Date.now().toString()}-${Math.random().toString()}`
   )) as BrowserCompatModule;
@@ -102,7 +101,7 @@ test("executeTabFunction returns script result and passes tab target", async () 
 
   assert.equal(result, "ok-result");
   assert.equal(mocks.executeScriptCalls.length, 1);
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- narrowing unknown call-log entries for test assertions
+
   const [firstCall] = mocks.executeScriptCalls as {
     target: { tabId: number };
     func: unknown;

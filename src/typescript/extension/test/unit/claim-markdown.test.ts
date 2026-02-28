@@ -5,16 +5,16 @@ import { JSDOM } from "jsdom";
 const dom = new JSDOM("<!doctype html><html><body></body></html>", {
   url: "https://openerrata.test/",
 });
-// eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- JSDOM global installation for test environment
+
 const globalScope = globalThis as unknown as {
   window: Window & typeof globalThis;
   document: Document;
   Node: typeof Node;
 };
-// eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- JSDOM global installation for test environment
+
 globalScope.window = dom.window as unknown as Window & typeof globalThis;
 globalScope.document = dom.window.document;
-// eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- JSDOM global installation for test environment
+
 globalScope.Node = dom.window.Node as unknown as typeof Node;
 
 const { renderClaimReasoningHtml } = await import("../../src/content/claim-markdown.js");

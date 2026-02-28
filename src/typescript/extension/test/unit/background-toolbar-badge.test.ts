@@ -22,11 +22,10 @@ function createPostStatus(
   state: "NOT_INVESTIGATED" | "INVESTIGATING" | "FAILED" | "CONTENT_MISMATCH" | "INVESTIGATED",
   options: { claimCount?: number } = {},
 ): ExtensionPostStatus {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- branded type from plain value in test factory
   const sessionId = 1 as ExtensionPostStatus["tabSessionId"];
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- branded type from plain value in test factory
+
   const externalId = "123" as ExtensionPostStatus["externalId"];
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- branded type from plain value in test factory
+
   const claimId = (value: string): InvestigationClaim["id"] => value as InvestigationClaim["id"];
 
   const base = {
@@ -162,20 +161,19 @@ function installIntervalMocks() {
   const originalClearInterval = globalThis.clearInterval;
   let nextTimerId = 1;
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- timer mock installation requires type casting
   globalThis.setInterval = ((handler: TimerHandler) => {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- timer mock installation requires type casting
     const callback = handler as () => void;
     const timerId = nextTimerId;
     nextTimerId += 1;
     intervalCallbacks.set(timerId, callback);
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- timer mock installation requires type casting
+
     return timerId as unknown as ReturnType<typeof setInterval>;
   }) as unknown as typeof setInterval;
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- timer mock installation requires type casting
   globalThis.clearInterval = ((timerId: ReturnType<typeof setInterval>) => {
-    intervalCallbacks.delete(Number(timerId));
+    if (typeof timerId === "number") {
+      intervalCallbacks.delete(timerId);
+    }
   }) as unknown as typeof clearInterval;
 
   return {
@@ -195,7 +193,6 @@ async function flushAsyncQueue(): Promise<void> {
 }
 
 async function importToolbarBadgeModule(): Promise<ToolbarBadgeModule> {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- dynamic import returns module as any
   return (await import(
     `../../src/background/toolbar-badge.ts?test=${Date.now().toString()}-${Math.random().toString()}`
   )) as ToolbarBadgeModule;
@@ -204,7 +201,7 @@ async function importToolbarBadgeModule(): Promise<ToolbarBadgeModule> {
 function requireSetIconCall(call: unknown): { tabId: number; path: Record<string, string> } {
   assert.equal(typeof call, "object");
   assert.notEqual(call, null);
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- narrowing unknown call-log entries for test assertions
+
   const maybeCall = call as { tabId?: unknown; path?: unknown };
   const tabId = maybeCall.tabId;
   assert.equal(typeof tabId, "number");
@@ -220,7 +217,7 @@ function requireSetIconCall(call: unknown): { tabId: number; path: Record<string
 
   return {
     tabId,
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- narrowing unknown call-log entries for test assertions
+
     path: path as Record<string, string>,
   };
 }
@@ -236,7 +233,7 @@ function assertIconPathMatches(path: string | undefined, pattern: RegExp): void 
 function requireSetBadgeColorCall(call: unknown): { tabId: number; color: string } {
   assert.equal(typeof call, "object");
   assert.notEqual(call, null);
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- narrowing unknown call-log entries for test assertions
+
   const maybeCall = call as { tabId?: unknown; color?: unknown };
   const tabId = maybeCall.tabId;
   const color = maybeCall.color;

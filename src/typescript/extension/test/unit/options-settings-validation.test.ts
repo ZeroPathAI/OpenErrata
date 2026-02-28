@@ -22,7 +22,7 @@ function abortError(message: string): Error {
 
 async function importSettingsValidationModule(): Promise<SettingsValidationModule> {
   installChromeRuntimeOnly();
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- dynamic import returns module as any
+
   return (await import(
     `../../src/options/settings-validation.ts?test=${Date.now().toString()}-${Math.random().toString()}`
   )) as SettingsValidationModule;

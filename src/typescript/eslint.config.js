@@ -121,14 +121,15 @@ const typeAwareRuleOverrides = {
   "@typescript-eslint/prefer-reduce-type-parameter": "error",
   "@typescript-eslint/prefer-return-this-type": "error",
   "@typescript-eslint/dot-notation": "error",
+  "@typescript-eslint/no-unnecessary-type-parameters": "error",
+  "@typescript-eslint/prefer-regexp-exec": "error",
+  "@typescript-eslint/related-getter-setter-pairs": "error",
 };
 
 const typeAwareTsFiles = ["**/*.ts"];
 
 const typeAwareTsIgnores = [
   "**/*.d.ts",
-  "**/test/**/*.ts",
-  "**/*.test.ts",
   "**/vite.config.ts",
   "**/svelte.config.js",
   "extension/playwright.config.ts",
@@ -169,7 +170,7 @@ export default [
   },
   {
     linterOptions: {
-      reportUnusedDisableDirectives: "off",
+      reportUnusedDisableDirectives: "error",
     },
   },
   js.configs.recommended,
@@ -197,6 +198,12 @@ export default [
       "no-template-curly-in-string": "error",
       "no-unmodified-loop-condition": "error",
       "no-useless-catch": "error",
+      "no-constructor-return": "error",
+      "no-promise-executor-return": "error",
+      "no-sequences": "error",
+      "no-script-url": "error",
+      "no-proto": "error",
+      "no-void": ["error", { allowAsStatement: true }],
       "prefer-const": "error",
       "no-var": "error",
       "no-throw-literal": "error",
@@ -264,6 +271,27 @@ export default [
         ...globals.webextensions,
       },
     },
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "@openerrata/api",
+              message:
+                "Do not import from @openerrata/api in extension runtime code. Depend on @openerrata/shared contracts only.",
+            },
+          ],
+          patterns: [
+            {
+              group: ["@openerrata/api/*"],
+              message:
+                "Do not import from @openerrata/api in extension runtime code. Depend on @openerrata/shared contracts only.",
+            },
+          ],
+        },
+      ],
+    },
   },
   {
     files: ["extension/scripts/**/*.{js,mjs,cjs,ts}"],
@@ -280,7 +308,16 @@ export default [
     ignores: typeAwareTsIgnores,
     languageOptions: {
       parserOptions: {
-        projectService: true,
+        projectService: {
+          allowDefaultProject: [
+            "extension/test/unit/*.ts",
+            "extension/test/helpers/*.ts",
+            "extension/test/e2e/*.ts",
+            "shared/test/unit/*.ts",
+          ],
+          defaultProject: "tsconfig.base.json",
+          maximumDefaultProjectFileMatchCount_THIS_WILL_SLOW_DOWN_LINTING: 512,
+        },
         tsconfigRootDir: import.meta.dirname,
         extraFileExtensions: [".svelte"],
       },
@@ -322,6 +359,15 @@ export default [
       "@typescript-eslint/no-floating-promises": "off",
       "@typescript-eslint/require-await": "off",
       "@typescript-eslint/no-empty-function": "off",
+      // Tests intentionally exercise malformed and unknown inputs.
+      "@typescript-eslint/no-unsafe-assignment": "off",
+      "@typescript-eslint/no-unsafe-member-access": "off",
+      "@typescript-eslint/no-unsafe-call": "off",
+      "@typescript-eslint/no-unsafe-return": "off",
+      "@typescript-eslint/no-unsafe-argument": "off",
+      "@typescript-eslint/no-unsafe-type-assertion": "off",
+      "@typescript-eslint/no-unsafe-enum-comparison": "off",
+      "@typescript-eslint/unbound-method": "off",
     },
   },
   {

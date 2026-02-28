@@ -135,7 +135,6 @@ function createCaller(options: CallerOptions = {}): AppCaller {
   const userOpenAiApiKey = options.userOpenAiApiKey ?? null;
 
   const caller = appRouter.createCaller({
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- tRPC caller test harness bypasses SvelteKit event
     event: null as unknown as RequestEvent,
     prisma,
     viewerKey: options.viewerKey ?? "integration-viewer",
@@ -190,7 +189,7 @@ async function queryPublicGraphql<TData>(
   variables?: Record<string, unknown>,
 ): Promise<TData> {
   const requestBody = JSON.stringify(variables === undefined ? { query } : { query, variables });
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- minimal SvelteKit request event stub for GraphQL route
+
   const response = await graphqlPost({
     request: new Request("http://localhost/graphql", {
       method: "POST",
@@ -203,7 +202,7 @@ async function queryPublicGraphql<TData>(
 
   assert.equal(response instanceof Response, true);
   assert.equal(response.status, 200);
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- integration test deserializing GraphQL JSON response
+
   const payload = (await response.json()) as GraphqlEnvelope<TData>;
   if (payload.errors !== undefined && payload.errors.length > 0) {
     assert.fail(`GraphQL errors: ${payload.errors.map((error) => error.message).join("; ")}`);
@@ -216,7 +215,6 @@ async function queryPublicGraphql<TData>(
 }
 
 function createMockRequestEvent(headers?: HeadersInit): RequestEvent {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- minimal SvelteKit request event stub for tRPC route
   return {
     request: new Request("http://localhost/trpc/post.validateSettings", {
       method: "POST",

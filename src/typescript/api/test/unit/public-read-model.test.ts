@@ -87,7 +87,6 @@ interface PublicReadModelPrismaMock {
 }
 
 function asPrismaClient(mock: PublicReadModelPrismaMock): PrismaClient {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- partial PrismaClient mock for unit testing
   return mock as unknown as PrismaClient;
 }
 

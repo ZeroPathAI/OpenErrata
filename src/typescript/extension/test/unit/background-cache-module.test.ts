@@ -24,7 +24,6 @@ const cacheChromeState: CacheChromeState = {
 
 function maybeCallback<T>(callback: unknown, value: T): Promise<T> {
   if (typeof callback === "function") {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- callback type narrowed for mock dispatch
     (callback as (input: T) => void)(value);
   }
   return Promise.resolve(value);
@@ -88,9 +87,8 @@ function resetCacheChromeState(input: { tabsResult?: { id?: number }[] } = {}): 
 }
 
 function createPostStatus(tabSessionId: number): ExtensionPostStatus {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- branded type from plain value in test factory
   const sessionId = tabSessionId as ExtensionPostStatus["tabSessionId"];
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- branded type from plain value in test factory
+
   const externalId = "post-123" as ExtensionPostStatus["externalId"];
   const status: ExtensionPostStatus = {
     kind: "POST",
@@ -106,9 +104,8 @@ function createPostStatus(tabSessionId: number): ExtensionPostStatus {
 }
 
 function createSkippedStatus(tabSessionId: number): ExtensionSkippedStatus {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- branded type from plain value in test factory
   const sessionId = tabSessionId as ExtensionSkippedStatus["tabSessionId"];
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- branded type from plain value in test factory
+
   const externalId = "post-123" as ExtensionSkippedStatus["externalId"];
   const skippedStatus: ExtensionSkippedStatus = {
     kind: "SKIPPED",
@@ -122,7 +119,6 @@ function createSkippedStatus(tabSessionId: number): ExtensionSkippedStatus {
 }
 
 async function importCacheModule(): Promise<CacheModule> {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- dynamic import returns module as any
   return (await import(
     `../../src/background/cache.ts?test=${Date.now().toString()}-${Math.random().toString()}`
   )) as CacheModule;

@@ -716,7 +716,9 @@ async function createOrFindByUniqueConstraint<T>(input: {
         input.assertEquivalent(raced);
         return raced;
       }
-      await new Promise((resolve) => setTimeout(resolve, UNIQUE_CONSTRAINT_RACE_RETRY_DELAY_MS));
+      await new Promise((resolve) => {
+        setTimeout(resolve, UNIQUE_CONSTRAINT_RACE_RETRY_DELAY_MS);
+      });
     }
     throw error;
   }

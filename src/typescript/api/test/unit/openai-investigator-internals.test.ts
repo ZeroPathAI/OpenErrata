@@ -21,7 +21,7 @@ interface UserInputMessage {
 
 function isUserInputMessage(value: unknown): value is UserInputMessage {
   if (typeof value !== "object" || value === null) return false;
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- narrowing from unknown after typeof/null guards
+
   const record = value as Record<string, unknown>;
   if (record["role"] !== "user") return false;
 
@@ -29,7 +29,7 @@ function isUserInputMessage(value: unknown): value is UserInputMessage {
   if (!Array.isArray(content)) return false;
   for (const entry of content) {
     if (typeof entry !== "object" || entry === null) return false;
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- narrowing from any in test assertion
+
     const part = entry as Record<string, unknown>;
 
     if (part["type"] === "input_text") {

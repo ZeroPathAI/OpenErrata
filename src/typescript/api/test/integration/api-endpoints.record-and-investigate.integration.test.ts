@@ -125,7 +125,6 @@ void [
 ];
 
 void test("GET /health returns ok", async () => {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- health route test bypasses SvelteKit event
   const requestEvent = null as unknown as Parameters<typeof healthGet>[0];
   const response = await healthGet(requestEvent);
   assert.equal(response.status, 200);
