@@ -128,6 +128,20 @@ test("apiErrorToPostStatus maps PAYLOAD_TOO_LARGE ApiClientError to FAILED state
   assert.equal(status.investigationState, "FAILED");
 });
 
+test("apiErrorToPostStatus maps MALFORMED_EXTENSION_VERSION ApiClientError to FAILED state", () => {
+  const status = apiErrorToPostStatus({
+    error: new ApiClientError("malformed extension version", {
+      errorCode: "MALFORMED_EXTENSION_VERSION",
+    }),
+    tabSessionId: 1,
+    platform: "LESSWRONG",
+    externalId: "lw-1",
+    pageUrl: "https://www.lesswrong.com/posts/lw-1/example",
+  });
+
+  assert.equal(status.investigationState, "FAILED");
+});
+
 test("apiErrorToPostStatus preserves investigationId and provenance", () => {
   const status = apiErrorToPostStatus({
     error: new Error("server error"),

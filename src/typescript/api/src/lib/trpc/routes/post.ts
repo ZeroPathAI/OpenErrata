@@ -87,6 +87,8 @@ interface ResolvedPostVersion {
 
 const CONTENT_MISMATCH_ERROR_CODE: ExtensionRuntimeErrorCode = "CONTENT_MISMATCH";
 const UPGRADE_REQUIRED_ERROR_CODE: ExtensionRuntimeErrorCode = "UPGRADE_REQUIRED";
+const MALFORMED_EXTENSION_VERSION_ERROR_CODE: ExtensionRuntimeErrorCode =
+  "MALFORMED_EXTENSION_VERSION";
 const WIKIPEDIA_HOST_REGEX = /^([a-z0-9-]+)(?:\.m)?\.wikipedia\.org$/i;
 const WIKIPEDIA_ARTICLE_PATH_PREFIX = "/wiki/";
 const WIKIPEDIA_INDEX_PATH_REGEX = /^\/w\/index\.php(?:[/?#]|$)/i;
@@ -160,7 +162,7 @@ function assertSupportedExtensionVersion(input: {
     throw new TRPCError({
       code: "BAD_REQUEST",
       message: `Malformed extension version header: "${currentVersion}"`,
-      cause: { openerrataCode: UPGRADE_REQUIRED_ERROR_CODE },
+      cause: { openerrataCode: MALFORMED_EXTENSION_VERSION_ERROR_CODE },
     });
   }
 

@@ -5,6 +5,7 @@ import {
   isContentMismatchRuntimeError,
   isExtensionContextInvalidatedError,
   isInvalidExtensionMessageRuntimeError,
+  isMalformedExtensionVersionRuntimeError,
   isPayloadTooLargeRuntimeError,
   isUpgradeRequiredRuntimeError,
 } from "../../src/lib/runtime-error.js";
@@ -31,6 +32,18 @@ test("isUpgradeRequiredRuntimeError matches ExtensionRuntimeError with UPGRADE_R
   const upgradeRequired = new ExtensionRuntimeError("upgrade required", "UPGRADE_REQUIRED");
   assert.equal(isUpgradeRequiredRuntimeError(upgradeRequired), true);
   assert.equal(isUpgradeRequiredRuntimeError(new Error("upgrade required")), false);
+});
+
+test("isMalformedExtensionVersionRuntimeError matches ExtensionRuntimeError with MALFORMED_EXTENSION_VERSION code", () => {
+  const malformed = new ExtensionRuntimeError(
+    "malformed extension version",
+    "MALFORMED_EXTENSION_VERSION",
+  );
+  assert.equal(isMalformedExtensionVersionRuntimeError(malformed), true);
+  assert.equal(
+    isMalformedExtensionVersionRuntimeError(new Error("malformed extension version")),
+    false,
+  );
 });
 
 test("isExtensionContextInvalidatedError matches known runtime-disconnect messages", () => {

@@ -18,6 +18,7 @@ import {
   isContentMismatchRuntimeError,
   isExtensionContextInvalidatedError,
   isInvalidExtensionMessageRuntimeError,
+  isMalformedExtensionVersionRuntimeError,
   isPayloadTooLargeRuntimeError,
   isUpgradeRequiredRuntimeError,
 } from "../lib/runtime-error";
@@ -633,6 +634,16 @@ export class PageSessionController {
         this.#syncCachedFailureStatus();
         console.warn(
           "Extension upgrade required by API compatibility policy; skipping retries.",
+          error,
+        );
+        return;
+      }
+      if (isMalformedExtensionVersionRuntimeError(error)) {
+        this.#resetSyncRetryState();
+        this.#annotations.clearAll();
+        this.#syncCachedFailureStatus();
+        console.warn(
+          "Extension version header is malformed; skipping retries until extension configuration is corrected.",
           error,
         );
         return;

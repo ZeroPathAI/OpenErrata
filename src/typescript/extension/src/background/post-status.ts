@@ -56,6 +56,7 @@ const failureStateByErrorCode = {
   CONTENT_MISMATCH: { investigationState: "CONTENT_MISMATCH" },
   PAYLOAD_TOO_LARGE: fallbackFailureState,
   UPGRADE_REQUIRED: fallbackFailureState,
+  MALFORMED_EXTENSION_VERSION: fallbackFailureState,
   INVALID_EXTENSION_MESSAGE: fallbackFailureState,
   UNSUPPORTED_PROTOCOL_VERSION: fallbackFailureState,
 } as const satisfies Record<

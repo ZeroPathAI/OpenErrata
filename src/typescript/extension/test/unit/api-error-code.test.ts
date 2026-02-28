@@ -43,6 +43,15 @@ test("extractApiErrorCode reads UPGRADE_REQUIRED code from tRPC data", () => {
   );
 });
 
+test("extractApiErrorCode reads MALFORMED_EXTENSION_VERSION code from tRPC data", () => {
+  assert.equal(
+    extractApiErrorCode({
+      data: { openerrataCode: "MALFORMED_EXTENSION_VERSION" },
+    }),
+    "MALFORMED_EXTENSION_VERSION",
+  );
+});
+
 test("extractApiErrorCode maps data.httpStatus=413 to PAYLOAD_TOO_LARGE", () => {
   assert.equal(
     extractApiErrorCode({

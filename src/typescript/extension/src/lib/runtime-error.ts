@@ -24,6 +24,10 @@ export function isUpgradeRequiredRuntimeError(error: unknown): boolean {
   return error instanceof ExtensionRuntimeError && error.errorCode === "UPGRADE_REQUIRED";
 }
 
+export function isMalformedExtensionVersionRuntimeError(error: unknown): boolean {
+  return error instanceof ExtensionRuntimeError && error.errorCode === "MALFORMED_EXTENSION_VERSION";
+}
+
 export function isInvalidExtensionMessageRuntimeError(error: unknown): boolean {
   return error instanceof ExtensionRuntimeError && error.errorCode === "INVALID_EXTENSION_MESSAGE";
 }

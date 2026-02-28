@@ -48,6 +48,21 @@ test("parseInvestigateNowResponse preserves UPGRADE_REQUIRED runtime error paylo
   );
 });
 
+test("parseViewPostResponse preserves MALFORMED_EXTENSION_VERSION runtime error payloads", () => {
+  assert.throws(
+    () =>
+      parseViewPostResponse({
+        ok: false,
+        error: "malformed extension version header",
+        errorCode: "MALFORMED_EXTENSION_VERSION",
+      }),
+    (error: unknown) =>
+      error instanceof ExtensionRuntimeError &&
+      error.errorCode === "MALFORMED_EXTENSION_VERSION" &&
+      error.message === "malformed extension version header",
+  );
+});
+
 test("parseViewPostResponse throws ExtensionRuntimeError for malformed responses", () => {
   assert.throws(
     () => parseViewPostResponse(undefined),

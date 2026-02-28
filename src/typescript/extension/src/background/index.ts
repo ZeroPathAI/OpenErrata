@@ -137,6 +137,13 @@ function isUpgradeRequiredError(error: unknown): error is ApiClientError {
   return error instanceof ApiClientError && error.errorCode === "UPGRADE_REQUIRED";
 }
 
+function isTerminalCompatibilityError(error: unknown): error is ApiClientError {
+  return (
+    error instanceof ApiClientError &&
+    (error.errorCode === "UPGRADE_REQUIRED" || error.errorCode === "MALFORMED_EXTENSION_VERSION")
+  );
+}
+
 function parseStoredUpgradeRequiredState(value: unknown): StoredUpgradeRequiredState | null {
   if (!isNonNullObject(value)) {
     return null;
@@ -188,6 +195,14 @@ async function clearUpgradeRequiredState(): Promise<void> {
   applyUpgradeRequiredToolbarOverride();
   await browser.storage.local.remove(UPGRADE_REQUIRED_STORAGE_KEY);
   await syncToolbarBadgesForOpenTabs();
+}
+
+async function clearUpgradeRequiredStateBestEffort(operation: string): Promise<void> {
+  try {
+    await clearUpgradeRequiredState();
+  } catch (error) {
+    console.warn(`Failed to clear upgrade-required state during ${operation}:`, error);
+  }
 }
 
 async function markUpgradeRequiredFromError(error: unknown): Promise<void> {
@@ -555,23 +570,26 @@ async function startInvestigationPolling(input: {
     if (activePoller.inFlight) return;
 
     activePoller.inFlight = true;
+    let existingStatus: ExtensionPostStatus | null = null;
     try {
       const existing = await getActivePostStatus(input.tabId);
       if (
-        existing?.tabSessionId !== input.tabSessionId ||
+        existing === null ||
+        existing.tabSessionId !== input.tabSessionId ||
         existing.platform !== input.platform ||
         existing.externalId !== input.externalId
       ) {
         stopInvestigationPolling(input.tabId);
         return;
       }
+      existingStatus = existing;
 
       const latest = await getInvestigation(
         getInvestigationInputSchema.parse({
           investigationId: input.investigationId,
         }),
       );
-      await clearUpgradeRequiredState();
+      await clearUpgradeRequiredStateBestEffort("investigation polling");
       const latestSnapshot = toInvestigationStatusSnapshot(latest);
       await cachePostStatus(
         input.tabId,
@@ -589,10 +607,29 @@ async function startInvestigationPolling(input: {
       if (!isInvestigatingSnapshot(latestSnapshot)) {
         stopInvestigationPolling(input.tabId);
       }
-    } catch (error) {
-      if (isUpgradeRequiredError(error)) {
-        await markUpgradeRequiredFromError(error);
-        stopInvestigationPolling(input.tabId);
+    } catch (error: unknown) {
+      if (isTerminalCompatibilityError(error)) {
+        if (isUpgradeRequiredError(error)) {
+          await markUpgradeRequiredFromError(error);
+        }
+
+        if (existingStatus !== null) {
+          await cacheApiErrorStatus({
+            error,
+            tabId: input.tabId,
+            tabSessionId: input.tabSessionId,
+            platform: input.platform,
+            externalId: input.externalId,
+            pageUrl: existingStatus.pageUrl,
+            investigationId: input.investigationId,
+            stopPolling: true,
+            ...(existingStatus.provenance === undefined
+              ? {}
+              : { provenance: existingStatus.provenance }),
+          });
+        } else {
+          stopInvestigationPolling(input.tabId);
+        }
         return;
       }
       console.error("investigation polling failed:", error);
@@ -845,6 +882,7 @@ async function handlePageContent(
   let result: ViewPostOutput;
   try {
     registeredVersion = await registerObservedVersion(request);
+    await clearUpgradeRequiredStateBestEffort("PAGE_CONTENT");
     result = await recordViewAndGetStatus({
       postVersionId: registeredVersion.postVersionId,
     });
@@ -864,8 +902,6 @@ async function handlePageContent(
     }
     throw error;
   }
-
-  await clearUpgradeRequiredState();
 
   if (sender.tab?.id !== undefined) {
     const tabId = sender.tab.id;
@@ -983,7 +1019,7 @@ async function handleGetStatus(
 ): Promise<InvestigationStatusOutput> {
   const { tabSessionId, ...request } = payload;
   const result = await getInvestigation(request);
-  await clearUpgradeRequiredState();
+  await clearUpgradeRequiredStateBestEffort("GET_STATUS");
 
   const { checkedAt: _checkedAt, ...response } = result;
   const parsedResponse = parseInvestigationStatusSnapshot(response);
@@ -1033,6 +1069,7 @@ async function handleInvestigateNow(
   let result: InvestigateNowOutput;
   try {
     registeredVersion = await registerObservedVersion(request);
+    await clearUpgradeRequiredStateBestEffort("INVESTIGATE_NOW");
     result = await investigateNow({
       postVersionId: registeredVersion.postVersionId,
     });
@@ -1051,8 +1088,6 @@ async function handleInvestigateNow(
     }
     throw error;
   }
-
-  await clearUpgradeRequiredState();
 
   if (sender.tab?.id !== undefined) {
     if (isStaleTabSession(sender.tab.id, payload.tabSessionId)) {
@@ -1100,7 +1135,7 @@ async function handleInvestigateNow(
 async function handleGetCached(sender: Runtime.MessageSender): Promise<ExtensionPageStatus | null> {
   if (upgradeRequiredState.active) {
     if (upgradeRequiredState.apiBaseUrl !== getCurrentApiBaseUrl()) {
-      await clearUpgradeRequiredState();
+      await clearUpgradeRequiredStateBestEffort("background GET_CACHED");
     } else {
       throw new ApiClientError(upgradeRequiredState.message, {
         errorCode: "UPGRADE_REQUIRED",
