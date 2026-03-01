@@ -32,7 +32,6 @@ import type { PrismaClient } from "$lib/generated/prisma/client";
 import { TRPCError } from "@trpc/server";
 import { createHash } from "node:crypto";
 import { prepareViewPostInput, type PreparedViewPostInput } from "./wikipedia.js";
-import type { ExtensionRuntimeErrorCode } from "@openerrata/shared";
 
 type PostMetadataInput = {
   [P in Platform]: {
@@ -72,20 +71,11 @@ export interface ResolvedPostVersion {
   };
 }
 
-const CONTENT_MISMATCH_ERROR_CODE: ExtensionRuntimeErrorCode = "CONTENT_MISMATCH";
 const UNIQUE_CONSTRAINT_RACE_RETRY_ATTEMPTS = 30;
 const UNIQUE_CONSTRAINT_RACE_RETRY_DELAY_MS = 20;
 
 function sha256(input: string): string {
   return createHash("sha256").update(input).digest("hex");
-}
-
-function contentMismatchError(): TRPCError {
-  return new TRPCError({
-    code: "BAD_REQUEST",
-    message: "Observed content does not match canonical content",
-    cause: { openerrataCode: CONTENT_MISMATCH_ERROR_CODE },
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -762,20 +752,17 @@ export async function registerObservedVersion(
   const preparedInput = prepareViewPostInput(input);
   const observed = await toObservedContentVersion(preparedInput);
 
-  const canonicalResolution = await resolveCanonicalContentVersion({
+  const canonical = await resolveCanonicalContentVersion({
     viewInput: preparedInput,
     observed,
     fetchCanonicalContent,
   });
-  if (canonicalResolution.state === "CONTENT_MISMATCH") {
-    throw contentMismatchError();
-  }
 
   const post = await upsertPostFromViewInput(prisma, preparedInput);
 
   return upsertPostVersion(prisma, {
     postId: post.id,
-    canonical: canonicalResolution.canonical,
+    canonical,
     ...(preparedInput.observedImageOccurrences === undefined
       ? {}
       : { observedImageOccurrences: preparedInput.observedImageOccurrences }),

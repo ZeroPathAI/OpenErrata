@@ -214,33 +214,36 @@ void test("post.recordViewAndGetStatus for LessWrong derives observed content fr
   assert.equal(post.viewCount, 1);
 });
 
-void test("post.recordViewAndGetStatus rejects canonical hash mismatches for server-verified content", async () => {
+void test("post.registerObservedVersion uses server canonical content when client content differs", async () => {
+  // When the server can independently verify content, it is authoritative regardless of
+  // what the client observed. The client's browser DOM extraction (which may include
+  // JS-injected elements, tracking pixels, and other browser-specific content) is only
+  // a fallback for platforms without server-side canonical fetching. For platforms where
+  // the server CAN fetch canonical content (LessWrong, Wikipedia), the server's version
+  // is always stored, and the client's differing observation is silently superseded.
   const caller = createCaller();
+  const serverCanonicalHtml = "<article><p>Server canonical content.</p></article>";
   const input = buildLesswrongViewInput({
-    externalId: "view-post-content-mismatch-1",
-    htmlContent: "<article><p>Observed browser content.</p></article>",
+    externalId: "view-post-server-wins-1",
+    htmlContent: "<article><p>Observed browser content that differs from server.</p></article>",
   });
 
-  await assert.rejects(
-    async () =>
-      withMockLesswrongCanonicalHtml(
-        "<article><p>Different canonical server content.</p></article>",
-        () => caller.post.recordViewAndGetStatus(input),
-      ),
-    /Observed content does not match canonical content/,
+  const result = await withMockLesswrongCanonicalHtml(serverCanonicalHtml, () =>
+    caller.post.registerObservedVersion(input),
   );
 
-  const post = await prisma.post.findUnique({
-    where: {
-      platform_externalId: {
-        platform: input.platform,
-        externalId: input.externalId,
-      },
-    },
-    select: { id: true },
-  });
+  assert.equal(result.provenance, "SERVER_VERIFIED");
 
-  assert.equal(post, null);
+  const latestVersion = await loadLatestPostVersionByIdentity({
+    platform: input.platform,
+    externalId: input.externalId,
+  });
+  const expectedCanonicalText = lesswrongHtmlToNormalizedText(serverCanonicalHtml);
+  const expectedCanonicalHash = await hashContent(expectedCanonicalText);
+
+  assert.ok(latestVersion);
+  assert.equal(latestVersion.contentBlob.contentText, expectedCanonicalText);
+  assert.equal(latestVersion.contentBlob.contentHash, expectedCanonicalHash);
 });
 
 void test("post.registerObservedVersion rejects extension clients below minimum supported version", async () => {

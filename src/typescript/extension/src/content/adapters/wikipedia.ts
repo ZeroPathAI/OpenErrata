@@ -12,6 +12,18 @@ import {
   wikipediaExternalIdFromPageId,
 } from "../../lib/wikipedia-url.js";
 
+// The comma-selector "#mw-content-text .mw-parser-output, #mw-content-text" cannot be
+// used with querySelector() for content root selection: querySelector returns the first
+// match in document order, and parent elements precede their descendants, so
+// #mw-content-text always wins over its descendant .mw-parser-output. We use the
+// comma-selector only for detection (contentRootSelector / detectFromDom), where we
+// just need to know if either element exists. getContentRoot() uses two separate queries
+// with an explicit fallback so .mw-parser-output is preferred.
+//
+// Preferring .mw-parser-output matters because the Wikipedia Parse API returns only the
+// article body (.mw-parser-output equivalent), not the surrounding #mw-content-text which
+// also contains tracking pixels, printfooter, and other non-article elements. Scoping
+// client extraction to .mw-parser-output keeps it consistent with the server's source.
 const CONTENT_ROOT_SELECTOR = "#mw-content-text .mw-parser-output, #mw-content-text";
 const HEADING_SELECTOR = "h2, h3, h4, h5, h6";
 const VIDEO_SELECTOR = [
@@ -388,6 +400,9 @@ export const wikipediaAdapter: PlatformAdapter = {
   },
 
   getContentRoot(document: Document): Element | null {
-    return document.querySelector(CONTENT_ROOT_SELECTOR);
+    return (
+      document.querySelector("#mw-content-text .mw-parser-output") ??
+      document.querySelector("#mw-content-text")
+    );
   },
 };

@@ -37,11 +37,11 @@ function buildWikipediaViewInput(
   }) as Extract<ViewPostInput, { platform: "WIKIPEDIA" }>;
 }
 
-test("resolveCanonicalContentVersion returns server-verified canonical content when hashes match", async () => {
+test("resolveCanonicalContentVersion returns server-verified canonical content", async () => {
   const viewInput = buildXViewInput("Observed text");
   const observed = {
     contentText: "Observed text",
-    contentHash: "matching-hash",
+    contentHash: "observed-hash",
   };
   let capturedFetchInput: CanonicalFetchInput | null = null;
 
@@ -53,7 +53,7 @@ test("resolveCanonicalContentVersion returns server-verified canonical content w
       return {
         provenance: "SERVER_VERIFIED",
         contentText: "Server canonical text",
-        contentHash: "matching-hash",
+        contentHash: "server-hash",
       };
     },
   });
@@ -64,20 +64,21 @@ test("resolveCanonicalContentVersion returns server-verified canonical content w
     externalId: viewInput.externalId,
   });
   assert.deepEqual(result, {
-    state: "RESOLVED",
-    canonical: {
-      provenance: "SERVER_VERIFIED",
-      contentText: "Server canonical text",
-      contentHash: "matching-hash",
-    },
+    provenance: "SERVER_VERIFIED",
+    contentText: "Server canonical text",
+    contentHash: "server-hash",
   });
 });
 
-test("resolveCanonicalContentVersion returns CONTENT_MISMATCH for differing server hash", async () => {
+test("resolveCanonicalContentVersion uses server content even when client hash differs", async () => {
+  // The server independently fetches the canonical content (e.g. Wikipedia Parse API,
+  // LessWrong GraphQL). The client's browser DOM extraction may differ from the server's
+  // source due to JS-injected elements, tracking pixels, etc. When the server can verify,
+  // its content is always authoritative — no hash comparison is performed.
   const viewInput = buildXViewInput("Observed text");
   const observed = {
-    contentText: "Observed text",
-    contentHash: "observed-hash",
+    contentText: "Observed text that differs from server",
+    contentHash: "observed-hash-that-differs",
   };
 
   const result = await resolveCanonicalContentVersion({
@@ -86,11 +87,15 @@ test("resolveCanonicalContentVersion returns CONTENT_MISMATCH for differing serv
     fetchCanonicalContent: async () => ({
       provenance: "SERVER_VERIFIED",
       contentText: "Server canonical text",
-      contentHash: "different-server-hash",
+      contentHash: "server-hash",
     }),
   });
 
-  assert.deepEqual(result, { state: "CONTENT_MISMATCH" });
+  assert.deepEqual(result, {
+    provenance: "SERVER_VERIFIED",
+    contentText: "Server canonical text",
+    contentHash: "server-hash",
+  });
 });
 
 test("resolveCanonicalContentVersion falls back to observed content when canonical fetch is unavailable", async () => {
@@ -110,13 +115,10 @@ test("resolveCanonicalContentVersion falls back to observed content when canonic
   });
 
   assert.deepEqual(result, {
-    state: "RESOLVED",
-    canonical: {
-      contentText: observed.contentText,
-      contentHash: observed.contentHash,
-      provenance: "CLIENT_FALLBACK",
-      fetchFailureReason: "canonical fetch unavailable",
-    },
+    contentText: observed.contentText,
+    contentHash: observed.contentHash,
+    provenance: "CLIENT_FALLBACK",
+    fetchFailureReason: "canonical fetch unavailable",
   });
 });
 
