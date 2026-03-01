@@ -78,6 +78,7 @@ jobs:
         env:
           OPENERRATA_EXTENSION_PACKAGE_VERSION: ${{ steps.version.outputs.version }}
           OPENERRATA_EXTENSION_PACKAGE_OUT_DIR: ${{ github.workspace }}
+          OPENERRATA_REQUIRE_CRX_SIGNING_KEY: "true"
           OPENERRATA_CHROME_CRX_PRIVATE_KEY: ${{ secrets.CHROME_CRX_PRIVATE_KEY }}
         run: pnpm --filter @openerrata/extension package:artifacts
 

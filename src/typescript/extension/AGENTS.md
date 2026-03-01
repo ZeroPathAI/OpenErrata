@@ -17,6 +17,8 @@ Firefox package metadata uses `browser_specific_settings.gecko.id`. Override
 the default id with `FIREFOX_GECKO_ID=<your-addon-id>` when running `pnpm build`.
 Chrome `.crx` packaging uses `OPENERRATA_CHROME_CRX_PRIVATE_KEY` when set;
 otherwise the packager generates a temporary signing key.
+Set `OPENERRATA_REQUIRE_CRX_SIGNING_KEY=true` to fail instead of generating a
+temporary key when no CRX key is configured.
 
 After building:
 

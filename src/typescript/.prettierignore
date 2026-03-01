@@ -4,6 +4,10 @@ build
 .svelte-kit
 coverage
 **/coverage/**
+extension/test-results
+extension/playwright-report
+**/test-results/**
+**/playwright-report/**
 pnpm-lock.yaml
 **/prisma/migrations/**
 api/src/lib/generated/**

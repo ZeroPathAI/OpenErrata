@@ -1,9 +1,11 @@
 import { execFileSync } from "node:child_process";
 import {
   copyFileSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -51,7 +53,17 @@ function resolveOutputDir() {
   return outputDir;
 }
 
-function resolveCrxSigningKeyPath(tempDir) {
+function isTrueEnv(raw) {
+  if (!raw) return false;
+  const normalized = raw.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes";
+}
+
+function requireCrxSigningKey() {
+  return isTrueEnv(process.env.OPENERRATA_REQUIRE_CRX_SIGNING_KEY);
+}
+
+function resolveCrxSigningKeyPath(tempDir, options) {
   const explicitKeyPath = process.env.OPENERRATA_CHROME_CRX_KEY_PATH?.trim();
   if (explicitKeyPath) {
     const absoluteKeyPath = resolve(explicitKeyPath);
@@ -71,6 +83,12 @@ function resolveCrxSigningKeyPath(tempDir) {
       : `${normalizedPrivateKeyPem}\n`;
     writeFileSync(keyPath, privateKeyWithFinalNewline, { mode: 0o600 });
     return keyPath;
+  }
+
+  if (options.requireConfiguredSigningKey) {
+    throw new Error(
+      "CRX signing key is required but neither OPENERRATA_CHROME_CRX_KEY_PATH nor OPENERRATA_CHROME_CRX_PRIVATE_KEY was provided.",
+    );
   }
 
   // Fall back to a transient key so CI can always produce a CRX artifact.
@@ -99,6 +117,24 @@ function packageChromeCrx(chromeSourceDir, keyPath, outputCrxPath) {
   ]);
 }
 
+function stageChromeDist(tempDir) {
+  const chromeStageDir = resolve(tempDir, "chrome-dist");
+  mkdirSync(chromeStageDir, { recursive: true });
+
+  for (const entry of readdirSync(distDir, { withFileTypes: true })) {
+    if (entry.name === "firefox") continue;
+    cpSync(resolve(distDir, entry.name), resolve(chromeStageDir, entry.name), {
+      recursive: true,
+    });
+  }
+
+  requireExistingFile(
+    resolve(chromeStageDir, "manifest.json"),
+    "staged Chrome manifest build artifact",
+  );
+  return chromeStageDir;
+}
+
 function removeIfExists(filePath) {
   rmSync(filePath, { force: true });
 }
@@ -115,6 +151,7 @@ function reportArtifact(label, artifactPath) {
 
 const packageVersion = requireVersion();
 const outputDir = resolveOutputDir();
+const requireConfiguredCrxSigningKey = requireCrxSigningKey();
 
 requireExistingFile(resolve(distDir, "manifest.json"), "Chrome manifest build artifact");
 requireExistingFile(resolve(firefoxDistDir, "manifest.json"), "Firefox manifest build artifact");
@@ -130,15 +167,19 @@ for (const artifactPath of [chromeZipPath, chromeCrxPath, firefoxZipPath, firefo
 
 const tempDir = mkdtempSync(resolve(tmpdir(), "openerrata-extension-package-"));
 try {
-  zipDirectory(distDir, chromeZipPath);
+  const chromeDistDir = stageChromeDist(tempDir);
+
+  zipDirectory(chromeDistDir, chromeZipPath);
   zipDirectory(firefoxDistDir, firefoxZipPath);
   copyFileSync(firefoxZipPath, firefoxXpiPath);
   globalThis.console.log(
     `[package-artifacts] copied ${basename(firefoxZipPath)} -> ${basename(firefoxXpiPath)}`,
   );
 
-  const crxSigningKeyPath = resolveCrxSigningKeyPath(tempDir);
-  packageChromeCrx(distDir, crxSigningKeyPath, chromeCrxPath);
+  const crxSigningKeyPath = resolveCrxSigningKeyPath(tempDir, {
+    requireConfiguredSigningKey: requireConfiguredCrxSigningKey,
+  });
+  packageChromeCrx(chromeDistDir, crxSigningKeyPath, chromeCrxPath);
 } finally {
   rmSync(tempDir, { recursive: true, force: true });
 }
