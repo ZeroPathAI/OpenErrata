@@ -1,6 +1,6 @@
 import { normalizeContent } from "./normalize.js";
 
-const WIKIPEDIA_EXCLUDED_SECTION_TITLES = [
+export const WIKIPEDIA_EXCLUDED_SECTION_TITLES = [
   "references",
   "notes",
   "further reading",
@@ -19,6 +19,7 @@ const WIKIPEDIA_EXCLUDED_CLASS_TOKENS = [
   "navbox",
   "vertical-navbox",
   "catlinks",
+  "printfooter",
 ] as const;
 
 const WIKIPEDIA_EXCLUDED_SECTION_TITLE_SET = new Set<string>(WIKIPEDIA_EXCLUDED_SECTION_TITLES);

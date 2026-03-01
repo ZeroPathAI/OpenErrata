@@ -104,18 +104,30 @@ function hasChildren(
 
 function htmlToTextContent(html: string): string {
   const fragment = parseFragment(html);
-  const stack: DefaultTreeAdapterMap["node"][] = [];
+  const stack: { node: DefaultTreeAdapterMap["node"]; phase: "enter" | "exit" }[] = [];
   for (let index = fragment.childNodes.length - 1; index >= 0; index -= 1) {
     const child = fragment.childNodes[index];
     if (child !== undefined) {
-      stack.push(child);
+      stack.push({ node: child, phase: "enter" });
     }
   }
 
   const chunks: string[] = [];
   while (stack.length > 0) {
-    const node = stack.pop();
-    if (!node) continue;
+    const current = stack.pop();
+    if (!current) continue;
+
+    const { node, phase } = current;
+
+    if (phase === "exit") {
+      // Inject a trailing separator when leaving a block element so text that
+      // ends at a block boundary (e.g. <div>about</div><span>Ali</span>) is
+      // still word-separated after normalizeContent.
+      if (isElementNode(node) && CONTENT_BLOCK_SEPARATOR_TAGS.has(node.tagName.toLowerCase())) {
+        chunks.push(" ");
+      }
+      continue;
+    }
 
     if (isTextNode(node)) {
       chunks.push(node.value);
@@ -126,18 +138,18 @@ function htmlToTextContent(html: string): string {
       continue;
     }
 
-    // Inject a space before the content of block-level elements so compact HTML
+    // Inject a leading separator when entering a block element so compact HTML
     // (no whitespace text nodes between adjacent block elements) still produces
-    // word-separated output after normalizeContent. Mirrors the extension's
-    // CONTENT_BLOCK_SEPARATOR_TAGS logic in extractContentWithImageOccurrencesFromRoot.
+    // word-separated output after normalizeContent.
     if (isElementNode(node) && CONTENT_BLOCK_SEPARATOR_TAGS.has(node.tagName.toLowerCase())) {
       chunks.push(" ");
     }
 
+    stack.push({ node, phase: "exit" });
     for (let index = node.childNodes.length - 1; index >= 0; index -= 1) {
       const child = node.childNodes[index];
       if (child !== undefined) {
-        stack.push(child);
+        stack.push({ node: child, phase: "enter" });
       }
     }
   }

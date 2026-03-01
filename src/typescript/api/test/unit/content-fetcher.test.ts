@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  CONTENT_BLOCK_SEPARATOR_TAGS,
+  WIKIPEDIA_EXCLUDED_SECTION_TITLES,
+} from "@openerrata/shared";
+import {
   lesswrongHtmlToNormalizedText,
   wikipediaHtmlToNormalizedText,
 } from "../../src/lib/services/content-fetcher.js";
@@ -179,4 +183,85 @@ test("wikipediaHtmlToNormalizedText handles Parsoid h3 sub-section exclusion und
   `;
 
   assert.equal(wikipediaHtmlToNormalizedText(html), "Main content.");
+});
+
+// ── Block separator exhaustiveness ────────────────────────────────────────────
+// Every tag in CONTENT_BLOCK_SEPARATOR_TAGS must produce word-separated output
+// when adjacent elements have no whitespace text node between them.  Both
+// extractors (lesswrong / wikipedia) are tested because they use different
+// internal traversal implementations that must stay in sync.
+//
+// Table-related tags (<tr>, <td>, <th>) cannot contain text as direct children
+// in valid HTML — parse5 foster-parents text nodes outside the element when no
+// table context exists, which defeats the block-separator check.  The map below
+// provides minimal valid table structures that exercise each tag as a separator.
+const TABLE_BLOCK_SEPARATOR_HTML: Record<string, string> = {
+  tr: "<table><tbody><tr><td>Word1</td></tr><tr><td>Word2</td></tr></tbody></table>",
+  td: "<table><tbody><tr><td>Word1</td><td>Word2</td></tr></tbody></table>",
+  th: "<table><thead><tr><th>Word1</th><th>Word2</th></tr></thead></table>",
+};
+
+test("lesswrongHtmlToNormalizedText separates text across adjacent CONTENT_BLOCK_SEPARATOR_TAGS elements", () => {
+  for (const tag of CONTENT_BLOCK_SEPARATOR_TAGS) {
+    const html = TABLE_BLOCK_SEPARATOR_HTML[tag] ?? `<${tag}>Word1</${tag}><${tag}>Word2</${tag}>`;
+    assert.equal(
+      lesswrongHtmlToNormalizedText(html),
+      "Word1 Word2",
+      `<${tag}> should produce word-separated output`,
+    );
+  }
+});
+
+test("wikipediaHtmlToNormalizedText separates text across adjacent CONTENT_BLOCK_SEPARATOR_TAGS elements", () => {
+  for (const tag of CONTENT_BLOCK_SEPARATOR_TAGS) {
+    const inner = TABLE_BLOCK_SEPARATOR_HTML[tag] ?? `<${tag}>Word1</${tag}><${tag}>Word2</${tag}>`;
+    assert.equal(
+      wikipediaHtmlToNormalizedText(`<div class="mw-parser-output">${inner}</div>`),
+      "Word1 Word2",
+      `<${tag}> should produce word-separated output`,
+    );
+  }
+});
+
+// ── Excluded section titles × heading formats ─────────────────────────────────
+// Every title in WIKIPEDIA_EXCLUDED_SECTION_TITLES must be excluded from output
+// in both the legacy heading format (<h2><span class="mw-headline">) and the
+// Parsoid heading format (<div class="mw-heading"><h2>).  A gap here means a
+// section whose title is in the list can silently appear in canonical text.
+
+test("wikipediaHtmlToNormalizedText excludes all WIKIPEDIA_EXCLUDED_SECTION_TITLES in legacy heading format", () => {
+  for (const title of WIKIPEDIA_EXCLUDED_SECTION_TITLES) {
+    const displayTitle = title.charAt(0).toUpperCase() + title.slice(1);
+    const html = `
+      <div class="mw-parser-output">
+        <p>Lead paragraph.</p>
+        <h2><span class="mw-headline">${displayTitle}</span></h2>
+        <p>Excluded section text.</p>
+      </div>
+    `;
+    assert.ok(
+      !wikipediaHtmlToNormalizedText(html).includes("Excluded section text."),
+      `"${title}" section should be excluded (legacy heading format)`,
+    );
+  }
+});
+
+test("wikipediaHtmlToNormalizedText excludes all WIKIPEDIA_EXCLUDED_SECTION_TITLES in Parsoid heading format", () => {
+  for (const title of WIKIPEDIA_EXCLUDED_SECTION_TITLES) {
+    const displayTitle = title.charAt(0).toUpperCase() + title.slice(1);
+    const html = `
+      <div class="mw-parser-output">
+        <p>Lead paragraph.</p>
+        <div class="mw-heading mw-heading2">
+          <h2>${displayTitle}</h2>
+          <span class="mw-editsection">[edit]</span>
+        </div>
+        <p>Excluded section text.</p>
+      </div>
+    `;
+    assert.ok(
+      !wikipediaHtmlToNormalizedText(html).includes("Excluded section text."),
+      `"${title}" section should be excluded (Parsoid heading format)`,
+    );
+  }
 });

@@ -223,8 +223,27 @@ export function extractContentWithImageOccurrencesFromRoot(
     appendOccurrence(root);
   }
 
+  // Track open block elements so we can inject a trailing separator when
+  // the TreeWalker moves past the end of a block element's subtree.  This
+  // mirrors the "exit" phase in the server's parse5 traversal and ensures
+  // that text ending at a block boundary (e.g. <div>about</div><span>Ali</span>)
+  // still produces word-separated output.
+  const openBlockElements: Element[] = [];
+
+  const flushExitedBlocks = (currentNode: Node): void => {
+    while (openBlockElements.length > 0) {
+      const top = openBlockElements[openBlockElements.length - 1];
+      if (top === undefined || top.contains(currentNode)) break;
+      openBlockElements.pop();
+      rawTextParts.push(" ");
+      rawTextLength += 1;
+    }
+  };
+
   const walker = document.createTreeWalker(root, TREE_WALKER_TEXT_AND_ELEMENT);
   for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+    flushExitedBlocks(node);
+
     if (node.nodeType === defaultView.Node.TEXT_NODE) {
       const value = node.nodeValue ?? "";
       rawTextParts.push(value);
@@ -235,18 +254,27 @@ export function extractContentWithImageOccurrencesFromRoot(
     // At this point node is an Element (TREE_WALKER_TEXT_AND_ELEMENT only
     // visits text nodes and element nodes, and text nodes were handled above).
     if (node instanceof defaultView.Element) {
-      // Inject a space when entering a block-level element so adjacent block
-      // elements that have no whitespace text node between them (compact HTML)
-      // still produce word-separated output after normalizeContent.
+      // Inject a space at the start and end of block-level elements so
+      // adjacent elements with no whitespace text node between them still
+      // produce word-separated output after normalizeContent.
       if (CONTENT_BLOCK_SEPARATOR_TAGS.has(node.tagName.toLowerCase())) {
         rawTextParts.push(" ");
         rawTextLength += 1;
+        openBlockElements.push(node);
       }
 
       if (node instanceof defaultView.HTMLImageElement && targetImages.has(node)) {
         appendOccurrence(node);
       }
     }
+  }
+
+  // Flush separators for any block elements whose subtrees extended to the
+  // end of the traversal.
+  while (openBlockElements.length > 0) {
+    openBlockElements.pop();
+    rawTextParts.push(" ");
+    rawTextLength += 1;
   }
 
   const rawText = rawTextParts.join("");

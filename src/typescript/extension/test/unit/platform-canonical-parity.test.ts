@@ -8,6 +8,7 @@ import {
 import { lesswrongAdapter } from "../../src/content/adapters/lesswrong.js";
 import { wikipediaAdapter } from "../../src/content/adapters/wikipedia.js";
 import { assertReady, withWindow } from "../helpers/adapter-harness.js";
+import { E2E_WIKIPEDIA_FIXTURE_KEYS, readE2eWikipediaFixture } from "../e2e/wikipedia-fixtures.js";
 
 function withWikipediaMwConfig<T>(
   url: string,
@@ -136,6 +137,34 @@ test("WIKIPEDIA client extraction matches API canonical text normalization", () 
 
   if (!contentRoot) {
     throw new Error("Expected wikipedia content root for canonical parity test");
+  }
+
+  const clientText = ready.content.contentText;
+  const serverText = wikipediaHtmlToNormalizedText(contentRoot.outerHTML);
+  assert.equal(clientText, serverText);
+});
+
+// ── Real-page fixture parity ───────────────────────────────────────────────
+// Loads the captured Wikipedia Parsoid HTML fixture to verify that client-side
+// extraction (DOM TreeWalker) and server-side canonicalization (parse5) produce
+// identical normalized text.  This test would have caught both the Parsoid
+// heading-wrapper bug and the compact-HTML block-separator gap before they
+// reached production.
+//
+// The Wikipedia adapter's mw.config reads fall back to parsing inline
+// <script> tags when window.mw is not set (as in JSDOM), so no mw global
+// setup is required here.
+
+test("WIKIPEDIA client extraction matches API canonical text normalization on a real Parsoid fixture page", async () => {
+  const fixture = await readE2eWikipediaFixture(E2E_WIKIPEDIA_FIXTURE_KEYS.ALI_KHAMENEI_PAGE_HTML);
+
+  const { ready, contentRoot } = withWindow(fixture.sourceUrl, fixture.html, (document) => ({
+    ready: assertReady(wikipediaAdapter.extract(document)),
+    contentRoot: wikipediaAdapter.getContentRoot(document),
+  }));
+
+  if (!contentRoot) {
+    throw new Error("Expected wikipedia content root for fixture canonical parity test");
   }
 
   const clientText = ready.content.contentText;
