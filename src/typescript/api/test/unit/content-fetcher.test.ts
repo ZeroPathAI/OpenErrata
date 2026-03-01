@@ -214,6 +214,24 @@ test("wikipediaHtmlToNormalizedText handles Parsoid h3 sub-section exclusion und
   assert.equal(wikipediaHtmlToNormalizedText(html), "Main content.");
 });
 
+test("wikipediaHtmlToNormalizedText treats div.mw-heading as a section boundary only with a direct heading child", () => {
+  const html = `
+    <div class="mw-parser-output">
+      <p>Lead paragraph.</p>
+      <h2><span class="mw-headline">References</span></h2>
+      <p>Excluded reference text.</p>
+      <div class="mw-heading mw-heading2">
+        <div><h2>Nested pseudo heading</h2></div>
+      </div>
+      <p>Still excluded.</p>
+      <h2><span class="mw-headline">History</span></h2>
+      <p>Kept paragraph.</p>
+    </div>
+  `;
+
+  assert.equal(wikipediaHtmlToNormalizedText(html), "Lead paragraph. History Kept paragraph.");
+});
+
 // ── Block separator exhaustiveness ────────────────────────────────────────────
 // Every tag in CONTENT_BLOCK_SEPARATOR_TAGS must produce word-separated output
 // when adjacent elements have no whitespace text node between them.  Both

@@ -203,9 +203,18 @@ function toIsoDate(value: unknown): string | null {
   return Number.isNaN(parsed.valueOf()) ? null : parsed.toISOString();
 }
 
+function firstDirectChildHeadingElement(element: Element): Element | null {
+  for (const child of element.children) {
+    if (headingLevelFromTag(child.tagName) !== null) {
+      return child;
+    }
+  }
+  return null;
+}
+
 /** Build a WikipediaNodeDescriptor from a DOM Element for shared heading logic. */
 function toNodeDescriptor(element: Element): WikipediaNodeDescriptor {
-  const firstHeading = element.querySelector("h1, h2, h3, h4, h5, h6");
+  const firstHeading = firstDirectChildHeadingElement(element);
   return {
     tagName: element.tagName,
     classTokens: Array.from(element.classList),

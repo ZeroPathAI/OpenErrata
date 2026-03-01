@@ -315,6 +315,31 @@ function classTokens(node: DefaultTreeAdapterMap["element"]): string[] {
     .filter(Boolean);
 }
 
+function firstDirectChildHeadingNode(
+  node: DefaultTreeAdapterMap["element"],
+): DefaultTreeAdapterMap["element"] | null {
+  for (const child of node.childNodes) {
+    if (isElementNode(child) && headingLevelFromTag(child.tagName) !== null) {
+      return child;
+    }
+  }
+  return null;
+}
+
+function toFirstChildHeadingDescriptor(
+  firstChildHeadingNode: DefaultTreeAdapterMap["element"] | null,
+  includeHeadingTextContent: boolean,
+): WikipediaNodeDescriptor["firstChildHeading"] {
+  if (firstChildHeadingNode === null) {
+    return null;
+  }
+
+  return {
+    tagName: firstChildHeadingNode.tagName,
+    textContent: includeHeadingTextContent ? textContentOfNode(firstChildHeadingNode) : "",
+  };
+}
+
 function textContentOfNode(node: DefaultTreeAdapterMap["node"]): string {
   if (isTextNode(node)) {
     return node.value;
@@ -331,23 +356,27 @@ function textContentOfNode(node: DefaultTreeAdapterMap["node"]): string {
   return text;
 }
 
-/** Build a WikipediaNodeDescriptor from a parse5 element for shared heading logic. */
-function toNodeDescriptor(node: DefaultTreeAdapterMap["element"]): WikipediaNodeDescriptor {
-  const firstChildHeadingNode = node.childNodes.find(
-    (child): child is DefaultTreeAdapterMap["element"] =>
-      isElementNode(child) && headingLevelFromTag(child.tagName) !== null,
-  );
+/**
+ * Build a WikipediaNodeDescriptor from a parse5 element for shared heading logic.
+ *
+ * This helper is intentionally configurable so callers can avoid expensive
+ * subtree text scans when they only need heading level (not heading text).
+ */
+function toNodeDescriptor(input: {
+  node: DefaultTreeAdapterMap["element"];
+  classTokenValues: readonly string[];
+  firstChildHeadingNode: DefaultTreeAdapterMap["element"] | null;
+  includeNodeTextContent: boolean;
+  includeFirstChildHeadingTextContent: boolean;
+}): WikipediaNodeDescriptor {
   return {
-    tagName: node.tagName,
-    classTokens: classTokens(node),
-    textContent: textContentOfNode(node),
-    firstChildHeading:
-      firstChildHeadingNode !== undefined
-        ? {
-            tagName: firstChildHeadingNode.tagName,
-            textContent: textContentOfNode(firstChildHeadingNode),
-          }
-        : null,
+    tagName: input.node.tagName,
+    classTokens: input.classTokenValues,
+    textContent: input.includeNodeTextContent ? textContentOfNode(input.node) : "",
+    firstChildHeading: toFirstChildHeadingDescriptor(
+      input.firstChildHeadingNode,
+      input.includeFirstChildHeadingTextContent,
+    ),
   };
 }
 
@@ -375,14 +404,32 @@ function createWikipediaNodeFilter(): Parse5NodeFilter {
 
   return (node: DefaultTreeAdapterMap["node"]): "include" | "skip" => {
     if (isElementNode(node)) {
-      const descriptor = toNodeDescriptor(node);
+      const classTokenValues = classTokens(node);
+      const firstChildHeadingNode = firstDirectChildHeadingNode(node);
+      const descriptor = toNodeDescriptor({
+        node,
+        classTokenValues,
+        firstChildHeadingNode,
+        includeNodeTextContent: false,
+        includeFirstChildHeadingTextContent: false,
+      });
       const nodeHeadingLevel = effectiveHeadingLevel(descriptor);
       if (nodeHeadingLevel !== null) {
         if (skipSectionLevel !== null && nodeHeadingLevel <= skipSectionLevel) {
           skipSectionLevel = null;
         }
 
-        const headingText = normalizeWikipediaSectionTitle(effectiveHeadingText(descriptor));
+        const headingText = normalizeWikipediaSectionTitle(
+          effectiveHeadingText(
+            toNodeDescriptor({
+              node,
+              classTokenValues,
+              firstChildHeadingNode,
+              includeNodeTextContent: true,
+              includeFirstChildHeadingTextContent: true,
+            }),
+          ),
+        );
         if (isExcludedWikipediaSectionTitle(headingText)) {
           skipSectionLevel = nodeHeadingLevel;
           return "skip";

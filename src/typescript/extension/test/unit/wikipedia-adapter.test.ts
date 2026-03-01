@@ -317,6 +317,41 @@ test("Wikipedia adapter stops excluding at the next Parsoid heading of same leve
   assert.equal(ready.content.contentText.includes("Ref."), false);
 });
 
+test("Wikipedia adapter treats div.mw-heading as a section boundary only with a direct heading child", () => {
+  const result = withMwConfig(
+    "https://en.wikipedia.org/wiki/Climate_change",
+    `<!doctype html>
+      <html>
+        <body>
+          <h1 id="firstHeading">Climate change</h1>
+          <div id="mw-content-text">
+            <div class="mw-parser-output">
+              <p>Lead paragraph.</p>
+              <h2><span class="mw-headline">References</span></h2>
+              <p>Excluded reference text.</p>
+              <div class="mw-heading mw-heading2">
+                <div><h2>Nested pseudo heading</h2></div>
+              </div>
+              <p>Still excluded.</p>
+              <h2><span class="mw-headline">History</span></h2>
+              <p>Kept paragraph.</p>
+            </div>
+          </div>
+        </body>
+      </html>`,
+    {
+      wgNamespaceNumber: 0,
+      wgArticleId: 12345,
+      wgRevisionId: 67890,
+      wgContentLanguage: "en",
+    },
+    (document) => wikipediaAdapter.extract(document),
+  );
+
+  const ready = assertReady(result);
+  assert.equal(ready.content.contentText, "Lead paragraph. History Kept paragraph.");
+});
+
 test("Wikipedia adapter preserves separators across adjacent block elements", () => {
   const result = withMwConfig(
     "https://en.wikipedia.org/wiki/Climate_change",
