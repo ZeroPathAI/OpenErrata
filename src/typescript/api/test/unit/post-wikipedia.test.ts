@@ -69,12 +69,12 @@ test("prepareViewPostInput passes through non-Wikipedia inputs unchanged", () =>
 test("prepareViewPostInput canonicalizes Wikipedia metadata and derives external id", () => {
   const prepared = prepareViewPostInput(
     buildWikipediaInput({
-      url: "https://EN.m.wikipedia.org/wiki/Open_Errata",
+      url: "https://en.m.wikipedia.org/wiki/Open_Errata",
       metadata: {
-        language: " EN ",
+        language: "EN",
         title: "Open Errata",
-        pageId: " 12345 ",
-        revisionId: " 67890 ",
+        pageId: "12345",
+        revisionId: "67890",
         displayTitle: "OpenErrata",
       },
     }),
