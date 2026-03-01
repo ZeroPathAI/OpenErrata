@@ -100,13 +100,147 @@ const serverVerifiedSourceInclude = {
   },
 } satisfies Prisma.InvestigationInclude;
 
-type ServerVerifiedSourceInvestigation = Prisma.InvestigationGetPayload<{
-  include: typeof serverVerifiedSourceInclude;
-}>;
+interface ClaimSourceSummary {
+  url: string;
+  title: string;
+  snippet: string;
+}
 
-type LatestServerVerifiedCompleteInvestigation = ServerVerifiedSourceInvestigation | null;
+interface ClaimSummary {
+  id: string;
+  text: string;
+  context: string;
+  summary: string;
+  reasoning: string;
+  sources: ClaimSourceSummary[];
+}
 
-type EnsureInvestigationResult = Awaited<ReturnType<typeof ensureInvestigationQueued>>;
+interface SourceInvestigationForUpdate {
+  id: string;
+  postVersion: {
+    id: string;
+    contentBlob: {
+      contentText: string;
+    };
+  };
+  claims: ClaimSummary[];
+}
+
+type LatestServerVerifiedCompleteInvestigation = SourceInvestigationForUpdate | null;
+
+type EnsuredInvestigationStatus = Awaited<
+  ReturnType<typeof ensureInvestigationQueued>
+>["investigation"]["status"];
+
+interface EnsureInvestigationResult {
+  investigation: {
+    id: string;
+    status: EnsuredInvestigationStatus;
+  };
+}
+
+interface EnsureQueuedInput<TPrisma> {
+  prisma: TPrisma;
+  postVersionId: string;
+  promptId: string;
+  parentInvestigationId?: string;
+  contentDiff?: string;
+  rejectOverWordLimitOnCreate: true;
+  allowRequeueFailed: true;
+  onPendingRun?: (input: {
+    prisma: TPrisma;
+    investigation: {
+      id: string;
+      status: EnsuredInvestigationStatus;
+    };
+    run: {
+      id: string;
+    };
+  }) => Promise<void>;
+}
+
+type EnsureQueued<TPrisma> = (
+  input: EnsureQueuedInput<TPrisma>,
+) => Promise<EnsureInvestigationResult>;
+
+interface EnsureWithDefaultInput {
+  prisma: PrismaClient;
+  promptId: string;
+  postVersion: ResolvedPostVersion;
+  sourceInvestigation: LatestServerVerifiedCompleteInvestigation;
+  onPendingRun?: Parameters<typeof ensureInvestigationQueued>[0]["onPendingRun"];
+  ensureQueued?: undefined;
+}
+
+interface EnsureWithCustomInput<TPrisma> {
+  prisma: TPrisma;
+  promptId: string;
+  postVersion: ResolvedPostVersion;
+  sourceInvestigation: LatestServerVerifiedCompleteInvestigation;
+  onPendingRun?: EnsureQueuedInput<TPrisma>["onPendingRun"];
+  ensureQueued: EnsureQueued<TPrisma>;
+}
+
+interface InvestigationWithClaimsLookup {
+  investigation: {
+    findUnique(args: {
+      where: { id: string };
+      include: typeof investigationWithClaimsInclude;
+    }): Promise<InvestigationWithClaims | null>;
+  };
+}
+
+interface CompletedInvestigationLookup {
+  investigation: {
+    findFirst(args: {
+      where: {
+        postVersionId: string;
+        status: "COMPLETE";
+      };
+      include: typeof completedInvestigationInclude;
+    }): Promise<CompletedInvestigation | null>;
+  };
+}
+
+interface LatestServerVerifiedInvestigationLookup {
+  investigation: {
+    findFirst(args: {
+      where: {
+        status: "COMPLETE";
+        postVersion: {
+          postId: string;
+          contentProvenance: "SERVER_VERIFIED";
+        };
+      };
+      orderBy: {
+        checkedAt: "desc";
+      };
+      include: typeof serverVerifiedSourceInclude;
+    }): Promise<SourceInvestigationForUpdate | null>;
+  };
+}
+
+interface CorroborationLookup {
+  investigation: {
+    findFirst(args: {
+      where: {
+        postVersionId: string;
+        postVersion: {
+          contentProvenance: "CLIENT_FALLBACK";
+        };
+      };
+      select: { id: true };
+    }): Promise<{ id: string } | null>;
+  };
+  corroborationCredit: {
+    create(args: {
+      data: {
+        investigationId: string;
+        reporterKey: string;
+      };
+    }): Promise<unknown>;
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Invariant helpers
@@ -136,16 +270,7 @@ export function requireCompleteCheckedAtIso(
 // Claim formatting
 // ---------------------------------------------------------------------------
 
-export function formatClaims(
-  claims: {
-    id: string;
-    text: string;
-    context: string;
-    summary: string;
-    reasoning: string;
-    sources: { url: string; title: string; snippet: string }[];
-  }[],
-): InvestigationClaim[] {
+export function formatClaims(claims: ClaimSummary[]): InvestigationClaim[] {
   return claims.map((c) => ({
     id: claimIdSchema.parse(c.id),
     text: c.text,
@@ -165,7 +290,7 @@ export function formatClaims(
 // ---------------------------------------------------------------------------
 
 export async function loadInvestigationWithClaims(
-  prisma: PrismaClient,
+  prisma: InvestigationWithClaimsLookup,
   investigationId: string,
 ): Promise<InvestigationWithClaims | null> {
   return prisma.investigation.findUnique({
@@ -175,7 +300,7 @@ export async function loadInvestigationWithClaims(
 }
 
 export async function findCompletedInvestigationByPostVersionId(
-  prisma: PrismaClient,
+  prisma: CompletedInvestigationLookup,
   postVersionId: string,
 ): Promise<CompletedInvestigation | null> {
   return prisma.investigation.findFirst({
@@ -188,10 +313,10 @@ export async function findCompletedInvestigationByPostVersionId(
 }
 
 export async function findLatestServerVerifiedCompleteInvestigationForPost(
-  prisma: PrismaClient,
+  prisma: LatestServerVerifiedInvestigationLookup,
   postId: string,
 ): Promise<LatestServerVerifiedCompleteInvestigation> {
-  return prisma.investigation.findFirst({
+  const source = await prisma.investigation.findFirst({
     where: {
       status: "COMPLETE",
       postVersion: {
@@ -204,6 +329,11 @@ export async function findLatestServerVerifiedCompleteInvestigationForPost(
     },
     include: serverVerifiedSourceInclude,
   });
+  if (source === null) {
+    return null;
+  }
+
+  return source;
 }
 
 // ---------------------------------------------------------------------------
@@ -280,7 +410,7 @@ function buildLineDiff(previous: string, current: string): string {
 // ---------------------------------------------------------------------------
 
 export async function maybeRecordCorroboration(
-  prisma: PrismaClient,
+  prisma: CorroborationLookup,
   postVersionId: string,
   viewerKey: string,
   isAuthenticated: boolean,
@@ -316,36 +446,86 @@ export async function maybeRecordCorroboration(
 // Investigation queueing with update metadata
 // ---------------------------------------------------------------------------
 
-export async function ensureInvestigationsWithUpdateMetadata(input: {
-  prisma: PrismaClient;
+export async function ensureInvestigationsWithUpdateMetadata(
+  input: EnsureWithDefaultInput,
+): Promise<EnsureInvestigationResult>;
+
+export async function ensureInvestigationsWithUpdateMetadata<TPrisma>(input: {
+  prisma: TPrisma;
   promptId: string;
   postVersion: ResolvedPostVersion;
   sourceInvestigation: LatestServerVerifiedCompleteInvestigation;
-  onPendingRun?: Parameters<typeof ensureInvestigationQueued>[0]["onPendingRun"];
-}): Promise<EnsureInvestigationResult> {
-  if (input.sourceInvestigation === null) {
-    return ensureInvestigationQueued({
+  onPendingRun?: EnsureQueuedInput<TPrisma>["onPendingRun"];
+  ensureQueued: EnsureQueued<TPrisma>;
+}): Promise<EnsureInvestigationResult>;
+
+export async function ensureInvestigationsWithUpdateMetadata<TPrisma>(
+  input:
+    | {
+        prisma: PrismaClient;
+        promptId: string;
+        postVersion: ResolvedPostVersion;
+        sourceInvestigation: LatestServerVerifiedCompleteInvestigation;
+        onPendingRun?: Parameters<typeof ensureInvestigationQueued>[0]["onPendingRun"];
+        ensureQueued?: undefined;
+      }
+    | EnsureWithCustomInput<TPrisma>,
+): Promise<EnsureInvestigationResult> {
+  if (input.ensureQueued !== undefined) {
+    const baseInput = {
       prisma: input.prisma,
       postVersionId: input.postVersion.id,
       promptId: input.promptId,
-      rejectOverWordLimitOnCreate: true,
-      allowRequeueFailed: true,
+      rejectOverWordLimitOnCreate: true as const,
+      allowRequeueFailed: true as const,
       ...(input.onPendingRun === undefined ? {} : { onPendingRun: input.onPendingRun }),
-    });
+    };
+
+    const queuedInput =
+      input.sourceInvestigation === null
+        ? baseInput
+        : {
+            ...baseInput,
+            parentInvestigationId: input.sourceInvestigation.id,
+            contentDiff: buildLineDiff(
+              input.sourceInvestigation.postVersion.contentBlob.contentText,
+              input.postVersion.contentBlob.contentText,
+            ),
+          };
+
+    return input.ensureQueued(queuedInput);
   }
 
-  const contentDiff = buildLineDiff(
-    input.sourceInvestigation.postVersion.contentBlob.contentText,
-    input.postVersion.contentBlob.contentText,
-  );
-  return ensureInvestigationQueued({
+  const baseInput = {
     prisma: input.prisma,
     postVersionId: input.postVersion.id,
     promptId: input.promptId,
-    parentInvestigationId: input.sourceInvestigation.id,
-    contentDiff,
-    rejectOverWordLimitOnCreate: true,
-    allowRequeueFailed: true,
+    rejectOverWordLimitOnCreate: true as const,
+    allowRequeueFailed: true as const,
     ...(input.onPendingRun === undefined ? {} : { onPendingRun: input.onPendingRun }),
-  });
+  };
+
+  const queuedInput =
+    input.sourceInvestigation === null
+      ? baseInput
+      : {
+          ...baseInput,
+          parentInvestigationId: input.sourceInvestigation.id,
+          contentDiff: buildLineDiff(
+            input.sourceInvestigation.postVersion.contentBlob.contentText,
+            input.postVersion.contentBlob.contentText,
+          ),
+        };
+
+  const ensured = await ensureInvestigationQueued(queuedInput);
+  return {
+    investigation: {
+      id: ensured.investigation.id,
+      status: ensured.investigation.status,
+    },
+  };
 }
+
+export const investigationQueriesInternals = {
+  buildLineDiff,
+};
