@@ -8,7 +8,7 @@ export interface PromptImageOccurrence {
   captionText?: string;
 }
 
-export interface PromptPostContext {
+interface PromptPostContext {
   platform: Platform;
   url: string;
   authorName?: string;
@@ -54,10 +54,10 @@ export const investigationContextInclude = {
   },
 } satisfies Prisma.InvestigationInclude;
 
-export type InvestigationWithContext = Prisma.InvestigationGetPayload<{
+type InvestigationWithContext = Prisma.InvestigationGetPayload<{
   include: typeof investigationContextInclude;
 }>;
-export type InvestigationVersionContext = InvestigationWithContext["postVersion"];
+type InvestigationVersionContext = InvestigationWithContext["postVersion"];
 
 export function unreachablePlatform(platform: never): never {
   throw new Error(`Unsupported post platform: ${String(platform)}`);

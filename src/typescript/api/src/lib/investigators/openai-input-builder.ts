@@ -3,11 +3,11 @@ import { validateAndSortImageOccurrences } from "@openerrata/shared";
 import { InvestigatorStructuredOutputError } from "./openai.js";
 import type { InvestigatorImageOccurrence } from "./interface.js";
 
-export type ContentInputPart =
+type ContentInputPart =
   | { type: "input_text"; text: string }
   | { type: "input_image"; detail: "auto"; image_url: string };
 
-export function appendTextInputPart(contentParts: ContentInputPart[], text: string): void {
+function appendTextInputPart(contentParts: ContentInputPart[], text: string): void {
   if (text.length === 0) return;
   contentParts.push({
     type: "input_text",
@@ -15,7 +15,7 @@ export function appendTextInputPart(contentParts: ContentInputPart[], text: stri
   });
 }
 
-export function normalizeImageOccurrences(
+function normalizeImageOccurrences(
   imageOccurrences: InvestigatorImageOccurrence[] | undefined,
   contentText?: string,
 ): InvestigatorImageOccurrence[] {

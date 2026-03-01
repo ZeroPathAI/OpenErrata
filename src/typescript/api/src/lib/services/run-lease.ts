@@ -8,11 +8,11 @@ export interface Logger {
   error(msg: string): void;
 }
 
-export const RUN_LEASE_TTL_MS = 60_000;
-export const RUN_HEARTBEAT_INTERVAL_MS = 15_000;
-export const RUN_RECOVERY_GRACE_MS = 60_000;
+const RUN_LEASE_TTL_MS = 60_000;
+const RUN_HEARTBEAT_INTERVAL_MS = 15_000;
+const RUN_RECOVERY_GRACE_MS = 60_000;
 
-export const runContextInclude = {
+const runContextInclude = {
   investigation: {
     include: {
       ...investigationContextInclude,
@@ -29,11 +29,11 @@ export const runContextInclude = {
   },
 } satisfies Prisma.InvestigationRunInclude;
 
-export type InvestigationRunWithContext = Prisma.InvestigationRunGetPayload<{
+type InvestigationRunWithContext = Prisma.InvestigationRunGetPayload<{
   include: typeof runContextInclude;
 }>;
 
-export function nextLeaseExpiry(): Date {
+function nextLeaseExpiry(): Date {
   return new Date(Date.now() + RUN_LEASE_TTL_MS);
 }
 

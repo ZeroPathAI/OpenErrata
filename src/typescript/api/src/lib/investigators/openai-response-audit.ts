@@ -309,7 +309,7 @@ export function extractReasoningSummaries(
   return summaries;
 }
 
-export function toToolCallAudit(
+function toToolCallAudit(
   outputIndex: number,
   outputItem: unknown,
 ): InvestigatorToolCallAudit | null {

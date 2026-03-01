@@ -10,13 +10,13 @@ import type { Prisma } from "$lib/generated/prisma/client";
 import { consumeOpenAiKeySource } from "./user-key-source.js";
 import { nextRecoveryAfter } from "./run-lease.js";
 
-export function isFailedAttemptAudit(
+function isFailedAttemptAudit(
   attemptAudit: InvestigatorAttemptAudit,
 ): attemptAudit is InvestigatorAttemptFailedAudit {
   return attemptAudit.error !== null;
 }
 
-export function isSucceededAttemptAudit(
+function isSucceededAttemptAudit(
   attemptAudit: InvestigatorAttemptAudit,
 ): attemptAudit is InvestigatorAttemptSucceededAudit {
   return attemptAudit.error === null;

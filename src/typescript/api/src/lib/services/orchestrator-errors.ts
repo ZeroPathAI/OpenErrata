@@ -6,7 +6,7 @@ import {
 } from "$lib/investigators/openai.js";
 import { ExpiredOpenAiKeySourceError, InvalidOpenAiKeySourceError } from "./user-key-source.js";
 
-export type UnwrappedError = Error | Record<string, unknown> | string;
+type UnwrappedError = Error | Record<string, unknown> | string;
 
 export function unwrapError(error: unknown): UnwrappedError {
   const root = error instanceof InvestigatorExecutionError ? (error.cause ?? error) : error;
