@@ -229,6 +229,50 @@ test("wikipediaHtmlToNormalizedText separates text across adjacent CONTENT_BLOCK
 // Parsoid heading format (<div class="mw-heading"><h2>).  A gap here means a
 // section whose title is in the list can silently appear in canonical text.
 
+// ── noscript exclusion ────────────────────────────────────────────────────────
+// Wikipedia's #mw-content-text div contains a <noscript> CentralAutoLogin
+// tracking pixel after .mw-parser-output closes.  getContentRoot() returns
+// #mw-content-text (querySelector returns the parent before its descendants in
+// document order), so the noscript is inside the extraction root.
+//
+// In a real browser (scripting enabled), <noscript> content is a raw text node
+// containing literal HTML — e.g. `<img src="…CentralAutoLogin…">`.  If
+// shouldExcludeWikipediaElement does not exclude noscript, the server includes
+// that literal HTML when parse5 parses contentRoot.outerHTML (parse5 also
+// defaults to scripting-enabled mode).
+//
+// The Assassination_of_Ali_Khamenei page ends with "See also" (not an excluded
+// section), so skipSectionLevel is not set when the noscript is reached.  This
+// caused CONTENT_MISMATCH: the server text contained the literal <img…> HTML
+// while the Wikipedia Parse API response, which the server fetches in
+// production, does not include the noscript at all.
+
+test("wikipediaHtmlToNormalizedText excludes noscript content even when last section is not an excluded title", () => {
+  // Mirrors the Assassination_of_Ali_Khamenei structure: the last section is
+  // "See also" (not excluded), followed by a noscript tracking pixel in
+  // #mw-content-text.
+  const html = `
+    <div id="mw-content-text">
+      <div class="mw-content-ltr mw-parser-output">
+        <p>Article body text.</p>
+        <div class="mw-heading mw-heading2"><h2>See also</h2></div>
+        <ul><li>Related article</li></ul>
+      </div>
+      <noscript><img src="https://en.wikipedia.org/wiki/Special:CentralAutoLogin/start?useformat=desktop&amp;type=1x1&amp;usesul3=1" alt="" width="1" height="1" style="border: none; position: absolute;"></noscript>
+      <div class="printfooter">Retrieved from "..."</div>
+    </div>
+  `;
+
+  const text = wikipediaHtmlToNormalizedText(html);
+  assert.ok(
+    !text.includes("CentralAutoLogin"),
+    "noscript tracking pixel must not appear in extracted text",
+  );
+  assert.ok(!text.includes("<img"), "no literal HTML tags should appear in extracted text");
+  assert.ok(text.includes("Article body text."), "article body text must be included");
+  assert.ok(text.includes("Related article"), "See also section content must be included");
+});
+
 test("wikipediaHtmlToNormalizedText excludes all WIKIPEDIA_EXCLUDED_SECTION_TITLES in legacy heading format", () => {
   for (const title of WIKIPEDIA_EXCLUDED_SECTION_TITLES) {
     const displayTitle = title.charAt(0).toUpperCase() + title.slice(1);

@@ -386,3 +386,87 @@ test("Wikipedia adapter keeps infobox-style table text separated from surroundin
     "(Learn how and when to remove this message) Assassination of Ali Khamenei Part of the 2026 strikes on Iran Article body starts here.",
   );
 });
+
+// ── noscript exclusion ────────────────────────────────────────────────────────
+// Wikipedia places a <noscript> CentralAutoLogin tracking pixel inside
+// #mw-content-text, after .mw-parser-output closes. getContentRoot() returns
+// #mw-content-text (not .mw-parser-output) because querySelector returns the
+// first match in document order, and parent elements precede their descendants.
+// So the noscript is always inside the extraction root.
+//
+// shouldExcludeWikipediaElement must exclude noscript to prevent two failure
+// modes depending on the scripting environment:
+//
+//   Browser (scripting enabled): <noscript> content is a raw TEXT NODE with
+//   literal HTML. The TreeWalker (SHOW_TEXT) visits it, adding the literal
+//   <img…> markup to contentText. This causes CONTENT_MISMATCH against the
+//   Wikipedia Parse API, which does not include the noscript at all.
+//
+//   JSDOM (scripting disabled, as used in tests): <noscript> content is
+//   HTML-parsed into element nodes. querySelectorAll("img[src]") finds the
+//   <img> and adds the CentralAutoLogin URL to imageUrls/imageOccurrences,
+//   causing mediaState to be "has_images" instead of "text_only".
+//
+// The Assassination_of_Ali_Khamenei page ends with "See also" (not excluded),
+// so skipSectionLevel is NOT set — making the noscript visible to extraction
+// even without the fix. This is the failure mode that was reported.
+
+test("Wikipedia adapter excludes noscript tracking pixel when last section is not an excluded title", () => {
+  // Mirrors the Assassination_of_Ali_Khamenei structure.
+  const result = withMwConfig(
+    "https://en.wikipedia.org/wiki/Assassination_of_Ali_Khamenei",
+    `<!doctype html>
+      <html>
+        <body>
+          <h1 id="firstHeading">Assassination of Ali Khamenei</h1>
+          <div id="mw-content-text">
+            <div class="mw-parser-output">
+              <p>Article body text.</p>
+              <div class="mw-heading mw-heading2"><h2>See also</h2></div>
+              <ul><li>Related article</li></ul>
+            </div>
+            <noscript><img src="https://en.wikipedia.org/wiki/Special:CentralAutoLogin/start?useformat=desktop&amp;type=1x1&amp;usesul3=1" alt="" width="1" height="1" style="border: none; position: absolute;"></noscript>
+            <div class="printfooter">Retrieved from &quot;...&quot;</div>
+          </div>
+        </body>
+      </html>`,
+    {
+      wgNamespaceNumber: 0,
+      wgArticleId: 82537558,
+      wgRevisionId: 1341069315,
+      wgContentLanguage: "en",
+    },
+    (document) => wikipediaAdapter.extract(document),
+  );
+
+  const ready = assertReady(result);
+  // Article body and See also content must be included (See also is not excluded).
+  assert.ok(
+    ready.content.contentText.includes("Article body text."),
+    "article body text must be included",
+  );
+  assert.ok(
+    ready.content.contentText.includes("Related article"),
+    "See also section content must be included",
+  );
+  // CentralAutoLogin tracking pixel must not appear in content or image metadata.
+  assert.ok(
+    !ready.content.contentText.includes("CentralAutoLogin"),
+    "noscript tracking pixel must not appear in contentText",
+  );
+  assert.ok(
+    !ready.content.contentText.includes("<img"),
+    "no literal HTML tags should appear in contentText",
+  );
+  // In JSDOM (scripting disabled), <noscript> content is parsed as elements,
+  // so the img would be found by querySelectorAll unless noscript is pruned first.
+  assert.equal(
+    ready.content.mediaState,
+    "text_only",
+    "noscript img must not be classified as article image",
+  );
+  assert.ok(
+    ready.content.imageUrls.every((url) => !url.includes("CentralAutoLogin")),
+    "CentralAutoLogin URL must not appear in imageUrls",
+  );
+});

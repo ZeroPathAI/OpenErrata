@@ -46,7 +46,12 @@ function isReferenceSupNode(tagName: string, classTokens: readonly string[]): bo
 
 function isExcludedWikipediaTag(tagName: string): boolean {
   const normalized = tagName.toLowerCase();
-  return normalized === "script" || normalized === "style";
+  // noscript is excluded because its content differs between environments: browsers
+  // with scripting enabled expose it as a raw text node (containing literal HTML), while
+  // scripting-disabled parsers (parse5, jsdom) expose it as parsed child elements.
+  // Either way, noscript content is metadata/tracking (e.g. the CentralAutoLogin
+  // pixel Wikipedia places in #mw-content-text), never article text.
+  return normalized === "script" || normalized === "style" || normalized === "noscript";
 }
 
 /**
