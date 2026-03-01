@@ -131,11 +131,18 @@ test("buildValidationPrompt embeds candidate claim and optional image context no
   assert.doesNotMatch(promptWithoutImages, /## Image context notes \(raw, untrusted\)/);
 });
 
-test("buildInvestigationPromptBundleText preserves stage ordering and prompt bodies", () => {
+test("buildInvestigationPromptBundleText includes both stage instruction bodies in order", () => {
   const bundle = buildInvestigationPromptBundleText();
 
-  assert.match(bundle, /=== Stage 1: Fact-check instructions ===/);
-  assert.match(bundle, /=== Stage 2: Validation instructions ===/);
-  assert.equal(bundle.includes(INVESTIGATION_SYSTEM_PROMPT), true);
-  assert.equal(bundle.includes(INVESTIGATION_VALIDATION_SYSTEM_PROMPT), true);
+  const factCheckPromptIndex = bundle.indexOf(INVESTIGATION_SYSTEM_PROMPT);
+  const validationPromptIndex = bundle.indexOf(INVESTIGATION_VALIDATION_SYSTEM_PROMPT);
+  assert.notEqual(factCheckPromptIndex, -1);
+  assert.notEqual(validationPromptIndex, -1);
+  assert.equal(factCheckPromptIndex < validationPromptIndex, true);
+
+  assert.equal(bundle.indexOf(INVESTIGATION_SYSTEM_PROMPT, factCheckPromptIndex + 1), -1);
+  assert.equal(
+    bundle.indexOf(INVESTIGATION_VALIDATION_SYSTEM_PROMPT, validationPromptIndex + 1),
+    -1,
+  );
 });

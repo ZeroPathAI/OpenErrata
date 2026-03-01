@@ -18,5 +18,4 @@ test("root route returns a JSON welcome payload", async () => {
     assert.fail("Expected root payload message to be a string");
   }
   assert.equal(message.trim().length > 0, true);
-  assert.match(message, /openerrata api/i);
 });

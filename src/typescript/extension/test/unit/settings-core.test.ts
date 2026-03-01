@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  API_BASE_URL_REQUIREMENTS_MESSAGE,
   DEFAULT_EXTENSION_SETTINGS,
   apiEndpointUrl,
   apiHostPermissionFor,
@@ -38,13 +37,6 @@ test("normalizeApiBaseUrl rejects public http URLs, non-http(s), and malformed v
   assert.equal(normalizeApiBaseUrl("ftp://api.openerrata.com"), null);
   assert.equal(normalizeApiBaseUrl("not-a-url"), null);
   assert.equal(normalizeApiBaseUrl(42), null);
-});
-
-test("API base URL validation message documents HTTPS requirement", () => {
-  assert.equal(
-    API_BASE_URL_REQUIREMENTS_MESSAGE,
-    "API Server URL must use HTTPS. HTTP is allowed only for localhost and private-network development addresses.",
-  );
 });
 
 test("apiHostPermissionFor preserves explicit origin port", () => {

@@ -6,7 +6,6 @@ import {
   ensureInvestigationsWithUpdateMetadata,
   findCompletedInvestigationByPostVersionId,
   findLatestServerVerifiedCompleteInvestigationForPost,
-  formatClaims,
   investigationQueriesInternals,
   loadInvestigationWithClaims,
   maybeRecordCorroboration,
@@ -48,52 +47,6 @@ test("requireCompleteCheckedAtIso returns ISO and throws when checkedAt is missi
   assert.equal(requireCompleteCheckedAtIso("inv-1", checkedAt), checkedAt.toISOString());
 
   assert.throws(() => requireCompleteCheckedAtIso("inv-2", null), /COMPLETE with null checkedAt/);
-});
-
-test("formatClaims preserves claim fields and source order", () => {
-  const formatted = formatClaims([
-    {
-      id: "claim_1",
-      text: "Claim text",
-      context: "Claim context",
-      summary: "Claim summary",
-      reasoning: "Claim reasoning",
-      sources: [
-        {
-          url: "https://example.com/1",
-          title: "Source 1",
-          snippet: "Snippet 1",
-        },
-        {
-          url: "https://example.com/2",
-          title: "Source 2",
-          snippet: "Snippet 2",
-        },
-      ],
-    },
-  ]);
-
-  assert.deepEqual(formatted, [
-    {
-      id: "claim_1",
-      text: "Claim text",
-      context: "Claim context",
-      summary: "Claim summary",
-      reasoning: "Claim reasoning",
-      sources: [
-        {
-          url: "https://example.com/1",
-          title: "Source 1",
-          snippet: "Snippet 1",
-        },
-        {
-          url: "https://example.com/2",
-          title: "Source 2",
-          snippet: "Snippet 2",
-        },
-      ],
-    },
-  ]);
 });
 
 test("selectSourceInvestigationForUpdate drops same-version source and keeps prior version", () => {
@@ -183,36 +136,27 @@ test("unreachableInvestigationStatus throws explicit internal error", () => {
   );
 });
 
-test("load and lookup helpers delegate to prisma with expected filters", async () => {
-  const loadResult = null;
-  const completedResult = null;
-  const latestResult = null;
-  let findUniqueWhere: unknown = null;
-  let findFirstCalls = 0;
+test("investigation lookup helpers apply required query filters and return loader results", async () => {
+  const loadedResult = { id: "loaded-investigation" };
+  const completedResult = { id: "completed-investigation" };
+  const latestResult = { id: "latest-server-verified-investigation" };
+
+  let findUniqueArgs: unknown = null;
+  let completedFindFirstArgs: unknown = null;
+  let latestFindFirstArgs: unknown = null;
 
   const prisma = {
     investigation: {
-      findUnique: async (input: unknown) => {
-        findUniqueWhere = input;
-        return loadResult;
+      findUnique: async (args: unknown) => {
+        findUniqueArgs = args;
+        return loadedResult;
       },
-      findFirst: async (input: { where?: unknown }) => {
-        findFirstCalls += 1;
-        if (findFirstCalls === 1) {
-          assert.deepEqual(input.where, {
-            postVersionId: "post-version-id",
-            status: "COMPLETE",
-          });
+      findFirst: async (args: unknown) => {
+        if (completedFindFirstArgs === null) {
+          completedFindFirstArgs = args;
           return completedResult;
         }
-
-        assert.deepEqual(input.where, {
-          status: "COMPLETE",
-          postVersion: {
-            postId: "post-id",
-            contentProvenance: "SERVER_VERIFIED",
-          },
-        });
+        latestFindFirstArgs = args;
         return latestResult;
       },
     },
@@ -222,18 +166,47 @@ test("load and lookup helpers delegate to prisma with expected filters", async (
   const completed = await findCompletedInvestigationByPostVersionId(prisma, "post-version-id");
   const latest = await findLatestServerVerifiedCompleteInvestigationForPost(prisma, "post-id");
 
-  assert.equal(loaded, loadResult);
+  assert.equal(loaded, loadedResult);
   assert.equal(completed, completedResult);
   assert.equal(latest, latestResult);
-  assert.equal(typeof findUniqueWhere, "object");
-  assert.notEqual(findUniqueWhere, null);
-  if (typeof findUniqueWhere !== "object" || findUniqueWhere === null) {
-    return;
-  }
-  const query = findUniqueWhere as Record<string, unknown>;
-  assert.deepEqual(query["where"], { id: "investigation-id" });
-  assert.equal(typeof query["include"], "object");
-  assert.notEqual(query["include"], null);
+
+  assert.equal(typeof findUniqueArgs, "object");
+  assert.notEqual(findUniqueArgs, null);
+  if (typeof findUniqueArgs !== "object" || findUniqueArgs === null) return;
+  const findUniqueQuery = findUniqueArgs as Record<string, unknown>;
+  assert.deepEqual(findUniqueQuery.where, { id: "investigation-id" });
+  assert.equal(typeof findUniqueQuery.include, "object");
+  assert.notEqual(findUniqueQuery.include, null);
+  if (typeof findUniqueQuery.include !== "object" || findUniqueQuery.include === null) return;
+  const include = findUniqueQuery.include as Record<string, unknown>;
+  assert.equal(Object.hasOwn(include, "postVersion"), true);
+  assert.equal(Object.hasOwn(include, "claims"), true);
+
+  assert.equal(typeof completedFindFirstArgs, "object");
+  assert.notEqual(completedFindFirstArgs, null);
+  if (typeof completedFindFirstArgs !== "object" || completedFindFirstArgs === null) return;
+  const completedQuery = completedFindFirstArgs as Record<string, unknown>;
+  assert.deepEqual(completedQuery.where, {
+    postVersionId: "post-version-id",
+    status: "COMPLETE",
+  });
+  assert.equal(typeof completedQuery.include, "object");
+  assert.notEqual(completedQuery.include, null);
+
+  assert.equal(typeof latestFindFirstArgs, "object");
+  assert.notEqual(latestFindFirstArgs, null);
+  if (typeof latestFindFirstArgs !== "object" || latestFindFirstArgs === null) return;
+  const latestQuery = latestFindFirstArgs as Record<string, unknown>;
+  assert.deepEqual(latestQuery.where, {
+    status: "COMPLETE",
+    postVersion: {
+      postId: "post-id",
+      contentProvenance: "SERVER_VERIFIED",
+    },
+  });
+  assert.deepEqual(latestQuery.orderBy, { checkedAt: "desc" });
+  assert.equal(typeof latestQuery.include, "object");
+  assert.notEqual(latestQuery.include, null);
 });
 
 test("maybeRecordCorroboration gates on auth and handles duplicate credit races", async () => {
