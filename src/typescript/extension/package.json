@@ -11,7 +11,8 @@
     "test:unit": "tsx --test \"test/unit/**/*.test.ts\"",
     "test:e2e": "pnpm build && node ./scripts/run-playwright-e2e.mjs",
     "test:e2e:ci": "node ./scripts/run-playwright-e2e.mjs",
-    "test:unit:coverage": "c8 --config ../.c8rc.extension.json tsx --test \"test/unit/**/*.test.ts\""
+    "test:unit:coverage": "c8 --config ../.c8rc.extension.json tsx --test \"test/unit/**/*.test.ts\"",
+    "fixtures:wikipedia:refresh": "tsx ./test/e2e/refresh-wikipedia-fixtures.ts"
   },
   "dependencies": {
     "@openerrata/shared": "workspace:*",

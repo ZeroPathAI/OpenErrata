@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { openAiInvestigatorInternals } from "../../src/lib/investigators/openai.js";
+import {
+  buildInitialInput,
+  buildValidationImageContextNotes,
+} from "../../src/lib/investigators/openai-input-builder.js";
 import type { InvestigatorImageOccurrence } from "../../src/lib/investigators/interface.js";
 
 interface InputTextPart {
@@ -84,11 +87,7 @@ test("buildInitialInput interleaves text and image occurrences with duplicate/mi
     },
   ];
 
-  const input = openAiInvestigatorInternals.buildInitialInput(
-    userPrompt,
-    contentText,
-    imageOccurrences,
-  );
+  const input = buildInitialInput(userPrompt, contentText, imageOccurrences);
 
   assert.ok(Array.isArray(input));
   const [message] = input;
@@ -112,7 +111,7 @@ test("buildInitialInput interleaves text and image occurrences with duplicate/mi
 });
 
 test("buildValidationImageContextNotes describes resolved duplicates distinctly", () => {
-  const notes = openAiInvestigatorInternals.buildValidationImageContextNotes([
+  const notes = buildValidationImageContextNotes([
     {
       originalIndex: 0,
       normalizedTextOffset: 2,

@@ -26,6 +26,28 @@ function withMwConfig<T>(
   });
 }
 
+function withInlineConfigScript<T>(
+  url: string,
+  htmlBody: string,
+  run: (document: Document) => T,
+): T {
+  return withWindow(
+    url,
+    `<!doctype html>
+      <html>
+        <head>
+          <script>
+            RLCONF={"wgNamespaceNumber":0,"wgPageName":"Climate_change","wgArticleId":12345,"wgRevisionId":67890,"wgRevisionTimestamp":"20260115010203"};
+          </script>
+        </head>
+        <body>
+          ${htmlBody}
+        </body>
+      </html>`,
+    run,
+  );
+}
+
 test("Wikipedia adapter extracts article content and excludes references section text", () => {
   const result = withMwConfig(
     "https://en.wikipedia.org/wiki/Climate_change",
@@ -84,6 +106,27 @@ test("Wikipedia adapter extracts article content and excludes references section
   assert.equal(ready.content.contentText.includes("Reference that should be excluded."), false);
 });
 
+test("Wikipedia adapter extracts content when metadata is only available through inline RLCONF", () => {
+  const result = withInlineConfigScript(
+    "https://en.wikipedia.org/wiki/Climate_change",
+    `<h1 id="firstHeading">Climate change</h1>
+     <div id="mw-content-text">
+       <div class="mw-parser-output">
+         <p>Human activity is warming the planet.</p>
+       </div>
+     </div>`,
+    (document) => wikipediaAdapter.extract(document),
+  );
+
+  const ready = assertReady(result);
+  assert.equal(ready.content.platform, "WIKIPEDIA");
+  assert.equal(ready.content.externalId, "en:12345");
+  assert.equal(ready.content.metadata.pageId, "12345");
+  assert.equal(ready.content.metadata.revisionId, "67890");
+  assert.equal(ready.content.metadata.title, "Climate_change");
+  assert.equal(ready.content.metadata.lastModifiedAt, "2026-01-15T01:02:03.000Z");
+});
+
 test("Wikipedia adapter supports /w/index.php title permalinks", () => {
   const result = withMwConfig(
     "https://en.wikipedia.org/w/index.php?title=Climate_change&oldid=1244905470",
@@ -110,6 +153,24 @@ test("Wikipedia adapter supports /w/index.php title permalinks", () => {
 
   const ready = assertReady(result);
   assert.equal(ready.content.externalId, "en:12345");
+});
+
+test("Wikipedia adapter derives metadata title from inline RLCONF on curid permalinks", () => {
+  const result = withInlineConfigScript(
+    "https://en.wikipedia.org/w/index.php?curid=12345&oldid=67890",
+    `<h1 id="firstHeading">Climate change</h1>
+     <div id="mw-content-text">
+       <div class="mw-parser-output">
+         <p>Human activity is warming the planet.</p>
+       </div>
+     </div>`,
+    (document) => wikipediaAdapter.extract(document),
+  );
+
+  const ready = assertReady(result);
+  assert.equal(ready.content.platform, "WIKIPEDIA");
+  assert.equal(ready.content.externalId, "en:12345");
+  assert.equal(ready.content.metadata.title, "Climate_change");
 });
 
 test("Wikipedia adapter returns unsupported for non-main namespaces", () => {

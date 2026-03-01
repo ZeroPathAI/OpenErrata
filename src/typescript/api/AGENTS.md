@@ -50,18 +50,45 @@ tRPC handler → `postRouter` or `publicRouter` → Prisma → PostgreSQL.
 1. Selector cron (`src/lib/services/selector.ts`) picks uninvestigated posts by
    uniqueViewScore, attempts server-side fetch, and creates PENDING investigations.
 2. graphile-worker (`src/lib/services/queue.ts`) picks up jobs.
-3. Orchestrator (`src/lib/services/orchestrator.ts`) calls the investigator,
-   stores claims + sources, marks COMPLETE or FAILED.
-4. The investigator (`src/lib/investigators/openai.ts`) runs a two-step OpenAI
-   Responses workflow: (a) tool-enabled fact-check generation, then (b) a
-   second model validation pass that filters claims against OpenErrata
-   principles before structured output is accepted.
+3. Orchestrator (`src/lib/services/orchestrator.ts`) claims a run lease, calls
+   the investigator, stores claims + sources, marks COMPLETE or FAILED.
+   Delegates to focused sub-modules:
+   - `services/run-lease.ts` — Atomic lease claim/release and heartbeat renewal.
+     Runs keep `PROCESSING` status throughout; lease expiry is the worker
+     exclusivity mechanism (not a status reset to `PENDING`).
+   - `services/prompt-context.ts` — Extracts post metadata (platform, URL,
+     author, image occurrences, video flag) from the Prisma query result.
+   - `services/attempt-audit.ts` — Persists `InvestigationAttempt` records and
+     all sub-records (tools, output items, text parts, annotations, reasoning
+     summaries, tool calls, usage, error). Provides two transaction helpers:
+     `persistFailedAttemptAndMarkInvestigationFailed` (terminal) and
+     `persistFailedAttemptAndReleaseLease` (transient, retryable).
+   - `services/orchestrator-errors.ts` — Error classification:
+     `isNonRetryableProviderError`, `formatErrorForLog`, `unwrapError`.
+4. The investigator (`src/lib/investigators/openai.ts`) runs a two-stage OpenAI
+   Responses workflow: (a) tool-enabled fact-check generation, then (b) per-claim
+   validation that filters each candidate claim against OpenErrata principles
+   before it is included in the final result. Delegates to focused sub-modules:
+   - `investigators/openai-schemas.ts` — Zod schemas for structured outputs
+     (avoids `format: "uri"` which OpenAI rejects). Includes
+     `buildUpdateInvestigationResultSchema` for carry/new update actions.
+   - `investigators/openai-input-builder.ts` — Builds multimodal request input,
+     interleaving inline image parts, caption text, and budget markers within
+     the post content.
+   - `investigators/openai-response-audit.ts` — Parses raw Responses API records
+     into typed audit structs; handles multi-round offset tracking and merging.
+   - `investigators/openai-tool-dispatch.ts` — Extracts and executes pending
+     `function_call` output items.
+   - `investigators/openai-claim-validator.ts` — Per-claim Stage 2 validation
+     (concurrency-limited to 4); returns `{ approved: boolean }` per claim.
 
 ### Failure Classification (spec §3.7)
 
 - **TRANSIENT**: Provider 5xx, 429, network timeouts → graphile-worker retries
-  with backoff. Orchestrator resets investigation status back to `PENDING`
-  before rethrow so only one worker run is active at a time.
+  with backoff. Investigation stays `PROCESSING`; the run lease is released so
+  the next worker attempt can claim it. Status is **not** reset to `PENDING`
+  (doing so would allow the selector/investigateNow to re-enqueue a duplicate
+  graphile-worker job via jobKey replacement).
 - **NON_RETRYABLE**: Zod validation failure, content-policy refusal, auth errors
   → mark FAILED immediately, don't rethrow.
 - **FAILED is terminal** for a given `postVersionId`. No automatic

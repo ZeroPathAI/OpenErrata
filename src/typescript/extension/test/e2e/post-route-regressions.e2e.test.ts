@@ -7,7 +7,8 @@ import {
   type ExtensionPostStatus,
   type ExtensionSkippedReason,
 } from "@openerrata/shared";
-import { chromium, expect, test, type BrowserContext, type Worker } from "@playwright/test";
+import { chromium, test, type BrowserContext, type Worker } from "@playwright/test";
+import { E2E_WIKIPEDIA_FIXTURE_KEYS, readE2eWikipediaFixture } from "./wikipedia-fixtures.js";
 
 type Platform = "LESSWRONG" | "X" | "SUBSTACK" | "WIKIPEDIA";
 
@@ -31,28 +32,282 @@ interface ExpectedPostStatus {
   investigationState?: ExtensionPostStatus["investigationState"];
 }
 
-async function getCachedStatus(serviceWorker: Worker): Promise<unknown> {
-  return serviceWorker.evaluate(async (protocolVersion: number) => {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (tab?.id === undefined) {
-      return null;
+const DEFAULT_STATUS_POLL_TIMEOUT_MS = 15_000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise<void>((done) => {
+    setTimeout(done, ms);
+  });
+}
+
+interface CachedStatusProbe {
+  tabId: number;
+  tabUrl: string | null;
+  pendingUrl: string | null;
+  status: unknown;
+  error: string | null;
+}
+
+interface ContentScriptProbe {
+  tabId: number;
+  tabUrl: string | null;
+  pendingUrl: string | null;
+  listenerReady: boolean;
+  listenerError: string | null;
+  injected: boolean;
+  injectError: string | null;
+}
+
+function summarizeContentScriptProbesForError(probes: ContentScriptProbe[]): string {
+  if (probes.length === 0) {
+    return JSON.stringify([{ kind: "NO_TABS_PROBED" }]);
+  }
+  return JSON.stringify(probes);
+}
+
+async function ensureContentScriptReady(
+  serviceWorker: Worker,
+  options: { preferredPageUrl?: string; timeoutMs?: number } = {},
+): Promise<void> {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_STATUS_POLL_TIMEOUT_MS;
+  const startedAt = Date.now();
+  let lastProbes: ContentScriptProbe[] = [];
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const probeResult = await serviceWorker.evaluate(
+      async (input: { protocolVersion: number; preferredPageUrl: string | null }) => {
+        function normalizeComparableUrl(url: string): string {
+          try {
+            const parsed = new URL(url);
+            const normalizedPathname =
+              parsed.pathname.length > 1 && parsed.pathname.endsWith("/")
+                ? parsed.pathname.slice(0, -1)
+                : parsed.pathname;
+            return `${parsed.origin}${normalizedPathname}`;
+          } catch {
+            return url;
+          }
+        }
+
+        function isPreferredUrlCandidate(
+          candidate: string | undefined | null,
+          preferredPageUrl: string | null,
+        ): boolean {
+          if (typeof candidate !== "string" || preferredPageUrl === null) {
+            return false;
+          }
+          if (
+            candidate === preferredPageUrl ||
+            candidate.startsWith(`${preferredPageUrl}?`) ||
+            candidate.startsWith(`${preferredPageUrl}#`)
+          ) {
+            return true;
+          }
+          return normalizeComparableUrl(candidate) === normalizeComparableUrl(preferredPageUrl);
+        }
+
+        const allTabs = await chrome.tabs.query({});
+        const preferredTabs =
+          input.preferredPageUrl === null
+            ? []
+            : allTabs.filter((tab) =>
+                [tab.url, tab.pendingUrl].some((candidate) =>
+                  isPreferredUrlCandidate(candidate, input.preferredPageUrl),
+                ),
+              );
+        const tabsToProbe =
+          preferredTabs.length > 0
+            ? preferredTabs
+            : allTabs.filter((tab) => typeof tab.id === "number");
+
+        const probes: ContentScriptProbe[] = [];
+        let anyReady = false;
+
+        for (const tab of tabsToProbe) {
+          if (typeof tab.id !== "number") {
+            continue;
+          }
+
+          let listenerReady = false;
+          let listenerError: string | null = null;
+          try {
+            await chrome.tabs.sendMessage(tab.id, {
+              v: input.protocolVersion,
+              type: "GET_ANNOTATION_VISIBILITY",
+            });
+            listenerReady = true;
+            anyReady = true;
+          } catch (error: unknown) {
+            listenerError = error instanceof Error ? error.message : String(error);
+          }
+
+          let injected = false;
+          let injectError: string | null = null;
+          if (!listenerReady) {
+            try {
+              await chrome.scripting.executeScript({
+                target: { tabId: tab.id },
+                files: ["content/main.js"],
+              });
+              await chrome.scripting.insertCSS({
+                target: { tabId: tab.id },
+                files: ["content/annotations.css"],
+              });
+              injected = true;
+            } catch (error: unknown) {
+              injectError = error instanceof Error ? error.message : String(error);
+            }
+          }
+
+          probes.push({
+            tabId: tab.id,
+            tabUrl: tab.url ?? null,
+            pendingUrl: tab.pendingUrl ?? null,
+            listenerReady,
+            listenerError,
+            injected,
+            injectError,
+          });
+        }
+
+        return {
+          ready: anyReady,
+          probes,
+        };
+      },
+      {
+        protocolVersion: EXTENSION_MESSAGE_PROTOCOL_VERSION,
+        preferredPageUrl: options.preferredPageUrl ?? null,
+      },
+    );
+
+    lastProbes = probeResult.probes;
+    if (probeResult.ready) {
+      return;
     }
 
-    const [result] = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      func: async (messageProtocolVersion: number) => {
-        const response = (await chrome.runtime.sendMessage({
-          v: messageProtocolVersion,
-          type: "GET_CACHED",
-        })) as unknown;
-        return response;
-      },
-      args: [protocolVersion],
-    });
+    await sleep(200);
+  }
 
-    const scriptResult = result?.result;
-    return scriptResult ?? null;
-  }, EXTENSION_MESSAGE_PROTOCOL_VERSION);
+  throw new Error(
+    `Timed out waiting for content script listener (timeout ${timeoutMs}ms). Last probe results: ${summarizeContentScriptProbesForError(lastProbes)}`,
+  );
+}
+
+async function getCachedStatuses(
+  serviceWorker: Worker,
+  options: { preferredPageUrl?: string } = {},
+): Promise<CachedStatusProbe[]> {
+  return serviceWorker.evaluate(
+    async (input: { protocolVersion: number; preferredPageUrl: string | null }) => {
+      function normalizeComparableUrl(url: string): string {
+        try {
+          const parsed = new URL(url);
+          const normalizedPathname =
+            parsed.pathname.length > 1 && parsed.pathname.endsWith("/")
+              ? parsed.pathname.slice(0, -1)
+              : parsed.pathname;
+          return `${parsed.origin}${normalizedPathname}`;
+        } catch {
+          return url;
+        }
+      }
+
+      function isPreferredUrlCandidate(
+        candidate: string | undefined | null,
+        preferredPageUrl: string | null,
+      ): boolean {
+        if (typeof candidate !== "string" || preferredPageUrl === null) {
+          return false;
+        }
+        if (
+          candidate === preferredPageUrl ||
+          candidate.startsWith(`${preferredPageUrl}?`) ||
+          candidate.startsWith(`${preferredPageUrl}#`)
+        ) {
+          return true;
+        }
+        return normalizeComparableUrl(candidate) === normalizeComparableUrl(preferredPageUrl);
+      }
+
+      const allTabs = await chrome.tabs.query({});
+
+      const preferredTabs =
+        input.preferredPageUrl === null
+          ? []
+          : allTabs.filter((tab) =>
+              [tab.url, tab.pendingUrl].some((candidate) =>
+                isPreferredUrlCandidate(candidate, input.preferredPageUrl),
+              ),
+            );
+
+      const tabsToProbe =
+        preferredTabs.length > 0
+          ? preferredTabs
+          : allTabs.filter((tab) => typeof tab.id === "number");
+
+      const probes: {
+        tabId: number;
+        tabUrl: string | null;
+        pendingUrl: string | null;
+        status: unknown;
+        error: string | null;
+      }[] = [];
+
+      for (const tab of tabsToProbe) {
+        if (typeof tab.id !== "number") {
+          continue;
+        }
+
+        try {
+          // Trigger a refresh-cycle sync point in the content script before
+          // reading cache so transient tab-cache clears can be repopulated.
+          await chrome.tabs.sendMessage(tab.id, {
+            v: input.protocolVersion,
+            type: "GET_ANNOTATION_VISIBILITY",
+          });
+        } catch {
+          // Ignore and continue to cached-status probing below.
+        }
+
+        try {
+          const [result] = await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            func: async (messageProtocolVersion: number) => {
+              const response = (await chrome.runtime.sendMessage({
+                v: messageProtocolVersion,
+                type: "GET_CACHED",
+              })) as unknown;
+              return response;
+            },
+            args: [input.protocolVersion],
+          });
+
+          probes.push({
+            tabId: tab.id,
+            tabUrl: tab.url ?? null,
+            pendingUrl: tab.pendingUrl ?? null,
+            status: result?.result ?? null,
+            error: null,
+          });
+        } catch (error: unknown) {
+          probes.push({
+            tabId: tab.id,
+            tabUrl: tab.url ?? null,
+            pendingUrl: tab.pendingUrl ?? null,
+            status: null,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
+      return probes;
+    },
+    {
+      protocolVersion: EXTENSION_MESSAGE_PROTOCOL_VERSION,
+      preferredPageUrl: options.preferredPageUrl ?? null,
+    },
+  );
 }
 
 function hasMatchingSkippedStatus(status: unknown, expected: ExpectedSkippedStatus): boolean {
@@ -85,6 +340,124 @@ function hasMatchingPostStatus(status: unknown, expected: ExpectedPostStatus): b
   );
 }
 
+function summarizeStatusForError(status: unknown): string {
+  const parsed = extensionPageStatusSchema.safeParse(status);
+  if (!parsed.success) {
+    return JSON.stringify({ kind: "UNPARSED", status });
+  }
+
+  if (parsed.data.kind === "SKIPPED") {
+    return JSON.stringify({
+      kind: "SKIPPED",
+      platform: parsed.data.platform,
+      externalId: parsed.data.externalId,
+      reason: parsed.data.reason,
+      pageUrl: parsed.data.pageUrl,
+      tabSessionId: parsed.data.tabSessionId,
+    });
+  }
+
+  return JSON.stringify({
+    kind: "POST",
+    platform: parsed.data.platform,
+    externalId: parsed.data.externalId,
+    investigationState: parsed.data.investigationState,
+    pageUrl: parsed.data.pageUrl,
+    tabSessionId: parsed.data.tabSessionId,
+  });
+}
+
+function summarizeStatusProbesForError(probes: CachedStatusProbe[]): string {
+  if (probes.length === 0) {
+    return JSON.stringify([{ kind: "NO_TABS_PROBED" }]);
+  }
+  return JSON.stringify(
+    probes.map((probe) => ({
+      tabId: probe.tabId,
+      tabUrl: probe.tabUrl,
+      pendingUrl: probe.pendingUrl,
+      error: probe.error,
+      status: summarizeStatusForError(probe.status),
+    })),
+  );
+}
+
+async function waitForStatusMatch(
+  readStatusProbes: () => Promise<CachedStatusProbe[]>,
+  matches: (status: unknown) => boolean,
+  timeoutMs: number,
+  failureLabel: string,
+): Promise<void> {
+  const startedAt = Date.now();
+  let lastProbes: CachedStatusProbe[] = [];
+  while (Date.now() - startedAt < timeoutMs) {
+    lastProbes = await readStatusProbes();
+    if (lastProbes.some((probe) => matches(probe.status))) {
+      return;
+    }
+    await sleep(250);
+  }
+
+  throw new Error(
+    `${failureLabel} (timeout ${timeoutMs}ms). Last cached statuses: ${summarizeStatusProbesForError(lastProbes)}`,
+  );
+}
+
+async function expectSkippedStatus(
+  serviceWorker: Worker,
+  expected: ExpectedSkippedStatus,
+  options: { timeoutMs?: number; preferredPageUrl?: string } = {},
+): Promise<void> {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_STATUS_POLL_TIMEOUT_MS;
+  const preferredPageUrl = options.preferredPageUrl ?? expected.pageUrl;
+  const probeOptions = preferredPageUrl === undefined ? {} : { preferredPageUrl };
+  await ensureContentScriptReady(serviceWorker, {
+    timeoutMs,
+    ...probeOptions,
+  });
+  await waitForStatusMatch(
+    () => getCachedStatuses(serviceWorker, probeOptions),
+    (status) => hasMatchingSkippedStatus(status, expected),
+    timeoutMs,
+    `Expected skipped status did not match ${JSON.stringify(expected)}`,
+  );
+}
+
+async function expectPostStatus(
+  serviceWorker: Worker,
+  expected: ExpectedPostStatus,
+  options: { timeoutMs?: number; preferredPageUrl?: string } = {},
+): Promise<void> {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_STATUS_POLL_TIMEOUT_MS;
+  const preferredPageUrl = options.preferredPageUrl ?? expected.pageUrl;
+  const probeOptions = preferredPageUrl === undefined ? {} : { preferredPageUrl };
+  await ensureContentScriptReady(serviceWorker, {
+    timeoutMs,
+    ...probeOptions,
+  });
+  await waitForStatusMatch(
+    () => getCachedStatuses(serviceWorker, probeOptions),
+    (status) => hasMatchingPostStatus(status, expected),
+    timeoutMs,
+    `Expected post status did not match ${JSON.stringify(expected)}`,
+  );
+}
+
+function injectVideoIntoWikipediaFixtureHtml(html: string): string {
+  const marker = '<div class="mw-parser-output">';
+  const videoNode =
+    '<video controls src="https://upload.wikimedia.org/openerrata-e2e-video.mp4"></video>';
+  if (html.includes(marker)) {
+    return html.replace(marker, `${marker}${videoNode}`);
+  }
+
+  const bodyEnd = "</body>";
+  if (html.includes(bodyEnd)) {
+    return html.replace(bodyEnd, `${videoNode}${bodyEnd}`);
+  }
+
+  return `${html}${videoNode}`;
+}
 async function launchExtensionHarness(): Promise<ExtensionHarness> {
   const extensionPath = resolve(process.cwd(), "dist");
   const userDataDir = mkdtempSync(join(tmpdir(), "openerrata-extension-e2e-"));
@@ -109,28 +482,6 @@ async function closeExtensionHarness(harness: ExtensionHarness): Promise<void> {
   rmSync(harness.userDataDir, { recursive: true, force: true });
 }
 
-async function expectSkippedStatus(
-  serviceWorker: Worker,
-  expected: ExpectedSkippedStatus,
-  options: { timeoutMs?: number } = {},
-): Promise<void> {
-  await expect
-    .poll(
-      async () => hasMatchingSkippedStatus(await getCachedStatus(serviceWorker), expected),
-      options.timeoutMs === undefined ? undefined : { timeout: options.timeoutMs },
-    )
-    .toBe(true);
-}
-
-async function expectPostStatus(
-  serviceWorker: Worker,
-  expected: ExpectedPostStatus,
-): Promise<void> {
-  await expect
-    .poll(async () => hasMatchingPostStatus(await getCachedStatus(serviceWorker), expected))
-    .toBe(true);
-}
-
 test("LessWrong post URL without slug still reaches a terminal skipped status", async () => {
   const harness = await launchExtensionHarness();
   try {
@@ -138,7 +489,7 @@ test("LessWrong post URL without slug still reaches a terminal skipped status", 
     const url = `https://www.lesswrong.com/posts/${postId}`;
     const page = await harness.context.newPage();
 
-    await page.route(`${url}*`, async (route) => {
+    await page.route(`${url}**`, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "text/html",
@@ -164,11 +515,15 @@ test("LessWrong post URL without slug still reaches a terminal skipped status", 
     });
 
     await page.goto(url, { waitUntil: "domcontentloaded" });
-    await expectSkippedStatus(harness.serviceWorker, {
-      platform: "LESSWRONG",
-      externalId: postId,
-      reason: "has_video",
-    });
+    await expectSkippedStatus(
+      harness.serviceWorker,
+      {
+        platform: "LESSWRONG",
+        externalId: postId,
+        reason: "has_video",
+      },
+      { preferredPageUrl: url },
+    );
   } finally {
     await closeExtensionHarness(harness);
   }
@@ -181,7 +536,7 @@ test("X i/status URL still reaches a terminal skipped status", async () => {
     const url = `https://x.com/i/status/${tweetId}`;
     const page = await harness.context.newPage();
 
-    await page.route(`${url}*`, async (route) => {
+    await page.route(`${url}**`, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "text/html",
@@ -208,11 +563,15 @@ test("X i/status URL still reaches a terminal skipped status", async () => {
     });
 
     await page.goto(url, { waitUntil: "domcontentloaded" });
-    await expectSkippedStatus(harness.serviceWorker, {
-      platform: "X",
-      externalId: tweetId,
-      reason: "has_video",
-    });
+    await expectSkippedStatus(
+      harness.serviceWorker,
+      {
+        platform: "X",
+        externalId: tweetId,
+        reason: "has_video",
+      },
+      { preferredPageUrl: url },
+    );
   } finally {
     await closeExtensionHarness(harness);
   }
@@ -225,7 +584,7 @@ test("X protected status stays private_or_gated even with unrelated tweet text o
     const url = `https://x.com/i/status/${tweetId}`;
     const page = await harness.context.newPage();
 
-    await page.route(`${url}*`, async (route) => {
+    await page.route(`${url}**`, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "text/html",
@@ -252,11 +611,15 @@ test("X protected status stays private_or_gated even with unrelated tweet text o
     });
 
     await page.goto(url, { waitUntil: "domcontentloaded" });
-    await expectSkippedStatus(harness.serviceWorker, {
-      platform: "X",
-      externalId: tweetId,
-      reason: "private_or_gated",
-    });
+    await expectSkippedStatus(
+      harness.serviceWorker,
+      {
+        platform: "X",
+        externalId: tweetId,
+        reason: "private_or_gated",
+      },
+      { preferredPageUrl: url },
+    );
   } finally {
     await closeExtensionHarness(harness);
   }
@@ -269,7 +632,7 @@ test("X i/web/status permalink anchors are accepted for target tweet extraction"
     const url = `https://x.com/i/web/status/${tweetId}`;
     const page = await harness.context.newPage();
 
-    await page.route(`${url}*`, async (route) => {
+    await page.route(`${url}**`, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "text/html",
@@ -297,11 +660,15 @@ test("X i/web/status permalink anchors are accepted for target tweet extraction"
     });
 
     await page.goto(url, { waitUntil: "domcontentloaded" });
-    await expectSkippedStatus(harness.serviceWorker, {
-      platform: "X",
-      externalId: tweetId,
-      reason: "has_video",
-    });
+    await expectSkippedStatus(
+      harness.serviceWorker,
+      {
+        platform: "X",
+        externalId: tweetId,
+        reason: "has_video",
+      },
+      { preferredPageUrl: url },
+    );
   } finally {
     await closeExtensionHarness(harness);
   }
@@ -314,7 +681,7 @@ test("X single-article fallback is allowed when canonical identity proves target
     const url = `https://x.com/i/status/${tweetId}`;
     const page = await harness.context.newPage();
 
-    await page.route(`${url}*`, async (route) => {
+    await page.route(`${url}**`, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "text/html",
@@ -342,11 +709,15 @@ test("X single-article fallback is allowed when canonical identity proves target
     });
 
     await page.goto(url, { waitUntil: "domcontentloaded" });
-    await expectSkippedStatus(harness.serviceWorker, {
-      platform: "X",
-      externalId: tweetId,
-      reason: "has_video",
-    });
+    await expectSkippedStatus(
+      harness.serviceWorker,
+      {
+        platform: "X",
+        externalId: tweetId,
+        reason: "has_video",
+      },
+      { preferredPageUrl: url },
+    );
   } finally {
     await closeExtensionHarness(harness);
   }
@@ -359,7 +730,7 @@ test("X status routes require identity proof and eventually skip when proof neve
     const url = `https://x.com/i/status/${tweetId}`;
     const page = await harness.context.newPage();
 
-    await page.route(`${url}*`, async (route) => {
+    await page.route(`${url}**`, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "text/html",
@@ -392,7 +763,7 @@ test("X status routes require identity proof and eventually skip when proof neve
         externalId: tweetId,
         reason: "unsupported_content",
       },
-      { timeoutMs: 15_000 },
+      { preferredPageUrl: url },
     );
   } finally {
     await closeExtensionHarness(harness);
@@ -406,7 +777,7 @@ test("Substack paywalled post reaches a private_or_gated skipped status", async 
     const url = `https://example.substack.com/p/${slug}`;
     const page = await harness.context.newPage();
 
-    await page.route(`${url}*`, async (route) => {
+    await page.route(`${url}**`, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "text/html",
@@ -429,11 +800,15 @@ test("Substack paywalled post reaches a private_or_gated skipped status", async 
     });
 
     await page.goto(url, { waitUntil: "domcontentloaded" });
-    await expectSkippedStatus(harness.serviceWorker, {
-      platform: "SUBSTACK",
-      externalId: slug,
-      reason: "private_or_gated",
-    });
+    await expectSkippedStatus(
+      harness.serviceWorker,
+      {
+        platform: "SUBSTACK",
+        externalId: slug,
+        reason: "private_or_gated",
+      },
+      { preferredPageUrl: url },
+    );
   } finally {
     await closeExtensionHarness(harness);
   }
@@ -447,7 +822,7 @@ test("Substack public post with subscribe CTA is not misclassified as private_or
     const url = `https://example.substack.com/p/${slug}`;
     const page = await harness.context.newPage();
 
-    await page.route(`${url}*`, async (route) => {
+    await page.route(`${url}**`, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "text/html",
@@ -495,7 +870,7 @@ test("Substack private_or_gated state updates when origin changes but slug stays
     const secondUrl = `https://beta.substack.com/p/${slug}`;
     const page = await harness.context.newPage();
 
-    await page.route(`${firstUrl}*`, async (route) => {
+    await page.route(`${firstUrl}**`, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "text/html",
@@ -514,7 +889,7 @@ test("Substack private_or_gated state updates when origin changes but slug stays
       });
     });
 
-    await page.route(`${secondUrl}*`, async (route) => {
+    await page.route(`${secondUrl}**`, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "text/html",
@@ -547,6 +922,36 @@ test("Substack private_or_gated state updates when origin changes but slug stays
       externalId: slug,
       reason: "private_or_gated",
       pageUrl: secondUrl,
+    });
+  } finally {
+    await closeExtensionHarness(harness);
+  }
+});
+
+test("Wikipedia cached live-page fixture reaches has_video skipped status", async () => {
+  const harness = await launchExtensionHarness();
+  try {
+    const fixture = await readE2eWikipediaFixture(
+      E2E_WIKIPEDIA_FIXTURE_KEYS.ALI_KHAMENEI_PAGE_HTML,
+    );
+    const url = fixture.sourceUrl;
+    const page = await harness.context.newPage();
+    const html = injectVideoIntoWikipediaFixtureHtml(fixture.html);
+
+    await page.route(`${url}**`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "text/html",
+        body: html,
+      });
+    });
+
+    await page.goto(url, { waitUntil: "domcontentloaded" });
+    await expectSkippedStatus(harness.serviceWorker, {
+      platform: "WIKIPEDIA",
+      externalId: `${fixture.language}:${fixture.pageId}`,
+      reason: "has_video",
+      pageUrl: url,
     });
   } finally {
     await closeExtensionHarness(harness);

@@ -22,6 +22,16 @@ const VIDEO_SELECTOR = [
   ".mw-tmh-player",
   ".mw-tmh-play",
 ].join(",");
+const INLINE_WIKIPEDIA_CONFIG_SCRIPT_HINTS = ["RLCONF", "mw.config.set"] as const;
+type InlineMwConfigCacheEntry =
+  | {
+      found: false;
+    }
+  | {
+      found: true;
+      value: unknown;
+    };
+const inlineMwConfigCache = new WeakMap<Document, Map<string, InlineMwConfigCacheEntry>>();
 
 type MediaWikiWindow = Window & {
   mw?: {
@@ -31,9 +41,113 @@ type MediaWikiWindow = Window & {
   };
 };
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function decodeJsonStringLiteral(value: string): string | null {
+  try {
+    const decoded = JSON.parse(`"${value}"`) as unknown;
+    return typeof decoded === "string" ? decoded : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseMwConfigValueFromScriptText(
+  scriptText: string,
+  key: string,
+): InlineMwConfigCacheEntry {
+  const escapedKey = escapeRegExp(key);
+
+  const numberMatch = new RegExp(`"${escapedKey}"\\s*:\\s*(-?\\d+)`).exec(scriptText);
+  if (numberMatch?.[1] !== undefined) {
+    const numericValue = Number(numberMatch[1]);
+    if (Number.isInteger(numericValue)) {
+      return {
+        found: true,
+        value: numericValue,
+      };
+    }
+  }
+
+  const stringMatch = new RegExp(`"${escapedKey}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"`).exec(
+    scriptText,
+  );
+  if (stringMatch?.[1] !== undefined) {
+    const decoded = decodeJsonStringLiteral(stringMatch[1]);
+    if (decoded !== null) {
+      return {
+        found: true,
+        value: decoded,
+      };
+    }
+  }
+
+  const booleanMatch = new RegExp(`"${escapedKey}"\\s*:\\s*(true|false|!0|!1)`).exec(scriptText);
+  if (booleanMatch?.[1] !== undefined) {
+    return {
+      found: true,
+      value: booleanMatch[1] === "true" || booleanMatch[1] === "!0",
+    };
+  }
+
+  if (new RegExp(`"${escapedKey}"\\s*:\\s*null`).test(scriptText)) {
+    return {
+      found: true,
+      value: null,
+    };
+  }
+
+  return {
+    found: false,
+  };
+}
+
+function readMwConfigValueFromInlineScripts(document: Document, key: string): unknown {
+  let cacheByKey = inlineMwConfigCache.get(document);
+  if (cacheByKey === undefined) {
+    cacheByKey = new Map<string, InlineMwConfigCacheEntry>();
+    inlineMwConfigCache.set(document, cacheByKey);
+  }
+
+  const cachedEntry = cacheByKey.get(key);
+  if (cachedEntry !== undefined) {
+    return cachedEntry.found ? cachedEntry.value : undefined;
+  }
+
+  for (const script of document.querySelectorAll<HTMLScriptElement>("script:not([src])")) {
+    const scriptText = script.text;
+    if (!scriptText.includes(`"${key}"`)) {
+      continue;
+    }
+    if (!INLINE_WIKIPEDIA_CONFIG_SCRIPT_HINTS.some((hint) => scriptText.includes(hint))) {
+      continue;
+    }
+
+    const entry = parseMwConfigValueFromScriptText(scriptText, key);
+    if (entry.found) {
+      cacheByKey.set(key, entry);
+      return entry.value;
+    }
+  }
+
+  cacheByKey.set(key, {
+    found: false,
+  });
+  return undefined;
+}
+
 function readMwConfigValue(document: Document, key: string): unknown {
   const defaultView = document.defaultView as MediaWikiWindow | null;
-  return defaultView?.mw?.config?.get?.(key);
+  const fromMwRuntime = defaultView?.mw?.config?.get?.(key);
+  if (fromMwRuntime !== undefined) {
+    return fromMwRuntime;
+  }
+
+  // Content scripts run in an isolated world, so page globals like `window.mw`
+  // are not guaranteed to be directly readable. Fall back to inline config.
+  return readMwConfigValueFromInlineScripts(document, key);
 }
 
 function toIdString(value: unknown): string | null {

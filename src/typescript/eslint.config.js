@@ -133,6 +133,7 @@ const typeAwareTsIgnores = [
   "**/vite.config.ts",
   "**/svelte.config.js",
   "extension/playwright.config.ts",
+  "test-support/*.ts",
 ];
 
 const typeAwarePresetConfigs = [

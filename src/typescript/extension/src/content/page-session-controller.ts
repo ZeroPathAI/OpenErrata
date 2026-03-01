@@ -393,6 +393,19 @@ export class PageSessionController {
     // Popup opens are a reliable user-driven sync point. Nudge a refresh in case
     // a prior SPA route transition missed observer-driven refresh scheduling.
     this.scheduleRefresh(0);
+    if (this.#state.kind === "SKIPPED") {
+      // Re-emit skipped status as an idempotent cache sync point. Background
+      // cache can be cleared by tab lifecycle events after a skip was already
+      // determined, and the skipped session otherwise has no further automatic
+      // sync path until the page state changes.
+      this.#sync.sendPageSkipped({
+        tabSessionId: this.#state.tabSessionId,
+        platform: this.#state.platform,
+        externalId: this.#state.externalId,
+        pageUrl: this.#state.pageUrl,
+        reason: this.#state.reason,
+      });
+    }
     return annotationVisibilityResponseSchema.parse({
       visible: this.#annotations.isVisible(),
     });

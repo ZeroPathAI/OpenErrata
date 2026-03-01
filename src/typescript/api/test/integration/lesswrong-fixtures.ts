@@ -1,5 +1,11 @@
-import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import {
+  hashText as hashFixtureText,
+  readJsonFile,
+  sanitizeFixtureKey,
+  writeJsonFile,
+} from "../../../test-support/fixture-cache.js";
+
+export const hashText = hashFixtureText;
 
 const FIXTURES_DIRECTORY = new URL("./fixtures/lesswrong/", import.meta.url);
 const LESSWRONG_GRAPHQL_URL = "https://www.lesswrong.com/graphql";
@@ -57,14 +63,6 @@ export interface LesswrongFixture {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
-}
-
-export function hashText(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
-}
-
-function sanitizeFixtureKey(fixtureKey: string): string {
-  return fixtureKey.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
 
 function fixturePath(fixtureKey: string): URL {
@@ -137,8 +135,7 @@ function extractLesswrongHtml(value: unknown): string | null {
 
 export async function readLesswrongFixture(fixtureKey: string): Promise<LesswrongFixture> {
   const path = fixturePath(fixtureKey);
-  const raw = await readFile(path, "utf8");
-  const record = validateLesswrongFixture(JSON.parse(raw));
+  const record = validateLesswrongFixture(await readJsonFile(path));
   if (record.key !== fixtureKey) {
     throw new Error(
       `Fixture key mismatch: requested ${fixtureKey}, but file contains ${record.key}.`,
@@ -159,10 +156,8 @@ export function resolveLesswrongFixtureDefinition(fixtureKey: string): Lesswrong
 }
 
 async function writeLesswrongFixture(fixture: LesswrongFixture): Promise<void> {
-  await mkdir(FIXTURES_DIRECTORY, { recursive: true });
   const path = fixturePath(fixture.key);
-  const normalized = JSON.stringify(fixture, null, 2) + "\n";
-  await writeFile(path, normalized, "utf8");
+  await writeJsonFile(path, fixture);
 }
 
 export async function fetchLesswrongHtmlFromLive(externalId: string): Promise<string> {
