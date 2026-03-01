@@ -1,6 +1,7 @@
 import {
   normalizeContent,
   isNonNullObject,
+  CONTENT_BLOCK_SEPARATOR_TAGS,
   type ObservedImageOccurrence,
 } from "@openerrata/shared";
 
@@ -231,8 +232,20 @@ export function extractContentWithImageOccurrencesFromRoot(
       continue;
     }
 
-    if (node instanceof defaultView.HTMLImageElement && targetImages.has(node)) {
-      appendOccurrence(node);
+    // At this point node is an Element (TREE_WALKER_TEXT_AND_ELEMENT only
+    // visits text nodes and element nodes, and text nodes were handled above).
+    if (node instanceof defaultView.Element) {
+      // Inject a space when entering a block-level element so adjacent block
+      // elements that have no whitespace text node between them (compact HTML)
+      // still produce word-separated output after normalizeContent.
+      if (CONTENT_BLOCK_SEPARATOR_TAGS.has(node.tagName.toLowerCase())) {
+        rawTextParts.push(" ");
+        rawTextLength += 1;
+      }
+
+      if (node instanceof defaultView.HTMLImageElement && targetImages.has(node)) {
+        appendOccurrence(node);
+      }
     }
   }
 

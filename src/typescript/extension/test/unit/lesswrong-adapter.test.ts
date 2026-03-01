@@ -285,3 +285,35 @@ test("LessWrong adapter prefers post JSON-LD published date over unrelated docum
   assert.equal(extracted.platform, "LESSWRONG");
   assert.equal(extracted.metadata.publishedAt, "2025-12-03T00:00:00.000Z");
 });
+
+test("LessWrong adapter preserves word boundaries across adjacent block elements", () => {
+  const result = withWindow(
+    "https://www.lesswrong.com/posts/abcd1234/boundary-test",
+    `
+      <!doctype html>
+      <html>
+        <body>
+          <div id="postBody">
+            <script type="application/ld+json">
+              {"url":"https://www.lesswrong.com/posts/abcd1234/boundary-test"}
+            </script>
+            <div class="LWPostsPageHeader-authorInfo">
+              <span class="PostsAuthors-authorName">
+                <a href="/users/example_author">Example Author</a>
+              </span>
+            </div>
+            <div class="PostsPage-postContent">
+              <div id="postContent">
+                <p>Alpha</p><p>Beta</p><div>Gamma</div>
+              </div>
+            </div>
+          </div>
+        </body>
+      </html>
+    `,
+    (document) => lesswrongAdapter.extract(document),
+  );
+
+  const extracted = assertReady(result).content;
+  assert.equal(extracted.contentText, "Alpha Beta Gamma");
+});

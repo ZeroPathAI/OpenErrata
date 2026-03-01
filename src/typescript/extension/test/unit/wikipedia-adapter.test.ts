@@ -235,3 +235,154 @@ test("Wikipedia adapter excludes references-class blocks even without references
   assert.equal(ready.content.contentText.includes("Reference that should be excluded."), false);
   assert.equal(ready.content.contentText, "Lead statement. Closing statement.");
 });
+
+// ── Parsoid heading wrapper format ────────────────────────────────────────────
+// Wikipedia's Parsoid renderer wraps headings in <div class="mw-heading mw-headingN">,
+// requiring special handling in both section removal and stop-condition detection.
+
+test("Wikipedia adapter excludes section content under Parsoid div.mw-heading wrapper", () => {
+  const result = withMwConfig(
+    "https://en.wikipedia.org/wiki/Climate_change",
+    `<!doctype html>
+      <html>
+        <body>
+          <h1 id="firstHeading">Climate change</h1>
+          <div id="mw-content-text">
+            <div class="mw-parser-output">
+              <p>Lead statement.</p>
+              <div class="mw-heading mw-heading2">
+                <h2 id="Notes">Notes</h2>
+                <span class="mw-editsection">[edit]</span>
+              </div>
+              <ul><li>Some related link.</li></ul>
+            </div>
+          </div>
+        </body>
+      </html>`,
+    {
+      wgNamespaceNumber: 0,
+      wgArticleId: 12345,
+      wgRevisionId: 67890,
+      wgContentLanguage: "en",
+    },
+    (document) => wikipediaAdapter.extract(document),
+  );
+
+  const ready = assertReady(result);
+  assert.equal(ready.content.contentText.includes("Some related link."), false);
+  assert.equal(ready.content.contentText, "Lead statement.");
+});
+
+test("Wikipedia adapter stops excluding at the next Parsoid heading of same level", () => {
+  const result = withMwConfig(
+    "https://en.wikipedia.org/wiki/Climate_change",
+    `<!doctype html>
+      <html>
+        <body>
+          <h1 id="firstHeading">Climate change</h1>
+          <div id="mw-content-text">
+            <div class="mw-parser-output">
+              <p>Lead statement.</p>
+              <div class="mw-heading mw-heading2">
+                <h2 id="Notes">Notes</h2>
+                <span class="mw-editsection">[edit]</span>
+              </div>
+              <ul><li>Excluded link.</li></ul>
+              <div class="mw-heading mw-heading2">
+                <h2 id="Legacy">Legacy</h2>
+                <span class="mw-editsection">[edit]</span>
+              </div>
+              <p>Legacy content.</p>
+              <div class="mw-heading mw-heading2">
+                <h2 id="References">References</h2>
+                <span class="mw-editsection">[edit]</span>
+              </div>
+              <ol class="references"><li>Ref.</li></ol>
+            </div>
+          </div>
+        </body>
+      </html>`,
+    {
+      wgNamespaceNumber: 0,
+      wgArticleId: 12345,
+      wgRevisionId: 67890,
+      wgContentLanguage: "en",
+    },
+    (document) => wikipediaAdapter.extract(document),
+  );
+
+  const ready = assertReady(result);
+  assert.equal(ready.content.contentText.includes("Excluded link."), false);
+  assert.equal(ready.content.contentText.includes("Legacy content."), true);
+  assert.equal(ready.content.contentText.includes("Ref."), false);
+});
+
+test("Wikipedia adapter preserves separators across adjacent block elements", () => {
+  const result = withMwConfig(
+    "https://en.wikipedia.org/wiki/Climate_change",
+    `<!doctype html>
+      <html>
+        <body>
+          <h1 id="firstHeading">Climate change</h1>
+          <div id="mw-content-text">
+            <div class="mw-parser-output">
+              <p>Alpha</p><p>Beta</p><div>Gamma</div>
+              <table>
+                <tbody>
+                  <tr><th>Delta</th><td>Epsilon</td></tr>
+                </tbody>
+              </table>
+              <p>Zeta</p>
+            </div>
+          </div>
+        </body>
+      </html>`,
+    {
+      wgNamespaceNumber: 0,
+      wgArticleId: 12345,
+      wgRevisionId: 67890,
+      wgContentLanguage: "en",
+    },
+    (document) => wikipediaAdapter.extract(document),
+  );
+
+  const ready = assertReady(result);
+  assert.equal(ready.content.contentText, "Alpha Beta Gamma Delta Epsilon Zeta");
+});
+
+test("Wikipedia adapter keeps infobox-style table text separated from surrounding prose", () => {
+  const result = withMwConfig(
+    "https://en.wikipedia.org/wiki/Assassination_of_Ali_Khamenei",
+    `<!doctype html>
+      <html>
+        <body>
+          <h1 id="firstHeading">Assassination of Ali Khamenei</h1>
+          <div id="mw-content-text">
+            <div class="mw-parser-output">
+              <p>(Learn how and when to remove this message)</p>
+              <table class="infobox">
+                <tbody>
+                  <tr><th>Assassination of Ali Khamenei</th></tr>
+                  <tr><td>Part of the 2026 strikes on Iran</td></tr>
+                </tbody>
+              </table>
+              <p>Article body starts here.</p>
+            </div>
+          </div>
+        </body>
+      </html>`,
+    {
+      wgNamespaceNumber: 0,
+      wgArticleId: 82537558,
+      wgRevisionId: 1341062788,
+      wgContentLanguage: "en",
+    },
+    (document) => wikipediaAdapter.extract(document),
+  );
+
+  const ready = assertReady(result);
+  assert.equal(
+    ready.content.contentText,
+    "(Learn how and when to remove this message) Assassination of Ali Khamenei Part of the 2026 strikes on Iran Article body starts here.",
+  );
+});

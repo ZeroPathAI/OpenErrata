@@ -1,4 +1,30 @@
 /**
+ * Block-level HTML elements whose boundaries are treated as word separators
+ * during content normalization. Used by both the extension (DOM TreeWalker)
+ * and API (parse5 traversal) to ensure identical output on compact HTML where
+ * no whitespace text nodes exist between adjacent block elements.
+ *
+ * Must be kept in sync between client and server to prevent CONTENT_MISMATCH.
+ * Spec §3.8.
+ */
+export const CONTENT_BLOCK_SEPARATOR_TAGS = new Set([
+  "p",
+  "li",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "figcaption",
+  "blockquote",
+  "tr",
+  "td",
+  "th",
+  "div",
+]);
+
+/**
  * Normalize content text for consistent hashing.
  * Must produce identical output on client (extension) and server (API).
  * Spec §3.8.

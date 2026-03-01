@@ -1,4 +1,5 @@
 import {
+  CONTENT_BLOCK_SEPARATOR_TAGS,
   hashContent,
   isNonNullObject,
   isExcludedWikipediaSectionTitle,
@@ -123,6 +124,14 @@ function htmlToTextContent(html: string): string {
 
     if (!hasChildren(node)) {
       continue;
+    }
+
+    // Inject a space before the content of block-level elements so compact HTML
+    // (no whitespace text nodes between adjacent block elements) still produces
+    // word-separated output after normalizeContent. Mirrors the extension's
+    // CONTENT_BLOCK_SEPARATOR_TAGS logic in extractContentWithImageOccurrencesFromRoot.
+    if (isElementNode(node) && CONTENT_BLOCK_SEPARATOR_TAGS.has(node.tagName.toLowerCase())) {
+      chunks.push(" ");
     }
 
     for (let index = node.childNodes.length - 1; index >= 0; index -= 1) {
@@ -277,29 +286,53 @@ function textContentOfNode(node: DefaultTreeAdapterMap["node"]): string {
   return text;
 }
 
-const WIKIPEDIA_BLOCK_TAGS = new Set([
-  "p",
-  "li",
-  "h1",
-  "h2",
-  "h3",
-  "h4",
-  "h5",
-  "h6",
-  "figcaption",
-  "blockquote",
-  "tr",
-  "td",
-  "th",
-  "div",
-]);
-
 function headingLevelFromTag(tagName: string): number | null {
   const match = /^h([2-6])$/i.exec(tagName);
   if (match?.[1] === undefined || match[1].length === 0) {
     return null;
   }
   return Number(match[1]);
+}
+
+/**
+ * Returns the direct child element of `node` that is a heading tag (h2–h6),
+ * if `node` is a Parsoid-style `<div class="mw-heading">` wrapper.
+ * Returns null for all other nodes.
+ */
+function innerHeadingOfParsoidWrapper(
+  node: DefaultTreeAdapterMap["element"],
+): DefaultTreeAdapterMap["element"] | null {
+  if (node.tagName.toLowerCase() !== "div" || !classTokens(node).includes("mw-heading")) {
+    return null;
+  }
+  for (const child of node.childNodes) {
+    if (isElementNode(child) && headingLevelFromTag(child.tagName) !== null) {
+      return child;
+    }
+  }
+  return null;
+}
+
+/**
+ * Returns the heading level of `node`, handling both direct heading elements
+ * (`<h2>`, `<h3>`, …) and Parsoid-style `<div class="mw-heading">` wrappers.
+ */
+function effectiveHeadingLevel(node: DefaultTreeAdapterMap["element"]): number | null {
+  const direct = headingLevelFromTag(node.tagName);
+  if (direct !== null) return direct;
+  const inner = innerHeadingOfParsoidWrapper(node);
+  return inner !== null ? headingLevelFromTag(inner.tagName) : null;
+}
+
+/**
+ * Returns the text to use for section-title exclusion checks. For Parsoid
+ * `<div class="mw-heading">` wrappers, reads the inner heading element's
+ * text (excluding the sibling `<span class="mw-editsection">`). For direct
+ * heading elements, reads their full text content.
+ */
+function effectiveHeadingText(node: DefaultTreeAdapterMap["element"]): string {
+  const inner = innerHeadingOfParsoidWrapper(node);
+  return inner !== null ? textContentOfNode(inner) : textContentOfNode(node);
 }
 
 function shouldSkipWikipediaElement(node: DefaultTreeAdapterMap["element"]): boolean {
@@ -331,7 +364,7 @@ function wikipediaHtmlToTextContent(html: string): string {
 
     const { node, phase } = current;
     if (phase === "exit") {
-      if (isElementNode(node) && WIKIPEDIA_BLOCK_TAGS.has(node.tagName.toLowerCase())) {
+      if (isElementNode(node) && CONTENT_BLOCK_SEPARATOR_TAGS.has(node.tagName.toLowerCase())) {
         chunks.push(" ");
       }
       continue;
@@ -339,13 +372,13 @@ function wikipediaHtmlToTextContent(html: string): string {
 
     if (isElementNode(node)) {
       const tagName = node.tagName.toLowerCase();
-      const headingLevel = headingLevelFromTag(tagName);
+      const headingLevel = effectiveHeadingLevel(node);
       if (headingLevel !== null) {
         if (skipSectionLevel !== null && headingLevel <= skipSectionLevel) {
           skipSectionLevel = null;
         }
 
-        const headingText = normalizeWikipediaSectionTitle(textContentOfNode(node));
+        const headingText = normalizeWikipediaSectionTitle(effectiveHeadingText(node));
         if (isExcludedWikipediaSectionTitle(headingText)) {
           skipSectionLevel = headingLevel;
           continue;
@@ -356,7 +389,7 @@ function wikipediaHtmlToTextContent(html: string): string {
         continue;
       }
 
-      if (WIKIPEDIA_BLOCK_TAGS.has(tagName)) {
+      if (CONTENT_BLOCK_SEPARATOR_TAGS.has(tagName)) {
         chunks.push(" ");
       }
 

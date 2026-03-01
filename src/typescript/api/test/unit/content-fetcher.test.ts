@@ -114,3 +114,69 @@ test("wikipediaHtmlToNormalizedText excludes references-class blocks outside ref
 
   assert.equal(wikipediaHtmlToNormalizedText(html), "Lead paragraph. Closing paragraph.");
 });
+
+// ── Parsoid heading wrapper format ────────────────────────────────────────────
+// Wikipedia's Parsoid renderer wraps headings in <div class="mw-heading mw-headingN">,
+// which changes how section exclusion interacts with skip-level tracking.
+
+test("wikipediaHtmlToNormalizedText excludes section under Parsoid div.mw-heading wrapper", () => {
+  const html = `
+    <div class="mw-parser-output">
+      <p>Lead paragraph.</p>
+      <div class="mw-heading mw-heading2">
+        <h2 id="Notes">Notes</h2>
+        <span class="mw-editsection">[edit]</span>
+      </div>
+      <ul><li>Some link.</li></ul>
+    </div>
+  `;
+
+  assert.equal(wikipediaHtmlToNormalizedText(html), "Lead paragraph.");
+});
+
+test("wikipediaHtmlToNormalizedText resumes inclusion after excluded Parsoid section when a non-excluded section follows", () => {
+  const html = `
+    <div class="mw-parser-output">
+      <p>Lead paragraph.</p>
+      <div class="mw-heading mw-heading2">
+        <h2 id="Notes">Notes</h2>
+        <span class="mw-editsection">[edit]</span>
+      </div>
+      <ul><li>Excluded link.</li></ul>
+      <div class="mw-heading mw-heading2">
+        <h2 id="Legacy">Legacy</h2>
+        <span class="mw-editsection">[edit]</span>
+      </div>
+      <p>Legacy content.</p>
+      <div class="mw-heading mw-heading2">
+        <h2 id="References">References</h2>
+        <span class="mw-editsection">[edit]</span>
+      </div>
+      <ol class="references"><li>Ref.</li></ol>
+    </div>
+  `;
+
+  assert.equal(wikipediaHtmlToNormalizedText(html), "Lead paragraph. Legacy Legacy content.");
+});
+
+test("wikipediaHtmlToNormalizedText handles Parsoid h3 sub-section exclusion under excluded h2", () => {
+  const html = `
+    <div class="mw-parser-output">
+      <p>Main content.</p>
+      <div class="mw-heading mw-heading2">
+        <h2 id="Further_reading">Further reading</h2>
+      </div>
+      <ul><li>Excluded.</li></ul>
+      <div class="mw-heading mw-heading3">
+        <h3 id="Sub_section">Sub-section of Further reading</h3>
+      </div>
+      <p>Also excluded.</p>
+      <div class="mw-heading mw-heading2">
+        <h2 id="Notes">Notes</h2>
+      </div>
+      <p>Also excluded notes.</p>
+    </div>
+  `;
+
+  assert.equal(wikipediaHtmlToNormalizedText(html), "Main content.");
+});

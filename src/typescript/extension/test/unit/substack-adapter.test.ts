@@ -174,3 +174,31 @@ test("Substack adapter falls back to article-local time before document-global t
   assert.equal(ready.content.platform, "SUBSTACK");
   assert.equal(ready.content.metadata.publishedAt, "2025-12-03T00:00:00.000Z");
 });
+
+test("Substack adapter preserves word boundaries across adjacent block elements", () => {
+  const postId = "123456";
+  const result = withWindow(
+    "https://example.substack.com/p/test-post",
+    `
+      <!doctype html>
+      <html>
+        <head>
+          <meta name="author" content="Example Author" />
+          <meta
+            name="twitter:image"
+            content="https://substackcdn.com/image/fetch/w_1456,c_limit,f_jpg,q_auto:good,fl_progressive:steep/https%3A%2F%2Fexample.substack.com%2Fpost_preview%2F${postId}%2Ftwitter.jpg"
+          />
+        </head>
+        <body>
+          <h1 class="post-title">Test Post</h1>
+          <div class="body markup"><p>Alpha</p><p>Beta</p><div>Gamma</div></div>
+        </body>
+      </html>
+    `,
+    (document) => substackAdapter.extract(document),
+  );
+
+  const ready = assertReady(result);
+  assert.equal(ready.content.platform, "SUBSTACK");
+  assert.equal(ready.content.contentText, "Alpha Beta Gamma");
+});

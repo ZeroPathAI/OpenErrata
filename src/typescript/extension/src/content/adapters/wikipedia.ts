@@ -195,6 +195,27 @@ function headingLevel(tagName: string): number | null {
   return Number(match[1]);
 }
 
+/**
+ * In Parsoid HTML, headings are wrapped in `<div class="mw-heading mw-headingN">`.
+ * Returns the heading level of the inner heading element if `element` is such a
+ * wrapper, or null otherwise.
+ */
+function parsoidHeadingWrapperLevel(element: Element): number | null {
+  if (element.tagName.toLowerCase() !== "div" || !element.classList.contains("mw-heading")) {
+    return null;
+  }
+  const innerHeading = element.querySelector("h1, h2, h3, h4, h5, h6");
+  return innerHeading !== null ? headingLevel(innerHeading.tagName) : null;
+}
+
+/**
+ * Returns the heading level of `element`, handling both direct heading elements
+ * (`<h2>`, `<h3>`, …) and Parsoid-style `<div class="mw-heading">` wrappers.
+ */
+function effectiveHeadingLevel(element: Element): number | null {
+  return headingLevel(element.tagName) ?? parsoidHeadingWrapperLevel(element);
+}
+
 function normalizeHeadingText(heading: Element): string {
   const headline = heading.querySelector(".mw-headline");
   return normalizeWikipediaSectionTitle((headline ?? heading).textContent);
@@ -207,7 +228,16 @@ function removeSectionFromHeading(heading: HTMLElement): void {
     return;
   }
 
-  let cursor: Element = heading;
+  // Parsoid HTML wraps headings in `<div class="mw-heading mw-headingN">`.
+  // Starting removal from the wrapper div (rather than the inner <h2>) ensures
+  // that cursor.nextElementSibling is the actual section content — in the
+  // new format, all section content is a sibling of the wrapper, not of the
+  // heading element inside it.
+  const parent = heading.parentElement;
+  const startCursor: Element =
+    parent !== null && parsoidHeadingWrapperLevel(parent) !== null ? parent : heading;
+
+  let cursor: Element = startCursor;
   while (true) {
     const nextSibling: Element | null = cursor.nextElementSibling;
     cursor.remove();
@@ -216,7 +246,7 @@ function removeSectionFromHeading(heading: HTMLElement): void {
       return;
     }
 
-    const nextLevel = headingLevel(nextSibling.tagName);
+    const nextLevel = effectiveHeadingLevel(nextSibling);
     if (nextLevel !== null && nextLevel <= level) {
       return;
     }
