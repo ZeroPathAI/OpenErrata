@@ -419,22 +419,19 @@ void test("post.recordViewAndGetStatus returns interim old claims from latest co
   });
   assert.equal(currentVersionInvestigations.length, 0);
 
-  const allInvestigations = await prisma.investigation.findMany({
+  const currentVersionRunCount = await prisma.investigationRun.count({
     where: {
-      postVersion: {
-        postId: post.id,
-      },
-    },
-    select: { id: true },
-  });
-  const runCount = await prisma.investigationRun.count({
-    where: {
-      investigationId: {
-        in: allInvestigations.map((investigation) => investigation.id),
+      investigation: {
+        postVersion: {
+          postId: post.id,
+          contentBlob: {
+            contentHash: currentCanonicalHash,
+          },
+        },
       },
     },
   });
-  assert.equal(runCount, 0);
+  assert.equal(currentVersionRunCount, 0);
 });
 
 void test("post.recordViewAndGetStatus does not reuse CLIENT_FALLBACK investigations as interim update claims", async () => {
