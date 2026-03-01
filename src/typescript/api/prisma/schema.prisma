@@ -215,9 +215,9 @@ model PostVersion {
   imageOccurrenceSetId String
   imageOccurrenceSet   ImageOccurrenceSet @relation(fields: [imageOccurrenceSetId], references: [id])
   contentProvenance    ContentProvenance
-  // DB check constraints require:
-  // - fetchFailureReason is NULL when contentProvenance = SERVER_VERIFIED
-  // - serverVerifiedAt is NOT NULL when contentProvenance = SERVER_VERIFIED
+  // INV-PV-PROVENANCE-SHAPE: SERVER_VERIFIED requires serverVerifiedAt set and fetchFailureReason null.
+  // INV-PV-PROVENANCE-SHAPE: CLIENT_FALLBACK requires serverVerifiedAt null and non-empty fetchFailureReason.
+  // Enforced by CHECK constraint "PostVersion_content_provenance_consistency_check".
   fetchFailureReason   String?
   serverVerifiedAt     DateTime?
   firstSeenAt          DateTime           @default(now())
@@ -261,9 +261,15 @@ model Investigation {
   postVersionId         String
   postVersion           PostVersion           @relation(fields: [postVersionId], references: [id])
   parentInvestigationId String?
+  // INV-INV-PARENT-LINEAGE: parentInvestigationId must not self-reference id.
+  // Enforced by CHECK constraint "Investigation_parent_not_self_chk".
+  // INV-INV-PARENT-SEMANTICS: parent investigations referenced by updates must stay same-post, COMPLETE,
+  // SERVER_VERIFIED, and checkedAt-set.
+  // Enforced by triggers "enforce_investigation_parent_semantics_trigger" and
+  // "enforce_referenced_parent_investigation_validity_trigger".
   parentInvestigation   Investigation?        @relation("InvestigationUpdateLineage", fields: [parentInvestigationId], references: [id])
-  // DB check constraint requires contentDiff presence to match update lineage:
-  // null for root investigations, non-null for updates.
+  // INV-INV-UPDATE-LINEAGE-SHAPE: parentInvestigationId is null iff contentDiff is null.
+  // Enforced by CHECK constraint "Investigation_contentDiff_parent_consistency_chk".
   contentDiff           String?
   status                CheckStatus
   promptId              String
@@ -271,7 +277,8 @@ model Investigation {
   provider              InvestigationProvider
   model                 InvestigationModel
   modelVersion          String?
-  // Null until completion; enforced by DB check constraint with `status`.
+  // INV-INV-CHECKED-AT-CONSISTENCY: checkedAt is set iff status = COMPLETE.
+  // Enforced by CHECK constraint "Investigation_checked_at_consistency_check".
   checkedAt             DateTime?
   run                   InvestigationRun?
   attempts              InvestigationAttempt[]

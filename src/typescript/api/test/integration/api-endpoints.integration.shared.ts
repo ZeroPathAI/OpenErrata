@@ -38,6 +38,7 @@ const INTEGRATION_TEST_RUN_ID = [
   Math.random().toString(36).slice(2, 8),
 ].join("-");
 const INTEGRATION_DATA_PREFIX = `integration-test-${INTEGRATION_TEST_RUN_ID}-`;
+let schemaCatalogInvariantsVerified = false;
 
 function withIntegrationPrefix(value: string): string {
   return value.startsWith(INTEGRATION_DATA_PREFIX) ? value : `${INTEGRATION_DATA_PREFIX}${value}`;
@@ -341,7 +342,290 @@ async function resetDatabase(): Promise<void> {
   });
 }
 
+async function assertSchemaCatalogInvariants(): Promise<void> {
+  if (schemaCatalogInvariantsVerified) {
+    return;
+  }
+
+  const legacyConstraintNames = await prisma.$queryRaw<{ constraintName: string }[]>`
+    SELECT c.conname AS "constraintName"
+    FROM pg_constraint c
+    JOIN pg_class t ON t.oid = c.conrelid
+    JOIN pg_namespace n ON n.oid = t.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.conname IN (
+        'PostVersion_server_verified_reason_chk',
+        'PostVersion_server_verified_at_chk',
+        'Investigation_content_diff_parent_chk'
+      )
+    ORDER BY c.conname
+  `;
+  assert.equal(
+    legacyConstraintNames.length,
+    0,
+    `schema invariant failed: legacy duplicate constraints must be absent: ${JSON.stringify(legacyConstraintNames)}`,
+  );
+
+  const canonicalChecks = await prisma.$queryRaw<
+    {
+      constraintName: string;
+      tableName: string;
+      validated: boolean;
+      constraintDef: string;
+    }[]
+  >`
+    SELECT
+      c.conname AS "constraintName",
+      t.relname AS "tableName",
+      c.convalidated AS "validated",
+      pg_get_constraintdef(c.oid, true) AS "constraintDef"
+    FROM pg_constraint c
+    JOIN pg_class t ON t.oid = c.conrelid
+    JOIN pg_namespace n ON n.oid = t.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.contype = 'c'
+      AND c.conname IN (
+        'PostVersion_content_provenance_consistency_check',
+        'Investigation_contentDiff_parent_consistency_chk'
+      )
+    ORDER BY c.conname
+  `;
+  assert.equal(
+    canonicalChecks.length,
+    2,
+    `schema invariant failed: missing canonical check constraints: ${JSON.stringify(canonicalChecks)}`,
+  );
+  assert.deepEqual(
+    canonicalChecks.map((check) => check.constraintName),
+    [
+      "Investigation_contentDiff_parent_consistency_chk",
+      "PostVersion_content_provenance_consistency_check",
+    ],
+    `schema invariant failed: unexpected canonical check names: ${JSON.stringify(canonicalChecks)}`,
+  );
+  for (const check of canonicalChecks) {
+    assert.equal(
+      check.validated,
+      true,
+      `schema invariant failed: check ${check.constraintName} must be validated`,
+    );
+  }
+
+  const postVersionProvenanceCheck = canonicalChecks.find(
+    (check) => check.constraintName === "PostVersion_content_provenance_consistency_check",
+  );
+  assert.ok(
+    postVersionProvenanceCheck,
+    "schema invariant failed: missing PostVersion provenance check constraint",
+  );
+  assert.equal(
+    postVersionProvenanceCheck.tableName,
+    "PostVersion",
+    "schema invariant failed: PostVersion provenance check is attached to wrong table",
+  );
+  assert.equal(
+    postVersionProvenanceCheck.constraintDef.includes("'SERVER_VERIFIED'"),
+    true,
+    "schema invariant failed: PostVersion provenance check must include SERVER_VERIFIED branch",
+  );
+  assert.equal(
+    postVersionProvenanceCheck.constraintDef.includes("'CLIENT_FALLBACK'"),
+    true,
+    "schema invariant failed: PostVersion provenance check must include CLIENT_FALLBACK branch",
+  );
+  assert.equal(
+    postVersionProvenanceCheck.constraintDef
+      .toLowerCase()
+      .includes('length(btrim("fetchFailureReason")) > 0'.toLowerCase()),
+    true,
+    "schema invariant failed: PostVersion provenance check must enforce non-empty fallback reason",
+  );
+
+  const updateLineageShapeCheck = canonicalChecks.find(
+    (check) => check.constraintName === "Investigation_contentDiff_parent_consistency_chk",
+  );
+  assert.ok(
+    updateLineageShapeCheck,
+    "schema invariant failed: missing Investigation update-lineage shape check",
+  );
+  assert.equal(
+    updateLineageShapeCheck.tableName,
+    "Investigation",
+    "schema invariant failed: Investigation update-lineage check is attached to wrong table",
+  );
+  assert.equal(
+    updateLineageShapeCheck.constraintDef.includes('"parentInvestigationId" IS NULL'),
+    true,
+    "schema invariant failed: Investigation update-lineage check must cover root branch",
+  );
+  assert.equal(
+    updateLineageShapeCheck.constraintDef.includes('"contentDiff" IS NOT NULL'),
+    true,
+    "schema invariant failed: Investigation update-lineage check must cover update branch",
+  );
+
+  const duplicateCheckDefinitions = await prisma.$queryRaw<
+    {
+      tableName: string;
+      normalizedDef: string;
+      duplicateCount: number;
+    }[]
+  >`
+    SELECT
+      t.relname AS "tableName",
+      regexp_replace(pg_get_constraintdef(c.oid, false), '\\s+', ' ', 'g') AS "normalizedDef",
+      COUNT(*)::INTEGER AS "duplicateCount"
+    FROM pg_constraint c
+    JOIN pg_class t ON t.oid = c.conrelid
+    JOIN pg_namespace n ON n.oid = t.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.contype = 'c'
+      AND t.relname IN ('PostVersion', 'Investigation')
+    GROUP BY t.relname, "normalizedDef"
+    HAVING COUNT(*) > 1
+    ORDER BY t.relname
+  `;
+  assert.equal(
+    duplicateCheckDefinitions.length,
+    0,
+    `schema invariant failed: duplicate check definitions detected: ${JSON.stringify(duplicateCheckDefinitions)}`,
+  );
+
+  const triggerRows = await prisma.$queryRaw<
+    {
+      triggerName: string;
+      tableName: string;
+      functionName: string;
+      triggerEnabled: string;
+      triggerDef: string;
+    }[]
+  >`
+    SELECT
+      tg.tgname AS "triggerName",
+      t.relname AS "tableName",
+      p.proname AS "functionName",
+      tg.tgenabled::text AS "triggerEnabled",
+      pg_get_triggerdef(tg.oid, true) AS "triggerDef"
+    FROM pg_trigger tg
+    JOIN pg_class t ON t.oid = tg.tgrelid
+    JOIN pg_namespace n ON n.oid = t.relnamespace
+    JOIN pg_proc p ON p.oid = tg.tgfoid
+    WHERE n.nspname = 'public'
+      AND NOT tg.tgisinternal
+      AND tg.tgname IN (
+        'enforce_investigation_parent_semantics_trigger',
+        'enforce_referenced_parent_investigation_validity_trigger',
+        'enforce_referenced_parent_post_version_validity_trigger'
+      )
+    ORDER BY tg.tgname
+  `;
+
+  const expectedTriggerBindings = new Map<
+    string,
+    { tableName: string; functionName: string; requiredFragments: string[] }
+  >([
+    [
+      "enforce_investigation_parent_semantics_trigger",
+      {
+        tableName: "Investigation",
+        functionName: "enforce_investigation_parent_semantics",
+        requiredFragments: ["before insert or update of", "parentinvestigationid", "postversionid"],
+      },
+    ],
+    [
+      "enforce_referenced_parent_investigation_validity_trigger",
+      {
+        tableName: "Investigation",
+        functionName: "enforce_referenced_parent_investigation_validity",
+        requiredFragments: ["before update of", "status", "checkedat", "postversionid"],
+      },
+    ],
+    [
+      "enforce_referenced_parent_post_version_validity_trigger",
+      {
+        tableName: "PostVersion",
+        functionName: "enforce_referenced_parent_post_version_validity",
+        requiredFragments: ["before update of", "contentprovenance"],
+      },
+    ],
+  ]);
+  assert.equal(
+    triggerRows.length,
+    expectedTriggerBindings.size,
+    `schema invariant failed: unexpected trigger count: ${JSON.stringify(triggerRows)}`,
+  );
+  for (const triggerRow of triggerRows) {
+    const expectedBinding = expectedTriggerBindings.get(triggerRow.triggerName);
+    assert.ok(
+      expectedBinding,
+      `schema invariant failed: unexpected trigger present: ${triggerRow.triggerName}`,
+    );
+    assert.equal(
+      triggerRow.tableName,
+      expectedBinding.tableName,
+      `schema invariant failed: trigger ${triggerRow.triggerName} is attached to wrong table`,
+    );
+    assert.equal(
+      triggerRow.functionName,
+      expectedBinding.functionName,
+      `schema invariant failed: trigger ${triggerRow.triggerName} calls wrong function`,
+    );
+    assert.equal(
+      triggerRow.triggerEnabled,
+      "O",
+      `schema invariant failed: trigger ${triggerRow.triggerName} must be enabled`,
+    );
+    const normalizedTriggerDef = triggerRow.triggerDef.toLowerCase().replaceAll('"', "");
+    for (const requiredFragment of expectedBinding.requiredFragments) {
+      assert.equal(
+        normalizedTriggerDef.includes(requiredFragment),
+        true,
+        `schema invariant failed: trigger ${triggerRow.triggerName} is missing expected fragment "${requiredFragment}"`,
+      );
+    }
+  }
+
+  const triggerEvents = await prisma.$queryRaw<
+    {
+      triggerName: string;
+      tableName: string;
+      actionTiming: string;
+      eventManipulation: string;
+    }[]
+  >`
+    SELECT
+      trigger_name AS "triggerName",
+      event_object_table AS "tableName",
+      action_timing AS "actionTiming",
+      event_manipulation AS "eventManipulation"
+    FROM information_schema.triggers
+    WHERE trigger_schema = 'public'
+      AND trigger_name IN (
+        'enforce_investigation_parent_semantics_trigger',
+        'enforce_referenced_parent_investigation_validity_trigger',
+        'enforce_referenced_parent_post_version_validity_trigger'
+      )
+    ORDER BY trigger_name, event_manipulation
+  `;
+  const expectedTriggerEvents = [
+    "enforce_investigation_parent_semantics_trigger|Investigation|BEFORE|INSERT",
+    "enforce_investigation_parent_semantics_trigger|Investigation|BEFORE|UPDATE",
+    "enforce_referenced_parent_investigation_validity_trigger|Investigation|BEFORE|UPDATE",
+    "enforce_referenced_parent_post_version_validity_trigger|PostVersion|BEFORE|UPDATE",
+  ];
+  assert.deepEqual(
+    triggerEvents.map((event) =>
+      [event.triggerName, event.tableName, event.actionTiming, event.eventManipulation].join("|"),
+    ),
+    expectedTriggerEvents,
+    `schema invariant failed: unexpected trigger timing/events: ${JSON.stringify(triggerEvents)}`,
+  );
+
+  schemaCatalogInvariantsVerified = true;
+}
+
 async function assertIntegrationDatabaseInvariants(): Promise<void> {
+  await assertSchemaCatalogInvariants();
   const integrationExternalIdPrefix = `${INTEGRATION_DATA_PREFIX}%`;
 
   const claimsOnNonCompleteInvestigations = await prisma.$queryRaw<
