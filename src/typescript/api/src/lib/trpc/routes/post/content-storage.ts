@@ -86,8 +86,48 @@ function logServerVerifiedContentMismatch(mismatch: ServerVerifiedContentMismatc
       : `externalId=${mismatch.externalId}; url=${mismatch.url}`;
 
   console.error(
-    `Server-verified canonical hash mismatch for ${mismatch.platform}; using server content. ${identity}; observedHash=${mismatch.observedHash}; serverHash=${mismatch.serverHash}`,
+    `Canonical integrity mismatch for ${mismatch.platform}; continuing with server-verified content. ${identity}; observedHash=${mismatch.observedHash}; serverHash=${mismatch.serverHash}`,
   );
+}
+
+function applyServerVerifiedWikipediaIdentity(input: {
+  preparedInput: PreparedViewPostInput;
+  canonical: CanonicalContentVersion;
+}): PreparedViewPostInput {
+  if (
+    input.preparedInput.platform !== "WIKIPEDIA" ||
+    input.canonical.provenance !== "SERVER_VERIFIED" ||
+    input.canonical.canonicalIdentity?.platform !== "WIKIPEDIA"
+  ) {
+    return input.preparedInput;
+  }
+
+  const serverIdentity = input.canonical.canonicalIdentity;
+  if (serverIdentity.language !== input.preparedInput.metadata.language) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message:
+        "Wikipedia canonical identity language mismatch between verified fetch and prepared input",
+    });
+  }
+
+  if (serverIdentity.pageId === input.preparedInput.metadata.pageId) {
+    return input.preparedInput;
+  }
+
+  console.error(
+    `Wikipedia metadata identity mismatch; continuing with server-verified page identity. url=${input.preparedInput.url}; clientPageId=${input.preparedInput.metadata.pageId}; serverPageId=${serverIdentity.pageId}`,
+  );
+
+  return {
+    ...input.preparedInput,
+    metadata: {
+      ...input.preparedInput.metadata,
+      pageId: serverIdentity.pageId,
+      revisionId: serverIdentity.revisionId,
+    },
+    derivedExternalId: `${serverIdentity.language}:${serverIdentity.pageId}`,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -762,16 +802,20 @@ export async function registerObservedVersion(
   prisma: PrismaClient,
   input: ViewPostInput,
 ): Promise<ResolvedPostVersion> {
-  const preparedInput = prepareViewPostInput(input);
-  const observed = await toObservedContentVersion(preparedInput);
+  const initiallyPreparedInput = prepareViewPostInput(input);
+  const observed = await toObservedContentVersion(initiallyPreparedInput);
 
   const canonical = await resolveCanonicalContentVersion({
-    viewInput: preparedInput,
+    viewInput: initiallyPreparedInput,
     observed,
     fetchCanonicalContent,
     onServerVerifiedContentMismatch: logServerVerifiedContentMismatch,
   });
 
+  const preparedInput = applyServerVerifiedWikipediaIdentity({
+    preparedInput: initiallyPreparedInput,
+    canonical,
+  });
   const post = await upsertPostFromViewInput(prisma, preparedInput);
 
   return upsertPostVersion(prisma, {

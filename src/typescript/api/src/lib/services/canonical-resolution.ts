@@ -1,5 +1,9 @@
 import type { ViewPostInput } from "@openerrata/shared";
-import type { CanonicalContentFetchResult, CanonicalFetchInput } from "./content-fetcher.js";
+import type {
+  CanonicalContentFetchResult,
+  CanonicalFetchInput,
+  CanonicalIdentity,
+} from "./content-fetcher.js";
 
 export interface ObservedContentVersion {
   contentText: string;
@@ -9,6 +13,7 @@ export interface ObservedContentVersion {
 export type CanonicalContentVersion =
   | (ObservedContentVersion & {
       provenance: "SERVER_VERIFIED";
+      canonicalIdentity?: CanonicalIdentity;
     })
   | (ObservedContentVersion & {
       provenance: "CLIENT_FALLBACK";
@@ -33,6 +38,7 @@ function toCanonicalFetchInput(input: ViewPostInput): CanonicalFetchInput {
       metadata: {
         language: input.metadata.language,
         title: input.metadata.title,
+        pageId: input.metadata.pageId,
         revisionId: input.metadata.revisionId,
       },
     };
@@ -54,16 +60,17 @@ function toCanonicalFetchInput(input: ViewPostInput): CanonicalFetchInput {
  * as a fallback when no server-side canonical source is available.
  *
  * Hash mismatches between client-observed and server-verified content are
- * reported via `onServerVerifiedContentMismatch`, but they do not block
- * canonical resolution. The two sources are fundamentally different:
+ * integrity anomalies and are reported via `onServerVerifiedContentMismatch`.
+ * They do not block canonical resolution because the two sources are
+ * fundamentally different:
  *   - Client: live browser DOM, which may include JS-injected elements, tracking
  *     pixels, and other browser-specific content outside the article body.
  *   - Server: canonical source API (e.g. Wikipedia Parse API), which returns only
  *     the article body HTML.
- * Requiring strict agreement between them would produce false errors for
- * legitimate page views while providing no meaningful security benefit — the
- * server's independently-
- * fetched canonical version already overrides whatever the client claims to have seen.
+ * A mismatch is still a real problem worth monitoring, but blocking requests on
+ * this invariant would cause avoidable service disruption without improving the
+ * trust boundary — the server's independently-fetched canonical version already
+ * overrides whatever the client claims to have seen.
  */
 export async function resolveCanonicalContentVersion(input: {
   viewInput: ViewPostInput;
@@ -88,6 +95,9 @@ export async function resolveCanonicalContentVersion(input: {
       contentText: serverResult.contentText,
       contentHash: serverResult.contentHash,
       provenance: "SERVER_VERIFIED",
+      ...(serverResult.canonicalIdentity === undefined
+        ? {}
+        : { canonicalIdentity: serverResult.canonicalIdentity }),
     };
   }
 

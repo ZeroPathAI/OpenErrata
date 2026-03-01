@@ -329,8 +329,8 @@ User visits post
   → API upserts Post + platform metadata
   → API attempts server-side content verification (best effort):
       VERIFIED + matches observed content  → continue with `SERVER_VERIFIED`
-      VERIFIED + mismatch                  → log error + continue with `SERVER_VERIFIED`
-                                            (server canonical content is authoritative)
+      VERIFIED + mismatch                  → record integrity anomaly + continue with `SERVER_VERIFIED`
+                                            (authoritative source is still server canonical content)
       NOT VERIFIED                         → continue with `CLIENT_FALLBACK`
   → API upserts PostVersion (content blob + image occurrences + provenance)
   → API returns { platform, externalId, versionHash, postVersionId, provenance }
@@ -467,11 +467,15 @@ scores.
 
 So server-side verification is preferred but best-effort.
 
+- Identity binding rule: server-canonical responses define authoritative platform identity.
+  For server-verifiable platforms (for example, Wikipedia `pageId` + `revisionId`), if
+  client-submitted identity disagrees with the platform response, the API records an
+  integrity anomaly and corrects stored identity to the server value.
 - Primary path: server verifies platform content and derives the canonical content version.
-- Mismatch policy: if verification succeeds but conflicts with the submitted content, log an
-  error and continue with the server-derived canonical content (`SERVER_VERIFIED`). The request is
-  not rejected; server canonical content is authoritative for server-verifiable platforms (Wikipedia
-  and LessWrong).
+- Mismatch policy: if identity-bound verification succeeds but conflicts with submitted content,
+  record an integrity anomaly and continue with the server-derived canonical content
+  (`SERVER_VERIFIED`). The request is not rejected because serving the server-canonical version is
+  safer than dropping service, but the mismatch remains a real integrity signal to monitor.
 - Degraded path: if server fetch fails (rate limit, temporary provider/platform outage, anti-bot
   block), investigations may proceed using client-observed content.
 - Every investigation stores provenance (`SERVER_VERIFIED` or `CLIENT_FALLBACK`).

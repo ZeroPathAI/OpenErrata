@@ -262,6 +262,84 @@ void test("post.registerObservedVersion uses server canonical content when clien
   assert.equal(latestVersion.contentBlob.contentHash, expectedCanonicalHash);
 });
 
+void test("post.registerObservedVersion corrects Wikipedia identity to server-verified pageId when client pageId differs", async () => {
+  const caller = createCaller();
+  const input = {
+    platform: "WIKIPEDIA" as const,
+    url: "https://en.wikipedia.org/wiki/OpenErrata",
+    observedContentText: "Client-observed content that may differ from server canonical content.",
+    metadata: {
+      language: "en",
+      title: "OpenErrata",
+      pageId: "12345",
+      revisionId: "67890",
+      displayTitle: "OpenErrata",
+    },
+  };
+
+  const originalFetch = globalThis.fetch;
+  let sawWikipediaRequest = false;
+  globalThis.fetch = async (fetchInput, fetchInit) => {
+    const url =
+      typeof fetchInput === "string"
+        ? fetchInput
+        : fetchInput instanceof URL
+          ? fetchInput.toString()
+          : fetchInput.url;
+    if (!url.startsWith("https://en.wikipedia.org/w/api.php")) {
+      return originalFetch(fetchInput, fetchInit);
+    }
+    sawWikipediaRequest = true;
+
+    return new Response(
+      JSON.stringify({
+        parse: {
+          text: "<div class='mw-parser-output'><p>Server canonical article text.</p></div>",
+          pageid: 99999,
+          revid: 67890,
+        },
+      }),
+      {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+        },
+      },
+    );
+  };
+
+  const result = await (async () => {
+    try {
+      return await caller.post.registerObservedVersion(input);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  })();
+
+  assert.equal(sawWikipediaRequest, true);
+  assert.equal(result.provenance, "SERVER_VERIFIED");
+  assert.equal(result.platform, "WIKIPEDIA");
+  assert.equal(result.externalId, "en:99999");
+
+  const corrected = await loadLatestPostVersionByIdentity({
+    platform: "WIKIPEDIA",
+    externalId: "en:99999",
+  });
+  assert.ok(corrected);
+  assert.equal(corrected.contentProvenance, "SERVER_VERIFIED");
+
+  const staleClientIdentityPost = await prisma.post.findUnique({
+    where: {
+      platform_externalId: {
+        platform: "WIKIPEDIA",
+        externalId: "en:12345",
+      },
+    },
+    select: { id: true },
+  });
+  assert.equal(staleClientIdentityPost, null);
+});
+
 void test("post.registerObservedVersion rejects extension clients below minimum supported version", async () => {
   const caller = createCaller({
     extensionVersion: "0.1.4",

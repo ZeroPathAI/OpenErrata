@@ -20,17 +20,26 @@ type ServerFetchResult =
       success: true;
       contentText: string;
       contentHash: string;
+      canonicalIdentity?: CanonicalIdentity;
     }
   | {
       success: false;
       failureReason: string;
     };
 
+export interface CanonicalIdentity {
+  platform: "WIKIPEDIA";
+  language: string;
+  pageId: string;
+  revisionId: string;
+}
+
 export type CanonicalContentFetchResult =
   | {
       provenance: "SERVER_VERIFIED";
       contentText: string;
       contentHash: string;
+      canonicalIdentity?: CanonicalIdentity;
     }
   | {
       provenance: "CLIENT_FALLBACK";
@@ -43,10 +52,17 @@ interface WikipediaCanonicalFetchInput {
   metadata: {
     language: string;
     title: string;
+    pageId: string;
     revisionId: string;
   };
 }
 
+/**
+ * Canonical fetch contract:
+ * - Server-verifiable platforms must carry stable platform identity in the fetch input.
+ * - When upstream canonical responses expose authoritative identity, fetchers
+ *   should return that identity so callers can correct client-submitted identity.
+ */
 export type CanonicalFetchInput =
   | {
       platform: "LESSWRONG";
@@ -67,6 +83,16 @@ export type CanonicalFetchInput =
 
 function describeFetchError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function parseNonNegativeIntegerId(value: unknown): string | null {
+  if (typeof value === "number" && Number.isInteger(value) && value >= 0) {
+    return value.toString();
+  }
+  if (typeof value === "string" && /^\d+$/.test(value)) {
+    return value;
+  }
+  return null;
 }
 
 /**
@@ -231,6 +257,9 @@ export async function fetchCanonicalContent(
     provenance: "SERVER_VERIFIED",
     contentText: fetched.contentText,
     contentHash: fetched.contentHash,
+    ...(fetched.canonicalIdentity === undefined
+      ? {}
+      : { canonicalIdentity: fetched.canonicalIdentity }),
   };
 }
 
@@ -462,6 +491,7 @@ export function wikipediaHtmlToNormalizedText(html: string): string {
 
 function extractWikipediaParsePayload(value: unknown): {
   html: string;
+  pageId: string;
   revisionId: string;
 } | null {
   if (!isNonNullObject(value)) return null;
@@ -469,18 +499,17 @@ function extractWikipediaParsePayload(value: unknown): {
   if (!isNonNullObject(parse)) return null;
 
   const text = parse["text"];
-  const rawRevisionId = parse["revid"];
+  const revisionId = parseNonNegativeIntegerId(parse["revid"]);
+  const pageId = parseNonNegativeIntegerId(parse["pageid"]);
   if (typeof text !== "string") return null;
-  if (
-    typeof rawRevisionId !== "number" &&
-    !(typeof rawRevisionId === "string" && /^\d+$/.test(rawRevisionId))
-  ) {
+  if (revisionId === null || pageId === null) {
     return null;
   }
 
   return {
     html: text,
-    revisionId: String(rawRevisionId),
+    pageId,
+    revisionId,
   };
 }
 
@@ -488,15 +517,20 @@ async function fetchWikipediaContent(
   input: WikipediaCanonicalFetchInput,
 ): Promise<ServerFetchResult> {
   const language = input.metadata.language.trim().toLowerCase();
+  const pageId = input.metadata.pageId.trim();
   const revisionId = input.metadata.revisionId.trim();
   if (
     language.length === 0 ||
+    pageId.length === 0 ||
     revisionId.length === 0 ||
-    !WIKIPEDIA_LANGUAGE_CODE_REGEX.test(language)
+    !WIKIPEDIA_LANGUAGE_CODE_REGEX.test(language) ||
+    !/^\d+$/.test(pageId) ||
+    !/^\d+$/.test(revisionId)
   ) {
     return {
       success: false,
-      failureReason: "Wikipedia canonical fetch requires valid language and revision metadata",
+      failureReason:
+        "Wikipedia canonical fetch requires valid language, pageId, and revision metadata",
     };
   }
 
@@ -549,5 +583,15 @@ async function fetchWikipediaContent(
 
   const contentText = wikipediaHtmlToNormalizedText(payload.html);
   const contentHash = await hashContent(contentText);
-  return { success: true, contentText, contentHash };
+  return {
+    success: true,
+    contentText,
+    contentHash,
+    canonicalIdentity: {
+      platform: "WIKIPEDIA",
+      language,
+      pageId: payload.pageId,
+      revisionId: payload.revisionId,
+    },
+  };
 }

@@ -3,8 +3,10 @@ import { test } from "node:test";
 import {
   CONTENT_BLOCK_SEPARATOR_TAGS,
   WIKIPEDIA_EXCLUDED_SECTION_TITLES,
+  hashContent,
 } from "@openerrata/shared";
 import {
+  fetchCanonicalContent,
   lesswrongHtmlToNormalizedText,
   wikipediaHtmlToNormalizedText,
 } from "../../src/lib/services/content-fetcher.js";
@@ -90,6 +92,54 @@ test("lesswrongHtmlToNormalizedText excludes noscript tag content", () => {
   const result = lesswrongHtmlToNormalizedText(html);
   assert.ok(!result.includes("tracking"), "noscript content must not appear in output");
   assert.equal(result, "Article text. More text.");
+});
+
+test("fetchCanonicalContent returns SERVER_VERIFIED Wikipedia content and canonical identity from parse payload", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (): Promise<Response> =>
+      new Response(
+        JSON.stringify({
+          parse: {
+            text: "<div class='mw-parser-output'><p>Server article text.</p></div>",
+            pageid: 99999,
+            revid: 67890,
+          },
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      );
+
+    const result = await fetchCanonicalContent({
+      platform: "WIKIPEDIA",
+      url: "https://en.wikipedia.org/wiki/OpenErrata",
+      metadata: {
+        language: "en",
+        title: "OpenErrata",
+        pageId: "12345",
+        revisionId: "67890",
+      },
+    });
+
+    const expectedContentText = "Server article text.";
+    const expectedContentHash = await hashContent(expectedContentText);
+
+    assert.deepEqual(result, {
+      provenance: "SERVER_VERIFIED",
+      contentText: expectedContentText,
+      contentHash: expectedContentHash,
+      canonicalIdentity: {
+        platform: "WIKIPEDIA",
+        language: "en",
+        pageId: "99999",
+        revisionId: "67890",
+      },
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("wikipediaHtmlToNormalizedText excludes references section and citation superscripts", () => {

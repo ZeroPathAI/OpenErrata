@@ -90,10 +90,10 @@ test("resolveCanonicalContentVersion returns server-verified canonical content",
 });
 
 test("resolveCanonicalContentVersion uses server content even when client hash differs", async () => {
-  // The server independently fetches the canonical content (e.g. Wikipedia Parse API,
-  // LessWrong GraphQL). The client's browser DOM extraction may differ from the server's
-  // source due to JS-injected elements, tracking pixels, etc. When the server can verify,
-  // its content is always authoritative — no hash comparison is performed.
+  // The server independently fetches canonical content (e.g. Wikipedia Parse API,
+  // LessWrong GraphQL). Client DOM extraction can differ due to JS-injected elements,
+  // tracking pixels, etc. Mismatches are anomalies to monitor, but server-verified
+  // canonical content remains authoritative for this resolution step.
   const viewInput = buildXViewInput("Observed text");
   const observed = {
     contentText: "Observed text that differs from server",
@@ -202,6 +202,7 @@ test("resolveCanonicalContentVersion forwards required Wikipedia canonical fetch
     metadata: {
       language: "en",
       title: "OpenErrata",
+      pageId: "12345",
       revisionId: "67890",
     },
   });
