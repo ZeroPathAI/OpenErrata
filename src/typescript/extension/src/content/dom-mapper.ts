@@ -8,6 +8,10 @@ export interface DomAnnotation {
   matched: boolean;
 }
 
+interface MapClaimsToDomOptions {
+  allowFuzzy?: boolean;
+}
+
 interface NormalizedTextIndex {
   normalized: string;
   normalizedToRaw: number[];
@@ -29,7 +33,12 @@ interface CodePointWithRawIndex {
  * 3. **Fuzzy (Levenshtein)** — sliding-window search for the best
  *    approximate match.
  */
-export function mapClaimsToDom(claims: InvestigationClaim[], root: Element): DomAnnotation[] {
+export function mapClaimsToDom(
+  claims: InvestigationClaim[],
+  root: Element,
+  options: MapClaimsToDomOptions = {},
+): DomAnnotation[] {
+  const allowFuzzy = options.allowFuzzy ?? true;
   const fullText = root.textContent;
   const fullTextIndex = buildNormalizedTextIndex(fullText);
   const normalizedFullText = fullTextIndex.normalized;
@@ -75,16 +84,18 @@ export function mapClaimsToDom(claims: InvestigationClaim[], root: Element): Dom
     }
 
     // ── Tier 3: fuzzy fallback (Levenshtein sliding window) ──────────────
-    const fuzzyResult = fuzzyFind(normalizedFullText, normalizedClaimText);
-    if (fuzzyResult) {
-      const mappedSpan = mapNormalizedSpanToRaw(
-        fullTextIndex,
-        fuzzyResult.offset,
-        fuzzyResult.length,
-      );
-      if (mappedSpan) {
-        const range = createRangeFromTextOffset(root, mappedSpan.offset, mappedSpan.length);
-        if (range) return { claim, range, matched: true };
+    if (allowFuzzy) {
+      const fuzzyResult = fuzzyFind(normalizedFullText, normalizedClaimText);
+      if (fuzzyResult) {
+        const mappedSpan = mapNormalizedSpanToRaw(
+          fullTextIndex,
+          fuzzyResult.offset,
+          fuzzyResult.length,
+        );
+        if (mappedSpan) {
+          const range = createRangeFromTextOffset(root, mappedSpan.offset, mappedSpan.length);
+          if (range) return { claim, range, matched: true };
+        }
       }
     }
 

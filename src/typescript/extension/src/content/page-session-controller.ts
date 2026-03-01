@@ -434,16 +434,17 @@ export class PageSessionController {
     }
 
     if (this.#annotations.isVisible()) {
-      this.#annotations.reapplyIfMissing(this.#state.adapter);
       const renderedClaimAnchor = resolveRenderedClaimAnchor(root, claimId);
       if (renderedClaimAnchor) {
         return focusClaimResponseSchema.parse({
           ok: scrollToClaimAnchor(renderedClaimAnchor),
         });
       }
+      this.scheduleRefresh(0);
+      return focusClaimResponseSchema.parse({ ok: false });
     }
 
-    const [mappedClaim] = mapClaimsToDom([claim], root);
+    const [mappedClaim] = mapClaimsToDom([claim], root, { allowFuzzy: false });
     if (!mappedClaim?.matched || !mappedClaim.range) {
       return focusClaimResponseSchema.parse({ ok: false });
     }

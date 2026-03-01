@@ -82,3 +82,32 @@ test("mapClaimsToDom preserves UTF-16 offset alignment after astral emoji", () =
     restoreDom();
   }
 });
+
+test("mapClaimsToDom can disable fuzzy matching for exact/context-only lookups", () => {
+  const restoreDom = installDom(
+    "<!doctype html><html><body><article id='root'>The quick brown fox jumps over the lazy dog.</article></body></html>",
+  );
+
+  try {
+    const root = document.getElementById("root");
+    if (!(root instanceof Element)) {
+      throw new Error("Missing #root test fixture");
+    }
+
+    const nearMatchClaim = createClaim("quick brown fox jumps over lazy dog", "");
+
+    const [fuzzyEnabled] = mapClaimsToDom([nearMatchClaim], root);
+    if (fuzzyEnabled === undefined) {
+      throw new Error("Expected one annotation result with fuzzy enabled");
+    }
+    assert.equal(fuzzyEnabled.matched, true);
+
+    const [fuzzyDisabled] = mapClaimsToDom([nearMatchClaim], root, { allowFuzzy: false });
+    if (fuzzyDisabled === undefined) {
+      throw new Error("Expected one annotation result with fuzzy disabled");
+    }
+    assert.equal(fuzzyDisabled.matched, false);
+  } finally {
+    restoreDom();
+  }
+});
