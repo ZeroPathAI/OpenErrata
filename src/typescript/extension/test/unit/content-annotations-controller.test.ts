@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { JSDOM } from "jsdom";
 import type { InvestigationClaim } from "@openerrata/shared";
+import { ANNOTATION_CLAIM_ID_ATTRIBUTE } from "../../src/content/annotation-dom";
 import { AnnotationController } from "../../src/content/annotations";
 
 function installDom(html: string): () => void {
@@ -100,6 +101,11 @@ test("AnnotationController render + reapplyIfMissing map claims into the content
 
     assert.equal(controller.render(adapter as never), true);
     assert.equal(document.querySelectorAll(".openerrata-annotation").length > 0, true);
+    const renderedMark = document.querySelector<HTMLElement>(".openerrata-annotation");
+    if (!renderedMark) {
+      throw new Error("Expected annotation mark to be rendered");
+    }
+    assert.equal(renderedMark.getAttribute(ANNOTATION_CLAIM_ID_ATTRIBUTE), claim.id);
 
     // Force annotation disappearance and verify reapply path restores marks.
     const root = document.getElementById("root");

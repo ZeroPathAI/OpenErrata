@@ -2,6 +2,7 @@ import type { InvestigationClaim } from "@openerrata/shared";
 import { renderAnnotations, clearAnnotations } from "./annotator";
 import type { PlatformAdapter } from "./adapters/index";
 import { mapClaimsToDom } from "./dom-mapper";
+import { ANNOTATION_SELECTOR } from "./annotation-dom";
 
 export class AnnotationController {
   #visible = true;
@@ -55,7 +56,7 @@ export class AnnotationController {
 
     const root = adapter.getContentRoot(document);
     if (!root) return;
-    if (root.querySelector(".openerrata-annotation")) return;
+    if (root.querySelector(ANNOTATION_SELECTOR)) return;
     this.render(adapter);
   }
 }

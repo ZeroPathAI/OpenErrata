@@ -1,6 +1,11 @@
 import type { InvestigationClaim } from "@openerrata/shared";
 import type { DomAnnotation } from "./dom-mapper";
 import { renderClaimReasoningHtml, toSafeSourceUrl } from "./claim-markdown";
+import {
+  ANNOTATION_CLAIM_ID_ATTRIBUTE,
+  ANNOTATION_CLASS,
+  ANNOTATION_SELECTOR,
+} from "./annotation-dom";
 
 const TOOLTIP_MARGIN_PX = 12;
 const TOOLTIP_GAP_PX = 8;
@@ -54,7 +59,7 @@ export function renderAnnotations(annotations: DomAnnotation[]): void {
  */
 export function clearAnnotations(): void {
   // Unwrap <mark> elements, restoring their text-node children
-  document.querySelectorAll(".openerrata-annotation").forEach((mark) => {
+  document.querySelectorAll(ANNOTATION_SELECTOR).forEach((mark) => {
     const parent = mark.parentNode;
     if (!parent) return;
     while (mark.firstChild) {
@@ -201,7 +206,8 @@ function showDetailPanel(claim: InvestigationClaim, anchor: HTMLElement | null =
 
 function createMarkElement(claim: InvestigationClaim): HTMLElement {
   const mark = document.createElement("mark");
-  mark.className = "openerrata-annotation";
+  mark.className = ANNOTATION_CLASS;
+  mark.setAttribute(ANNOTATION_CLAIM_ID_ATTRIBUTE, claim.id);
   mark.setAttribute("aria-label", `OpenErrata claim highlight: ${claim.summary}`);
   return mark;
 }

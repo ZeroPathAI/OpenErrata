@@ -27,6 +27,7 @@ import { PageObserver } from "./observer";
 import { ContentSyncClient, type ParsedExtensionPageStatus } from "./sync";
 import { mapClaimsToDom } from "./dom-mapper";
 import { extractSubstackPostSlug } from "../lib/substack-url";
+import { ANNOTATION_SELECTOR, readAnnotationClaimId } from "./annotation-dom";
 
 const REFRESH_DEBOUNCE_MS = 200;
 const REAPPLY_DEBOUNCE_MS = 300;
@@ -187,13 +188,20 @@ function resolveClaimAnchor(range: Range): HTMLElement | null {
           ? startContainer.parentElement
           : null;
   if (!startElement) return null;
-  return startElement.closest(".openerrata-annotation") ?? startElement;
+  return startElement.closest(ANNOTATION_SELECTOR) ?? startElement;
 }
 
-function scrollToClaimRange(range: Range): boolean {
-  const anchor = resolveClaimAnchor(range);
-  if (!anchor) return false;
+function resolveRenderedClaimAnchor(root: Element, claimId: string): HTMLElement | null {
+  const renderedClaims = root.querySelectorAll<HTMLElement>(ANNOTATION_SELECTOR);
+  for (const renderedClaim of renderedClaims) {
+    if (readAnnotationClaimId(renderedClaim) === claimId) {
+      return renderedClaim;
+    }
+  }
+  return null;
+}
 
+function scrollToClaimAnchor(anchor: HTMLElement): boolean {
   anchor.scrollIntoView({
     behavior: "smooth",
     block: "center",
@@ -208,6 +216,12 @@ function scrollToClaimRange(range: Range): boolean {
   }, CLAIM_FOCUS_DURATION_MS);
 
   return true;
+}
+
+function scrollToClaimRange(range: Range): boolean {
+  const anchor = resolveClaimAnchor(range);
+  if (!anchor) return false;
+  return scrollToClaimAnchor(anchor);
 }
 
 function areClaimsEqual(left: InvestigationClaim[], right: InvestigationClaim[]): boolean {
@@ -420,9 +434,12 @@ export class PageSessionController {
     }
 
     if (this.#annotations.isVisible()) {
-      const applied = this.#annotations.render(this.#state.adapter);
-      if (!applied) {
-        this.scheduleRefresh();
+      this.#annotations.reapplyIfMissing(this.#state.adapter);
+      const renderedClaimAnchor = resolveRenderedClaimAnchor(root, claimId);
+      if (renderedClaimAnchor) {
+        return focusClaimResponseSchema.parse({
+          ok: scrollToClaimAnchor(renderedClaimAnchor),
+        });
       }
     }
 
