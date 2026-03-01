@@ -34,7 +34,6 @@ import {
   prisma,
   queryPublicGraphql,
   randomChance,
-  randomInt,
   readLesswrongFixture,
   resetDatabase,
   runConcurrentInvestigateNowScenario,
@@ -46,20 +45,19 @@ import {
   seedInstanceApiKey,
   seedInvestigation,
   seedInvestigationForXViewInput,
-  seedInvestigationRun,
   seedPendingInvestigation,
   seedPost,
   seedPostForXViewInput,
   seedProcessingInvestigation,
   seedPrompt,
   sha256,
-  sleep,
   test,
   versionHashFromContentHash,
   withIntegrationPrefix,
   withMockLesswrongCanonicalHtml,
   withMockLesswrongFetch,
 } from "./api-endpoints.integration.shared.js";
+import { createInvestigateNowFuzzRoundScenario } from "./helpers/investigate-now-scenario-dsl.js";
 
 void [
   EMPTY_IMAGE_OCCURRENCES_HASH,
@@ -97,7 +95,6 @@ void [
   prisma,
   queryPublicGraphql,
   randomChance,
-  randomInt,
   readLesswrongFixture,
   resetDatabase,
   runConcurrentInvestigateNowScenario,
@@ -109,19 +106,18 @@ void [
   seedInstanceApiKey,
   seedInvestigation,
   seedInvestigationForXViewInput,
-  seedInvestigationRun,
   seedPendingInvestigation,
   seedPost,
   seedPostForXViewInput,
   seedProcessingInvestigation,
   seedPrompt,
   sha256,
-  sleep,
   test,
   versionHashFromContentHash,
   withIntegrationPrefix,
   withMockLesswrongCanonicalHtml,
   withMockLesswrongFetch,
+  createInvestigateNowFuzzRoundScenario,
 ];
 
 void test("GET /health returns ok", async () => {
@@ -1106,129 +1102,12 @@ void test("post.investigateNow deduplicates concurrent user-key callers to one a
 void test("post.investigateNow randomized concurrency fuzz preserves dedupe invariants", async () => {
   const random = createDeterministicRandom(0x1a2b3c4d);
   const rounds = 12;
-  const scenarios = [
-    "NONE",
-    "FAILED",
-    "PENDING",
-    "PROCESSING_STALE",
-    "PROCESSING_ACTIVE",
-    "COMPLETE",
-  ] as const;
-  const callerModes = ["authenticated", "user_key", "mixed"] as const;
 
   for (let round = 0; round < rounds; round += 1) {
-    const scenario = scenarios[randomInt(random, 0, scenarios.length - 1)];
-    const callerMode = callerModes[randomInt(random, 0, callerModes.length - 1)];
-    const roundTag = `round=${round.toString()} scenario=${scenario} callerMode=${callerMode}`;
-    const input = buildXViewInput({
-      externalId: `investigate-now-fuzz-${round.toString()}`,
-      observedContentText: `Concurrency fuzz payload for ${roundTag}`,
-    });
-
-    let seededInvestigationId: string | null = null;
-    if (scenario !== "NONE") {
-      const seeded = await seedInvestigationForXViewInput({
-        viewInput: input,
-        status:
-          scenario === "COMPLETE"
-            ? "COMPLETE"
-            : scenario === "FAILED"
-              ? "FAILED"
-              : scenario === "PENDING"
-                ? "PENDING"
-                : "PROCESSING",
-        provenance: "CLIENT_FALLBACK",
-      });
-      seededInvestigationId = seeded.investigationId;
-
-      if (scenario === "PROCESSING_STALE") {
-        await seedInvestigationRun({
-          investigationId: seeded.investigationId,
-          leaseOwner: withIntegrationPrefix(`stale-worker-${round.toString()}`),
-          leaseExpiresAt: new Date(Date.now() - 10 * 60_000),
-          startedAt: new Date(Date.now() - 20 * 60_000),
-          heartbeatAt: new Date(Date.now() - 10 * 60_000),
-        });
-      }
-
-      if (scenario === "PROCESSING_ACTIVE") {
-        await seedInvestigationRun({
-          investigationId: seeded.investigationId,
-          leaseOwner: withIntegrationPrefix(`active-worker-${round.toString()}`),
-          leaseExpiresAt: new Date(Date.now() + 10 * 60_000),
-          startedAt: new Date(Date.now() - 60_000),
-          heartbeatAt: new Date(),
-        });
-      }
-    }
-
-    const callerCount = randomInt(random, 4, 14);
-    const callerPlans = Array.from({ length: callerCount }, (_, index) => {
-      const jitterMs = randomInt(random, 0, 12);
-      const viewerKey = withIntegrationPrefix(
-        `fuzz-viewer-${round.toString()}-${index.toString()}`,
-      );
-      const ipRangeKey = withIntegrationPrefix(`fuzz-ip-${round.toString()}-${index.toString()}`);
-
-      if (callerMode === "authenticated") {
-        return {
-          jitterMs,
-          caller: createCaller({
-            isAuthenticated: true,
-            viewerKey,
-            ipRangeKey,
-          }),
-        };
-      }
-
-      if (callerMode === "user_key") {
-        return {
-          jitterMs,
-          caller: createCaller({
-            userOpenAiApiKey: `sk-test-fuzz-${round.toString()}-${index.toString()}`,
-            viewerKey,
-            ipRangeKey,
-          }),
-        };
-      }
-
-      if (index % 2 === 0) {
-        return {
-          jitterMs,
-          caller: createCaller({
-            isAuthenticated: true,
-            viewerKey,
-            ipRangeKey,
-          }),
-        };
-      }
-
-      return {
-        jitterMs,
-        caller: createCaller({
-          userOpenAiApiKey: `sk-test-fuzz-mixed-${round.toString()}-${index.toString()}`,
-          viewerKey,
-          ipRangeKey,
-        }),
-      };
-    });
-
-    const results = await Promise.all(
-      callerPlans.map(async ({ caller, jitterMs }) => {
-        await sleep(jitterMs);
-        return caller.post.investigateNow(input);
-      }),
-    );
-
-    const investigationIds = new Set(results.map((result) => result.investigationId));
-    assert.equal(
-      investigationIds.size,
-      1,
-      `all callers should converge to one investigation (${roundTag})`,
-    );
-    const firstResult = results[0];
-    assert.ok(firstResult, `missing first result (${roundTag})`);
-    const investigationId = firstResult.investigationId;
+    const fuzzRound = createInvestigateNowFuzzRoundScenario({ round, random });
+    const { roundTag, input, expectedStoredStatus } = fuzzRound;
+    const { seededInvestigationId } = await fuzzRound.seedExistingInvestigation();
+    const { investigationId, returnedStatuses } = await fuzzRound.runConcurrentInvestigateNow();
     if (seededInvestigationId !== null) {
       assert.equal(
         investigationId,
@@ -1237,23 +1116,12 @@ void test("post.investigateNow randomized concurrency fuzz preserves dedupe inva
       );
     }
 
-    const expectedStoredStatus =
-      scenario === "COMPLETE"
-        ? "COMPLETE"
-        : scenario === "PROCESSING_ACTIVE"
-          ? "PROCESSING"
-          : "PENDING";
-    const returnedStatuses = new Set(results.map((result) => result.status));
-    const allowedReturnedStatuses =
-      scenario === "PROCESSING_STALE"
-        ? new Set(["PENDING", "PROCESSING"])
-        : new Set([expectedStoredStatus]);
     assert.equal(
-      Array.from(returnedStatuses).every((status) => allowedReturnedStatuses.has(status)),
+      Array.from(returnedStatuses).every((status) => fuzzRound.allowedReturnedStatuses.has(status)),
       true,
       `returned statuses fell outside allowed transition window (${roundTag})`,
     );
-    if (scenario === "PROCESSING_STALE") {
+    if (fuzzRound.requiresPendingRecoveryEvidence) {
       assert.equal(
         returnedStatuses.has("PENDING"),
         true,
@@ -1308,7 +1176,7 @@ void test("post.investigateNow randomized concurrency fuzz preserves dedupe inva
       },
     });
 
-    if (scenario === "COMPLETE") {
+    if (fuzzRound.scenario === "COMPLETE") {
       assert.equal(
         storedRuns.length,
         0,
@@ -1345,8 +1213,7 @@ void test("post.investigateNow randomized concurrency fuzz preserves dedupe inva
     const keySourceCount = await prisma.investigationOpenAiKeySource.count({
       where: { runId: run.id },
     });
-    const hasUserKeyCaller = callerMode !== "authenticated";
-    if (expectedStoredStatus === "PENDING" && hasUserKeyCaller) {
+    if (expectedStoredStatus === "PENDING" && fuzzRound.hasUserKeyCaller) {
       assert.equal(
         keySourceCount <= 1,
         true,

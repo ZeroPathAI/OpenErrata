@@ -16,9 +16,12 @@
     "src/lib/services/hmac.ts",
     "src/lib/services/investigation-state.ts",
     "src/lib/services/openai-key-validation-core.ts",
+    "src/lib/services/orchestrator.ts",
     "src/lib/services/public-read-model.ts",
     "src/lib/services/queue-lifecycle.ts",
     "src/lib/services/request-identity.ts",
+    "src/lib/trpc/routes/post.ts",
+    "src/lib/trpc/routes/post/**",
     "src/routes/+server.ts"
   ],
   "exclude": [
@@ -32,8 +35,8 @@
     "src/lib/generated/**"
   ],
   "check-coverage": true,
-  "lines": 60,
-  "branches": 60,
-  "functions": 60,
-  "statements": 60
+  "lines": 75,
+  "branches": 75,
+  "functions": 75,
+  "statements": 75
 }

@@ -13,10 +13,17 @@ tRPC handler → `postRouter` or `publicRouter` → Prisma → PostgreSQL.
 
 ### tRPC Routers
 
-- `src/lib/trpc/routes/post.ts` — Extension-facing API:
+- `src/lib/trpc/routes/post.ts` — Extension-facing API router:
   `registerObservedVersion` (mutation), `recordViewAndGetStatus` (mutation),
   `getInvestigation` (query), `investigateNow` (mutation),
   `validateSettings` (query), `batchStatus` (query).
+  Delegates to focused sub-modules:
+  - `routes/post/content-storage.ts` — Content canonicalization, blob/version
+    upsert, post management, image occurrence sets.
+  - `routes/post/investigation-queries.ts` — Investigation loading, claim
+    formatting, diff computation, corroboration, queue lifecycle.
+  - `routes/post/wikipedia.ts` — Wikipedia URL identity parsing and metadata
+    canonicalization.
 - `src/lib/trpc/routes/public.ts` — Legacy public tRPC API: investigation
   browser, search, metrics. Uses shared read-model logic.
 - `src/routes/graphql/+server.ts` — Public GraphQL API endpoint (`POST /graphql`).

@@ -88,6 +88,52 @@ type PageSnapshot =
       request: ViewPostInput;
     };
 
+type SyncTrackedSnapshotErrorPolicy =
+  | {
+      matches: (error: unknown) => boolean;
+      action: "RESET_AND_SYNC_CACHED_FAILURE";
+      warningMessage: string;
+    }
+  | {
+      matches: (error: unknown) => boolean;
+      action: "RESET_ONLY";
+    };
+
+const SYNC_TRACKED_SNAPSHOT_ERROR_POLICIES: readonly SyncTrackedSnapshotErrorPolicy[] = [
+  {
+    matches: isContentMismatchRuntimeError,
+    action: "RESET_AND_SYNC_CACHED_FAILURE",
+    warningMessage:
+      "Page content mismatch with server-verified canonical content; skipping retries.",
+  },
+  {
+    matches: isPayloadTooLargeRuntimeError,
+    action: "RESET_AND_SYNC_CACHED_FAILURE",
+    warningMessage: "Page content request exceeded API body size limit; skipping retries.",
+  },
+  {
+    matches: isUpgradeRequiredRuntimeError,
+    action: "RESET_AND_SYNC_CACHED_FAILURE",
+    warningMessage: "Extension upgrade required by API compatibility policy; skipping retries.",
+  },
+  {
+    matches: isMalformedExtensionVersionRuntimeError,
+    action: "RESET_AND_SYNC_CACHED_FAILURE",
+    warningMessage:
+      "Extension version header is malformed; skipping retries until extension configuration is corrected.",
+  },
+  {
+    matches: isInvalidExtensionMessageRuntimeError,
+    action: "RESET_AND_SYNC_CACHED_FAILURE",
+    warningMessage:
+      "Extension message contract rejected PAGE_CONTENT payload/response; skipping retries.",
+  },
+  {
+    matches: isExtensionContextInvalidatedError,
+    action: "RESET_ONLY",
+  },
+];
+
 function pageKeyFor(content: PlatformContent): string {
   return [content.platform, content.externalId, content.mediaState, content.contentText].join(":");
 }
@@ -431,6 +477,23 @@ export class PageSessionController {
     this.scheduleRefresh(retryDelayMs);
   }
 
+  #applySyncTrackedSnapshotErrorPolicy(error: unknown): boolean {
+    const policy = SYNC_TRACKED_SNAPSHOT_ERROR_POLICIES.find((candidate) =>
+      candidate.matches(error),
+    );
+    if (policy === undefined) {
+      return false;
+    }
+
+    this.#resetSyncRetryState();
+    if (policy.action === "RESET_AND_SYNC_CACHED_FAILURE") {
+      this.#annotations.clearAll();
+      this.#syncCachedFailureStatus();
+      console.warn(policy.warningMessage, error);
+    }
+    return true;
+  }
+
   async #runRefreshCycle(): Promise<void> {
     if (!this.#booted) return;
     if (this.#refreshInFlight) {
@@ -611,55 +674,7 @@ export class PageSessionController {
     try {
       viewPost = await this.#sync.sendPageContent(tabSessionId, snapshot.content);
     } catch (error) {
-      if (isContentMismatchRuntimeError(error)) {
-        this.#resetSyncRetryState();
-        this.#annotations.clearAll();
-        this.#syncCachedFailureStatus();
-        console.warn(
-          "Page content mismatch with server-verified canonical content; skipping retries.",
-          error,
-        );
-        return;
-      }
-      if (isPayloadTooLargeRuntimeError(error)) {
-        this.#resetSyncRetryState();
-        this.#annotations.clearAll();
-        this.#syncCachedFailureStatus();
-        console.warn("Page content request exceeded API body size limit; skipping retries.", error);
-        return;
-      }
-      if (isUpgradeRequiredRuntimeError(error)) {
-        this.#resetSyncRetryState();
-        this.#annotations.clearAll();
-        this.#syncCachedFailureStatus();
-        console.warn(
-          "Extension upgrade required by API compatibility policy; skipping retries.",
-          error,
-        );
-        return;
-      }
-      if (isMalformedExtensionVersionRuntimeError(error)) {
-        this.#resetSyncRetryState();
-        this.#annotations.clearAll();
-        this.#syncCachedFailureStatus();
-        console.warn(
-          "Extension version header is malformed; skipping retries until extension configuration is corrected.",
-          error,
-        );
-        return;
-      }
-      if (isInvalidExtensionMessageRuntimeError(error)) {
-        this.#resetSyncRetryState();
-        this.#annotations.clearAll();
-        this.#syncCachedFailureStatus();
-        console.warn(
-          "Extension message contract rejected PAGE_CONTENT payload/response; skipping retries.",
-          error,
-        );
-        return;
-      }
-      if (isExtensionContextInvalidatedError(error)) {
-        this.#resetSyncRetryState();
+      if (this.#applySyncTrackedSnapshotErrorPolicy(error)) {
         return;
       }
       console.error("Failed to sync page content with background:", error);

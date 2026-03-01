@@ -9,10 +9,14 @@ API, and renders inline annotations on incorrect claims.
 ```bash
 pnpm dev    # vite build --watch (rebuilds on file change)
 pnpm build  # production build to dist/ (Chrome) and dist/firefox/
+# package CI artifacts (.zip/.crx/.xpi) after pnpm build:
+OPENERRATA_EXTENSION_PACKAGE_VERSION=0.2.0 pnpm package:artifacts
 ```
 
 Firefox package metadata uses `browser_specific_settings.gecko.id`. Override
 the default id with `FIREFOX_GECKO_ID=<your-addon-id>` when running `pnpm build`.
+Chrome `.crx` packaging uses `OPENERRATA_CHROME_CRX_PRIVATE_KEY` when set;
+otherwise the packager generates a temporary signing key.
 
 After building:
 

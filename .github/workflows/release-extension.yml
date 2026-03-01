@@ -74,15 +74,12 @@ jobs:
             echo "version=$(date +%Y%m%d)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Package Chrome extension zip
-        run: |
-          cd extension/dist
-          zip -r "$GITHUB_WORKSPACE/openerrata-extension-chrome-${{ steps.version.outputs.version }}.zip" .
-
-      - name: Package Firefox extension zip
-        run: |
-          cd extension/dist/firefox
-          zip -r "$GITHUB_WORKSPACE/openerrata-extension-firefox-${{ steps.version.outputs.version }}.zip" .
+      - name: Package extension artifacts
+        env:
+          OPENERRATA_EXTENSION_PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+          OPENERRATA_EXTENSION_PACKAGE_OUT_DIR: ${{ github.workspace }}
+          OPENERRATA_CHROME_CRX_PRIVATE_KEY: ${{ secrets.CHROME_CRX_PRIVATE_KEY }}
+        run: pnpm --filter @openerrata/extension package:artifacts
 
       - name: Enforce bundle size hard limit
         shell: bash
@@ -90,35 +87,36 @@ jobs:
           set -euo pipefail
 
           chrome_zip="$GITHUB_WORKSPACE/openerrata-extension-chrome-${{ steps.version.outputs.version }}.zip"
+          chrome_crx="$GITHUB_WORKSPACE/openerrata-extension-chrome-${{ steps.version.outputs.version }}.crx"
           firefox_zip="$GITHUB_WORKSPACE/openerrata-extension-firefox-${{ steps.version.outputs.version }}.zip"
+          firefox_xpi="$GITHUB_WORKSPACE/openerrata-extension-firefox-${{ steps.version.outputs.version }}.xpi"
           limit_bytes=5242880
 
-          chrome_bytes="$(stat -c%s "$chrome_zip")"
-          firefox_bytes="$(stat -c%s "$firefox_zip")"
+          for artifact in "$chrome_zip" "$chrome_crx" "$firefox_zip" "$firefox_xpi"; do
+            bytes="$(stat -c%s "$artifact")"
+            if [ "$bytes" -gt "$limit_bytes" ]; then
+              echo "$(basename "$artifact") exceeds 5 MiB: ${bytes} bytes"
+              exit 1
+            fi
+          done
 
-          if [ "$chrome_bytes" -gt "$limit_bytes" ]; then
-            echo "Chrome zip exceeds 5 MiB: ${chrome_bytes} bytes"
-            exit 1
-          fi
-
-          if [ "$firefox_bytes" -gt "$limit_bytes" ]; then
-            echo "Firefox zip exceeds 5 MiB: ${firefox_bytes} bytes"
-            exit 1
-          fi
-
-      - name: Verify Firefox zip integrity
-        run: unzip -t "$GITHUB_WORKSPACE/openerrata-extension-firefox-${{ steps.version.outputs.version }}.zip"
+      - name: Verify Firefox package integrity
+        run: |
+          unzip -t "$GITHUB_WORKSPACE/openerrata-extension-firefox-${{ steps.version.outputs.version }}.zip"
+          unzip -t "$GITHUB_WORKSPACE/openerrata-extension-firefox-${{ steps.version.outputs.version }}.xpi"
 
       - name: Lint Firefox extension package
         run: npx -y web-ext@8.9.0 lint --source-dir extension/dist/firefox
 
-      - name: Upload packaged zips
+      - name: Upload packaged extension artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: openerrata-extension-zips-${{ steps.version.outputs.version }}
+          name: openerrata-extension-packages-${{ steps.version.outputs.version }}
           path: |
             ${{ github.workspace }}/openerrata-extension-chrome-${{ steps.version.outputs.version }}.zip
+            ${{ github.workspace }}/openerrata-extension-chrome-${{ steps.version.outputs.version }}.crx
             ${{ github.workspace }}/openerrata-extension-firefox-${{ steps.version.outputs.version }}.zip
+            ${{ github.workspace }}/openerrata-extension-firefox-${{ steps.version.outputs.version }}.xpi
 
   release:
     needs: [build-and-test]
@@ -128,10 +126,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Download packaged zips
+      - name: Download packaged extension artifacts
         uses: actions/download-artifact@v4
         with:
-          name: openerrata-extension-zips-${{ needs.build-and-test.outputs.version }}
+          name: openerrata-extension-packages-${{ needs.build-and-test.outputs.version }}
           path: .
 
       - name: Create GitHub Release
@@ -139,7 +137,9 @@ jobs:
         with:
           files: |
             openerrata-extension-chrome-${{ needs.build-and-test.outputs.version }}.zip
+            openerrata-extension-chrome-${{ needs.build-and-test.outputs.version }}.crx
             openerrata-extension-firefox-${{ needs.build-and-test.outputs.version }}.zip
+            openerrata-extension-firefox-${{ needs.build-and-test.outputs.version }}.xpi
           generate_release_notes: true
 
   publish:
@@ -149,10 +149,10 @@ jobs:
     timeout-minutes: 20
     environment: extension-store-publish
     steps:
-      - name: Download packaged zips
+      - name: Download packaged extension artifacts
         uses: actions/download-artifact@v4
         with:
-          name: openerrata-extension-zips-${{ needs.build-and-test.outputs.version }}
+          name: openerrata-extension-packages-${{ needs.build-and-test.outputs.version }}
           path: .
 
       - name: Publish to Chrome Web Store
