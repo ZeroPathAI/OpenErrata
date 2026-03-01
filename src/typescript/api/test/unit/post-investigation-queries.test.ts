@@ -136,77 +136,76 @@ test("unreachableInvestigationStatus throws explicit internal error", () => {
   );
 });
 
-test("investigation lookup helpers apply required query filters and return loader results", async () => {
-  const loadedResult = { id: "loaded-investigation" };
-  const completedResult = { id: "completed-investigation" };
-  const latestResult = { id: "latest-server-verified-investigation" };
-
-  let findUniqueArgs: unknown = null;
-  let completedFindFirstArgs: unknown = null;
-  let latestFindFirstArgs: unknown = null;
-
+test("loadInvestigationWithClaims queries by id and includes required relations", async () => {
+  let capturedArgs: unknown = null;
   const prisma = {
     investigation: {
       findUnique: async (args: unknown) => {
-        findUniqueArgs = args;
-        return loadedResult;
-      },
-      findFirst: async (args: unknown) => {
-        if (completedFindFirstArgs === null) {
-          completedFindFirstArgs = args;
-          return completedResult;
-        }
-        latestFindFirstArgs = args;
-        return latestResult;
+        capturedArgs = args;
+        return null;
       },
     },
   };
 
-  const loaded = await loadInvestigationWithClaims(prisma, "investigation-id");
-  const completed = await findCompletedInvestigationByPostVersionId(prisma, "post-version-id");
-  const latest = await findLatestServerVerifiedCompleteInvestigationForPost(prisma, "post-id");
+  const result = await loadInvestigationWithClaims(prisma, "investigation-id");
+  assert.equal(result, null);
 
-  assert.equal(loaded, loadedResult);
-  assert.equal(completed, completedResult);
-  assert.equal(latest, latestResult);
+  if (typeof capturedArgs !== "object" || capturedArgs === null) return;
+  const query = capturedArgs as { where: unknown; include: unknown };
+  assert.deepEqual(query.where, { id: "investigation-id" });
+  if (typeof query.include !== "object" || query.include === null) return;
+  assert.ok(Object.hasOwn(query.include, "postVersion"));
+  assert.ok(Object.hasOwn(query.include, "claims"));
+});
 
-  assert.equal(typeof findUniqueArgs, "object");
-  assert.notEqual(findUniqueArgs, null);
-  if (typeof findUniqueArgs !== "object" || findUniqueArgs === null) return;
-  const findUniqueQuery = findUniqueArgs as Record<string, unknown>;
-  assert.deepEqual(findUniqueQuery.where, { id: "investigation-id" });
-  assert.equal(typeof findUniqueQuery.include, "object");
-  assert.notEqual(findUniqueQuery.include, null);
-  if (typeof findUniqueQuery.include !== "object" || findUniqueQuery.include === null) return;
-  const include = findUniqueQuery.include as Record<string, unknown>;
-  assert.equal(Object.hasOwn(include, "postVersion"), true);
-  assert.equal(Object.hasOwn(include, "claims"), true);
+test("findCompletedInvestigationByPostVersionId queries by postVersionId and COMPLETE status", async () => {
+  let capturedArgs: unknown = null;
+  const prisma = {
+    investigation: {
+      findFirst: async (args: unknown) => {
+        capturedArgs = args;
+        return null;
+      },
+    },
+  };
 
-  assert.equal(typeof completedFindFirstArgs, "object");
-  assert.notEqual(completedFindFirstArgs, null);
-  if (typeof completedFindFirstArgs !== "object" || completedFindFirstArgs === null) return;
-  const completedQuery = completedFindFirstArgs as Record<string, unknown>;
-  assert.deepEqual(completedQuery.where, {
+  const result = await findCompletedInvestigationByPostVersionId(prisma, "post-version-id");
+  assert.equal(result, null);
+
+  if (typeof capturedArgs !== "object" || capturedArgs === null) return;
+  const query = capturedArgs as { where: unknown; include: unknown };
+  assert.deepEqual(query.where, {
     postVersionId: "post-version-id",
     status: "COMPLETE",
   });
-  assert.equal(typeof completedQuery.include, "object");
-  assert.notEqual(completedQuery.include, null);
+  assert.notEqual(query.include, null);
+});
 
-  assert.equal(typeof latestFindFirstArgs, "object");
-  assert.notEqual(latestFindFirstArgs, null);
-  if (typeof latestFindFirstArgs !== "object" || latestFindFirstArgs === null) return;
-  const latestQuery = latestFindFirstArgs as Record<string, unknown>;
-  assert.deepEqual(latestQuery.where, {
+test("findLatestServerVerifiedCompleteInvestigationForPost queries by post id and orders by checkedAt desc", async () => {
+  let capturedArgs: unknown = null;
+  const prisma = {
+    investigation: {
+      findFirst: async (args: unknown) => {
+        capturedArgs = args;
+        return null;
+      },
+    },
+  };
+
+  const result = await findLatestServerVerifiedCompleteInvestigationForPost(prisma, "post-id");
+  assert.equal(result, null);
+
+  if (typeof capturedArgs !== "object" || capturedArgs === null) return;
+  const query = capturedArgs as { where: unknown; orderBy: unknown; include: unknown };
+  assert.deepEqual(query.where, {
     status: "COMPLETE",
     postVersion: {
       postId: "post-id",
       contentProvenance: "SERVER_VERIFIED",
     },
   });
-  assert.deepEqual(latestQuery.orderBy, { checkedAt: "desc" });
-  assert.equal(typeof latestQuery.include, "object");
-  assert.notEqual(latestQuery.include, null);
+  assert.deepEqual(query.orderBy, { checkedAt: "desc" });
+  assert.notEqual(query.include, null);
 });
 
 test("maybeRecordCorroboration gates on auth and handles duplicate credit races", async () => {

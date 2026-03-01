@@ -20,6 +20,7 @@ test("extractPendingFunctionToolCalls extracts valid function calls", () => {
   };
   const calls = extractPendingFunctionToolCalls(record);
   assert.equal(calls.length, 1);
+  assert.ok(calls[0]);
   assert.equal(calls[0].callId, "call-1");
   assert.equal(calls[0].name, "fetch_url");
   assert.equal(calls[0].argumentsJson, '{"url":"https://example.com"}');
@@ -61,8 +62,10 @@ test("deduplicateFunctionToolCalls removes duplicate callIds", () => {
   ];
   const result = deduplicateFunctionToolCalls(calls);
   assert.equal(result.length, 2);
+  assert.ok(result[0]);
   assert.equal(result[0].callId, "call-1");
   assert.equal(result[0].argumentsJson, '{"url":"a"}');
+  assert.ok(result[1]);
   assert.equal(result[1].callId, "call-2");
 });
 

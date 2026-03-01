@@ -290,8 +290,10 @@ test("extractRequestedTools extracts tools from array", () => {
   const tools = [{ type: "web_search_preview" }, { type: "function", name: "fetch_url" }];
   const result = extractRequestedTools(tools);
   assert.equal(result.length, 2);
+  assert.ok(result[0]);
   assert.equal(result[0].requestOrder, 0);
   assert.equal(result[0].toolType, "web_search_preview");
+  assert.ok(result[1]);
   assert.equal(result[1].requestOrder, 1);
   assert.equal(result[1].toolType, "function");
 });
@@ -316,6 +318,7 @@ test("extractOutputItems extracts items with id and status", () => {
   ];
   const result = extractOutputItems(items);
   assert.equal(result.length, 2);
+  assert.ok(result[0]);
   assert.equal(result[0].providerItemId, "msg-1");
   assert.equal(result[0].itemStatus, "completed");
 });
@@ -323,6 +326,7 @@ test("extractOutputItems extracts items with id and status", () => {
 test("extractOutputItems handles missing id by nulling both id and status", () => {
   const items = [{ type: "message", status: "completed" }];
   const result = extractOutputItems(items);
+  assert.ok(result[0]);
   assert.equal(result[0].providerItemId, null);
   assert.equal(result[0].itemStatus, null);
 });
@@ -330,6 +334,7 @@ test("extractOutputItems handles missing id by nulling both id and status", () =
 test("extractOutputItems handles non-object entries", () => {
   const items = ["not-an-object"];
   const result = extractOutputItems(items);
+  assert.ok(result[0]);
   assert.equal(result[0].itemType, "unknown");
   assert.equal(result[0].providerItemId, null);
 });
@@ -345,6 +350,7 @@ test("extractOutputTextArtifacts extracts text parts from message output", () =>
   ];
   const { parts, annotations } = extractOutputTextArtifacts(items);
   assert.equal(parts.length, 1);
+  assert.ok(parts[0]);
   assert.equal(parts[0].text, "Hello world");
   assert.equal(annotations.length, 0);
 });
@@ -373,6 +379,7 @@ test("extractOutputTextArtifacts extracts annotations", () => {
   const { parts, annotations } = extractOutputTextArtifacts(items);
   assert.equal(parts.length, 1);
   assert.equal(annotations.length, 1);
+  assert.ok(annotations[0]);
   assert.equal(annotations[0].url, "https://example.com");
   assert.deepStrictEqual(annotations[0].characterPosition, { start: 4, end: 10 });
 });
@@ -386,6 +393,7 @@ test("extractOutputTextArtifacts extracts refusal parts", () => {
   ];
   const { parts } = extractOutputTextArtifacts(items);
   assert.equal(parts.length, 1);
+  assert.ok(parts[0]);
   assert.equal(parts[0].partType, "refusal");
   assert.equal(parts[0].text, "I cannot help with that");
 });
@@ -407,7 +415,9 @@ test("extractReasoningSummaries extracts summaries from reasoning items", () => 
   ];
   const result = extractReasoningSummaries(items);
   assert.equal(result.length, 2);
+  assert.ok(result[0]);
   assert.equal(result[0].text, "Step 1 reasoning");
+  assert.ok(result[1]);
   assert.equal(result[1].summaryIndex, 1);
 });
 
@@ -437,6 +447,7 @@ test("extractToolCalls extracts function_call items", () => {
   ];
   const result = extractToolCalls(items);
   assert.equal(result.length, 1);
+  assert.ok(result[0]);
   assert.equal(result[0].toolType, "function_call");
   assert.equal(result[0].providerToolCallId, "fc-1");
 });
@@ -553,10 +564,15 @@ test("offsetResponseAuditIndices offsets all index fields", () => {
   };
 
   const offset = offsetResponseAuditIndices(audit, 5);
+  assert.ok(offset.outputItems[0]);
   assert.equal(offset.outputItems[0].outputIndex, 5);
+  assert.ok(offset.outputTextParts[0]);
   assert.equal(offset.outputTextParts[0].outputIndex, 5);
+  assert.ok(offset.outputTextAnnotations[0]);
   assert.equal(offset.outputTextAnnotations[0].outputIndex, 5);
+  assert.ok(offset.reasoningSummaries[0]);
   assert.equal(offset.reasoningSummaries[0].outputIndex, 5);
+  assert.ok(offset.toolCalls[0]);
   assert.equal(offset.toolCalls[0].outputIndex, 5);
 });
 
