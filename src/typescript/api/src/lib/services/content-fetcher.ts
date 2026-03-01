@@ -1,5 +1,6 @@
 import {
   CONTENT_BLOCK_SEPARATOR_TAGS,
+  NON_CONTENT_TAGS,
   effectiveHeadingLevel,
   effectiveHeadingText,
   hashContent,
@@ -106,7 +107,31 @@ function hasChildren(
   return "childNodes" in node;
 }
 
-function htmlToTextContent(html: string): string {
+/**
+ * Callback invoked during the "enter" phase of the parse5 DFS traversal.
+ * Returning `"skip"` omits the node and its entire subtree from the output.
+ * Returning `"include"` processes the node normally.
+ *
+ * For element nodes, receives the element.
+ * For text nodes, receives the text node (allows stateful filters like
+ * Wikipedia's section-level skip to suppress text outside of elements).
+ */
+type Parse5NodeFilter = (node: DefaultTreeAdapterMap["node"]) => "include" | "skip";
+
+/**
+ * Shared parse5 HTML-to-text traversal used by all platform extractors.
+ *
+ * Performs a stack-based DFS over the parse5 fragment tree, collecting text
+ * node values and injecting word-boundary separators at block element edges.
+ *
+ * Built-in behavior (unconditional):
+ *   - `NON_CONTENT_TAGS` (script, style, noscript) are always excluded.
+ *
+ * Platform-specific filtering:
+ *   - An optional `nodeFilter` callback is invoked during the "enter" phase
+ *     for every node. Returning `"skip"` omits the node and its subtree.
+ */
+function parse5HtmlToTextContent(html: string, nodeFilter?: Parse5NodeFilter): string {
   const fragment = parseFragment(html);
   const stack: { node: DefaultTreeAdapterMap["node"]; phase: "enter" | "exit" }[] = [];
   for (let index = fragment.childNodes.length - 1; index >= 0; index -= 1) {
@@ -124,12 +149,19 @@ function htmlToTextContent(html: string): string {
     const { node, phase } = current;
 
     if (phase === "exit") {
-      // Inject a trailing separator when leaving a block element so text that
-      // ends at a block boundary (e.g. <div>about</div><span>Ali</span>) is
-      // still word-separated after normalizeContent.
       if (isElementNode(node) && CONTENT_BLOCK_SEPARATOR_TAGS.has(node.tagName.toLowerCase())) {
         chunks.push(" ");
       }
+      continue;
+    }
+
+    // Universal exclusion: NON_CONTENT_TAGS never contain article prose.
+    if (isElementNode(node) && NON_CONTENT_TAGS.has(node.tagName.toLowerCase())) {
+      continue;
+    }
+
+    // Platform-specific filtering.
+    if (nodeFilter !== undefined && nodeFilter(node) === "skip") {
       continue;
     }
 
@@ -142,9 +174,6 @@ function htmlToTextContent(html: string): string {
       continue;
     }
 
-    // Inject a leading separator when entering a block element so compact HTML
-    // (no whitespace text nodes between adjacent block elements) still produces
-    // word-separated output after normalizeContent.
     if (isElementNode(node) && CONTENT_BLOCK_SEPARATOR_TAGS.has(node.tagName.toLowerCase())) {
       chunks.push(" ");
     }
@@ -165,7 +194,7 @@ function htmlToTextContent(html: string): string {
  * Convert LessWrong post HTML into normalized plain text for hashing/storage.
  */
 export function lesswrongHtmlToNormalizedText(html: string): string {
-  return normalizeContent(htmlToTextContent(html));
+  return normalizeContent(parse5HtmlToTextContent(html));
 }
 
 async function fetchServerVerifiedContent(
@@ -329,36 +358,23 @@ function shouldSkipWikipediaElement(node: DefaultTreeAdapterMap["element"]): boo
   });
 }
 
-function wikipediaHtmlToTextContent(html: string): string {
-  const fragment = parseFragment(html);
-  const stack: {
-    node: DefaultTreeAdapterMap["node"];
-    phase: "enter" | "exit";
-  }[] = [];
-  for (let index = fragment.childNodes.length - 1; index >= 0; index -= 1) {
-    const child = fragment.childNodes[index];
-    if (child !== undefined) {
-      stack.push({ node: child, phase: "enter" });
-    }
-  }
-
-  const chunks: string[] = [];
+/**
+ * Creates a stateful node filter for Wikipedia content extraction.
+ *
+ * Handles section-level exclusion (e.g. "References", "External links") and
+ * element-level exclusion (e.g. citation superscripts, edit-section links)
+ * via `shouldExcludeWikipediaElement`. Text nodes are suppressed when inside
+ * an excluded section.
+ *
+ * NON_CONTENT_TAGS (script/style/noscript) are already excluded by
+ * `parse5HtmlToTextContent` before this filter runs, so
+ * `shouldExcludeWikipediaElement`'s tag check is redundant but harmless.
+ */
+function createWikipediaNodeFilter(): Parse5NodeFilter {
   let skipSectionLevel: number | null = null;
 
-  while (stack.length > 0) {
-    const current = stack.pop();
-    if (!current) continue;
-
-    const { node, phase } = current;
-    if (phase === "exit") {
-      if (isElementNode(node) && CONTENT_BLOCK_SEPARATOR_TAGS.has(node.tagName.toLowerCase())) {
-        chunks.push(" ");
-      }
-      continue;
-    }
-
+  return (node: DefaultTreeAdapterMap["node"]): "include" | "skip" => {
     if (isElementNode(node)) {
-      const tagName = node.tagName.toLowerCase();
       const descriptor = toNodeDescriptor(node);
       const nodeHeadingLevel = effectiveHeadingLevel(descriptor);
       if (nodeHeadingLevel !== null) {
@@ -369,40 +385,28 @@ function wikipediaHtmlToTextContent(html: string): string {
         const headingText = normalizeWikipediaSectionTitle(effectiveHeadingText(descriptor));
         if (isExcludedWikipediaSectionTitle(headingText)) {
           skipSectionLevel = nodeHeadingLevel;
-          continue;
+          return "skip";
         }
       }
 
       if (skipSectionLevel !== null || shouldSkipWikipediaElement(node)) {
-        continue;
+        return "skip";
       }
 
-      if (CONTENT_BLOCK_SEPARATOR_TAGS.has(tagName)) {
-        chunks.push(" ");
-      }
-
-      if (hasChildren(node)) {
-        stack.push({ node, phase: "exit" });
-        for (let index = node.childNodes.length - 1; index >= 0; index -= 1) {
-          const child = node.childNodes[index];
-          if (child !== undefined) {
-            stack.push({ node: child, phase: "enter" });
-          }
-        }
-      }
-      continue;
+      return "include";
     }
 
+    // Text nodes: suppress when inside an excluded section.
     if (skipSectionLevel !== null) {
-      continue;
+      return "skip";
     }
 
-    if (isTextNode(node)) {
-      chunks.push(node.value);
-    }
-  }
+    return "include";
+  };
+}
 
-  return chunks.join("");
+function wikipediaHtmlToTextContent(html: string): string {
+  return parse5HtmlToTextContent(html, createWikipediaNodeFilter());
 }
 
 export function wikipediaHtmlToNormalizedText(html: string): string {

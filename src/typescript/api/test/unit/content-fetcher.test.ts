@@ -63,6 +63,35 @@ test("lesswrongHtmlToNormalizedText preserves escaped literal tags as text", () 
   assert.equal(lesswrongHtmlToNormalizedText(html), "<em>not markup</em>");
 });
 
+// ── NON_CONTENT_TAGS exclusion (bug fix) ──────────────────────────────────────
+// htmlToTextContent previously had no element filtering, so <script>, <style>,
+// and <noscript> text content leaked into the LessWrong canonical text.
+
+test("lesswrongHtmlToNormalizedText excludes script tag content", () => {
+  const html = '<p>Article text.</p><script>var x = "leaked";</script><p>More text.</p>';
+
+  const result = lesswrongHtmlToNormalizedText(html);
+  assert.ok(!result.includes("leaked"), "script content must not appear in output");
+  assert.equal(result, "Article text. More text.");
+});
+
+test("lesswrongHtmlToNormalizedText excludes style tag content", () => {
+  const html = "<p>Article text.</p><style>.cls { color: red; }</style><p>More text.</p>";
+
+  const result = lesswrongHtmlToNormalizedText(html);
+  assert.ok(!result.includes("color"), "style content must not appear in output");
+  assert.equal(result, "Article text. More text.");
+});
+
+test("lesswrongHtmlToNormalizedText excludes noscript tag content", () => {
+  const html =
+    '<p>Article text.</p><noscript><img src="tracking.gif" alt="tracker"></noscript><p>More text.</p>';
+
+  const result = lesswrongHtmlToNormalizedText(html);
+  assert.ok(!result.includes("tracking"), "noscript content must not appear in output");
+  assert.equal(result, "Article text. More text.");
+});
+
 test("wikipediaHtmlToNormalizedText excludes references section and citation superscripts", () => {
   const html = `
     <div class="mw-parser-output">

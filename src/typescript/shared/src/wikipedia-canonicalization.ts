@@ -1,4 +1,4 @@
-import { normalizeContent } from "./normalize.js";
+import { NON_CONTENT_TAGS, normalizeContent } from "./normalize.js";
 
 // ---------------------------------------------------------------------------
 // Shared heading detection for Wikipedia Parsoid and legacy HTML formats.
@@ -138,13 +138,7 @@ function isReferenceSupNode(tagName: string, classTokens: readonly string[]): bo
 }
 
 function isExcludedWikipediaTag(tagName: string): boolean {
-  const normalized = tagName.toLowerCase();
-  // noscript is excluded because its content differs between environments: browsers
-  // with scripting enabled expose it as a raw text node (containing literal HTML), while
-  // scripting-disabled parsers (parse5, jsdom) expose it as parsed child elements.
-  // Either way, noscript content is metadata/tracking (e.g. the CentralAutoLogin
-  // pixel Wikipedia places in #mw-content-text), never article text.
-  return normalized === "script" || normalized === "style" || normalized === "noscript";
+  return NON_CONTENT_TAGS.has(tagName.toLowerCase());
 }
 
 /**
