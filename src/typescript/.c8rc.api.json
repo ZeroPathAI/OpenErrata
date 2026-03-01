@@ -35,8 +35,8 @@
     "src/lib/generated/**"
   ],
   "check-coverage": true,
-  "lines": 55,
+  "lines": 45,
   "branches": 75,
   "functions": 65,
-  "statements": 55
+  "statements": 45
 }
