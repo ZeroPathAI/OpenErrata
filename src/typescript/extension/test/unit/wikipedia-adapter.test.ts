@@ -399,7 +399,7 @@ test("Wikipedia adapter keeps infobox-style table text separated from surroundin
 //
 //   Browser (scripting enabled): <noscript> content is a raw TEXT NODE with
 //   literal HTML. The TreeWalker (SHOW_TEXT) visits it, adding the literal
-//   <img…> markup to contentText. This causes CONTENT_MISMATCH against the
+//   <img…> markup to contentText. This causes canonicalization drift against the
 //   Wikipedia Parse API, which does not include the noscript at all.
 //
 //   JSDOM (scripting disabled, as used in tests): <noscript> content is

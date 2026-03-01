@@ -8,9 +8,9 @@ import {
 test("extractApiErrorCode reads openerrataCode from tRPC data", () => {
   assert.equal(
     extractApiErrorCode({
-      data: { openerrataCode: "CONTENT_MISMATCH" },
+      data: { openerrataCode: "INVALID_EXTENSION_MESSAGE" },
     }),
-    "CONTENT_MISMATCH",
+    "INVALID_EXTENSION_MESSAGE",
   );
 });
 
@@ -27,10 +27,10 @@ test("extractApiErrorCode reads openerrataCode from nested shape data", () => {
   assert.equal(
     extractApiErrorCode({
       shape: {
-        data: { openerrataCode: "CONTENT_MISMATCH" },
+        data: { openerrataCode: "UNSUPPORTED_PROTOCOL_VERSION" },
       },
     }),
-    "CONTENT_MISMATCH",
+    "UNSUPPORTED_PROTOCOL_VERSION",
   );
 });
 
@@ -73,10 +73,10 @@ test("extractApiErrorCode maps meta.response.status=413 to PAYLOAD_TOO_LARGE", (
 test("extractApiErrorCode walks cause chain", () => {
   const nested = {
     cause: {
-      data: { openerrataCode: "CONTENT_MISMATCH" },
+      data: { openerrataCode: "MALFORMED_EXTENSION_VERSION" },
     },
   };
-  assert.equal(extractApiErrorCode(nested), "CONTENT_MISMATCH");
+  assert.equal(extractApiErrorCode(nested), "MALFORMED_EXTENSION_VERSION");
 });
 
 test("extractApiErrorCode returns undefined for circular cause chains", () => {

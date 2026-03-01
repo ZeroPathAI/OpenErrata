@@ -4,7 +4,7 @@ import { extensionPostStatusSchema, type ExtensionPageStatus } from "@openerrata
 import { computePostView } from "../../src/popup/post-view.js";
 
 function createPostStatus(
-  investigationState: "FAILED" | "CONTENT_MISMATCH",
+  investigationState: "FAILED",
 ): Extract<ExtensionPageStatus, { kind: "POST" }> {
   return extensionPostStatusSchema.parse({
     kind: "POST",
@@ -16,12 +16,6 @@ function createPostStatus(
     claims: null,
   });
 }
-
-test("computePostView maps CONTENT_MISMATCH to popup mismatch state", () => {
-  const status = createPostStatus("CONTENT_MISMATCH");
-  const result = computePostView(status, true);
-  assert.deepEqual(result, { kind: "content_mismatch" });
-});
 
 test("computePostView maps FAILED to popup failed state", () => {
   const status = createPostStatus("FAILED");

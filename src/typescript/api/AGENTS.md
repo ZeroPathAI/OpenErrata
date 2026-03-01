@@ -34,7 +34,8 @@ tRPC handler → `postRouter` or `publicRouter` → Prisma → PostgreSQL.
 
 1. Normalizes client-observed content and image-occurrence payloads
 2. Resolves canonical content version (server-verified when available; client-fallback otherwise)
-3. Rejects mismatches (`CONTENT_MISMATCH`) when server-verified content conflicts with observed content
+3. Logs mismatches when server-verified content conflicts with observed content, while keeping
+   server-derived canonical content authoritative
 4. Upserts PostVersion-backed storage (`ContentBlob`, `ImageOccurrenceSet`, `PostVersion`)
 5. Returns `{ platform, externalId, versionHash, postVersionId, provenance }`
 

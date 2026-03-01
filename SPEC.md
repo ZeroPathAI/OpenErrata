@@ -329,7 +329,8 @@ User visits post
   → API upserts Post + platform metadata
   → API attempts server-side content verification (best effort):
       VERIFIED + matches observed content  → continue with `SERVER_VERIFIED`
-      VERIFIED + mismatch                  → reject request (`CONTENT_MISMATCH`)
+      VERIFIED + mismatch                  → log error + continue with `SERVER_VERIFIED`
+                                            (server canonical content is authoritative)
       NOT VERIFIED                         → continue with `CLIENT_FALLBACK`
   → API upserts PostVersion (content blob + image occurrences + provenance)
   → API returns { platform, externalId, versionHash, postVersionId, provenance }
@@ -467,8 +468,10 @@ scores.
 So server-side verification is preferred but best-effort.
 
 - Primary path: server verifies platform content and derives the canonical content version.
-- Mismatch policy: if verification succeeds but conflicts with the submitted content, reject that
-  request (`CONTENT_MISMATCH`) instead of silently proceeding.
+- Mismatch policy: if verification succeeds but conflicts with the submitted content, log an
+  error and continue with the server-derived canonical content (`SERVER_VERIFIED`). The request is
+  not rejected; server canonical content is authoritative for server-verifiable platforms (Wikipedia
+  and LessWrong).
 - Degraded path: if server fetch fails (rate limit, temporary provider/platform outage, anti-bot
   block), investigations may proceed using client-observed content.
 - Every investigation stores provenance (`SERVER_VERIFIED` or `CLIENT_FALLBACK`).

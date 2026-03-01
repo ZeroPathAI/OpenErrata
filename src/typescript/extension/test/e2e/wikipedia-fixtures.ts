@@ -11,6 +11,9 @@ const WIKIPEDIA_NUMERIC_CONFIG_TOKEN = /^\d+$/;
 
 export const E2E_WIKIPEDIA_FIXTURE_KEYS = {
   ALI_KHAMENEI_PAGE_HTML: "wikipedia-ali-khamenei-page-html-1",
+  OPENAI_PAGE_HTML: "wikipedia-openai-page-html-1",
+  ALBERT_EINSTEIN_PAGE_HTML: "wikipedia-albert-einstein-page-html-1",
+  CLIMATE_CHANGE_PAGE_HTML: "wikipedia-climate-change-page-html-1",
 } as const;
 
 type E2eWikipediaFixtureKey =
@@ -29,6 +32,18 @@ const E2E_WIKIPEDIA_FIXTURE_DEFINITIONS: Record<
     fixtureKey: E2E_WIKIPEDIA_FIXTURE_KEYS.ALI_KHAMENEI_PAGE_HTML,
     sourceUrl: "https://en.wikipedia.org/wiki/Ali_Khamenei",
   },
+  [E2E_WIKIPEDIA_FIXTURE_KEYS.OPENAI_PAGE_HTML]: {
+    fixtureKey: E2E_WIKIPEDIA_FIXTURE_KEYS.OPENAI_PAGE_HTML,
+    sourceUrl: "https://en.wikipedia.org/wiki/OpenAI",
+  },
+  [E2E_WIKIPEDIA_FIXTURE_KEYS.ALBERT_EINSTEIN_PAGE_HTML]: {
+    fixtureKey: E2E_WIKIPEDIA_FIXTURE_KEYS.ALBERT_EINSTEIN_PAGE_HTML,
+    sourceUrl: "https://en.wikipedia.org/wiki/Albert_Einstein",
+  },
+  [E2E_WIKIPEDIA_FIXTURE_KEYS.CLIMATE_CHANGE_PAGE_HTML]: {
+    fixtureKey: E2E_WIKIPEDIA_FIXTURE_KEYS.CLIMATE_CHANGE_PAGE_HTML,
+    sourceUrl: "https://en.wikipedia.org/wiki/Climate_change",
+  },
 };
 
 export interface E2eWikipediaFixture {
@@ -40,6 +55,18 @@ export interface E2eWikipediaFixture {
   fetchedAt: string;
   htmlSha256: string;
   html: string;
+  /**
+   * The article body HTML returned by the Wikipedia Parse API
+   * (`action=parse&prop=text&oldid=<revisionId>`). This is the server's
+   * canonical source of truth for content — the same HTML that
+   * `fetchWikipediaContent` in `content-fetcher.ts` processes.
+   *
+   * Stored alongside the full page HTML so parity tests can compare:
+   *   - client: DOM extraction from the full page (after JS runs in a browser)
+   *   - server: `wikipediaHtmlToNormalizedText(parseApiHtml)`
+   */
+  parseApiHtml: string;
+  parseApiHtmlSha256: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -84,6 +111,8 @@ function validateFixture(record: unknown): E2eWikipediaFixture {
   const fetchedAt = record["fetchedAt"];
   const htmlSha256 = record["htmlSha256"];
   const html = record["html"];
+  const parseApiHtml = record["parseApiHtml"];
+  const parseApiHtmlSha256 = record["parseApiHtmlSha256"];
 
   if (typeof key !== "string" || key.length === 0) {
     throw new Error("Malformed Wikipedia e2e fixture: missing key.");
@@ -112,6 +141,17 @@ function validateFixture(record: unknown): E2eWikipediaFixture {
   if (hashText(html) !== htmlSha256) {
     throw new Error(`Wikipedia e2e fixture ${key} is corrupt: htmlSha256 does not match payload.`);
   }
+  if (typeof parseApiHtml !== "string" || parseApiHtml.length === 0) {
+    throw new Error(`Malformed Wikipedia e2e fixture (${key}): missing parseApiHtml.`);
+  }
+  if (typeof parseApiHtmlSha256 !== "string" || parseApiHtmlSha256.length === 0) {
+    throw new Error(`Malformed Wikipedia e2e fixture (${key}): missing parseApiHtmlSha256.`);
+  }
+  if (hashText(parseApiHtml) !== parseApiHtmlSha256) {
+    throw new Error(
+      `Wikipedia e2e fixture ${key} is corrupt: parseApiHtmlSha256 does not match payload.`,
+    );
+  }
 
   return {
     key,
@@ -122,6 +162,8 @@ function validateFixture(record: unknown): E2eWikipediaFixture {
     fetchedAt,
     htmlSha256,
     html,
+    parseApiHtml,
+    parseApiHtmlSha256,
   };
 }
 
@@ -195,6 +237,50 @@ export async function fetchWikipediaHtmlFromLive(sourceUrl: string): Promise<str
   return await response.text();
 }
 
+async function fetchWikipediaParseApiHtml(language: string, revisionId: string): Promise<string> {
+  const endpoint = new URL(`https://${language}.wikipedia.org/w/api.php`);
+  endpoint.searchParams.set("action", "parse");
+  endpoint.searchParams.set("format", "json");
+  endpoint.searchParams.set("formatversion", "2");
+  endpoint.searchParams.set("prop", "text|revid");
+  endpoint.searchParams.set("oldid", revisionId);
+
+  const response = await fetch(endpoint, {
+    headers: {
+      "User-Agent": "OpenErrataFixtureRefresher/1.0 (+https://github.com/ZeroPathAI/openerrata)",
+    },
+  });
+  if (!response.ok) {
+    throw new Error(
+      `Wikipedia Parse API returned HTTP ${response.status.toString()} for revisionId ${revisionId}`,
+    );
+  }
+
+  const data: unknown = await response.json();
+  if (!isRecord(data)) {
+    throw new Error("Wikipedia Parse API returned unexpected JSON shape.");
+  }
+
+  const parse = data["parse"];
+  if (!isRecord(parse)) {
+    throw new Error("Wikipedia Parse API returned unexpected JSON shape.");
+  }
+
+  const text = parse["text"];
+  const responseRevisionId = parse["revid"];
+
+  if (typeof text !== "string" || text.length === 0) {
+    throw new Error("Wikipedia Parse API response missing 'parse.text' field.");
+  }
+  if (String(responseRevisionId) !== revisionId) {
+    throw new Error(
+      `Wikipedia Parse API revision mismatch: expected ${revisionId}, got ${String(responseRevisionId)}`,
+    );
+  }
+
+  return text;
+}
+
 export async function captureE2eWikipediaFixture(input: {
   fixtureKey: string;
   sourceUrl: string;
@@ -209,6 +295,8 @@ export async function captureE2eWikipediaFixture(input: {
     );
   }
 
+  const parseApiHtml = await fetchWikipediaParseApiHtml(language, revisionId);
+
   const fixture: E2eWikipediaFixture = {
     key: input.fixtureKey,
     sourceUrl: input.sourceUrl,
@@ -218,6 +306,8 @@ export async function captureE2eWikipediaFixture(input: {
     fetchedAt: new Date().toISOString(),
     htmlSha256: hashText(html),
     html,
+    parseApiHtml,
+    parseApiHtmlSha256: hashText(parseApiHtml),
   };
 
   await writeJsonFile(fixturePath(input.fixtureKey), fixture);

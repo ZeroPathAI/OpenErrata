@@ -181,64 +181,64 @@ interface EnsureWithCustomInput<TPrisma> {
   ensureQueued: EnsureQueued<TPrisma>;
 }
 
-interface InvestigationWithClaimsLookup {
-  investigation: {
-    findUnique(args: {
-      where: { id: string };
-      include: typeof investigationWithClaimsInclude;
-    }): Promise<InvestigationWithClaims | null>;
-  };
+/**
+ * Semantic repository interface for investigation queries. Both PrismaClient
+ * (production) and test stubs implement this — decoupled from Prisma's exact
+ * query-shape types so consumers depend on behavior, not call signatures.
+ */
+export interface InvestigationRepository {
+  findInvestigationWithClaims(id: string): Promise<InvestigationWithClaims | null>;
+  findCompletedByPostVersionId(postVersionId: string): Promise<CompletedInvestigation | null>;
+  findLatestServerVerifiedComplete(postId: string): Promise<SourceInvestigationForUpdate | null>;
+  findClientFallbackInvestigationId(postVersionId: string): Promise<string | null>;
+  recordCorroborationCredit(investigationId: string, reporterKey: string): Promise<void>;
 }
 
-interface CompletedInvestigationLookup {
-  investigation: {
-    findFirst(args: {
-      where: {
-        postVersionId: string;
-        status: "COMPLETE";
-      };
-      include: typeof completedInvestigationInclude;
-    }): Promise<CompletedInvestigation | null>;
-  };
-}
-
-interface LatestServerVerifiedInvestigationLookup {
-  investigation: {
-    findFirst(args: {
-      where: {
-        status: "COMPLETE";
-        postVersion: {
-          postId: string;
-          contentProvenance: "SERVER_VERIFIED";
-        };
-      };
-      orderBy: {
-        checkedAt: "desc";
-      };
-      include: typeof serverVerifiedSourceInclude;
-    }): Promise<SourceInvestigationForUpdate | null>;
-  };
-}
-
-interface CorroborationLookup {
-  investigation: {
-    findFirst(args: {
-      where: {
-        postVersionId: string;
-        postVersion: {
-          contentProvenance: "CLIENT_FALLBACK";
-        };
-      };
-      select: { id: true };
-    }): Promise<{ id: string } | null>;
-  };
-  corroborationCredit: {
-    create(args: {
-      data: {
-        investigationId: string;
-        reporterKey: string;
-      };
-    }): Promise<unknown>;
+/** Create an InvestigationRepository backed by PrismaClient. */
+export function prismaInvestigationRepository(prisma: PrismaClient): InvestigationRepository {
+  return {
+    async findInvestigationWithClaims(id) {
+      return prisma.investigation.findUnique({
+        where: { id },
+        include: investigationWithClaimsInclude,
+      });
+    },
+    async findCompletedByPostVersionId(postVersionId) {
+      return prisma.investigation.findFirst({
+        where: { postVersionId, status: "COMPLETE" },
+        include: completedInvestigationInclude,
+      });
+    },
+    async findLatestServerVerifiedComplete(postId) {
+      return prisma.investigation.findFirst({
+        where: {
+          status: "COMPLETE",
+          postVersion: { postId, contentProvenance: "SERVER_VERIFIED" },
+        },
+        orderBy: { checkedAt: "desc" },
+        include: serverVerifiedSourceInclude,
+      });
+    },
+    async findClientFallbackInvestigationId(postVersionId) {
+      const result = await prisma.investigation.findFirst({
+        where: {
+          postVersionId,
+          postVersion: { contentProvenance: "CLIENT_FALLBACK" },
+        },
+        select: { id: true },
+      });
+      return result?.id ?? null;
+    },
+    async recordCorroborationCredit(investigationId, reporterKey) {
+      try {
+        await prisma.corroborationCredit.create({
+          data: { investigationId, reporterKey },
+        });
+      } catch (error) {
+        if (isUniqueConstraintError(error)) return;
+        throw error;
+      }
+    },
   };
 }
 
@@ -290,50 +290,24 @@ export function formatClaims(claims: ClaimSummary[]): InvestigationClaim[] {
 // ---------------------------------------------------------------------------
 
 export async function loadInvestigationWithClaims(
-  prisma: InvestigationWithClaimsLookup,
+  repo: InvestigationRepository,
   investigationId: string,
 ): Promise<InvestigationWithClaims | null> {
-  return prisma.investigation.findUnique({
-    where: { id: investigationId },
-    include: investigationWithClaimsInclude,
-  });
+  return repo.findInvestigationWithClaims(investigationId);
 }
 
 export async function findCompletedInvestigationByPostVersionId(
-  prisma: CompletedInvestigationLookup,
+  repo: InvestigationRepository,
   postVersionId: string,
 ): Promise<CompletedInvestigation | null> {
-  return prisma.investigation.findFirst({
-    where: {
-      postVersionId,
-      status: "COMPLETE",
-    },
-    include: completedInvestigationInclude,
-  });
+  return repo.findCompletedByPostVersionId(postVersionId);
 }
 
 export async function findLatestServerVerifiedCompleteInvestigationForPost(
-  prisma: LatestServerVerifiedInvestigationLookup,
+  repo: InvestigationRepository,
   postId: string,
 ): Promise<LatestServerVerifiedCompleteInvestigation> {
-  const source = await prisma.investigation.findFirst({
-    where: {
-      status: "COMPLETE",
-      postVersion: {
-        postId,
-        contentProvenance: "SERVER_VERIFIED",
-      },
-    },
-    orderBy: {
-      checkedAt: "desc",
-    },
-    include: serverVerifiedSourceInclude,
-  });
-  if (source === null) {
-    return null;
-  }
-
-  return source;
+  return repo.findLatestServerVerifiedComplete(postId);
 }
 
 // ---------------------------------------------------------------------------
@@ -410,36 +384,17 @@ function buildLineDiff(previous: string, current: string): string {
 // ---------------------------------------------------------------------------
 
 export async function maybeRecordCorroboration(
-  prisma: CorroborationLookup,
+  repo: InvestigationRepository,
   postVersionId: string,
   viewerKey: string,
   isAuthenticated: boolean,
 ): Promise<void> {
   if (!isAuthenticated) return;
 
-  const investigation = await prisma.investigation.findFirst({
-    where: {
-      postVersionId,
-      postVersion: {
-        contentProvenance: "CLIENT_FALLBACK",
-      },
-    },
-    select: { id: true },
-  });
+  const investigationId = await repo.findClientFallbackInvestigationId(postVersionId);
+  if (investigationId === null) return;
 
-  if (!investigation) return;
-
-  try {
-    await prisma.corroborationCredit.create({
-      data: {
-        investigationId: investigation.id,
-        reporterKey: viewerKey,
-      },
-    });
-  } catch (error) {
-    if (isUniqueConstraintError(error)) return;
-    throw error;
-  }
+  await repo.recordCorroborationCredit(investigationId, viewerKey);
 }
 
 // ---------------------------------------------------------------------------

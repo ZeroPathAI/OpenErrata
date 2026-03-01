@@ -1,12 +1,16 @@
 import {
   CONTENT_BLOCK_SEPARATOR_TAGS,
+  effectiveHeadingLevel,
+  effectiveHeadingText,
   hashContent,
+  headingLevelFromTag,
   isNonNullObject,
   isExcludedWikipediaSectionTitle,
   normalizeContent,
   normalizeWikipediaSectionTitle,
   shouldExcludeWikipediaElement,
   WIKIPEDIA_LANGUAGE_CODE_REGEX,
+  type WikipediaNodeDescriptor,
 } from "@openerrata/shared";
 import { parseFragment, type DefaultTreeAdapterMap } from "parse5";
 
@@ -69,7 +73,7 @@ function describeFetchError(error: unknown): string {
  *
  * We use the `html` field rather than `plaintextMainText` because the latter
  * is truncated to 2000 characters by LessWrong's API, which would cause a
- * CONTENT_MISMATCH for any post longer than that.
+ * canonicalization mismatch for any post longer than that.
  */
 function extractLesswrongHtml(value: unknown): string | null {
   if (!isNonNullObject(value)) return null;
@@ -298,53 +302,24 @@ function textContentOfNode(node: DefaultTreeAdapterMap["node"]): string {
   return text;
 }
 
-function headingLevelFromTag(tagName: string): number | null {
-  const match = /^h([2-6])$/i.exec(tagName);
-  if (match?.[1] === undefined || match[1].length === 0) {
-    return null;
-  }
-  return Number(match[1]);
-}
-
-/**
- * Returns the direct child element of `node` that is a heading tag (h2–h6),
- * if `node` is a Parsoid-style `<div class="mw-heading">` wrapper.
- * Returns null for all other nodes.
- */
-function innerHeadingOfParsoidWrapper(
-  node: DefaultTreeAdapterMap["element"],
-): DefaultTreeAdapterMap["element"] | null {
-  if (node.tagName.toLowerCase() !== "div" || !classTokens(node).includes("mw-heading")) {
-    return null;
-  }
-  for (const child of node.childNodes) {
-    if (isElementNode(child) && headingLevelFromTag(child.tagName) !== null) {
-      return child;
-    }
-  }
-  return null;
-}
-
-/**
- * Returns the heading level of `node`, handling both direct heading elements
- * (`<h2>`, `<h3>`, …) and Parsoid-style `<div class="mw-heading">` wrappers.
- */
-function effectiveHeadingLevel(node: DefaultTreeAdapterMap["element"]): number | null {
-  const direct = headingLevelFromTag(node.tagName);
-  if (direct !== null) return direct;
-  const inner = innerHeadingOfParsoidWrapper(node);
-  return inner !== null ? headingLevelFromTag(inner.tagName) : null;
-}
-
-/**
- * Returns the text to use for section-title exclusion checks. For Parsoid
- * `<div class="mw-heading">` wrappers, reads the inner heading element's
- * text (excluding the sibling `<span class="mw-editsection">`). For direct
- * heading elements, reads their full text content.
- */
-function effectiveHeadingText(node: DefaultTreeAdapterMap["element"]): string {
-  const inner = innerHeadingOfParsoidWrapper(node);
-  return inner !== null ? textContentOfNode(inner) : textContentOfNode(node);
+/** Build a WikipediaNodeDescriptor from a parse5 element for shared heading logic. */
+function toNodeDescriptor(node: DefaultTreeAdapterMap["element"]): WikipediaNodeDescriptor {
+  const firstChildHeadingNode = node.childNodes.find(
+    (child): child is DefaultTreeAdapterMap["element"] =>
+      isElementNode(child) && headingLevelFromTag(child.tagName) !== null,
+  );
+  return {
+    tagName: node.tagName,
+    classTokens: classTokens(node),
+    textContent: textContentOfNode(node),
+    firstChildHeading:
+      firstChildHeadingNode !== undefined
+        ? {
+            tagName: firstChildHeadingNode.tagName,
+            textContent: textContentOfNode(firstChildHeadingNode),
+          }
+        : null,
+  };
 }
 
 function shouldSkipWikipediaElement(node: DefaultTreeAdapterMap["element"]): boolean {
@@ -384,15 +359,16 @@ function wikipediaHtmlToTextContent(html: string): string {
 
     if (isElementNode(node)) {
       const tagName = node.tagName.toLowerCase();
-      const headingLevel = effectiveHeadingLevel(node);
-      if (headingLevel !== null) {
-        if (skipSectionLevel !== null && headingLevel <= skipSectionLevel) {
+      const descriptor = toNodeDescriptor(node);
+      const nodeHeadingLevel = effectiveHeadingLevel(descriptor);
+      if (nodeHeadingLevel !== null) {
+        if (skipSectionLevel !== null && nodeHeadingLevel <= skipSectionLevel) {
           skipSectionLevel = null;
         }
 
-        const headingText = normalizeWikipediaSectionTitle(effectiveHeadingText(node));
+        const headingText = normalizeWikipediaSectionTitle(effectiveHeadingText(descriptor));
         if (isExcludedWikipediaSectionTitle(headingText)) {
-          skipSectionLevel = headingLevel;
+          skipSectionLevel = nodeHeadingLevel;
           continue;
         }
       }

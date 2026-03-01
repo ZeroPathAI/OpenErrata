@@ -24,6 +24,7 @@ import {
   resolveCanonicalContentVersion,
   type CanonicalContentVersion,
   type ObservedContentVersion,
+  type ServerVerifiedContentMismatch,
 } from "$lib/services/canonical-resolution.js";
 import { wordCount } from "$lib/services/investigation-lifecycle.js";
 import { isUniqueConstraintError } from "$lib/db/errors.js";
@@ -76,6 +77,17 @@ const UNIQUE_CONSTRAINT_RACE_RETRY_DELAY_MS = 20;
 
 function sha256(input: string): string {
   return createHash("sha256").update(input).digest("hex");
+}
+
+function logServerVerifiedContentMismatch(mismatch: ServerVerifiedContentMismatch): void {
+  const identity =
+    mismatch.externalId === undefined
+      ? mismatch.url
+      : `externalId=${mismatch.externalId}; url=${mismatch.url}`;
+
+  console.error(
+    `Server-verified canonical hash mismatch for ${mismatch.platform}; using server content. ${identity}; observedHash=${mismatch.observedHash}; serverHash=${mismatch.serverHash}`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -742,7 +754,8 @@ async function toObservedContentVersion(input: ViewPostInput): Promise<ObservedC
 
 /**
  * Normalizes client-observed content, resolves the canonical version
- * (server-verified when a live fetch matches; client-fallback otherwise),
+ * (server-verified when available; client-fallback otherwise),
+ * logs hash mismatches between observed and server-verified content,
  * and upserts the full Post -> PostVersion -> ContentBlob storage chain.
  */
 export async function registerObservedVersion(
@@ -756,6 +769,7 @@ export async function registerObservedVersion(
     viewInput: preparedInput,
     observed,
     fetchCanonicalContent,
+    onServerVerifiedContentMismatch: logServerVerifiedContentMismatch,
   });
 
   const post = await upsertPostFromViewInput(prisma, preparedInput);

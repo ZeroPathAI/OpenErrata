@@ -1,8 +1,12 @@
 import {
+  effectiveHeadingLevel,
+  effectiveHeadingText,
+  headingLevelFromTag,
   isExcludedWikipediaSectionTitle,
   normalizeContent,
   normalizeWikipediaSectionTitle,
   shouldExcludeWikipediaElement,
+  type WikipediaNodeDescriptor,
 } from "@openerrata/shared";
 import type { AdapterExtractionResult, PlatformAdapter } from "./model";
 import { cloneElement, extractContentWithImageOccurrencesFromRoot } from "./utils";
@@ -199,42 +203,30 @@ function toIsoDate(value: unknown): string | null {
   return Number.isNaN(parsed.valueOf()) ? null : parsed.toISOString();
 }
 
-function headingLevel(tagName: string): number | null {
-  const match = /^H([2-6])$/i.exec(tagName);
-  if (match?.[1] === undefined || match[1].length === 0) {
-    return null;
-  }
-  return Number(match[1]);
-}
-
-/**
- * In Parsoid HTML, headings are wrapped in `<div class="mw-heading mw-headingN">`.
- * Returns the heading level of the inner heading element if `element` is such a
- * wrapper, or null otherwise.
- */
-function parsoidHeadingWrapperLevel(element: Element): number | null {
-  if (element.tagName.toLowerCase() !== "div" || !element.classList.contains("mw-heading")) {
-    return null;
-  }
-  const innerHeading = element.querySelector("h1, h2, h3, h4, h5, h6");
-  return innerHeading !== null ? headingLevel(innerHeading.tagName) : null;
-}
-
-/**
- * Returns the heading level of `element`, handling both direct heading elements
- * (`<h2>`, `<h3>`, …) and Parsoid-style `<div class="mw-heading">` wrappers.
- */
-function effectiveHeadingLevel(element: Element): number | null {
-  return headingLevel(element.tagName) ?? parsoidHeadingWrapperLevel(element);
+/** Build a WikipediaNodeDescriptor from a DOM Element for shared heading logic. */
+function toNodeDescriptor(element: Element): WikipediaNodeDescriptor {
+  const firstHeading = element.querySelector("h1, h2, h3, h4, h5, h6");
+  return {
+    tagName: element.tagName,
+    classTokens: Array.from(element.classList),
+    textContent: element.textContent,
+    firstChildHeading:
+      firstHeading !== null
+        ? { tagName: firstHeading.tagName, textContent: firstHeading.textContent }
+        : null,
+  };
 }
 
 function normalizeHeadingText(heading: Element): string {
   const headline = heading.querySelector(".mw-headline");
-  return normalizeWikipediaSectionTitle((headline ?? heading).textContent);
+  const descriptor = toNodeDescriptor(heading);
+  return normalizeWikipediaSectionTitle(
+    effectiveHeadingText(descriptor, (headline ?? heading).textContent),
+  );
 }
 
 function removeSectionFromHeading(heading: HTMLElement): void {
-  const level = headingLevel(heading.tagName);
+  const level = headingLevelFromTag(heading.tagName);
   if (level === null) {
     heading.remove();
     return;
@@ -246,8 +238,8 @@ function removeSectionFromHeading(heading: HTMLElement): void {
   // new format, all section content is a sibling of the wrapper, not of the
   // heading element inside it.
   const parent = heading.parentElement;
-  const startCursor: Element =
-    parent !== null && parsoidHeadingWrapperLevel(parent) !== null ? parent : heading;
+  const parentLevel = parent !== null ? effectiveHeadingLevel(toNodeDescriptor(parent)) : null;
+  const startCursor: Element = parent !== null && parentLevel !== null ? parent : heading;
 
   let cursor: Element = startCursor;
   while (true) {
@@ -258,7 +250,7 @@ function removeSectionFromHeading(heading: HTMLElement): void {
       return;
     }
 
-    const nextLevel = effectiveHeadingLevel(nextSibling);
+    const nextLevel = effectiveHeadingLevel(toNodeDescriptor(nextSibling));
     if (nextLevel !== null && nextLevel <= level) {
       return;
     }

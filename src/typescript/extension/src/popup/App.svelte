@@ -384,14 +384,6 @@
           <p class="state-title">Investigation failed.</p>
           <button class="btn" onclick={requestInvestigation}>Investigate Again</button>
         </section>
-      {:else if view.kind === "content_mismatch"}
-        <section class="state-panel">
-          <p class="state-title">Content Mismatch</p>
-          <p class="state-subtitle">
-            This page's extracted content does not match the server-verified canonical post content.
-            Reload the page or open the canonical post URL.
-          </p>
-        </section>
       {:else if view.kind === "investigating"}
         <section class="state-panel">
           <p class="state-title">Not Yet Investigated</p>

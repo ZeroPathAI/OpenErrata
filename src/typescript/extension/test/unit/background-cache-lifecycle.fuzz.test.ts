@@ -76,18 +76,10 @@ function createPostStatus(input: {
     });
   }
 
-  if (input.investigationState === "FAILED") {
-    return extensionPostStatusSchema.parse({
-      ...base,
-      investigationState: "FAILED",
-      provenance: "CLIENT_FALLBACK",
-      claims: null,
-    });
-  }
-
   return extensionPostStatusSchema.parse({
     ...base,
-    investigationState: "CONTENT_MISMATCH",
+    investigationState: "FAILED",
+    provenance: "CLIENT_FALLBACK",
     claims: null,
   });
 }

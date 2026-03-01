@@ -1,5 +1,5 @@
 import { isNonNullObject } from "@openerrata/shared";
-import { InvestigatorStructuredOutputError } from "./openai.js";
+import { InvestigatorStructuredOutputError } from "./openai-errors.js";
 import type {
   InvestigatorErrorAudit,
   InvestigatorJsonValue,

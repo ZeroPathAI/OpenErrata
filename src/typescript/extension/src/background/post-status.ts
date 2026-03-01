@@ -41,9 +41,6 @@ type PostStatusInput =
       provenance?: ContentProvenance;
     })
   | (PostStatusIdentity & {
-      investigationState: "CONTENT_MISMATCH";
-    })
-  | (PostStatusIdentity & {
       investigationState: "INVESTIGATED";
       provenance: ContentProvenance;
       claims: NonNullable<InvestigationStatusOutput["claims"]>;
@@ -53,16 +50,12 @@ type InvestigationSnapshot = InvestigationStatusOutput | ViewPostOutput;
 
 const fallbackFailureState = { investigationState: "FAILED" as const };
 const failureStateByErrorCode = {
-  CONTENT_MISMATCH: { investigationState: "CONTENT_MISMATCH" },
   PAYLOAD_TOO_LARGE: fallbackFailureState,
   UPGRADE_REQUIRED: fallbackFailureState,
   MALFORMED_EXTENSION_VERSION: fallbackFailureState,
   INVALID_EXTENSION_MESSAGE: fallbackFailureState,
   UNSUPPORTED_PROTOCOL_VERSION: fallbackFailureState,
-} as const satisfies Record<
-  ExtensionRuntimeErrorCode,
-  { investigationState: "CONTENT_MISMATCH" } | { investigationState: "FAILED" }
->;
+} as const satisfies Record<ExtensionRuntimeErrorCode, { investigationState: "FAILED" }>;
 
 function toPostStatusBase(input: PostStatusIdentity): {
   kind: "POST";
@@ -125,12 +118,6 @@ export function createPostStatus(input: PostStatusInput): ExtensionPostStatus {
         investigationState: "FAILED",
         claims: null,
       });
-    case "CONTENT_MISMATCH":
-      return extensionPostStatusSchema.parse({
-        ...base,
-        investigationState: "CONTENT_MISMATCH",
-        claims: null,
-      });
     case "INVESTIGATED":
       return extensionPostStatusSchema.parse({
         ...base,
@@ -187,9 +174,9 @@ export function createPostStatusFromInvestigation(
   }
 }
 
-function apiErrorToFailureState(
-  errorCode: ExtensionRuntimeErrorCode | undefined,
-): { investigationState: "CONTENT_MISMATCH" } | { investigationState: "FAILED" } {
+function apiErrorToFailureState(errorCode: ExtensionRuntimeErrorCode | undefined): {
+  investigationState: "FAILED";
+} {
   if (errorCode === undefined) {
     return fallbackFailureState;
   }

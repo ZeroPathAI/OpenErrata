@@ -228,11 +228,27 @@ void test("post.registerObservedVersion uses server canonical content when clien
     htmlContent: "<article><p>Observed browser content that differs from server.</p></article>",
   });
 
-  const result = await withMockLesswrongCanonicalHtml(serverCanonicalHtml, () =>
-    caller.post.registerObservedVersion(input),
-  );
+  const loggedErrors: string[] = [];
+  const originalConsoleError = console.error;
+  console.error = (...args: unknown[]): void => {
+    loggedErrors.push(args.map((value) => String(value)).join(" "));
+  };
+
+  const result = await (async () => {
+    try {
+      return await withMockLesswrongCanonicalHtml(serverCanonicalHtml, () =>
+        caller.post.registerObservedVersion(input),
+      );
+    } finally {
+      console.error = originalConsoleError;
+    }
+  })();
 
   assert.equal(result.provenance, "SERVER_VERIFIED");
+  assert.equal(loggedErrors.length, 1);
+  assert.match(loggedErrors[0] ?? "", /LESSWRONG/);
+  assert.match(loggedErrors[0] ?? "", /observedHash=/);
+  assert.match(loggedErrors[0] ?? "", /serverHash=/);
 
   const latestVersion = await loadLatestPostVersionByIdentity({
     platform: input.platform,

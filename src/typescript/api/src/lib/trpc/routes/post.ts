@@ -42,6 +42,7 @@ import {
   maybeRecordCorroboration,
   unreachableInvestigationStatus,
   requireCompleteCheckedAtIso,
+  prismaInvestigationRepository,
 } from "./post/investigation-queries.js";
 
 // ---------------------------------------------------------------------------
@@ -159,13 +160,16 @@ export const postRouter = router({
       );
 
       await maybeRecordCorroboration(
-        ctx.prisma,
+        prismaInvestigationRepository(ctx.prisma),
         postVersion.id,
         ctx.viewerKey,
         ctx.isAuthenticated,
       );
 
-      const complete = await findCompletedInvestigationByPostVersionId(ctx.prisma, postVersion.id);
+      const complete = await findCompletedInvestigationByPostVersionId(
+        prismaInvestigationRepository(ctx.prisma),
+        postVersion.id,
+      );
 
       if (complete) {
         return {
@@ -176,7 +180,7 @@ export const postRouter = router({
       }
 
       const latestServerVerifiedSource = await findLatestServerVerifiedCompleteInvestigationForPost(
-        ctx.prisma,
+        prismaInvestigationRepository(ctx.prisma),
         postVersion.post.id,
       );
 
@@ -196,7 +200,10 @@ export const postRouter = router({
     .input(getInvestigationInputSchema)
     .output(getInvestigationOutputSchema)
     .query(async ({ input, ctx }) => {
-      const investigation = await loadInvestigationWithClaims(ctx.prisma, input.investigationId);
+      const investigation = await loadInvestigationWithClaims(
+        prismaInvestigationRepository(ctx.prisma),
+        input.investigationId,
+      );
 
       if (!investigation) {
         return {
@@ -264,7 +271,10 @@ export const postRouter = router({
         });
       }
 
-      const complete = await findCompletedInvestigationByPostVersionId(ctx.prisma, postVersion.id);
+      const complete = await findCompletedInvestigationByPostVersionId(
+        prismaInvestigationRepository(ctx.prisma),
+        postVersion.id,
+      );
       if (complete) {
         return {
           investigationId: complete.id,
@@ -275,7 +285,7 @@ export const postRouter = router({
       }
 
       const latestServerVerifiedSource = await findLatestServerVerifiedCompleteInvestigationForPost(
-        ctx.prisma,
+        prismaInvestigationRepository(ctx.prisma),
         postVersion.post.id,
       );
 
@@ -302,7 +312,10 @@ export const postRouter = router({
 
         switch (investigation.status) {
           case "COMPLETE": {
-            const completed = await loadInvestigationWithClaims(ctx.prisma, investigation.id);
+            const completed = await loadInvestigationWithClaims(
+              prismaInvestigationRepository(ctx.prisma),
+              investigation.id,
+            );
             if (!completed) {
               throw new TRPCError({
                 code: "INTERNAL_SERVER_ERROR",

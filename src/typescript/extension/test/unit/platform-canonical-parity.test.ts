@@ -145,29 +145,33 @@ test("WIKIPEDIA client extraction matches API canonical text normalization", () 
 });
 
 // ── Real-page fixture parity ───────────────────────────────────────────────
-// Loads the captured Wikipedia Parsoid HTML fixture to verify that client-side
-// extraction (DOM TreeWalker) and server-side canonicalization (parse5) produce
-// identical normalized text.  This test would have caught both the Parsoid
-// heading-wrapper bug and the compact-HTML block-separator gap before they
-// reached production.
+// Loads the captured Wikipedia Parsoid HTML fixtures to verify that client-side
+// extraction (DOM TreeWalker on the full page) and server-side canonicalization
+// (parse5 on the Wikipedia Parse API response) produce identical normalized text.
+//
+// Crucially, the server-side input is the stored `parseApiHtml` — the actual
+// Wikipedia Parse API output — NOT `contentRoot.outerHTML` from the same
+// document. Using the same document for both sides would mask bugs like
+// getContentRoot() returning the wrong DOM element: if both sides use
+// `#mw-content-text` instead of `.mw-parser-output`, they agree but are both
+// wrong. The Parse API only returns the article body (`.mw-parser-output`
+// equivalent), so a mismatch in root selection produces a visible content
+// difference that the test catches.
 //
 // The Wikipedia adapter's mw.config reads fall back to parsing inline
 // <script> tags when window.mw is not set (as in JSDOM), so no mw global
 // setup is required here.
 
-test("WIKIPEDIA client extraction matches API canonical text normalization on a real Parsoid fixture page", async () => {
-  const fixture = await readE2eWikipediaFixture(E2E_WIKIPEDIA_FIXTURE_KEYS.ALI_KHAMENEI_PAGE_HTML);
+for (const fixtureKey of Object.values(E2E_WIKIPEDIA_FIXTURE_KEYS)) {
+  test(`WIKIPEDIA client extraction matches Parse API canonical text for ${fixtureKey}`, async () => {
+    const fixture = await readE2eWikipediaFixture(fixtureKey);
 
-  const { ready, contentRoot } = withWindow(fixture.sourceUrl, fixture.html, (document) => ({
-    ready: assertReady(wikipediaAdapter.extract(document)),
-    contentRoot: wikipediaAdapter.getContentRoot(document),
-  }));
+    const ready = withWindow(fixture.sourceUrl, fixture.html, (document) =>
+      assertReady(wikipediaAdapter.extract(document)),
+    );
 
-  if (!contentRoot) {
-    throw new Error("Expected wikipedia content root for fixture canonical parity test");
-  }
-
-  const clientText = ready.content.contentText;
-  const serverText = wikipediaHtmlToNormalizedText(contentRoot.outerHTML);
-  assert.equal(clientText, serverText);
-});
+    const clientText = ready.content.contentText;
+    const serverText = wikipediaHtmlToNormalizedText(fixture.parseApiHtml);
+    assert.equal(clientText, serverText);
+  });
+}

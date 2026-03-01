@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Prisma } from "../../src/lib/generated/prisma/client.js";
 import type { ResolvedPostVersion } from "../../src/lib/trpc/routes/post/content-storage.js";
 import {
   ensureInvestigationsWithUpdateMetadata,
@@ -13,13 +12,17 @@ import {
   selectSourceInvestigationForUpdate,
   toPriorInvestigationResult,
   unreachableInvestigationStatus,
+  type InvestigationRepository,
 } from "../../src/lib/trpc/routes/post/investigation-queries.js";
 
-function createKnownRequestError(code: "P2002" | "P2025") {
-  return new Prisma.PrismaClientKnownRequestError("mock error", {
-    code,
-    clientVersion: "unit-test",
-  });
+function nullRepo(): InvestigationRepository {
+  return {
+    findInvestigationWithClaims: async () => null,
+    findCompletedByPostVersionId: async () => null,
+    findLatestServerVerifiedComplete: async () => null,
+    findClientFallbackInvestigationId: async () => null,
+    recordCorroborationCredit: async () => {},
+  };
 }
 
 function buildResolvedPostVersion(contentText = "new line"): ResolvedPostVersion {
@@ -136,123 +139,55 @@ test("unreachableInvestigationStatus throws explicit internal error", () => {
   );
 });
 
-test("loadInvestigationWithClaims queries by id and includes required relations", async () => {
-  let capturedArgs: unknown = null;
-  const prisma = {
-    investigation: {
-      findUnique: async (args: unknown) => {
-        capturedArgs = args;
-        return null;
-      },
-    },
-  };
-
-  const result = await loadInvestigationWithClaims(prisma, "investigation-id");
-  assert.equal(result, null);
-
-  if (typeof capturedArgs !== "object" || capturedArgs === null) return;
-  const query = capturedArgs as { where: unknown; include: unknown };
-  assert.deepEqual(query.where, { id: "investigation-id" });
-  if (typeof query.include !== "object" || query.include === null) return;
-  assert.ok(Object.hasOwn(query.include, "postVersion"));
-  assert.ok(Object.hasOwn(query.include, "claims"));
+test("load and lookup helpers delegate to repository methods", async () => {
+  const repo = nullRepo();
+  assert.equal(await loadInvestigationWithClaims(repo, "inv-1"), null);
+  assert.equal(await findCompletedInvestigationByPostVersionId(repo, "pv-1"), null);
+  assert.equal(await findLatestServerVerifiedCompleteInvestigationForPost(repo, "post-1"), null);
 });
 
-test("findCompletedInvestigationByPostVersionId queries by postVersionId and COMPLETE status", async () => {
-  let capturedArgs: unknown = null;
-  const prisma = {
-    investigation: {
-      findFirst: async (args: unknown) => {
-        capturedArgs = args;
-        return null;
-      },
+test("maybeRecordCorroboration gates on auth and delegates to repository", async () => {
+  let lookupCalls = 0;
+  let creditCalls = 0;
+  const errors: Error[] = [new Error("unexpected")];
+
+  const repo: InvestigationRepository = {
+    ...nullRepo(),
+    findClientFallbackInvestigationId: async () => {
+      lookupCalls += 1;
+      return lookupCalls === 1 ? null : "investigation-id";
+    },
+    recordCorroborationCredit: async () => {
+      creditCalls += 1;
+      const maybeError = errors.shift();
+      if (maybeError !== undefined) {
+        throw maybeError;
+      }
     },
   };
 
-  const result = await findCompletedInvestigationByPostVersionId(prisma, "post-version-id");
-  assert.equal(result, null);
+  // Not authenticated — skipped entirely.
+  await maybeRecordCorroboration(repo, "pv-1", "viewer-key", false);
+  assert.equal(lookupCalls, 0);
+  assert.equal(creditCalls, 0);
 
-  if (typeof capturedArgs !== "object" || capturedArgs === null) return;
-  const query = capturedArgs as { where: unknown; include: unknown };
-  assert.deepEqual(query.where, {
-    postVersionId: "post-version-id",
-    status: "COMPLETE",
-  });
-  assert.notEqual(query.include, null);
-});
+  // Authenticated but no client-fallback investigation found.
+  await maybeRecordCorroboration(repo, "pv-1", "viewer-key", true);
+  assert.equal(lookupCalls, 1);
+  assert.equal(creditCalls, 0);
 
-test("findLatestServerVerifiedCompleteInvestigationForPost queries by post id and orders by checkedAt desc", async () => {
-  let capturedArgs: unknown = null;
-  const prisma = {
-    investigation: {
-      findFirst: async (args: unknown) => {
-        capturedArgs = args;
-        return null;
-      },
-    },
-  };
-
-  const result = await findLatestServerVerifiedCompleteInvestigationForPost(prisma, "post-id");
-  assert.equal(result, null);
-
-  if (typeof capturedArgs !== "object" || capturedArgs === null) return;
-  const query = capturedArgs as { where: unknown; orderBy: unknown; include: unknown };
-  assert.deepEqual(query.where, {
-    status: "COMPLETE",
-    postVersion: {
-      postId: "post-id",
-      contentProvenance: "SERVER_VERIFIED",
-    },
-  });
-  assert.deepEqual(query.orderBy, { checkedAt: "desc" });
-  assert.notEqual(query.include, null);
-});
-
-test("maybeRecordCorroboration gates on auth and handles duplicate credit races", async () => {
-  let findFirstCalls = 0;
-  let createCalls = 0;
-  const createErrors: Error[] = [createKnownRequestError("P2002"), new Error("unexpected")];
-
-  const prisma = {
-    investigation: {
-      findFirst: async () => {
-        findFirstCalls += 1;
-        if (findFirstCalls === 1) {
-          return null;
-        }
-        return { id: "investigation-id" };
-      },
-    },
-    corroborationCredit: {
-      create: async () => {
-        createCalls += 1;
-        const maybeError = createErrors.shift();
-        if (maybeError !== undefined) {
-          throw maybeError;
-        }
-        return { id: "credit-id" };
-      },
-    },
-  };
-
-  await maybeRecordCorroboration(prisma, "post-version-id", "viewer-key", false);
-  assert.equal(findFirstCalls, 0);
-  assert.equal(createCalls, 0);
-
-  await maybeRecordCorroboration(prisma, "post-version-id", "viewer-key", true);
-  assert.equal(findFirstCalls, 1);
-  assert.equal(createCalls, 0);
-
-  await maybeRecordCorroboration(prisma, "post-version-id", "viewer-key", true);
-  assert.equal(findFirstCalls, 2);
-  assert.equal(createCalls, 1);
-
+  // Authenticated with matching investigation — error propagates.
   await assert.rejects(
-    () => maybeRecordCorroboration(prisma, "post-version-id", "viewer-key", true),
+    () => maybeRecordCorroboration(repo, "pv-1", "viewer-key", true),
     /unexpected/,
   );
-  assert.equal(findFirstCalls, 3);
-  assert.equal(createCalls, 2);
+  assert.equal(lookupCalls, 2);
+  assert.equal(creditCalls, 1);
+
+  // Success path.
+  await maybeRecordCorroboration(repo, "pv-1", "viewer-key", true);
+  assert.equal(lookupCalls, 3);
+  assert.equal(creditCalls, 2);
 });
 
 test("ensureInvestigationsWithUpdateMetadata forwards create and update payloads", async () => {

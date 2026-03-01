@@ -15,7 +15,6 @@ import type { PlatformAdapter } from "./adapters/index";
 import { getAdapter } from "./adapters/index";
 import { parseSupportedPageIdentity } from "../lib/post-identity";
 import {
-  isContentMismatchRuntimeError,
   isExtensionContextInvalidatedError,
   isInvalidExtensionMessageRuntimeError,
   isMalformedExtensionVersionRuntimeError,
@@ -100,12 +99,6 @@ type SyncTrackedSnapshotErrorPolicy =
     };
 
 const SYNC_TRACKED_SNAPSHOT_ERROR_POLICIES: readonly SyncTrackedSnapshotErrorPolicy[] = [
-  {
-    matches: isContentMismatchRuntimeError,
-    action: "RESET_AND_SYNC_CACHED_FAILURE",
-    warningMessage:
-      "Page content mismatch with server-verified canonical content; skipping retries.",
-  },
   {
     matches: isPayloadTooLargeRuntimeError,
     action: "RESET_AND_SYNC_CACHED_FAILURE",
@@ -788,10 +781,7 @@ export class PageSessionController {
       return;
     }
 
-    if (
-      status.investigationState === "FAILED" ||
-      status.investigationState === "CONTENT_MISMATCH"
-    ) {
+    if (status.investigationState === "FAILED") {
       this.#annotations.clearAll();
     }
   }

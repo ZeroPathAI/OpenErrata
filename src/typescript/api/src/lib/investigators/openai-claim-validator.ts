@@ -42,12 +42,19 @@ export class InvestigatorIncompleteResponseError extends Error {
   }
 }
 
-export interface PerClaimValidationResult {
-  claimIndex: number;
-  approved: boolean;
-  responseAudit: InvestigatorResponseAudit | null;
-  error: Error | null;
-}
+export type PerClaimValidationResult =
+  | {
+      claimIndex: number;
+      approved: boolean;
+      responseAudit: InvestigatorResponseAudit;
+      error: null;
+    }
+  | {
+      claimIndex: number;
+      approved: false;
+      responseAudit: InvestigatorResponseAudit | null;
+      error: Error;
+    };
 
 export async function validateClaim(
   client: OpenAI,

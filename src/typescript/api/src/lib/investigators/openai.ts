@@ -18,6 +18,7 @@ import {
   type InvestigatorOutput,
   type InvestigatorResponseAudit,
 } from "./interface.js";
+import { InvestigatorStructuredOutputError } from "./openai-errors.js";
 import {
   INVESTIGATION_SYSTEM_PROMPT,
   INVESTIGATION_VALIDATION_SYSTEM_PROMPT,
@@ -66,12 +67,7 @@ ${INVESTIGATION_SYSTEM_PROMPT}
 === Stage 2: Validation instructions ===
 ${INVESTIGATION_VALIDATION_SYSTEM_PROMPT}`;
 
-export class InvestigatorStructuredOutputError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "InvestigatorStructuredOutputError";
-  }
-}
+export { InvestigatorStructuredOutputError } from "./openai-errors.js";
 
 function getOpenAiModelId(): string {
   return getEnv().OPENAI_MODEL_ID;
@@ -531,9 +527,7 @@ export class OpenAIInvestigator implements Investigator {
 
     let validationOutputOffset = factCheckResponseAudit.outputItems.length;
     const orderedValidationResponseAudits = [
-      ...successfulValidations.flatMap((result) =>
-        result.responseAudit === null ? [] : [result.responseAudit],
-      ),
+      ...successfulValidations.map((result) => result.responseAudit),
       ...validationFailureResponseAudits,
     ].map((responseAudit) => {
       const offsetAudit = offsetResponseAuditIndices(responseAudit, validationOutputOffset);

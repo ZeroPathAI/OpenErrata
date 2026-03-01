@@ -15,6 +15,14 @@ export type CanonicalContentVersion =
       fetchFailureReason: string;
     });
 
+export interface ServerVerifiedContentMismatch {
+  platform: ViewPostInput["platform"];
+  url: string;
+  observedHash: string;
+  serverHash: string;
+  externalId?: string;
+}
+
 type CanonicalFetcher = (input: CanonicalFetchInput) => Promise<CanonicalContentFetchResult>;
 
 function toCanonicalFetchInput(input: ViewPostInput): CanonicalFetchInput {
@@ -45,24 +53,37 @@ function toCanonicalFetchInput(input: ViewPostInput): CanonicalFetchInput {
  * regardless of what the client observed. Client-observed content is only used
  * as a fallback when no server-side canonical source is available.
  *
- * We do NOT compare the client's observed hash against the server's canonical
- * hash. The two sources are fundamentally different:
+ * Hash mismatches between client-observed and server-verified content are
+ * reported via `onServerVerifiedContentMismatch`, but they do not block
+ * canonical resolution. The two sources are fundamentally different:
  *   - Client: live browser DOM, which may include JS-injected elements, tracking
  *     pixels, and other browser-specific content outside the article body.
  *   - Server: canonical source API (e.g. Wikipedia Parse API), which returns only
  *     the article body HTML.
- * Requiring agreement between them would produce false errors for legitimate page
- * views while providing no meaningful security benefit — the server's independently-
+ * Requiring strict agreement between them would produce false errors for
+ * legitimate page views while providing no meaningful security benefit — the
+ * server's independently-
  * fetched canonical version already overrides whatever the client claims to have seen.
  */
 export async function resolveCanonicalContentVersion(input: {
   viewInput: ViewPostInput;
   observed: ObservedContentVersion;
   fetchCanonicalContent: CanonicalFetcher;
+  onServerVerifiedContentMismatch?: (mismatch: ServerVerifiedContentMismatch) => void;
 }): Promise<CanonicalContentVersion> {
   const serverResult = await input.fetchCanonicalContent(toCanonicalFetchInput(input.viewInput));
 
   if (serverResult.provenance === "SERVER_VERIFIED") {
+    if (serverResult.contentHash !== input.observed.contentHash) {
+      input.onServerVerifiedContentMismatch?.({
+        platform: input.viewInput.platform,
+        url: input.viewInput.url,
+        observedHash: input.observed.contentHash,
+        serverHash: serverResult.contentHash,
+        ...("externalId" in input.viewInput ? { externalId: input.viewInput.externalId } : {}),
+      });
+    }
+
     return {
       contentText: serverResult.contentText,
       contentHash: serverResult.contentHash,

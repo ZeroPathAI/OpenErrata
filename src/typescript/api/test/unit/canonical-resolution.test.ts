@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { viewPostInputSchema } from "@openerrata/shared";
 import type { ViewPostInput } from "@openerrata/shared";
-import { resolveCanonicalContentVersion } from "../../src/lib/services/canonical-resolution.js";
+import {
+  resolveCanonicalContentVersion,
+  type ServerVerifiedContentMismatch,
+} from "../../src/lib/services/canonical-resolution.js";
 import type { CanonicalFetchInput } from "../../src/lib/services/content-fetcher.js";
 
 function buildXViewInput(observedContentText: string): Extract<ViewPostInput, { platform: "X" }> {
@@ -35,6 +38,22 @@ function buildWikipediaViewInput(
       displayTitle: "OpenErrata",
     },
   }) as Extract<ViewPostInput, { platform: "WIKIPEDIA" }>;
+}
+
+function buildLesswrongViewInput(
+  htmlContent: string,
+): Extract<ViewPostInput, { platform: "LESSWRONG" }> {
+  return viewPostInputSchema.parse({
+    platform: "LESSWRONG",
+    externalId: "unit-test-post-lw-1",
+    url: "https://www.lesswrong.com/posts/unit-test-post-lw-1/openerrata",
+    metadata: {
+      slug: "unit-test-post-lw-1-openerrata",
+      title: "OpenErrata",
+      htmlContent,
+      tags: [],
+    },
+  }) as Extract<ViewPostInput, { platform: "LESSWRONG" }>;
 }
 
 test("resolveCanonicalContentVersion returns server-verified canonical content", async () => {
@@ -91,6 +110,41 @@ test("resolveCanonicalContentVersion uses server content even when client hash d
     }),
   });
 
+  assert.deepEqual(result, {
+    provenance: "SERVER_VERIFIED",
+    contentText: "Server canonical text",
+    contentHash: "server-hash",
+  });
+});
+
+test("resolveCanonicalContentVersion reports mismatches for server-verified LessWrong content", async () => {
+  const viewInput = buildLesswrongViewInput("<p>Observed text</p>");
+  const observed = {
+    contentText: "Observed text",
+    contentHash: "observed-hash",
+  };
+  let capturedMismatch: ServerVerifiedContentMismatch | null = null;
+
+  const result = await resolveCanonicalContentVersion({
+    viewInput,
+    observed,
+    fetchCanonicalContent: async () => ({
+      provenance: "SERVER_VERIFIED",
+      contentText: "Server canonical text",
+      contentHash: "server-hash",
+    }),
+    onServerVerifiedContentMismatch: (mismatch) => {
+      capturedMismatch = mismatch;
+    },
+  });
+
+  assert.deepEqual(capturedMismatch, {
+    platform: "LESSWRONG",
+    externalId: viewInput.externalId,
+    url: viewInput.url,
+    observedHash: "observed-hash",
+    serverHash: "server-hash",
+  });
   assert.deepEqual(result, {
     provenance: "SERVER_VERIFIED",
     contentText: "Server canonical text",

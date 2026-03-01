@@ -59,10 +59,12 @@ import { describeError } from "../lib/describe-error.js";
 import { isSubstackPostPath } from "../lib/substack-url.js";
 import { wikipediaExternalIdFromPageId } from "../lib/wikipedia-url.js";
 import { UPGRADE_REQUIRED_STORAGE_KEY } from "../lib/runtime-error.js";
-import { setToolbarUpgradeRequiredState } from "./toolbar-badge.js";
 import { DEFAULT_EXTENSION_SETTINGS, normalizeApiBaseUrl } from "../lib/settings-core.js";
-import { shouldIgnoreMetadataLessUpgradeRequiredRefresh } from "./upgrade-required-state.js";
-import type { UpgradeRequiredState } from "./upgrade-required-state.js";
+import {
+  getUpgradeRequiredState,
+  setUpgradeRequiredState,
+  shouldIgnoreMetadataLessUpgradeRequiredRefresh,
+} from "./upgrade-required-state.js";
 
 // Initialize API client on worker start, then restore persisted upgrade state.
 void init()
@@ -119,12 +121,6 @@ interface StoredUpgradeRequiredState {
   apiBaseUrl: string;
 }
 
-let upgradeRequiredState: UpgradeRequiredState = { active: false };
-
-function isContentMismatchError(error: unknown): boolean {
-  return error instanceof ApiClientError && error.errorCode === "CONTENT_MISMATCH";
-}
-
 function isUpgradeRequiredError(error: unknown): error is ApiClientError {
   return error instanceof ApiClientError && error.errorCode === "UPGRADE_REQUIRED";
 }
@@ -170,21 +166,12 @@ function upgradeRequiredMessageFromApiError(error: ApiClientError): string {
   return "Update required: this OpenErrata extension version is no longer supported by the API server.";
 }
 
-function applyUpgradeRequiredToolbarOverride(): void {
-  setToolbarUpgradeRequiredState(
-    upgradeRequiredState.active
-      ? { active: true, message: upgradeRequiredState.message }
-      : { active: false },
-  );
-}
-
 async function clearUpgradeRequiredState(): Promise<void> {
-  if (!upgradeRequiredState.active) {
+  if (!getUpgradeRequiredState().active) {
     return;
   }
 
-  upgradeRequiredState = { active: false };
-  applyUpgradeRequiredToolbarOverride();
+  setUpgradeRequiredState({ active: false });
   await browser.storage.local.remove(UPGRADE_REQUIRED_STORAGE_KEY);
   await syncToolbarBadgesForOpenTabs();
 }
@@ -202,6 +189,7 @@ async function markUpgradeRequiredFromError(error: unknown): Promise<void> {
     return;
   }
 
+  const upgradeRequiredState = getUpgradeRequiredState();
   const apiBaseUrl = getCurrentApiBaseUrl();
   if (
     shouldIgnoreMetadataLessUpgradeRequiredRefresh({
@@ -222,8 +210,7 @@ async function markUpgradeRequiredFromError(error: unknown): Promise<void> {
     return;
   }
 
-  upgradeRequiredState = { active: true, message, apiBaseUrl };
-  applyUpgradeRequiredToolbarOverride();
+  setUpgradeRequiredState({ active: true, message, apiBaseUrl });
   await browser.storage.local.set({
     [UPGRADE_REQUIRED_STORAGE_KEY]: {
       message,
@@ -243,19 +230,17 @@ async function restoreUpgradeRequiredState(): Promise<void> {
     storedState?.detectedForVersion !== EXTENSION_VERSION ||
     storedApiBaseUrl !== configuredApiBaseUrl
   ) {
-    upgradeRequiredState = { active: false };
-    applyUpgradeRequiredToolbarOverride();
+    setUpgradeRequiredState({ active: false });
     await browser.storage.local.remove(UPGRADE_REQUIRED_STORAGE_KEY);
     await syncToolbarBadgesForOpenTabs();
     return;
   }
 
-  upgradeRequiredState = {
+  setUpgradeRequiredState({
     active: true,
     message: storedState.message,
     apiBaseUrl: storedState.apiBaseUrl,
-  };
-  applyUpgradeRequiredToolbarOverride();
+  });
   await syncToolbarBadgesForOpenTabs();
 }
 
@@ -862,9 +847,7 @@ browser.runtime.onMessage.addListener((message: unknown, sender: Runtime.Message
   };
 
   return handle().catch(async (err: unknown) => {
-    if (isContentMismatchError(err)) {
-      console.warn("Background handler rejected mismatched page content:", err);
-    } else if (isUpgradeRequiredError(err)) {
+    if (isUpgradeRequiredError(err)) {
       // Upgrade requirement is expected while the extension is outdated.
     } else {
       console.error("Background handler error:", err);
@@ -1140,11 +1123,12 @@ async function handleInvestigateNow(
 }
 
 async function handleGetCached(sender: Runtime.MessageSender): Promise<ExtensionPageStatus | null> {
-  if (upgradeRequiredState.active) {
-    if (upgradeRequiredState.apiBaseUrl !== getCurrentApiBaseUrl()) {
+  const upgradeState = getUpgradeRequiredState();
+  if (upgradeState.active) {
+    if (upgradeState.apiBaseUrl !== getCurrentApiBaseUrl()) {
       await clearUpgradeRequiredStateBestEffort("background GET_CACHED");
     } else {
-      throw new ApiClientError(upgradeRequiredState.message, {
+      throw new ApiClientError(upgradeState.message, {
         errorCode: "UPGRADE_REQUIRED",
       });
     }
@@ -1193,12 +1177,13 @@ browser.storage.onChanged.addListener((changes, areaName) => {
   if (!Object.prototype.hasOwnProperty.call(changes, "apiBaseUrl")) {
     return;
   }
-  if (!upgradeRequiredState.active) {
+  const currentUpgradeState = getUpgradeRequiredState();
+  if (!currentUpgradeState.active) {
     return;
   }
 
   const changedApiBaseUrl = normalizeConfiguredApiBaseUrl(changes["apiBaseUrl"]?.newValue);
-  if (changedApiBaseUrl === upgradeRequiredState.apiBaseUrl) {
+  if (changedApiBaseUrl === currentUpgradeState.apiBaseUrl) {
     return;
   }
 

@@ -19,7 +19,7 @@ const toolbarActionState: ActionCallLog = {
 };
 
 function createPostStatus(
-  state: "NOT_INVESTIGATED" | "INVESTIGATING" | "FAILED" | "CONTENT_MISMATCH" | "INVESTIGATED",
+  state: "NOT_INVESTIGATED" | "INVESTIGATING" | "FAILED" | "INVESTIGATED",
   options: { claimCount?: number } = {},
 ): ExtensionPostStatus {
   const sessionId = 1 as ExtensionPostStatus["tabSessionId"];
@@ -63,15 +63,6 @@ function createPostStatus(
       ...base,
       investigationState: "FAILED",
       provenance: "SERVER_VERIFIED",
-      claims: null,
-    };
-    return status;
-  }
-
-  if (state === "CONTENT_MISMATCH") {
-    const status: ExtensionPostStatus = {
-      ...base,
-      investigationState: "CONTENT_MISMATCH",
       claims: null,
     };
     return status;
@@ -302,7 +293,7 @@ test("updateToolbarBadge animates investigating state and clears badge when inve
   }
 });
 
-test("updateToolbarBadge renders count/success/failure/content-mismatch badge states", async () => {
+test("updateToolbarBadge renders count/success/failure badge states", async () => {
   const calls = installChromeActionMock();
   const intervals = installIntervalMocks();
 
@@ -315,13 +306,10 @@ test("updateToolbarBadge renders count/success/failure/content-mismatch badge st
     await flushAsyncQueue();
     updateToolbarBadge(22, createPostStatus("FAILED"));
     await flushAsyncQueue();
-    updateToolbarBadge(23, createPostStatus("CONTENT_MISMATCH"));
-    await flushAsyncQueue();
-
     const colors = calls.setBadgeBackgroundColor.map((call) => requireSetBadgeColorCall(call));
     assert.deepEqual(
       colors.map((entry) => entry.tabId),
-      [20, 21, 22, 23],
+      [20, 21, 22],
     );
     assert.equal(
       colors.every((entry) => entry.color.length > 0),
@@ -330,35 +318,34 @@ test("updateToolbarBadge renders count/success/failure/content-mismatch badge st
     const firstColor = colors[0];
     const secondColor = colors[1];
     const thirdColor = colors[2];
-    const fourthColor = colors[3];
     assert.ok(firstColor);
     assert.ok(secondColor);
     assert.ok(thirdColor);
-    assert.ok(fourthColor);
     assert.equal(firstColor.color, thirdColor.color);
     assert.notEqual(firstColor.color, secondColor.color);
-    assert.notEqual(firstColor.color, fourthColor.color);
 
     assert.deepEqual(calls.setBadgeText, [
       { tabId: 20, text: "3" },
       { tabId: 21, text: "✓" },
       { tabId: 22, text: "!" },
-      { tabId: 23, text: "!" },
     ]);
   } finally {
     intervals.restore();
   }
 });
 
-test("setToolbarUpgradeRequiredState overrides badge and title until cleared", async () => {
+test("upgrade-required state overrides badge and title until cleared", async () => {
   const calls = installChromeActionMock();
   const intervals = installIntervalMocks();
 
   try {
-    const { updateToolbarBadge, setToolbarUpgradeRequiredState } = await importToolbarBadgeModule();
-    setToolbarUpgradeRequiredState({
+    const { setUpgradeRequiredState } =
+      await import("../../src/background/upgrade-required-state.js");
+    const { updateToolbarBadge } = await importToolbarBadgeModule();
+    setUpgradeRequiredState({
       active: true,
       message: "Extension upgrade required (minimum 0.2.0).",
+      apiBaseUrl: "https://api.openerrata.com",
     });
 
     updateToolbarBadge(30, createPostStatus("INVESTIGATED", { claimCount: 2 }));
@@ -372,7 +359,7 @@ test("setToolbarUpgradeRequiredState overrides badge and title until cleared", a
       title: "Extension upgrade required (minimum 0.2.0).",
     });
 
-    setToolbarUpgradeRequiredState({ active: false });
+    setUpgradeRequiredState({ active: false });
     updateToolbarBadge(30, createPostStatus("INVESTIGATED", { claimCount: 2 }));
     await flushAsyncQueue();
 

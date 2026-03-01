@@ -243,7 +243,7 @@ test("wikipediaHtmlToNormalizedText separates text across adjacent CONTENT_BLOCK
 //
 // The Assassination_of_Ali_Khamenei page ends with "See also" (not an excluded
 // section), so skipSectionLevel is not set when the noscript is reached.  This
-// caused CONTENT_MISMATCH: the server text contained the literal <img…> HTML
+// caused canonicalization drift: the server text contained the literal <img…> HTML
 // while the Wikipedia Parse API response, which the server fetches in
 // production, does not include the noscript at all.
 

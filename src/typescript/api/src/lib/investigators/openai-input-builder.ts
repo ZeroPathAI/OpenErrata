@@ -1,6 +1,6 @@
 import type { ResponseInput } from "openai/resources/responses/responses";
 import { validateAndSortImageOccurrences } from "@openerrata/shared";
-import { InvestigatorStructuredOutputError } from "./openai.js";
+import { InvestigatorStructuredOutputError } from "./openai-errors.js";
 import type { InvestigatorImageOccurrence } from "./interface.js";
 
 type ContentInputPart =

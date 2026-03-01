@@ -4,9 +4,16 @@
  * and API (parse5 traversal) to ensure identical output on compact HTML where
  * no whitespace text nodes exist between adjacent block elements.
  *
- * Must be kept in sync between client and server to prevent CONTENT_MISMATCH.
+ * Must be kept in sync between client and server to prevent canonicalization drift.
  * Spec §3.8.
  */
+/**
+ * HTML tags that never contain article prose on any platform.
+ * Text inside these elements is excluded unconditionally during
+ * content extraction on both client and server.
+ */
+export const NON_CONTENT_TAGS = new Set(["script", "style", "noscript"]);
+
 export const CONTENT_BLOCK_SEPARATOR_TAGS = new Set([
   "p",
   "li",

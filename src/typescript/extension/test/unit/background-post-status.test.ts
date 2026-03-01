@@ -7,16 +7,16 @@ import {
 } from "../../src/background/post-status.js";
 import { ApiClientError } from "../../src/background/api-client-error.js";
 
-test("createPostStatus builds CONTENT_MISMATCH without status", () => {
+test("createPostStatus builds FAILED without status", () => {
   const status = createPostStatus({
     tabSessionId: 2,
     platform: "LESSWRONG",
     externalId: "lw-2",
     pageUrl: "https://www.lesswrong.com/posts/lw-2/example",
-    investigationState: "CONTENT_MISMATCH",
+    investigationState: "FAILED",
   });
 
-  assert.equal(status.investigationState, "CONTENT_MISMATCH");
+  assert.equal(status.investigationState, "FAILED");
   assert.equal("status" in status, false);
 });
 
@@ -86,10 +86,8 @@ test("createPostStatusFromInvestigation maps undefined status to NOT_INVESTIGATE
   assert.equal(status.priorInvestigationResult, null);
 });
 
-test("apiErrorToPostStatus maps CONTENT_MISMATCH ApiClientError to mismatch state", () => {
-  const error = new ApiClientError("mismatch", {
-    errorCode: "CONTENT_MISMATCH",
-  });
+test("apiErrorToPostStatus maps ApiClientError without a recognized code to FAILED state", () => {
+  const error = new ApiClientError("mismatch", {});
   const status = apiErrorToPostStatus({
     error,
     tabSessionId: 1,
@@ -98,7 +96,7 @@ test("apiErrorToPostStatus maps CONTENT_MISMATCH ApiClientError to mismatch stat
     pageUrl: "https://www.lesswrong.com/posts/lw-1/example",
   });
 
-  assert.equal(status.investigationState, "CONTENT_MISMATCH");
+  assert.equal(status.investigationState, "FAILED");
   assert.equal(status.claims, null);
 });
 

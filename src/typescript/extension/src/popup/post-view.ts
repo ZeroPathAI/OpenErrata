@@ -7,7 +7,6 @@ export type PostPopupView =
   | { kind: "found_claims"; claims: PopupClaim[] }
   | { kind: "clean" }
   | { kind: "failed" }
-  | { kind: "content_mismatch" }
   | { kind: "investigating" }
   | { kind: "not_investigated"; canRequest: boolean };
 
@@ -20,9 +19,6 @@ export function computePostView(matched: PostStatus, canRequest: boolean): PostP
   }
   if (matched.investigationState === "FAILED") {
     return { kind: "failed" };
-  }
-  if (matched.investigationState === "CONTENT_MISMATCH") {
-    return { kind: "content_mismatch" };
   }
   if (matched.investigationState === "INVESTIGATING") {
     return { kind: "investigating" };

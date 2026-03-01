@@ -524,14 +524,6 @@ const extensionPostFailedSchema = extensionPostStatusBaseSchema
   })
   .strict();
 
-const extensionPostContentMismatchSchema = extensionPostStatusBaseSchema
-  .extend({
-    investigationState: z.literal("CONTENT_MISMATCH"),
-    status: z.undefined().optional(),
-    claims: z.null(),
-  })
-  .strict();
-
 const extensionPostInvestigatedSchema = extensionPostStatusBaseSchema
   .extend({
     investigationState: z.literal("INVESTIGATED"),
@@ -544,7 +536,6 @@ export const extensionPostStatusSchema = z.discriminatedUnion("investigationStat
   extensionPostNotInvestigatedSchema,
   extensionPostInvestigatingSchema,
   extensionPostFailedSchema,
-  extensionPostContentMismatchSchema,
   extensionPostInvestigatedSchema,
 ]);
 
@@ -591,7 +582,6 @@ export const annotationVisibilityResponseSchema = z
   .strict();
 
 export const extensionRuntimeErrorCodeSchema = z.enum([
-  "CONTENT_MISMATCH",
   "PAYLOAD_TOO_LARGE",
   "UPGRADE_REQUIRED",
   "MALFORMED_EXTENSION_VERSION",

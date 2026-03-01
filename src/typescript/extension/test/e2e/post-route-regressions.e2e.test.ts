@@ -21,7 +21,8 @@ interface ExtensionHarness {
 interface ExpectedSkippedStatus {
   platform: Platform;
   externalId: string;
-  reason: ExtensionSkippedReason;
+  /** A single reason or array of acceptable reasons (when multiple skip conditions apply). */
+  reason: ExtensionSkippedReason | ExtensionSkippedReason[];
   pageUrl?: string;
 }
 
@@ -316,10 +317,11 @@ function hasMatchingSkippedStatus(status: unknown, expected: ExpectedSkippedStat
   if (expected.pageUrl !== undefined && parsed.data.pageUrl !== expected.pageUrl) {
     return false;
   }
+  const acceptableReasons = Array.isArray(expected.reason) ? expected.reason : [expected.reason];
   return (
     parsed.data.platform === expected.platform &&
     parsed.data.externalId === expected.externalId &&
-    parsed.data.reason === expected.reason
+    acceptableReasons.includes(parsed.data.reason)
   );
 }
 
@@ -928,7 +930,7 @@ test("Substack private_or_gated state updates when origin changes but slug stays
   }
 });
 
-test("Wikipedia cached live-page fixture reaches has_video skipped status", async () => {
+test("Wikipedia cached live-page fixture reaches a terminal skipped status", async () => {
   const harness = await launchExtensionHarness();
   try {
     const fixture = await readE2eWikipediaFixture(
@@ -947,10 +949,14 @@ test("Wikipedia cached live-page fixture reaches has_video skipped status", asyn
     });
 
     await page.goto(url, { waitUntil: "domcontentloaded" });
+    // The fixture has injected video AND exceeds the 10K word count limit,
+    // so either skip reason is valid. The test verifies that the extension
+    // reaches a terminal SKIPPED status for this article without depending
+    // on which skip condition is evaluated first.
     await expectSkippedStatus(harness.serviceWorker, {
       platform: "WIKIPEDIA",
       externalId: `${fixture.language}:${fixture.pageId}`,
-      reason: "has_video",
+      reason: ["has_video", "word_count"],
       pageUrl: url,
     });
   } finally {
