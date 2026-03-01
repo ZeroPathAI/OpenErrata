@@ -203,7 +203,9 @@ function resolveRenderedClaimAnchor(root: Element, claimId: string): HTMLElement
 
 function scrollToClaimAnchor(anchor: HTMLElement): boolean {
   anchor.scrollIntoView({
-    behavior: "smooth",
+    // Smooth scrolling can cause long main-thread stalls on very large pages
+    // with heavy scroll handlers (observed on long Substack posts).
+    behavior: "auto",
     block: "center",
     inline: "nearest",
   });
