@@ -46,7 +46,7 @@
 
   function skippedReasonMessage(reason: ExtensionSkippedReason): string {
     if (reason === "has_video") {
-      return "This post contains video and no supported images. Video analysis is not supported yet.";
+      return "This post contains video. Video analysis is not supported yet.";
     }
     if (reason === "word_count") {
       return "This post is too long and is not eligible for investigation.";
