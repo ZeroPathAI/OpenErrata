@@ -706,25 +706,29 @@ async function createPlatformVersionMetadataIfMissing(
               clientHtmlBlobId: true,
             },
           }),
-        assertEquivalent: (existing) => {
-          if (existing.slug !== metadata.slug) {
-            throw new TRPCError({
-              code: "INTERNAL_SERVER_ERROR",
-              message: `LessWrong version slug mismatch for postVersion ${input.postVersionId}: existing=${existing.slug}, incoming=${metadata.slug}`,
-            });
-          }
+        assertEquivalent: () => {
+          // No assertions — all version meta fields except postVersionId,
+          // createdAt, and clientHtmlBlobId are mutable post-level metadata
+          // (slug, title, karma, author info, tags can all change independently
+          // of the content hash that identifies this PostVersion).
         },
       });
+
+      // Latest-wins update for mutable metadata + server HTML. Version meta
+      // is a "best available snapshot" for the PostVersion; re-registrations
+      // should reflect the current state of the post on LessWrong.
+      const needsServerHtml =
+        serverHtmlBlobId !== null && existingOrCreated.serverHtmlBlobId !== serverHtmlBlobId;
+      const needsSlug = existingOrCreated.slug !== metadata.slug;
+
       await Promise.all([
-        // Server HTML: always update to the latest server-fetched snapshot.
-        // The LessWrong GraphQL API can return different raw bytes for the same
-        // post content across time (API formatting drift), so "last server fetch
-        // wins" is correct here. Past investigations are unaffected — each has
-        // its own InvestigationInput markdown snapshot.
-        serverHtmlBlobId !== null && existingOrCreated.serverHtmlBlobId !== serverHtmlBlobId
+        needsServerHtml || needsSlug
           ? prisma.lesswrongVersionMeta.update({
               where: { postVersionId: input.postVersionId },
-              data: { serverHtmlBlobId },
+              data: {
+                ...(needsServerHtml && { serverHtmlBlobId }),
+                ...(needsSlug && { slug: metadata.slug }),
+              },
             })
           : null,
         // Client HTML: first-write-wins. Client HTML is extracted from the live
