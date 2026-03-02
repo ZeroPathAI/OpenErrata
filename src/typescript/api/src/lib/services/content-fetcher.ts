@@ -1,26 +1,27 @@
 import {
   CONTENT_BLOCK_SEPARATOR_TAGS,
   NON_CONTENT_TAGS,
-  effectiveHeadingLevel,
-  effectiveHeadingText,
   hashContent,
-  headingLevelFromTag,
   isNonNullObject,
-  isExcludedWikipediaSectionTitle,
   normalizeContent,
-  normalizeWikipediaSectionTitle,
-  shouldExcludeWikipediaElement,
   WIKIPEDIA_LANGUAGE_CODE_REGEX,
-  type WikipediaNodeDescriptor,
 } from "@openerrata/shared";
 import { parseFragment, type DefaultTreeAdapterMap } from "parse5";
+import {
+  createWikipediaNodeFilter,
+  hasChildren,
+  isElementNode,
+  isTextNode,
+  type Parse5NodeFilter,
+} from "./wikipedia-content-filter.js";
 
 type ServerFetchResult =
   | {
       success: true;
       contentText: string;
       contentHash: string;
-      canonicalIdentity?: CanonicalIdentity;
+      sourceHtml: string;
+      canonicalIdentity: CanonicalIdentity | null;
     }
   | {
       success: false;
@@ -39,7 +40,8 @@ export type CanonicalContentFetchResult =
       provenance: "SERVER_VERIFIED";
       contentText: string;
       contentHash: string;
-      canonicalIdentity?: CanonicalIdentity;
+      sourceHtml: string;
+      canonicalIdentity: CanonicalIdentity | null;
     }
   | {
       provenance: "CLIENT_FALLBACK";
@@ -120,29 +122,6 @@ function extractLesswrongHtml(value: unknown): string | null {
   const html = contents["html"];
   return typeof html === "string" ? html : null;
 }
-
-function isTextNode(
-  node: DefaultTreeAdapterMap["node"],
-): node is DefaultTreeAdapterMap["textNode"] {
-  return node.nodeName === "#text";
-}
-
-function hasChildren(
-  node: DefaultTreeAdapterMap["node"],
-): node is DefaultTreeAdapterMap["parentNode"] {
-  return "childNodes" in node;
-}
-
-/**
- * Callback invoked during the "enter" phase of the parse5 DFS traversal.
- * Returning `"skip"` omits the node and its entire subtree from the output.
- * Returning `"include"` processes the node normally.
- *
- * For element nodes, receives the element.
- * For text nodes, receives the text node (allows stateful filters like
- * Wikipedia's section-level skip to suppress text outside of elements).
- */
-type Parse5NodeFilter = (node: DefaultTreeAdapterMap["node"]) => "include" | "skip";
 
 /**
  * Shared parse5 HTML-to-text traversal used by all platform extractors.
@@ -257,9 +236,8 @@ export async function fetchCanonicalContent(
     provenance: "SERVER_VERIFIED",
     contentText: fetched.contentText,
     contentHash: fetched.contentHash,
-    ...(fetched.canonicalIdentity === undefined
-      ? {}
-      : { canonicalIdentity: fetched.canonicalIdentity }),
+    sourceHtml: fetched.sourceHtml,
+    canonicalIdentity: fetched.canonicalIdentity,
   };
 }
 
@@ -321,164 +299,7 @@ async function fetchLesswrongContent(
 
   const contentText = lesswrongHtmlToNormalizedText(html);
   const contentHash = await hashContent(contentText);
-  return { success: true, contentText, contentHash };
-}
-
-function isElementNode(
-  node: DefaultTreeAdapterMap["node"],
-): node is DefaultTreeAdapterMap["element"] {
-  return "tagName" in node;
-}
-
-function attrValue(node: DefaultTreeAdapterMap["element"], name: string): string | null {
-  const match = node.attrs.find((entry) => entry.name === name);
-  return match?.value ?? null;
-}
-
-function classTokens(node: DefaultTreeAdapterMap["element"]): string[] {
-  const classValue = attrValue(node, "class");
-  if (classValue === null || classValue.length === 0) return [];
-  return classValue
-    .split(/\s+/)
-    .map((token) => token.trim())
-    .filter(Boolean);
-}
-
-function firstDirectChildHeadingNode(
-  node: DefaultTreeAdapterMap["element"],
-): DefaultTreeAdapterMap["element"] | null {
-  for (const child of node.childNodes) {
-    if (isElementNode(child) && headingLevelFromTag(child.tagName) !== null) {
-      return child;
-    }
-  }
-  return null;
-}
-
-function toFirstChildHeadingDescriptor(
-  firstChildHeadingNode: DefaultTreeAdapterMap["element"] | null,
-  includeHeadingTextContent: boolean,
-): WikipediaNodeDescriptor["firstChildHeading"] {
-  if (firstChildHeadingNode === null) {
-    return null;
-  }
-
-  return {
-    tagName: firstChildHeadingNode.tagName,
-    textContent: includeHeadingTextContent ? textContentOfNode(firstChildHeadingNode) : "",
-  };
-}
-
-function textContentOfNode(node: DefaultTreeAdapterMap["node"]): string {
-  if (isTextNode(node)) {
-    return node.value;
-  }
-
-  if (!hasChildren(node)) {
-    return "";
-  }
-
-  let text = "";
-  for (const child of node.childNodes) {
-    text += textContentOfNode(child);
-  }
-  return text;
-}
-
-/**
- * Build a WikipediaNodeDescriptor from a parse5 element for shared heading logic.
- *
- * This helper is intentionally configurable so callers can avoid expensive
- * subtree text scans when they only need heading level (not heading text).
- */
-function toNodeDescriptor(input: {
-  node: DefaultTreeAdapterMap["element"];
-  classTokenValues: readonly string[];
-  firstChildHeadingNode: DefaultTreeAdapterMap["element"] | null;
-  includeNodeTextContent: boolean;
-  includeFirstChildHeadingTextContent: boolean;
-}): WikipediaNodeDescriptor {
-  return {
-    tagName: input.node.tagName,
-    classTokens: input.classTokenValues,
-    textContent: input.includeNodeTextContent ? textContentOfNode(input.node) : "",
-    firstChildHeading: toFirstChildHeadingDescriptor(
-      input.firstChildHeadingNode,
-      input.includeFirstChildHeadingTextContent,
-    ),
-  };
-}
-
-function shouldSkipWikipediaElement(node: DefaultTreeAdapterMap["element"]): boolean {
-  return shouldExcludeWikipediaElement({
-    tagName: node.tagName,
-    classTokens: classTokens(node),
-  });
-}
-
-/**
- * Creates a stateful node filter for Wikipedia content extraction.
- *
- * Handles section-level exclusion (e.g. "References", "External links") and
- * element-level exclusion (e.g. citation superscripts, edit-section links)
- * via `shouldExcludeWikipediaElement`. Text nodes are suppressed when inside
- * an excluded section.
- *
- * NON_CONTENT_TAGS (script/style/noscript) are already excluded by
- * `parse5HtmlToTextContent` before this filter runs, so
- * `shouldExcludeWikipediaElement`'s tag check is redundant but harmless.
- */
-function createWikipediaNodeFilter(): Parse5NodeFilter {
-  let skipSectionLevel: number | null = null;
-
-  return (node: DefaultTreeAdapterMap["node"]): "include" | "skip" => {
-    if (isElementNode(node)) {
-      const classTokenValues = classTokens(node);
-      const firstChildHeadingNode = firstDirectChildHeadingNode(node);
-      const descriptor = toNodeDescriptor({
-        node,
-        classTokenValues,
-        firstChildHeadingNode,
-        includeNodeTextContent: false,
-        includeFirstChildHeadingTextContent: false,
-      });
-      const nodeHeadingLevel = effectiveHeadingLevel(descriptor);
-      if (nodeHeadingLevel !== null) {
-        if (skipSectionLevel !== null && nodeHeadingLevel <= skipSectionLevel) {
-          skipSectionLevel = null;
-        }
-
-        const headingText = normalizeWikipediaSectionTitle(
-          effectiveHeadingText(
-            toNodeDescriptor({
-              node,
-              classTokenValues,
-              firstChildHeadingNode,
-              includeNodeTextContent: true,
-              includeFirstChildHeadingTextContent: true,
-            }),
-          ),
-        );
-        if (isExcludedWikipediaSectionTitle(headingText)) {
-          skipSectionLevel = nodeHeadingLevel;
-          return "skip";
-        }
-      }
-
-      if (skipSectionLevel !== null || shouldSkipWikipediaElement(node)) {
-        return "skip";
-      }
-
-      return "include";
-    }
-
-    // Text nodes: suppress when inside an excluded section.
-    if (skipSectionLevel !== null) {
-      return "skip";
-    }
-
-    return "include";
-  };
+  return { success: true, contentText, contentHash, sourceHtml: html, canonicalIdentity: null };
 }
 
 function wikipediaHtmlToTextContent(html: string): string {
@@ -587,6 +408,7 @@ async function fetchWikipediaContent(
     success: true,
     contentText,
     contentHash,
+    sourceHtml: payload.html,
     canonicalIdentity: {
       platform: "WIKIPEDIA",
       language,

@@ -7,7 +7,7 @@
  * badge reads it on demand via getUpgradeRequiredState().
  */
 
-type UpgradeRequiredState =
+export type UpgradeRequiredState =
   | { active: false }
   | { active: true; message: string; apiBaseUrl: string };
 

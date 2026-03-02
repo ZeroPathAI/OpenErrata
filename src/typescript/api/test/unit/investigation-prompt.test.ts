@@ -47,8 +47,8 @@ function extractRawSectionMarkers(
   };
 }
 
-test("buildUserPrompt includes untrusted-data handling and raw post text boundaries", () => {
-  const prompt = buildUserPrompt({
+test("buildUserPrompt includes untrusted-data handling and article content boundaries", () => {
+  const { prompt } = buildUserPrompt({
     contentText: "Post body text",
     platform: "X",
     url: "https://x.com/openerrata/status/123",
@@ -63,9 +63,9 @@ test("buildUserPrompt includes untrusted-data handling and raw post text boundar
   assert.match(prompt, /"authorName": "OpenErrata"/);
   assert.match(prompt, /"postPublishedAt": "2026-02-28T10:00:00.000Z"/);
 
-  const markers = extractRawSectionMarkers(prompt, "Post text");
-  assert.match(markers.beginMarker, /BEGIN_OPENERRATA_POST_TEXT/);
-  assert.match(markers.endMarker, /END_OPENERRATA_POST_TEXT/);
+  const markers = extractRawSectionMarkers(prompt, "Article content");
+  assert.match(markers.beginMarker, /BEGIN_OPENERRATA_CONTENT/);
+  assert.match(markers.endMarker, /END_OPENERRATA_CONTENT/);
   assert.match(prompt, /Post body text/);
   assert.doesNotMatch(prompt, /## Update output contract/);
 });
@@ -74,7 +74,7 @@ test("buildUserPrompt update mode includes carry/new contract and collision-safe
   const collidingText =
     "Current text includes <<<BEGIN_OPENERRATA_CONTENT_DIFF>>> marker text on purpose.";
   const diffText = "New sentence added.";
-  const prompt = buildUserPrompt({
+  const { prompt } = buildUserPrompt({
     contentText: collidingText,
     platform: "LESSWRONG",
     url: "https://www.lesswrong.com/posts/post_1",
@@ -110,6 +110,55 @@ test("buildUserPrompt update mode includes carry/new contract and collision-safe
   assert.equal(diffText.includes(markers.endMarker), false);
 });
 
+test("buildUserPrompt returns contentOffset for the content section even with matching update metadata", () => {
+  const contentText = "This exact string appears in old claims too.";
+  const { prompt, contentOffset, contentString } = buildUserPrompt({
+    contentText,
+    platform: "LESSWRONG",
+    url: "https://www.lesswrong.com/posts/post_2",
+    isUpdate: true,
+    oldClaims: [
+      {
+        id: claimIdSchema.parse("claim_old_2"),
+        text: contentText,
+        context: contentText,
+        summary: "Old summary",
+        reasoning: "Old reasoning",
+        sources: [
+          {
+            url: "https://example.com/old-source-2",
+            title: "Old source",
+            snippet: "Old snippet",
+          },
+        ],
+      },
+    ],
+    contentDiff: "Diff text",
+  });
+
+  assert.equal(contentString, contentText);
+  assert.equal(
+    prompt.slice(contentOffset, contentOffset + contentString.length),
+    contentString,
+    "contentOffset should point at content within prompt",
+  );
+
+  const sectionTitle = "Article content";
+  const sectionHeader = `## ${sectionTitle} (raw, untrusted)`;
+  const sectionStart = prompt.indexOf(sectionHeader);
+  assert.notEqual(sectionStart, -1);
+
+  const markers = extractRawSectionMarkers(prompt, sectionTitle);
+  const beginMarkerIndex = prompt.indexOf(markers.beginMarker, sectionStart);
+  const endMarkerIndex = prompt.indexOf(markers.endMarker, beginMarkerIndex);
+  assert.ok(beginMarkerIndex >= 0);
+  assert.ok(endMarkerIndex > beginMarkerIndex);
+  assert.ok(
+    contentOffset > beginMarkerIndex && contentOffset < endMarkerIndex,
+    "contentOffset must fall inside content raw block",
+  );
+});
+
 test("buildValidationPrompt embeds candidate claim and optional image context notes", () => {
   const candidateClaim = createCandidateClaim();
   const promptWithImages = buildValidationPrompt({
@@ -129,6 +178,66 @@ test("buildValidationPrompt embeds candidate claim and optional image context no
     candidateClaim,
   });
   assert.doesNotMatch(promptWithoutImages, /## Image context notes \(raw, untrusted\)/);
+});
+
+test("buildUserPrompt uses contentMarkdown as single content section when provided", () => {
+  const { prompt, contentString } = buildUserPrompt({
+    contentText: "Plain post body text",
+    contentMarkdown: "## Heading\n\n- Item one\n- Item two",
+    platform: "SUBSTACK",
+    url: "https://example.substack.com/p/test-post",
+  });
+
+  assert.equal(contentString, "## Heading\n\n- Item one\n- Item two");
+  assert.ok(prompt.includes("## Heading"));
+  assert.ok(prompt.includes("- Item one"));
+
+  // Single content section — Article content
+  const markers = extractRawSectionMarkers(prompt, "Article content");
+  assert.match(markers.beginMarker, /BEGIN_OPENERRATA_CONTENT/);
+
+  // Flat text should NOT appear separately — markdown replaced it.
+  const flatTextCount = prompt.split("Plain post body text").length - 1;
+  assert.equal(flatTextCount, 0, "Flat text should not appear when markdown is provided");
+});
+
+test("buildUserPrompt uses contentText when contentMarkdown is undefined", () => {
+  const { prompt, contentString } = buildUserPrompt({
+    contentText: "Post body text only",
+    platform: "X",
+    url: "https://x.com/user/status/123",
+  });
+
+  assert.equal(contentString, "Post body text only");
+  const markers = extractRawSectionMarkers(prompt, "Article content");
+  assert.match(markers.beginMarker, /BEGIN_OPENERRATA_CONTENT/);
+});
+
+test("buildUserPrompt uses contentText when contentMarkdown is empty", () => {
+  const { prompt, contentString } = buildUserPrompt({
+    contentText: "Post body text only",
+    contentMarkdown: "",
+    platform: "LESSWRONG",
+    url: "https://www.lesswrong.com/posts/test/test",
+  });
+
+  assert.equal(contentString, "Post body text only");
+  assert.ok(prompt.includes("Post body text only"));
+});
+
+test("contentString appears exactly once in prompt", () => {
+  const contentText = "Unique post text for counting";
+  const { prompt, contentString } = buildUserPrompt({
+    contentText,
+    contentMarkdown: "# Some markdown",
+    platform: "SUBSTACK",
+    url: "https://example.substack.com/p/test",
+  });
+
+  const firstIdx = prompt.indexOf(contentString);
+  const lastIdx = prompt.lastIndexOf(contentString);
+  assert.ok(firstIdx >= 0, "contentString must appear in prompt");
+  assert.equal(firstIdx, lastIdx, "contentString must appear exactly once");
 });
 
 test("buildInvestigationPromptBundleText includes both stage instruction bodies in order", () => {

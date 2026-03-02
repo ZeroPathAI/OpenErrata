@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/explicit-module-boundary-types */
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { after, afterEach, test } from "node:test";
 import type { RequestEvent } from "@sveltejs/kit";
 import {
@@ -300,16 +300,6 @@ async function resetDatabase(): Promise<void> {
     }
 
     if (integrationPostIds.length > 0) {
-      await tx.xMeta.deleteMany({
-        where: {
-          postId: { in: integrationPostIds },
-        },
-      });
-      await tx.lesswrongMeta.deleteMany({
-        where: {
-          postId: { in: integrationPostIds },
-        },
-      });
       await tx.postViewCredit.deleteMany({
         where: {
           postId: { in: integrationPostIds },
@@ -356,6 +346,7 @@ async function assertSchemaCatalogInvariants(): Promise<void> {
       AND c.conname IN (
         'PostVersion_server_verified_reason_chk',
         'PostVersion_server_verified_at_chk',
+        'PostVersion_content_provenance_consistency_check',
         'Investigation_content_diff_parent_chk'
       )
     ORDER BY c.conname
@@ -385,22 +376,18 @@ async function assertSchemaCatalogInvariants(): Promise<void> {
     WHERE n.nspname = 'public'
       AND c.contype = 'c'
       AND c.conname IN (
-        'PostVersion_content_provenance_consistency_check',
         'Investigation_contentDiff_parent_consistency_chk'
       )
     ORDER BY c.conname
   `;
   assert.equal(
     canonicalChecks.length,
-    2,
+    1,
     `schema invariant failed: missing canonical check constraints: ${JSON.stringify(canonicalChecks)}`,
   );
   assert.deepEqual(
     canonicalChecks.map((check) => check.constraintName),
-    [
-      "Investigation_contentDiff_parent_consistency_chk",
-      "PostVersion_content_provenance_consistency_check",
-    ],
+    ["Investigation_contentDiff_parent_consistency_chk"],
     `schema invariant failed: unexpected canonical check names: ${JSON.stringify(canonicalChecks)}`,
   );
   for (const check of canonicalChecks) {
@@ -410,36 +397,6 @@ async function assertSchemaCatalogInvariants(): Promise<void> {
       `schema invariant failed: check ${check.constraintName} must be validated`,
     );
   }
-
-  const postVersionProvenanceCheck = canonicalChecks.find(
-    (check) => check.constraintName === "PostVersion_content_provenance_consistency_check",
-  );
-  assert.ok(
-    postVersionProvenanceCheck,
-    "schema invariant failed: missing PostVersion provenance check constraint",
-  );
-  assert.equal(
-    postVersionProvenanceCheck.tableName,
-    "PostVersion",
-    "schema invariant failed: PostVersion provenance check is attached to wrong table",
-  );
-  assert.equal(
-    postVersionProvenanceCheck.constraintDef.includes("'SERVER_VERIFIED'"),
-    true,
-    "schema invariant failed: PostVersion provenance check must include SERVER_VERIFIED branch",
-  );
-  assert.equal(
-    postVersionProvenanceCheck.constraintDef.includes("'CLIENT_FALLBACK'"),
-    true,
-    "schema invariant failed: PostVersion provenance check must include CLIENT_FALLBACK branch",
-  );
-  assert.equal(
-    postVersionProvenanceCheck.constraintDef
-      .toLowerCase()
-      .includes('length(btrim("fetchFailureReason")) > 0'.toLowerCase()),
-    true,
-    "schema invariant failed: PostVersion provenance check must enforce non-empty fallback reason",
-  );
 
   const updateLineageShapeCheck = canonicalChecks.find(
     (check) => check.constraintName === "Investigation_contentDiff_parent_consistency_chk",
@@ -515,7 +472,8 @@ async function assertSchemaCatalogInvariants(): Promise<void> {
       AND tg.tgname IN (
         'enforce_investigation_parent_semantics_trigger',
         'enforce_referenced_parent_investigation_validity_trigger',
-        'enforce_referenced_parent_post_version_validity_trigger'
+        'enforce_server_verified_at_latch_trigger',
+        'enforce_server_verified_html_snapshot_trigger'
       )
     ORDER BY tg.tgname
   `;
@@ -541,11 +499,23 @@ async function assertSchemaCatalogInvariants(): Promise<void> {
       },
     ],
     [
-      "enforce_referenced_parent_post_version_validity_trigger",
+      "enforce_server_verified_at_latch_trigger",
       {
         tableName: "PostVersion",
-        functionName: "enforce_referenced_parent_post_version_validity",
-        requiredFragments: ["before update of", "contentprovenance"],
+        functionName: "enforce_server_verified_at_latch",
+        requiredFragments: ["before update of", "serververifiedat"],
+      },
+    ],
+    [
+      "enforce_server_verified_html_snapshot_trigger",
+      {
+        tableName: "PostVersion",
+        functionName: "enforce_server_verified_html_snapshot",
+        requiredFragments: [
+          "after insert or update of",
+          "serververifiedat",
+          "deferrable initially deferred",
+        ],
       },
     ],
   ]);
@@ -603,7 +573,8 @@ async function assertSchemaCatalogInvariants(): Promise<void> {
       AND trigger_name IN (
         'enforce_investigation_parent_semantics_trigger',
         'enforce_referenced_parent_investigation_validity_trigger',
-        'enforce_referenced_parent_post_version_validity_trigger'
+        'enforce_server_verified_at_latch_trigger',
+        'enforce_server_verified_html_snapshot_trigger'
       )
     ORDER BY trigger_name, event_manipulation
   `;
@@ -611,7 +582,9 @@ async function assertSchemaCatalogInvariants(): Promise<void> {
     "enforce_investigation_parent_semantics_trigger|Investigation|BEFORE|INSERT",
     "enforce_investigation_parent_semantics_trigger|Investigation|BEFORE|UPDATE",
     "enforce_referenced_parent_investigation_validity_trigger|Investigation|BEFORE|UPDATE",
-    "enforce_referenced_parent_post_version_validity_trigger|PostVersion|BEFORE|UPDATE",
+    "enforce_server_verified_at_latch_trigger|PostVersion|BEFORE|UPDATE",
+    "enforce_server_verified_html_snapshot_trigger|PostVersion|AFTER|INSERT",
+    "enforce_server_verified_html_snapshot_trigger|PostVersion|AFTER|UPDATE",
   ];
   assert.deepEqual(
     triggerEvents.map((event) =>
@@ -745,15 +718,152 @@ async function getOrCreateEmptyImageOccurrenceSet(): Promise<{ id: string }> {
   }
 }
 
+function htmlHashFromContent(htmlContent: string): string {
+  return createHash("sha256").update(htmlContent).digest("hex");
+}
+
+function seedHtmlSnapshotFromText(contentText: string): string {
+  return `<article><p>${contentText}</p></article>`;
+}
+
+async function getOrCreateSeedHtmlBlob(htmlContent: string): Promise<{ id: string }> {
+  const htmlHash = htmlHashFromContent(htmlContent);
+  const existing = await prisma.htmlBlob.findUnique({
+    where: { htmlHash },
+    select: { id: true },
+  });
+  if (existing !== null) {
+    return existing;
+  }
+
+  try {
+    return await prisma.htmlBlob.create({
+      data: {
+        htmlHash,
+        htmlContent,
+      },
+      select: { id: true },
+    });
+  } catch (error) {
+    if (!isPrismaUniqueConstraintError(error)) {
+      throw error;
+    }
+    const raced = await prisma.htmlBlob.findUnique({
+      where: { htmlHash },
+      select: { id: true },
+    });
+    if (raced !== null) {
+      return raced;
+    }
+    throw error;
+  }
+}
+
+async function ensureServerHtmlSnapshotForSeed(input: {
+  postVersionId: string;
+  platform: Platform;
+  externalId: string;
+  contentText: string;
+}): Promise<void> {
+  if (input.platform === "X") {
+    return;
+  }
+
+  const htmlBlob = await getOrCreateSeedHtmlBlob(seedHtmlSnapshotFromText(input.contentText));
+
+  switch (input.platform) {
+    case "LESSWRONG": {
+      const existing = await prisma.lesswrongVersionMeta.findUnique({
+        where: { postVersionId: input.postVersionId },
+        select: { serverHtmlBlobId: true },
+      });
+      if (existing === null) {
+        await prisma.lesswrongVersionMeta.create({
+          data: {
+            postVersionId: input.postVersionId,
+            slug: `${input.externalId}-integration-post`,
+            serverHtmlBlobId: htmlBlob.id,
+            imageUrls: [],
+            tags: [],
+          },
+        });
+        return;
+      }
+      if (existing.serverHtmlBlobId === null) {
+        await prisma.lesswrongVersionMeta.updateMany({
+          where: { postVersionId: input.postVersionId, serverHtmlBlobId: null },
+          data: { serverHtmlBlobId: htmlBlob.id },
+        });
+      }
+      return;
+    }
+    case "SUBSTACK": {
+      const existing = await prisma.substackVersionMeta.findUnique({
+        where: { postVersionId: input.postVersionId },
+        select: { serverHtmlBlobId: true },
+      });
+      if (existing === null) {
+        await prisma.substackVersionMeta.create({
+          data: {
+            postVersionId: input.postVersionId,
+            substackPostId: `seed-${input.externalId}`,
+            publicationSubdomain: "seed",
+            slug: `seed-${input.externalId}`,
+            title: "Seeded Substack Post",
+            serverHtmlBlobId: htmlBlob.id,
+            imageUrls: [],
+            authorName: "Seed Author",
+          },
+        });
+        return;
+      }
+      if (existing.serverHtmlBlobId === null) {
+        await prisma.substackVersionMeta.updateMany({
+          where: { postVersionId: input.postVersionId, serverHtmlBlobId: null },
+          data: { serverHtmlBlobId: htmlBlob.id },
+        });
+      }
+      return;
+    }
+    case "WIKIPEDIA": {
+      const existing = await prisma.wikipediaVersionMeta.findUnique({
+        where: { postVersionId: input.postVersionId },
+        select: { serverHtmlBlobId: true },
+      });
+      if (existing === null) {
+        await prisma.wikipediaVersionMeta.create({
+          data: {
+            postVersionId: input.postVersionId,
+            pageId: `seed-${input.externalId}`,
+            language: "en",
+            title: `Seeded ${input.externalId}`,
+            serverHtmlBlobId: htmlBlob.id,
+            revisionId: `seed-rev-${input.externalId}`,
+            imageUrls: [],
+          },
+        });
+        return;
+      }
+      if (existing.serverHtmlBlobId === null) {
+        await prisma.wikipediaVersionMeta.updateMany({
+          where: { postVersionId: input.postVersionId, serverHtmlBlobId: null },
+          data: { serverHtmlBlobId: htmlBlob.id },
+        });
+      }
+      return;
+    }
+  }
+}
+
 async function ensurePostVersionForSeed(input: {
   postId: string;
   contentHash: string;
   contentText: string;
   provenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK";
-  fetchFailureReason?: string;
 }): Promise<{ id: string; versionHash: string }> {
   const wordCount = input.contentText.split(/\s+/).filter(Boolean).length;
   const versionHash = versionHashFromContentHash(input.contentHash);
+  const shouldServerVerify = input.provenance === "SERVER_VERIFIED";
 
   const [contentBlob, imageOccurrenceSet] = await Promise.all([
     prisma.contentBlob.upsert({
@@ -773,11 +883,12 @@ async function ensurePostVersionForSeed(input: {
   ]);
 
   const now = new Date();
-  const fetchFailureReason =
-    input.provenance === "CLIENT_FALLBACK"
-      ? (input.fetchFailureReason ?? "fetch unavailable")
-      : null;
-  const serverVerifiedAt = input.provenance === "SERVER_VERIFIED" ? now : null;
+  const post = await prisma.post.findUnique({
+    where: { id: input.postId },
+    select: { platform: true, externalId: true },
+  });
+  assert.ok(post);
+
   const existing = await prisma.postVersion.findUnique({
     where: {
       postId_versionHash: {
@@ -787,52 +898,73 @@ async function ensurePostVersionForSeed(input: {
     },
     select: {
       id: true,
-      contentProvenance: true,
+      serverVerifiedAt: true,
     },
   });
-  if (existing === null) {
-    return prisma.postVersion.create({
-      data: {
-        postId: input.postId,
-        versionHash,
-        contentBlobId: contentBlob.id,
-        imageOccurrenceSetId: imageOccurrenceSet.id,
-        contentProvenance: input.provenance,
-        fetchFailureReason,
-        serverVerifiedAt,
-        firstSeenAt: now,
-        lastSeenAt: now,
-        seenCount: 1,
-      },
-      select: {
-        id: true,
-        versionHash: true,
-      },
+  const basePostVersion =
+    existing === null
+      ? await prisma.postVersion.create({
+          data: {
+            postId: input.postId,
+            versionHash,
+            contentBlobId: contentBlob.id,
+            imageOccurrenceSetId: imageOccurrenceSet.id,
+            serverVerifiedAt: null,
+            firstSeenAt: now,
+            lastSeenAt: now,
+            seenCount: 1,
+          },
+          select: {
+            id: true,
+            versionHash: true,
+            serverVerifiedAt: true,
+          },
+        })
+      : await prisma.postVersion.update({
+          where: { id: existing.id },
+          data: {
+            contentBlobId: contentBlob.id,
+            imageOccurrenceSetId: imageOccurrenceSet.id,
+            lastSeenAt: now,
+            seenCount: {
+              increment: 1,
+            },
+          },
+          select: {
+            id: true,
+            versionHash: true,
+            serverVerifiedAt: true,
+          },
+        });
+
+  if (shouldServerVerify && post.platform !== "X") {
+    await ensureServerHtmlSnapshotForSeed({
+      postVersionId: basePostVersion.id,
+      platform: post.platform,
+      externalId: post.externalId,
+      contentText: input.contentText,
     });
   }
 
-  return prisma.postVersion.update({
-    where: { id: existing.id },
+  if (!shouldServerVerify || basePostVersion.serverVerifiedAt !== null) {
+    return {
+      id: basePostVersion.id,
+      versionHash: basePostVersion.versionHash,
+    };
+  }
+
+  const verifiedPostVersion = await prisma.postVersion.update({
+    where: { id: basePostVersion.id },
     data: {
-      contentBlobId: contentBlob.id,
-      imageOccurrenceSetId: imageOccurrenceSet.id,
-      lastSeenAt: now,
-      seenCount: {
-        increment: 1,
-      },
-      ...(input.provenance === "SERVER_VERIFIED" && existing.contentProvenance === "CLIENT_FALLBACK"
-        ? {
-            contentProvenance: "SERVER_VERIFIED",
-            fetchFailureReason: null,
-            serverVerifiedAt: now,
-          }
-        : {}),
+      serverVerifiedAt: now,
     },
     select: {
       id: true,
       versionHash: true,
     },
   });
+
+  return verifiedPostVersion;
 }
 
 async function loadLatestPostVersionByIdentity(input: { platform: Platform; externalId: string }) {
@@ -977,18 +1109,32 @@ async function seedInvestigation(input: {
     provenance: input.provenance,
   });
 
-  const investigation = await prisma.investigation.create({
-    data: {
-      postVersionId: postVersion.id,
-      status: input.status,
-      promptId: prompt.id,
-      provider: "OPENAI",
-      model: "OPENAI_GPT_5",
-      checkedAt,
-      parentInvestigationId: input.parentInvestigationId ?? null,
-      contentDiff: input.contentDiff ?? null,
-    },
-    select: { id: true },
+  const investigationId = randomUUID();
+  const investigation = await prisma.$transaction(async (tx) => {
+    await tx.investigationInput.create({
+      data: {
+        investigationId,
+        provenance: input.provenance,
+        contentHash: input.contentHash,
+        markdownSource: "NONE",
+      },
+    });
+
+    return tx.investigation.create({
+      data: {
+        id: investigationId,
+        inputId: investigationId,
+        postVersionId: postVersion.id,
+        status: input.status,
+        promptId: prompt.id,
+        provider: "OPENAI",
+        model: "OPENAI_GPT_5",
+        checkedAt,
+        parentInvestigationId: input.parentInvestigationId ?? null,
+        contentDiff: input.contentDiff ?? null,
+      },
+      select: { id: true },
+    });
   });
 
   return { id: investigation.id };

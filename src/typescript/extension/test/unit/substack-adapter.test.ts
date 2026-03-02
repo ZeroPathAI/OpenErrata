@@ -104,6 +104,8 @@ test("Substack adapter returns ready when identity metadata is complete", () => 
   assert.equal(ready.content.externalId, postId);
   assert.equal(ready.content.metadata.slug, "test-post");
   assert.equal(ready.content.metadata.publicationSubdomain, "example");
+  assert.equal(typeof ready.content.metadata.htmlContent, "string");
+  assert.match(ready.content.metadata.htmlContent ?? "", /Post body text\./);
 });
 
 test("Substack adapter prefers structured published date over unrelated document time", () => {
@@ -201,4 +203,33 @@ test("Substack adapter preserves word boundaries across adjacent block elements"
   const ready = assertReady(result);
   assert.equal(ready.content.platform, "SUBSTACK");
   assert.equal(ready.content.contentText, "Alpha Beta Gamma");
+});
+
+test("Substack adapter omits htmlContent when serialized HTML exceeds transport budget", () => {
+  const postId = "123456";
+  const oversizedParagraph = "A".repeat(300 * 1024);
+  const result = withWindow(
+    "https://example.substack.com/p/test-post",
+    `
+      <!doctype html>
+      <html>
+        <head>
+          <meta name="author" content="Example Author" />
+          <meta
+            name="twitter:image"
+            content="https://substackcdn.com/image/fetch/w_1456,c_limit,f_jpg,q_auto:good,fl_progressive:steep/https%3A%2F%2Fexample.substack.com%2Fpost_preview%2F${postId}%2Ftwitter.jpg"
+          />
+        </head>
+        <body>
+          <h1 class="post-title">Test Post</h1>
+          <div class="body markup"><p>${oversizedParagraph}</p></div>
+        </body>
+      </html>
+    `,
+    (document) => substackAdapter.extract(document),
+  );
+
+  const ready = assertReady(result);
+  assert.equal(ready.content.platform, "SUBSTACK");
+  assert.equal(ready.content.metadata.htmlContent, undefined);
 });

@@ -16,7 +16,7 @@ const postMediaStateSchema = z.enum(["text_only", "has_images", "has_video"]);
 
 const utf8Encoder = new TextEncoder();
 
-function utf8ByteLength(input: string): number {
+export function utf8ByteLength(input: string): number {
   return utf8Encoder.encode(input).byteLength;
 }
 
@@ -118,6 +118,7 @@ const substackMetadataSchema = z
     slug: z.string().min(1),
     title: z.string().min(1),
     subtitle: z.string().min(1).optional(),
+    htmlContent: z.string().min(1).optional(),
     authorName: z.string().min(1),
     authorSubstackHandle: z.string().min(1).optional(),
     publishedAt: z.iso.datetime().optional(),
@@ -756,24 +757,12 @@ export const getMetricsInputSchema = z
   })
   .strict();
 
-const publicInvestigationOriginServerVerifiedSchema = z
+const publicInvestigationOriginSchema = z
   .object({
-    provenance: z.literal("SERVER_VERIFIED"),
-    serverVerifiedAt: z.iso.datetime(),
+    provenance: contentProvenanceSchema,
+    serverVerifiedAt: z.iso.datetime().optional(),
   })
   .strict();
-
-const publicInvestigationOriginClientFallbackSchema = z
-  .object({
-    provenance: z.literal("CLIENT_FALLBACK"),
-    fetchFailureReason: z.string().min(1),
-  })
-  .strict();
-
-const publicInvestigationOriginSchema = z.discriminatedUnion("provenance", [
-  publicInvestigationOriginServerVerifiedSchema,
-  publicInvestigationOriginClientFallbackSchema,
-]);
 
 const publicPostSchema = z
   .object({

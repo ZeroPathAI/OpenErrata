@@ -6,6 +6,7 @@ import {
   headingLevelFromTag,
   isExcludedWikipediaSectionTitle,
   shouldExcludeWikipediaElement,
+  type WikipediaHeadingLevelDescriptor,
   type WikipediaNodeDescriptor,
 } from "../../src/wikipedia-canonicalization.js";
 
@@ -60,39 +61,39 @@ test("headingLevelFromTag parses h2–h6 and rejects non-headings", () => {
 // effectiveHeadingLevel
 // ---------------------------------------------------------------------------
 
-function node(
+/** Heading level detection requires only tag names and classes — no text. */
+function levelDescriptor(
   tagName: string,
   classTokens: string[],
-  firstChildHeading?: { tagName: string; textContent: string },
-): WikipediaNodeDescriptor {
+  firstChildHeadingTagName?: string,
+): WikipediaHeadingLevelDescriptor {
   return {
     tagName,
     classTokens,
-    textContent: "",
-    firstChildHeading: firstChildHeading ?? null,
+    firstChildHeading:
+      firstChildHeadingTagName !== undefined ? { tagName: firstChildHeadingTagName } : null,
   };
 }
 
 test("effectiveHeadingLevel returns level for direct heading elements", () => {
-  assert.equal(effectiveHeadingLevel(node("h2", [])), 2);
-  assert.equal(effectiveHeadingLevel(node("H4", [])), 4);
+  assert.equal(effectiveHeadingLevel(levelDescriptor("h2", [])), 2);
+  assert.equal(effectiveHeadingLevel(levelDescriptor("H4", [])), 4);
 });
 
 test("effectiveHeadingLevel returns level for Parsoid wrapper with inner heading", () => {
-  const wrapper = node("div", ["mw-heading", "mw-heading3"], {
-    tagName: "h3",
-    textContent: "History",
-  });
-  assert.equal(effectiveHeadingLevel(wrapper), 3);
+  assert.equal(
+    effectiveHeadingLevel(levelDescriptor("div", ["mw-heading", "mw-heading3"], "h3")),
+    3,
+  );
 });
 
 test("effectiveHeadingLevel returns null for Parsoid wrapper without inner heading", () => {
-  assert.equal(effectiveHeadingLevel(node("div", ["mw-heading"])), null);
+  assert.equal(effectiveHeadingLevel(levelDescriptor("div", ["mw-heading"])), null);
 });
 
 test("effectiveHeadingLevel returns null for non-heading elements", () => {
-  assert.equal(effectiveHeadingLevel(node("p", [])), null);
-  assert.equal(effectiveHeadingLevel(node("div", ["some-class"])), null);
+  assert.equal(effectiveHeadingLevel(levelDescriptor("p", [])), null);
+  assert.equal(effectiveHeadingLevel(levelDescriptor("div", ["some-class"])), null);
 });
 
 // ---------------------------------------------------------------------------

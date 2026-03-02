@@ -1,0 +1,237 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { WIKIPEDIA_EXCLUDED_SECTION_TITLES } from "@openerrata/shared";
+import {
+  lesswrongHtmlToContentMarkdown,
+  wikipediaHtmlToContentMarkdown,
+  substackHtmlToContentMarkdown,
+} from "../../src/lib/services/html-to-markdown.js";
+
+// ── Basic structural elements ────────────────────────────────────────────
+
+test("converts headings to markdown heading syntax", () => {
+  const html = "<h1>Title</h1><h2>Subtitle</h2><h3>Sub-subtitle</h3>";
+  const md = lesswrongHtmlToContentMarkdown(html).markdown;
+  assert.ok(md.includes("# Title"));
+  assert.ok(md.includes("## Subtitle"));
+  assert.ok(md.includes("### Sub-subtitle"));
+});
+
+test("converts paragraphs to double-newline-separated blocks", () => {
+  const html = "<p>First paragraph.</p><p>Second paragraph.</p>";
+  const md = lesswrongHtmlToContentMarkdown(html).markdown;
+  assert.ok(md.includes("First paragraph."));
+  assert.ok(md.includes("Second paragraph."));
+  // Should have separation between paragraphs.
+  const firstIdx = md.indexOf("First paragraph.");
+  const secondIdx = md.indexOf("Second paragraph.");
+  assert.ok(secondIdx > firstIdx);
+});
+
+test("converts unordered lists to dash-prefixed items", () => {
+  const html = "<ul><li>Item one</li><li>Item two</li><li>Item three</li></ul>";
+  const md = lesswrongHtmlToContentMarkdown(html).markdown;
+  assert.ok(md.includes("-   Item one"));
+  assert.ok(md.includes("-   Item two"));
+  assert.ok(md.includes("-   Item three"));
+});
+
+test("converts ordered lists to numbered items", () => {
+  const html = "<ol><li>First</li><li>Second</li><li>Third</li></ol>";
+  const md = lesswrongHtmlToContentMarkdown(html).markdown;
+  assert.ok(md.includes("1.  First"), `Expected "1.  First" in: ${md}`);
+  assert.ok(md.includes("2.  Second"), `Expected "2.  Second" in: ${md}`);
+  assert.ok(md.includes("3.  Third"), `Expected "3.  Third" in: ${md}`);
+});
+
+test("handles nested lists with indentation", () => {
+  const html =
+    "<ul><li>Outer<ul><li>Inner one</li><li>Inner two</li></ul></li><li>Another outer</li></ul>";
+  const md = lesswrongHtmlToContentMarkdown(html).markdown;
+  assert.ok(md.includes("-   Outer"), `Expected "-   Outer" in: ${md}`);
+  assert.ok(md.includes("-   Inner one"), `Expected nested "-   Inner one" in: ${md}`);
+  assert.ok(md.includes("-   Inner two"), `Expected nested "-   Inner two" in: ${md}`);
+  assert.ok(md.includes("-   Another outer"), `Expected "-   Another outer" in: ${md}`);
+});
+
+test("converts blockquotes to > prefixed text", () => {
+  const html = "<blockquote><p>A wise quote.</p></blockquote>";
+  const md = lesswrongHtmlToContentMarkdown(html).markdown;
+  assert.ok(md.includes("> A wise quote."), `Expected "> A wise quote." in: ${md}`);
+});
+
+// ── Inline formatting ────────────────────────────────────────────────────
+
+test("converts bold tags to ** markers", () => {
+  const html = "<p>This is <strong>important</strong> text.</p>";
+  const md = lesswrongHtmlToContentMarkdown(html).markdown;
+  assert.ok(md.includes("**important**"));
+});
+
+test("converts <b> tags to ** markers", () => {
+  const html = "<p>Also <b>bold</b> text.</p>";
+  const md = lesswrongHtmlToContentMarkdown(html).markdown;
+  assert.ok(md.includes("**bold**"));
+});
+
+test("converts italic tags to * markers", () => {
+  const html = "<p>This is <em>emphasized</em> text.</p>";
+  const md = lesswrongHtmlToContentMarkdown(html).markdown;
+  assert.ok(md.includes("*emphasized*"));
+});
+
+test("converts <i> tags to * markers", () => {
+  const html = "<p>Also <i>italic</i> text.</p>";
+  const md = lesswrongHtmlToContentMarkdown(html).markdown;
+  assert.ok(md.includes("*italic*"));
+});
+
+test("converts links to markdown link syntax", () => {
+  const html = '<p>Visit <a href="https://example.com">Example</a> for more.</p>';
+  const md = lesswrongHtmlToContentMarkdown(html).markdown;
+  assert.ok(md.includes("[Example](https://example.com)"));
+});
+
+test("preserves superscript text inline", () => {
+  const html = "<p>Footnote<sup>1</sup> here.</p>";
+  const md = lesswrongHtmlToContentMarkdown(html).markdown;
+  assert.ok(md.includes("Footnote1 here."), `Expected inline superscript text in: ${md}`);
+});
+
+// ── Exclusions ───────────────────────────────────────────────────────────
+
+test("excludes NON_CONTENT_TAGS (script, style, noscript)", () => {
+  const html =
+    '<p>Article text.</p><script>var x = "leaked";</script><style>.cls { color: red; }</style><noscript>tracking</noscript><p>More text.</p>';
+  const md = lesswrongHtmlToContentMarkdown(html).markdown;
+  assert.ok(!md.includes("leaked"));
+  assert.ok(!md.includes("color"));
+  assert.ok(!md.includes("tracking"));
+  assert.ok(md.includes("Article text."));
+  assert.ok(md.includes("More text."));
+});
+
+test("skips img elements", () => {
+  const html = '<p>Before image.</p><img src="test.jpg" alt="test"/><p>After image.</p>';
+  const md = lesswrongHtmlToContentMarkdown(html).markdown;
+  assert.ok(!md.includes("test.jpg"));
+  assert.ok(md.includes("Before image."));
+  assert.ok(md.includes("After image."));
+});
+
+// ── Entity decoding ──────────────────────────────────────────────────────
+
+test("decodes HTML entities", () => {
+  const html = "<p>Tea&nbsp;&amp;&nbsp;Biscuits</p>";
+  const md = lesswrongHtmlToContentMarkdown(html).markdown;
+  assert.ok(md.includes("Tea"));
+  assert.ok(md.includes("&"));
+  assert.ok(md.includes("Biscuits"));
+});
+
+// ── The motivating case: bullet list not run-on ──────────────────────────
+
+test("bullet list items are separate lines, not run-on text", () => {
+  const html = `
+    <p>The president could respond by:</p>
+    <ul>
+      <li>canceling the contract</li>
+      <li>using the Defense Production Act</li>
+      <li>issuing an executive order</li>
+    </ul>
+  `;
+  const md = substackHtmlToContentMarkdown(html).markdown;
+  assert.ok(md.includes("-   canceling the contract"));
+  assert.ok(md.includes("-   using the Defense Production Act"));
+  assert.ok(md.includes("-   issuing an executive order"));
+  // Crucially, these should NOT be joined together.
+  assert.ok(
+    !md.includes("canceling the contract using the Defense Production Act"),
+    "list items must not be joined into run-on text",
+  );
+});
+
+// ── Wikipedia section exclusion ──────────────────────────────────────────
+// Every title in WIKIPEDIA_EXCLUDED_SECTION_TITLES must be excluded from
+// markdown output in both the legacy and Parsoid heading formats, mirroring
+// the exhaustiveness requirement in content-fetcher.test.ts for normalized text.
+
+test("wikipediaHtmlToContentMarkdown excludes all WIKIPEDIA_EXCLUDED_SECTION_TITLES in legacy heading format", () => {
+  for (const title of WIKIPEDIA_EXCLUDED_SECTION_TITLES) {
+    const displayTitle = title.charAt(0).toUpperCase() + title.slice(1);
+    const html = `
+      <div class="mw-parser-output">
+        <p>Lead paragraph.</p>
+        <h2><span class="mw-headline">${displayTitle}</span></h2>
+        <p>Excluded section text.</p>
+      </div>
+    `;
+    assert.ok(
+      !wikipediaHtmlToContentMarkdown(html).markdown.includes("Excluded section text."),
+      `"${title}" section should be excluded (legacy heading format)`,
+    );
+  }
+});
+
+test("wikipediaHtmlToContentMarkdown excludes all WIKIPEDIA_EXCLUDED_SECTION_TITLES in Parsoid heading format", () => {
+  for (const title of WIKIPEDIA_EXCLUDED_SECTION_TITLES) {
+    const displayTitle = title.charAt(0).toUpperCase() + title.slice(1);
+    const html = `
+      <div class="mw-parser-output">
+        <p>Lead paragraph.</p>
+        <div class="mw-heading mw-heading2">
+          <h2>${displayTitle}</h2>
+          <span class="mw-editsection">[edit]</span>
+        </div>
+        <p>Excluded section text.</p>
+      </div>
+    `;
+    assert.ok(
+      !wikipediaHtmlToContentMarkdown(html).markdown.includes("Excluded section text."),
+      `"${title}" section should be excluded (Parsoid heading format)`,
+    );
+  }
+});
+
+test("wikipedia markdown excludes citation superscripts", () => {
+  const html = `
+    <div class="mw-parser-output">
+      <p>A fact.<sup class="reference">[1]</sup></p>
+    </div>
+  `;
+  const md = wikipediaHtmlToContentMarkdown(html).markdown;
+  assert.ok(md.includes("A fact."));
+  assert.ok(!md.includes("[1]"));
+});
+
+// ── Platform wrappers ────────────────────────────────────────────────────
+
+test("lesswrongHtmlToContentMarkdown handles complex post structure", () => {
+  const html = `
+    <h1>Post Title</h1>
+    <p>First paragraph with <strong>bold</strong> and <em>italic</em>.</p>
+    <h2>Section One</h2>
+    <p>Content here.</p>
+    <ul>
+      <li>Point A</li>
+      <li>Point B</li>
+    </ul>
+    <blockquote><p>A quote from someone.</p></blockquote>
+  `;
+  const md = lesswrongHtmlToContentMarkdown(html).markdown;
+  assert.ok(md.includes("# Post Title"));
+  assert.ok(md.includes("**bold**"));
+  assert.ok(md.includes("*italic*"));
+  assert.ok(md.includes("## Section One"));
+  assert.ok(md.includes("-   Point A"));
+  assert.ok(md.includes("-   Point B"));
+  assert.ok(md.includes("A quote from someone."));
+});
+
+test("substackHtmlToContentMarkdown renders same as lesswrong for shared elements", () => {
+  const html = "<h2>Title</h2><p>Paragraph one.</p><p>Paragraph two.</p>";
+  const md = substackHtmlToContentMarkdown(html).markdown;
+  assert.ok(md.includes("## Title"));
+  assert.ok(md.includes("Paragraph one."));
+  assert.ok(md.includes("Paragraph two."));
+});

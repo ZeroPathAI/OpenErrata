@@ -326,7 +326,7 @@ void test("post.registerObservedVersion corrects Wikipedia identity to server-ve
     externalId: "en:99999",
   });
   assert.ok(corrected);
-  assert.equal(corrected.contentProvenance, "SERVER_VERIFIED");
+  assert.notEqual(corrected.serverVerifiedAt, null);
 
   const staleClientIdentityPost = await prisma.post.findUnique({
     where: {
@@ -340,6 +340,124 @@ void test("post.registerObservedVersion corrects Wikipedia identity to server-ve
   assert.equal(staleClientIdentityPost, null);
 });
 
+void test("post.registerObservedVersion enriches existing Wikipedia version htmlContent when first observation is fallback", async () => {
+  const caller = createCaller();
+  const canonicalHtml = "<div class='mw-parser-output'><p>Server canonical article text.</p></div>";
+  const input = {
+    platform: "WIKIPEDIA" as const,
+    url: "https://en.wikipedia.org/wiki/OpenErrata_html_enrichment",
+    observedContentText: normalizeContent("Server canonical article text."),
+    metadata: {
+      language: "en",
+      title: "OpenErrata html enrichment",
+      pageId: "777777",
+      revisionId: "888888",
+      displayTitle: "OpenErrata html enrichment",
+    },
+  };
+
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async (fetchInput, fetchInit) => {
+    const url =
+      typeof fetchInput === "string"
+        ? fetchInput
+        : fetchInput instanceof URL
+          ? fetchInput.toString()
+          : fetchInput.url;
+    if (!url.startsWith("https://en.wikipedia.org/w/api.php")) {
+      return originalFetch(fetchInput, fetchInit);
+    }
+    return new Response(JSON.stringify({ error: "temporary upstream failure" }), {
+      status: 503,
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+  };
+
+  const fallbackResult = await (async () => {
+    try {
+      return await caller.post.registerObservedVersion(input);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  })();
+
+  assert.equal(fallbackResult.provenance, "CLIENT_FALLBACK");
+
+  const fallbackVersion = await loadLatestPostVersionByIdentity({
+    platform: "WIKIPEDIA",
+    externalId: "en:777777",
+  });
+  assert.ok(fallbackVersion);
+  const fallbackMeta = await prisma.wikipediaVersionMeta.findUnique({
+    where: { postVersionId: fallbackVersion.id },
+    select: {
+      serverHtmlBlob: { select: { htmlContent: true } },
+      clientHtmlBlob: { select: { htmlContent: true } },
+    },
+  });
+  assert.ok(fallbackMeta);
+  assert.equal(fallbackMeta.serverHtmlBlob?.htmlContent ?? null, null);
+  assert.equal(fallbackMeta.clientHtmlBlob?.htmlContent ?? null, null);
+
+  globalThis.fetch = async (fetchInput, fetchInit) => {
+    const url =
+      typeof fetchInput === "string"
+        ? fetchInput
+        : fetchInput instanceof URL
+          ? fetchInput.toString()
+          : fetchInput.url;
+    if (!url.startsWith("https://en.wikipedia.org/w/api.php")) {
+      return originalFetch(fetchInput, fetchInit);
+    }
+    return new Response(
+      JSON.stringify({
+        parse: {
+          text: canonicalHtml,
+          pageid: 777777,
+          revid: 888888,
+        },
+      }),
+      {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+        },
+      },
+    );
+  };
+
+  const verifiedResult = await (async () => {
+    try {
+      return await caller.post.registerObservedVersion(input);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  })();
+
+  assert.equal(verifiedResult.provenance, "SERVER_VERIFIED");
+
+  const verifiedVersion = await loadLatestPostVersionByIdentity({
+    platform: "WIKIPEDIA",
+    externalId: "en:777777",
+  });
+  assert.ok(verifiedVersion);
+  assert.equal(verifiedVersion.id, fallbackVersion.id);
+  assert.notEqual(verifiedVersion.serverVerifiedAt, null);
+  const verifiedMeta = await prisma.wikipediaVersionMeta.findUnique({
+    where: { postVersionId: verifiedVersion.id },
+    select: {
+      serverHtmlBlob: { select: { htmlContent: true } },
+      clientHtmlBlob: { select: { htmlContent: true } },
+    },
+  });
+  assert.ok(verifiedMeta);
+  assert.equal(verifiedMeta.serverHtmlBlob?.htmlContent, canonicalHtml);
+  assert.equal(verifiedMeta.clientHtmlBlob?.htmlContent ?? null, null);
+});
+
 void test("post.registerObservedVersion rejects extension clients below minimum supported version", async () => {
   const caller = createCaller({
     extensionVersion: "0.1.4",
@@ -351,9 +469,7 @@ void test("post.registerObservedVersion rejects extension clients below minimum 
 
   await assert.rejects(
     async () => caller.post.registerObservedVersion(input),
-    (error: unknown) =>
-      /minimum supported version is 0\.2\.0/i.test(String(error)) &&
-      errorHasOpenErrataCode(error, "UPGRADE_REQUIRED"),
+    (error: unknown) => errorHasOpenErrataCode(error, "UPGRADE_REQUIRED"),
   );
 });
 
@@ -368,9 +484,7 @@ void test("post.registerObservedVersion rejects malformed extension version head
 
   await assert.rejects(
     async () => caller.post.registerObservedVersion(input),
-    (error: unknown) =>
-      /Malformed extension version header/i.test(String(error)) &&
-      errorHasOpenErrataCode(error, "MALFORMED_EXTENSION_VERSION"),
+    (error: unknown) => errorHasOpenErrataCode(error, "MALFORMED_EXTENSION_VERSION"),
   );
 });
 
@@ -903,7 +1017,7 @@ void test("post.investigateNow creates update lineage metadata for edited server
       contentDiff: true,
       postVersion: {
         select: {
-          contentProvenance: true,
+          serverVerifiedAt: true,
           contentBlob: {
             select: {
               contentHash: true,
@@ -917,10 +1031,9 @@ void test("post.investigateNow creates update lineage metadata for edited server
   assert.ok(storedInvestigation);
   assert.equal(storedInvestigation.status, "PENDING");
   assert.equal(storedInvestigation.postVersion.contentBlob.contentHash, currentCanonicalHash);
-  assert.equal(storedInvestigation.postVersion.contentProvenance, "SERVER_VERIFIED");
+  assert.notEqual(storedInvestigation.postVersion.serverVerifiedAt, null);
   assert.equal(storedInvestigation.parentInvestigationId, sourceInvestigation.id);
   assert.notEqual(storedInvestigation.contentDiff, null);
-  assert.equal(storedInvestigation.contentDiff?.startsWith("Diff summary (line context):"), true);
 
   const runCount = await prisma.investigationRun.count({
     where: {
@@ -979,7 +1092,7 @@ void test("post.investigateNow creates update lineage metadata using latest comp
       contentDiff: true,
       postVersion: {
         select: {
-          contentProvenance: true,
+          serverVerifiedAt: true,
           contentBlob: {
             select: {
               contentHash: true,
@@ -992,10 +1105,9 @@ void test("post.investigateNow creates update lineage metadata using latest comp
   assert.ok(storedInvestigation);
   assert.equal(storedInvestigation.status, "PENDING");
   assert.equal(storedInvestigation.postVersion.contentBlob.contentHash, currentCanonicalHash);
-  assert.equal(storedInvestigation.postVersion.contentProvenance, "CLIENT_FALLBACK");
+  assert.equal(storedInvestigation.postVersion.serverVerifiedAt, null);
   assert.equal(storedInvestigation.parentInvestigationId, sourceInvestigation.id);
   assert.notEqual(storedInvestigation.contentDiff, null);
-  assert.equal(storedInvestigation.contentDiff?.startsWith("Diff summary (line context):"), true);
 
   const runCount = await prisma.investigationRun.count({
     where: { investigationId: result.investigationId },

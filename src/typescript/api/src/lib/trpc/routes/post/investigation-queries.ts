@@ -18,9 +18,9 @@ import type { ResolvedPostVersion } from "./content-storage.js";
 // ---------------------------------------------------------------------------
 
 const investigationWithClaimsInclude = {
+  input: true,
   postVersion: {
     select: {
-      contentProvenance: true,
       contentBlob: {
         select: {
           contentText: true,
@@ -59,10 +59,10 @@ type InvestigationWithClaims = Prisma.InvestigationGetPayload<{
 }>;
 
 const completedInvestigationInclude = {
+  input: true,
   postVersion: {
     select: {
       id: true,
-      contentProvenance: true,
       contentBlob: {
         select: {
           contentText: true,
@@ -213,7 +213,8 @@ export function prismaInvestigationRepository(prisma: PrismaClient): Investigati
       return prisma.investigation.findFirst({
         where: {
           status: "COMPLETE",
-          postVersion: { postId, contentProvenance: "SERVER_VERIFIED" },
+          postVersion: { postId },
+          input: { provenance: "SERVER_VERIFIED" },
         },
         orderBy: { checkedAt: "desc" },
         include: serverVerifiedSourceInclude,
@@ -223,7 +224,7 @@ export function prismaInvestigationRepository(prisma: PrismaClient): Investigati
       const result = await prisma.investigation.findFirst({
         where: {
           postVersionId,
-          postVersion: { contentProvenance: "CLIENT_FALLBACK" },
+          input: { provenance: "CLIENT_FALLBACK" },
         },
         select: { id: true },
       });

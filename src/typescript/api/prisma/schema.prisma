@@ -25,11 +25,6 @@ enum CheckStatus {
   FAILED
 }
 
-enum ContentProvenance {
-  SERVER_VERIFIED
-  CLIENT_FALLBACK
-}
-
 enum InvestigationProvider {
   OPENAI
   ANTHROPIC
@@ -50,23 +45,19 @@ enum InvestigationAttemptOutcome {
 // ─── Models ──────────────────────────────────────────────────────────
 
 model Post {
-  id              String   @id @default(cuid())
+  id              String           @id @default(cuid())
   platform        Platform
   externalId      String
   url             String
   authorId        String?
-  author          Author?  @relation(fields: [authorId], references: [id])
-  viewCount       Int      @default(0)
-  uniqueViewScore Int      @default(0)
+  author          Author?          @relation(fields: [authorId], references: [id])
+  viewCount       Int              @default(0)
+  uniqueViewScore Int              @default(0)
   lastViewedAt    DateTime?
   versions        PostVersion[]
   viewCredits     PostViewCredit[]
-  lesswrongMeta   LesswrongMeta?
-  xMeta           XMeta?
-  substackMeta    SubstackMeta?
-  wikipediaMeta   WikipediaMeta?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
 
   @@unique([platform, externalId])
   @@index([viewCount])
@@ -101,75 +92,15 @@ model Author {
 }
 
 model InstanceApiKey {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid())
   name      String
-  keyHash   String   @unique
+  keyHash   String    @unique
   revokedAt DateTime?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
 
   @@index([name])
   @@index([revokedAt])
-}
-
-model LesswrongMeta {
-  postId      String    @id
-  post        Post      @relation(fields: [postId], references: [id])
-  slug        String    @unique
-  title       String
-  htmlContent String
-  imageUrls   String[]
-  wordCount   Int?
-  karma       Int?
-  authorName  String
-  authorSlug  String?
-  tags        String[]
-  publishedAt DateTime?
-}
-
-model XMeta {
-  postId            String    @id
-  post              Post      @relation(fields: [postId], references: [id])
-  tweetId           String    @unique
-  text              String
-  authorHandle      String
-  authorDisplayName String?
-  mediaUrls         String[]
-  likeCount         Int?
-  retweetCount      Int?
-  postedAt          DateTime?
-}
-
-model SubstackMeta {
-  postId                String    @id
-  post                  Post      @relation(fields: [postId], references: [id])
-  substackPostId        String    @unique
-  publicationSubdomain  String
-  slug                  String
-  title                 String
-  subtitle              String?
-  imageUrls             String[]
-  authorName            String
-  authorSubstackHandle  String?
-  publishedAt           DateTime?
-  likeCount             Int?
-  commentCount          Int?
-
-  @@unique([publicationSubdomain, slug])
-}
-
-model WikipediaMeta {
-  postId         String    @id
-  post           Post      @relation(fields: [postId], references: [id])
-  pageId         String
-  language       String
-  title          String
-  displayTitle   String?
-  revisionId     String
-  lastModifiedAt DateTime?
-  imageUrls      String[]
-
-  @@unique([language, pageId])
 }
 
 model ContentBlob {
@@ -180,6 +111,20 @@ model ContentBlob {
   createdAt   DateTime @default(now())
 
   postVersions PostVersion[]
+}
+
+model HtmlBlob {
+  id          String   @id @default(cuid())
+  htmlHash    String   @unique
+  htmlContent String
+  createdAt   DateTime @default(now())
+
+  lesswrongServerVersionMetas LesswrongVersionMeta[] @relation("LesswrongServerHtml")
+  lesswrongClientVersionMetas LesswrongVersionMeta[] @relation("LesswrongClientHtml")
+  substackServerVersionMetas  SubstackVersionMeta[]  @relation("SubstackServerHtml")
+  substackClientVersionMetas  SubstackVersionMeta[]  @relation("SubstackClientHtml")
+  wikipediaServerVersionMetas WikipediaVersionMeta[] @relation("WikipediaServerHtml")
+  wikipediaClientVersionMetas WikipediaVersionMeta[] @relation("WikipediaClientHtml")
 }
 
 model ImageOccurrenceSet {
@@ -214,23 +159,103 @@ model PostVersion {
   contentBlob          ContentBlob        @relation(fields: [contentBlobId], references: [id])
   imageOccurrenceSetId String
   imageOccurrenceSet   ImageOccurrenceSet @relation(fields: [imageOccurrenceSetId], references: [id])
-  contentProvenance    ContentProvenance
-  // INV-PV-PROVENANCE-SHAPE: SERVER_VERIFIED requires serverVerifiedAt set and fetchFailureReason null.
-  // INV-PV-PROVENANCE-SHAPE: CLIENT_FALLBACK requires serverVerifiedAt null and non-empty fetchFailureReason.
-  // Enforced by CHECK constraint "PostVersion_content_provenance_consistency_check".
-  fetchFailureReason   String?
+  // serverVerifiedAt is a one-way latch: null → DateTime, never overwritten.
+  // Enforced by trigger "enforce_server_verified_at_latch".
   serverVerifiedAt     DateTime?
   firstSeenAt          DateTime           @default(now())
   lastSeenAt           DateTime           @default(now())
   seenCount            Int                @default(1)
 
-  investigation      Investigation?
-  versionViewCredits PostVersionViewCredit[]
+  investigation        Investigation?
+  lesswrongVersionMeta LesswrongVersionMeta?
+  xVersionMeta         XVersionMeta?
+  substackVersionMeta  SubstackVersionMeta?
+  wikipediaVersionMeta WikipediaVersionMeta?
+  versionViewCredits   PostVersionViewCredit[]
 
   @@unique([postId, versionHash])
   @@unique([postId, contentBlobId, imageOccurrenceSetId])
   @@index([postId, lastSeenAt])
-  @@index([postId, contentProvenance, lastSeenAt])
+}
+
+model LesswrongVersionMeta {
+  postVersionId     String      @id
+  postVersion       PostVersion @relation(fields: [postVersionId], references: [id], onDelete: Cascade)
+  slug              String
+  title             String?
+  serverHtmlBlobId  String?
+  serverHtmlBlob    HtmlBlob?   @relation("LesswrongServerHtml", fields: [serverHtmlBlobId], references: [id], onDelete: Restrict)
+  clientHtmlBlobId  String?
+  clientHtmlBlob    HtmlBlob?   @relation("LesswrongClientHtml", fields: [clientHtmlBlobId], references: [id], onDelete: Restrict)
+  imageUrls         String[]
+  karma             Int?
+  authorName        String?
+  authorSlug        String?
+  tags              String[]
+  publishedAt       DateTime?
+  createdAt         DateTime    @default(now())
+
+  @@index([slug])
+}
+
+model XVersionMeta {
+  postVersionId     String      @id
+  postVersion       PostVersion @relation(fields: [postVersionId], references: [id], onDelete: Cascade)
+  tweetId           String
+  text              String
+  authorHandle      String
+  authorDisplayName String?
+  mediaUrls         String[]
+  likeCount         Int?
+  retweetCount      Int?
+  postedAt          DateTime?
+  createdAt         DateTime    @default(now())
+
+  @@index([tweetId])
+}
+
+model SubstackVersionMeta {
+  postVersionId        String      @id
+  postVersion          PostVersion @relation(fields: [postVersionId], references: [id], onDelete: Cascade)
+  substackPostId       String
+  publicationSubdomain String
+  slug                 String
+  title                String
+  subtitle             String?
+  serverHtmlBlobId     String?
+  serverHtmlBlob       HtmlBlob?   @relation("SubstackServerHtml", fields: [serverHtmlBlobId], references: [id], onDelete: Restrict)
+  clientHtmlBlobId     String?
+  clientHtmlBlob       HtmlBlob?   @relation("SubstackClientHtml", fields: [clientHtmlBlobId], references: [id], onDelete: Restrict)
+  imageUrls            String[]
+  authorName           String
+  authorSubstackHandle String?
+  publishedAt          DateTime?
+  likeCount            Int?
+  commentCount         Int?
+  createdAt            DateTime    @default(now())
+
+  @@index([publicationSubdomain, slug])
+  @@index([substackPostId])
+}
+
+model WikipediaVersionMeta {
+  postVersionId     String      @id
+  postVersion       PostVersion @relation(fields: [postVersionId], references: [id], onDelete: Cascade)
+  pageId            String
+  language          String
+  title             String
+  displayTitle      String?
+  serverHtmlBlobId  String?
+  serverHtmlBlob    HtmlBlob?   @relation("WikipediaServerHtml", fields: [serverHtmlBlobId], references: [id], onDelete: Restrict)
+  clientHtmlBlobId  String?
+  clientHtmlBlob    HtmlBlob?   @relation("WikipediaClientHtml", fields: [clientHtmlBlobId], references: [id], onDelete: Restrict)
+  revisionId        String
+  lastModifiedAt    DateTime?
+  imageUrls         String[]
+  createdAt         DateTime    @default(now())
+
+  @@index([language, pageId])
+  @@index([revisionId])
 }
 
 model PostVersionViewCredit {
@@ -248,32 +273,36 @@ model PostVersionViewCredit {
 }
 
 model Prompt {
-  id              String          @id @default(cuid())
-  version         String          @unique
-  hash            String          @unique
-  text            String
-  investigations  Investigation[]
-  createdAt       DateTime        @default(now())
+  id             String          @id @default(cuid())
+  version        String          @unique
+  hash           String          @unique
+  text           String
+  investigations Investigation[]
+  createdAt      DateTime        @default(now())
 }
 
 model Investigation {
-  id                    String                @id @default(cuid())
+  id                    String                 @id @default(cuid())
   postVersionId         String
-  postVersion           PostVersion           @relation(fields: [postVersionId], references: [id])
+  postVersion           PostVersion            @relation(fields: [postVersionId], references: [id])
+  // INV-INV-INPUT-SNAPSHOT: every Investigation references exactly one immutable
+  // InvestigationInput snapshot via inputId. Enforced by unique + FK.
+  inputId               String                 @unique
+  input                 InvestigationInput     @relation("InvestigationInputOwner", fields: [inputId], references: [investigationId], onDelete: Restrict)
   parentInvestigationId String?
   // INV-INV-PARENT-LINEAGE: parentInvestigationId must not self-reference id.
   // Enforced by CHECK constraint "Investigation_parent_not_self_chk".
   // INV-INV-PARENT-SEMANTICS: parent investigations referenced by updates must stay same-post, COMPLETE,
-  // SERVER_VERIFIED, and checkedAt-set.
+  // SERVER_VERIFIED (per InvestigationInput.provenance), and checkedAt-set.
   // Enforced by triggers "enforce_investigation_parent_semantics_trigger" and
   // "enforce_referenced_parent_investigation_validity_trigger".
-  parentInvestigation   Investigation?        @relation("InvestigationUpdateLineage", fields: [parentInvestigationId], references: [id])
+  parentInvestigation   Investigation?         @relation("InvestigationUpdateLineage", fields: [parentInvestigationId], references: [id])
   // INV-INV-UPDATE-LINEAGE-SHAPE: parentInvestigationId is null iff contentDiff is null.
   // Enforced by CHECK constraint "Investigation_contentDiff_parent_consistency_chk".
   contentDiff           String?
   status                CheckStatus
   promptId              String
-  prompt                Prompt                @relation(fields: [promptId], references: [id])
+  prompt                Prompt                 @relation(fields: [promptId], references: [id])
   provider              InvestigationProvider
   model                 InvestigationModel
   modelVersion          String?
@@ -282,15 +311,27 @@ model Investigation {
   checkedAt             DateTime?
   run                   InvestigationRun?
   attempts              InvestigationAttempt[]
-  updates               Investigation[]       @relation("InvestigationUpdateLineage")
+  updates               Investigation[]        @relation("InvestigationUpdateLineage")
   claims                Claim[]
   images                InvestigationImage[]
   corroborationCredits  CorroborationCredit[]
-  createdAt             DateTime              @default(now())
-  updatedAt             DateTime              @updatedAt
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
 
   @@unique([postVersionId])
   @@index([status])
+}
+
+model InvestigationInput {
+  investigationId         String   @id
+  investigation           Investigation? @relation("InvestigationInputOwner")
+  // Immutable after insert; enforced by trigger "reject_investigation_input_updates_trigger".
+  provenance              String // SERVER_VERIFIED | CLIENT_FALLBACK
+  contentHash             String
+  markdownSource          String // SERVER_HTML | CLIENT_HTML | NONE
+  markdown                String? // null iff markdownSource = NONE
+  markdownRendererVersion String? // null iff markdownSource = NONE
+  createdAt               DateTime @default(now())
 }
 
 model InvestigationRun {
@@ -351,9 +392,9 @@ model InvestigationImage {
 }
 
 model InvestigationAttempt {
-  id                      String                             @id @default(cuid())
+  id                      String                              @id @default(cuid())
   investigationId         String
-  investigation           Investigation                      @relation(fields: [investigationId], references: [id], onDelete: Cascade)
+  investigation           Investigation                       @relation(fields: [investigationId], references: [id], onDelete: Cascade)
   attemptNumber           Int
   outcome                 InvestigationAttemptOutcome
   requestModel            String
@@ -372,61 +413,61 @@ model InvestigationAttempt {
   toolCalls               InvestigationAttemptToolCall[]
   usage                   InvestigationAttemptUsage?
   error                   InvestigationAttemptError?
-  createdAt               DateTime                           @default(now())
-  updatedAt               DateTime                           @updatedAt
+  createdAt               DateTime                            @default(now())
+  updatedAt               DateTime                            @updatedAt
 
   @@unique([investigationId, attemptNumber])
   @@index([investigationId, startedAt])
 }
 
 model InvestigationAttemptRequestedTool {
-  id                String               @id @default(cuid())
-  attemptId         String
-  attempt           InvestigationAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
-  requestOrder      Int
-  toolType          String
-  rawDefinition     Json
-  createdAt         DateTime             @default(now())
+  id            String               @id @default(cuid())
+  attemptId     String
+  attempt       InvestigationAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  requestOrder  Int
+  toolType      String
+  rawDefinition Json
+  createdAt     DateTime             @default(now())
 
   @@unique([attemptId, requestOrder])
   @@index([attemptId])
 }
 
 model InvestigationAttemptOutputItem {
-  id                String                             @id @default(cuid())
-  attemptId         String
-  attempt           InvestigationAttempt               @relation(fields: [attemptId], references: [id], onDelete: Cascade)
-  outputIndex       Int
-  providerItemId    String?
-  itemType          String
-  itemStatus        String?
-  textParts         InvestigationAttemptOutputTextPart[]
+  id                 String                                 @id @default(cuid())
+  attemptId          String
+  attempt            InvestigationAttempt                   @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  outputIndex        Int
+  providerItemId     String?
+  itemType           String
+  itemStatus         String?
+  textParts          InvestigationAttemptOutputTextPart[]
   reasoningSummaries InvestigationAttemptReasoningSummary[]
-  toolCall          InvestigationAttemptToolCall?
-  createdAt         DateTime                           @default(now())
+  toolCall           InvestigationAttemptToolCall?
+  createdAt          DateTime                               @default(now())
 
   @@unique([attemptId, outputIndex])
   @@index([attemptId])
 }
 
 model InvestigationAttemptOutputTextPart {
-  id            String                                   @id @default(cuid())
-  outputItemId  String
-  outputItem    InvestigationAttemptOutputItem           @relation(fields: [outputItemId], references: [id], onDelete: Cascade)
-  partIndex     Int
-  partType      String
-  text          String
-  annotations   InvestigationAttemptOutputTextAnnotation[]
-  createdAt     DateTime                                 @default(now())
+  id           String                                     @id @default(cuid())
+  outputItemId String
+  outputItem   InvestigationAttemptOutputItem             @relation(fields: [outputItemId], references: [id], onDelete: Cascade)
+  partIndex    Int
+  partType     String
+  text         String
+  annotations  InvestigationAttemptOutputTextAnnotation[]
+  createdAt    DateTime                                   @default(now())
 
   @@unique([outputItemId, partIndex])
   @@index([outputItemId])
 }
 
 model InvestigationAttemptOutputTextAnnotation {
-  id              String                              @id @default(cuid())
+  id              String                             @id @default(cuid())
   textPartId      String
-  textPart        InvestigationAttemptOutputTextPart  @relation(fields: [textPartId], references: [id], onDelete: Cascade)
+  textPart        InvestigationAttemptOutputTextPart @relation(fields: [textPartId], references: [id], onDelete: Cascade)
   annotationIndex Int
   annotationType  String
   startIndex      Int?
@@ -434,30 +475,30 @@ model InvestigationAttemptOutputTextAnnotation {
   url             String?
   title           String?
   fileId          String?
-  createdAt       DateTime                            @default(now())
+  createdAt       DateTime                           @default(now())
 
   @@unique([textPartId, annotationIndex], map: "IATextAnn_textPart_annotation_uq")
   @@index([textPartId])
 }
 
 model InvestigationAttemptReasoningSummary {
-  id            String                         @id @default(cuid())
-  outputItemId  String
-  outputItem    InvestigationAttemptOutputItem @relation(fields: [outputItemId], references: [id], onDelete: Cascade)
-  summaryIndex  Int
-  text          String
-  createdAt     DateTime                       @default(now())
+  id           String                         @id @default(cuid())
+  outputItemId String
+  outputItem   InvestigationAttemptOutputItem @relation(fields: [outputItemId], references: [id], onDelete: Cascade)
+  summaryIndex Int
+  text         String
+  createdAt    DateTime                       @default(now())
 
   @@unique([outputItemId, summaryIndex], map: "IAReasoning_output_summary_uq")
   @@index([outputItemId])
 }
 
 model InvestigationAttemptToolCall {
-  id                  String                          @id @default(cuid())
+  id                  String                         @id @default(cuid())
   attemptId           String
-  attempt             InvestigationAttempt            @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  attempt             InvestigationAttempt           @relation(fields: [attemptId], references: [id], onDelete: Cascade)
   outputItemId        String
-  outputItem          InvestigationAttemptOutputItem  @relation(fields: [outputItemId], references: [id], onDelete: Cascade)
+  outputItem          InvestigationAttemptOutputItem @relation(fields: [outputItemId], references: [id], onDelete: Cascade)
   outputIndex         Int
   providerToolCallId  String?
   toolType            String
@@ -466,7 +507,7 @@ model InvestigationAttemptToolCall {
   capturedAt          DateTime
   providerStartedAt   DateTime?
   providerCompletedAt DateTime?
-  createdAt           DateTime                        @default(now())
+  createdAt           DateTime                       @default(now())
 
   @@unique([attemptId, outputIndex])
   @@unique([outputItemId])

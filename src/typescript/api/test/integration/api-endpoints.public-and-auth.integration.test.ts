@@ -611,17 +611,10 @@ void test("public.getInvestigation returns complete investigation and trust sign
     publicInvestigation: {
       investigation: {
         id: string;
-        origin:
-          | {
-              __typename: "ServerVerifiedOrigin";
-              provenance: "SERVER_VERIFIED";
-              serverVerifiedAt: string;
-            }
-          | {
-              __typename: "ClientFallbackOrigin";
-              provenance: "CLIENT_FALLBACK";
-              fetchFailureReason: string;
-            };
+        origin: {
+          provenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK";
+          serverVerifiedAt: string | null;
+        };
         corroborationCount: number;
       };
       post: {
@@ -637,15 +630,8 @@ void test("public.getInvestigation returns complete investigation and trust sign
           investigation {
             id
             origin {
-              __typename
-              ... on ServerVerifiedOrigin {
-                provenance
-                serverVerifiedAt
-              }
-              ... on ClientFallbackOrigin {
-                provenance
-                fetchFailureReason
-              }
+              provenance
+              serverVerifiedAt
             }
             corroborationCount
           }
@@ -667,7 +653,7 @@ void test("public.getInvestigation returns complete investigation and trust sign
   assert.equal(graphqlInvestigation.id, investigation.id);
   assert.equal(graphqlInvestigation.origin.provenance, "SERVER_VERIFIED");
   assert.equal(graphqlInvestigation.corroborationCount, 0);
-  assert.equal(graphqlInvestigation.origin.__typename, "ServerVerifiedOrigin");
+  assert.notEqual(graphqlInvestigation.origin.serverVerifiedAt, null);
 });
 
 void test("public.getInvestigation returns CLIENT_FALLBACK without corroboration", async () => {
@@ -693,22 +679,15 @@ void test("public.getInvestigation returns CLIENT_FALLBACK without corroboration
   assert.equal(result.investigation.id, investigation.id);
   assert.equal(result.investigation.origin.provenance, "CLIENT_FALLBACK");
   assert.equal(result.investigation.corroborationCount, 0);
-  assert.equal(result.investigation.origin.fetchFailureReason, "fetch unavailable");
+  assert.equal(result.investigation.origin.serverVerifiedAt, undefined);
 
   const graphqlResult = await queryPublicGraphql<{
     publicInvestigation: {
       investigation: {
-        origin:
-          | {
-              __typename: "ServerVerifiedOrigin";
-              provenance: "SERVER_VERIFIED";
-              serverVerifiedAt: string;
-            }
-          | {
-              __typename: "ClientFallbackOrigin";
-              provenance: "CLIENT_FALLBACK";
-              fetchFailureReason: string;
-            };
+        origin: {
+          provenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK";
+          serverVerifiedAt: string | null;
+        };
         corroborationCount: number;
       };
     } | null;
@@ -718,15 +697,8 @@ void test("public.getInvestigation returns CLIENT_FALLBACK without corroboration
         publicInvestigation(investigationId: $investigationId) {
           investigation {
             origin {
-              __typename
-              ... on ServerVerifiedOrigin {
-                provenance
-                serverVerifiedAt
-              }
-              ... on ClientFallbackOrigin {
-                provenance
-                fetchFailureReason
-              }
+              provenance
+              serverVerifiedAt
             }
             corroborationCount
           }
@@ -742,14 +714,7 @@ void test("public.getInvestigation returns CLIENT_FALLBACK without corroboration
     "CLIENT_FALLBACK",
   );
   assert.equal(graphqlResult.publicInvestigation.investigation.corroborationCount, 0);
-  assert.equal(
-    graphqlResult.publicInvestigation.investigation.origin.__typename,
-    "ClientFallbackOrigin",
-  );
-  assert.equal(
-    graphqlResult.publicInvestigation.investigation.origin.fetchFailureReason,
-    "fetch unavailable",
-  );
+  assert.equal(graphqlResult.publicInvestigation.investigation.origin.serverVerifiedAt, null);
 });
 
 void test("public.getInvestigation reports corroborationCount for CLIENT_FALLBACK investigations", async () => {
@@ -834,17 +799,10 @@ void test("public.getPostInvestigations lists all complete investigations for a 
     postInvestigations: {
       investigations: {
         id: string;
-        origin:
-          | {
-              __typename: "ServerVerifiedOrigin";
-              provenance: "SERVER_VERIFIED";
-              serverVerifiedAt: string;
-            }
-          | {
-              __typename: "ClientFallbackOrigin";
-              provenance: "CLIENT_FALLBACK";
-              fetchFailureReason: string;
-            };
+        origin: {
+          provenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK";
+          serverVerifiedAt: string | null;
+        };
         corroborationCount: number;
       }[];
     };
@@ -855,15 +813,8 @@ void test("public.getPostInvestigations lists all complete investigations for a 
           investigations {
             id
             origin {
-              __typename
-              ... on ServerVerifiedOrigin {
-                provenance
-                serverVerifiedAt
-              }
-              ... on ClientFallbackOrigin {
-                provenance
-                fetchFailureReason
-              }
+              provenance
+              serverVerifiedAt
             }
             corroborationCount
           }
@@ -951,17 +902,10 @@ void test("public.searchInvestigations filters by query/platform and includes fa
     searchInvestigations: {
       investigations: {
         id: string;
-        origin:
-          | {
-              __typename: "ServerVerifiedOrigin";
-              provenance: "SERVER_VERIFIED";
-              serverVerifiedAt: string;
-            }
-          | {
-              __typename: "ClientFallbackOrigin";
-              provenance: "CLIENT_FALLBACK";
-              fetchFailureReason: string;
-            };
+        origin: {
+          provenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK";
+          serverVerifiedAt: string | null;
+        };
       }[];
     };
   }>(
@@ -971,15 +915,8 @@ void test("public.searchInvestigations filters by query/platform and includes fa
           investigations {
             id
             origin {
-              __typename
-              ... on ServerVerifiedOrigin {
-                provenance
-                serverVerifiedAt
-              }
-              ... on ClientFallbackOrigin {
-                provenance
-                fetchFailureReason
-              }
+              provenance
+              serverVerifiedAt
             }
           }
         }

@@ -1,42 +1,30 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { CHECK_STATUS_VALUES } from "@openerrata/shared";
 import {
   isRecoverableProcessingRunState,
   recoveredProcessingRunData,
   runTimingForInvestigationStatus,
-  serverVerifiedAtForProvenance,
 } from "../../src/lib/services/investigation-state.js";
-
-test("serverVerifiedAtForProvenance returns timestamp only for SERVER_VERIFIED", () => {
-  const now = new Date("2026-02-27T12:00:00.000Z");
-
-  assert.equal(
-    serverVerifiedAtForProvenance("SERVER_VERIFIED", now)?.toISOString(),
-    "2026-02-27T12:00:00.000Z",
-  );
-  assert.equal(serverVerifiedAtForProvenance("CLIENT_FALLBACK", now), null);
-});
 
 test("runTimingForInvestigationStatus sets status-specific run timestamps", () => {
   const now = new Date("2026-02-27T12:00:00.000Z");
 
-  assert.deepEqual(runTimingForInvestigationStatus("PENDING", now), {
-    queuedAt: now,
-    startedAt: null,
-    heartbeatAt: null,
-  });
+  type RunTiming = ReturnType<typeof runTimingForInvestigationStatus>;
+  const expected = {
+    PENDING: { queuedAt: now, startedAt: null, heartbeatAt: null },
+    PROCESSING: { queuedAt: null, startedAt: now, heartbeatAt: now },
+    COMPLETE: { queuedAt: null, startedAt: null, heartbeatAt: null },
+    FAILED: { queuedAt: null, startedAt: null, heartbeatAt: null },
+  } satisfies Record<(typeof CHECK_STATUS_VALUES)[number], RunTiming>;
 
-  assert.deepEqual(runTimingForInvestigationStatus("PROCESSING", now), {
-    queuedAt: null,
-    startedAt: now,
-    heartbeatAt: now,
-  });
-
-  assert.deepEqual(runTimingForInvestigationStatus("FAILED", now), {
-    queuedAt: null,
-    startedAt: null,
-    heartbeatAt: null,
-  });
+  for (const status of CHECK_STATUS_VALUES) {
+    assert.deepEqual(
+      runTimingForInvestigationStatus(status, now),
+      expected[status],
+      `status=${status}`,
+    );
+  }
 });
 
 test("isRecoverableProcessingRunState checks lease and recovery windows correctly", () => {

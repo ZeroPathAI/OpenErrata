@@ -40,6 +40,24 @@ function buildWikipediaViewInput(
   }) as Extract<ViewPostInput, { platform: "WIKIPEDIA" }>;
 }
 
+function buildSubstackViewInput(
+  observedContentText: string,
+): Extract<ViewPostInput, { platform: "SUBSTACK" }> {
+  return viewPostInputSchema.parse({
+    platform: "SUBSTACK",
+    externalId: "unit-test-post-sub-1",
+    url: "https://example.substack.com/p/unit-test-post",
+    observedContentText,
+    metadata: {
+      substackPostId: "111111",
+      publicationSubdomain: "example",
+      slug: "unit-test-post",
+      title: "OpenErrata",
+      authorName: "Test Author",
+    },
+  }) as Extract<ViewPostInput, { platform: "SUBSTACK" }>;
+}
+
 function buildLesswrongViewInput(
   htmlContent: string,
 ): Extract<ViewPostInput, { platform: "LESSWRONG" }> {
@@ -73,6 +91,8 @@ test("resolveCanonicalContentVersion returns server-verified canonical content",
         provenance: "SERVER_VERIFIED",
         contentText: "Server canonical text",
         contentHash: "server-hash",
+        sourceHtml: "<p>Server canonical text</p>",
+        canonicalIdentity: null,
       };
     },
   });
@@ -86,6 +106,8 @@ test("resolveCanonicalContentVersion returns server-verified canonical content",
     provenance: "SERVER_VERIFIED",
     contentText: "Server canonical text",
     contentHash: "server-hash",
+    sourceHtml: "<p>Server canonical text</p>",
+    canonicalIdentity: null,
   });
 });
 
@@ -107,6 +129,8 @@ test("resolveCanonicalContentVersion uses server content even when client hash d
       provenance: "SERVER_VERIFIED",
       contentText: "Server canonical text",
       contentHash: "server-hash",
+      sourceHtml: "<p>Server canonical text</p>",
+      canonicalIdentity: null,
     }),
   });
 
@@ -114,42 +138,56 @@ test("resolveCanonicalContentVersion uses server content even when client hash d
     provenance: "SERVER_VERIFIED",
     contentText: "Server canonical text",
     contentHash: "server-hash",
+    sourceHtml: "<p>Server canonical text</p>",
+    canonicalIdentity: null,
   });
 });
 
-test("resolveCanonicalContentVersion reports mismatches for server-verified LessWrong content", async () => {
-  const viewInput = buildLesswrongViewInput("<p>Observed text</p>");
-  const observed = {
-    contentText: "Observed text",
-    contentHash: "observed-hash",
-  };
-  let capturedMismatch: ServerVerifiedContentMismatch | null = null;
+test("resolveCanonicalContentVersion reports mismatches for all server-verified platforms", async () => {
+  // Platforms with externalId (LESSWRONG, X, SUBSTACK) include it in the mismatch report;
+  // WIKIPEDIA has no externalId so the mismatch omits it. Both shapes are tested here.
+  const viewInputs = [
+    buildLesswrongViewInput("<p>Observed text</p>"),
+    buildXViewInput("Observed text"),
+    buildSubstackViewInput("Observed text"),
+    buildWikipediaViewInput("Observed text"),
+  ] satisfies ViewPostInput[];
 
-  const result = await resolveCanonicalContentVersion({
-    viewInput,
-    observed,
-    fetchCanonicalContent: async () => ({
-      provenance: "SERVER_VERIFIED",
-      contentText: "Server canonical text",
-      contentHash: "server-hash",
-    }),
-    onServerVerifiedContentMismatch: (mismatch) => {
-      capturedMismatch = mismatch;
-    },
-  });
+  for (const viewInput of viewInputs) {
+    let capturedMismatch: ServerVerifiedContentMismatch | null = null;
 
-  assert.deepEqual(capturedMismatch, {
-    platform: "LESSWRONG",
-    externalId: viewInput.externalId,
-    url: viewInput.url,
-    observedHash: "observed-hash",
-    serverHash: "server-hash",
-  });
-  assert.deepEqual(result, {
-    provenance: "SERVER_VERIFIED",
-    contentText: "Server canonical text",
-    contentHash: "server-hash",
-  });
+    const result = await resolveCanonicalContentVersion({
+      viewInput,
+      observed: {
+        contentText: "Observed text",
+        contentHash: "observed-hash",
+      },
+      fetchCanonicalContent: async () => ({
+        provenance: "SERVER_VERIFIED",
+        contentText: "Server canonical text",
+        contentHash: "server-hash",
+        sourceHtml: "<p>Server canonical text</p>",
+        canonicalIdentity: null,
+      }),
+      onServerVerifiedContentMismatch: (mismatch) => {
+        capturedMismatch = mismatch;
+      },
+    });
+
+    assert.deepEqual(
+      capturedMismatch,
+      {
+        platform: viewInput.platform,
+        url: viewInput.url,
+        observedHash: "observed-hash",
+        serverHash: "server-hash",
+        ...("externalId" in viewInput ? { externalId: viewInput.externalId } : {}),
+      },
+      `platform=${viewInput.platform}`,
+    );
+    // Server content remains authoritative regardless of the mismatch
+    assert.equal(result.provenance, "SERVER_VERIFIED", `platform=${viewInput.platform}`);
+  }
 });
 
 test("resolveCanonicalContentVersion falls back to observed content when canonical fetch is unavailable", async () => {
@@ -172,7 +210,6 @@ test("resolveCanonicalContentVersion falls back to observed content when canonic
     contentText: observed.contentText,
     contentHash: observed.contentHash,
     provenance: "CLIENT_FALLBACK",
-    fetchFailureReason: "canonical fetch unavailable",
   });
 });
 

@@ -5,7 +5,6 @@ import {
   getMetricsInputSchema,
   getPostInvestigationsInputSchema,
   getPublicInvestigationInputSchema,
-  isNonNullObject,
   searchInvestigationsInputSchema,
   type Platform,
 } from "@openerrata/shared";
@@ -49,17 +48,13 @@ const typeDefs = /* GraphQL */ `
     CLIENT_FALLBACK
   }
 
-  type ServerVerifiedOrigin {
+  """
+  Trust provenance for a completed investigation.
+  """
+  type InvestigationOrigin {
     provenance: ContentProvenance!
-    serverVerifiedAt: DateTime!
+    serverVerifiedAt: DateTime
   }
-
-  type ClientFallbackOrigin {
-    provenance: ContentProvenance!
-    fetchFailureReason: String!
-  }
-
-  union InvestigationOrigin = ServerVerifiedOrigin | ClientFallbackOrigin
 
   """
   Metadata and trust signals for a single investigation. An investigation
@@ -384,14 +379,6 @@ const defaultPublicReadModel: PublicReadModel = {
 function createResolvers(publicReadModel: PublicReadModel) {
   return {
     DateTime: DateTimeResolver,
-    InvestigationOrigin: {
-      __resolveType: (value: unknown): "ServerVerifiedOrigin" | "ClientFallbackOrigin" | null => {
-        if (!isNonNullObject(value)) return null;
-        if (value["provenance"] === "SERVER_VERIFIED") return "ServerVerifiedOrigin";
-        if (value["provenance"] === "CLIENT_FALLBACK") return "ClientFallbackOrigin";
-        return null;
-      },
-    },
     Query: {
       publicInvestigation: async (
         _root: unknown,

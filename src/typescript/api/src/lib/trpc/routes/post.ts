@@ -20,16 +20,32 @@ import {
   batchStatusInputSchema,
   batchStatusOutputSchema,
   settingsValidationOutputSchema,
+  contentProvenanceSchema,
   isExtensionVersionAtLeast,
+  type ContentProvenance,
   type ExtensionRuntimeErrorCode,
   type Platform,
 } from "@openerrata/shared";
 import { getOrCreateCurrentPrompt } from "$lib/services/prompt.js";
+import { TRPCError } from "@trpc/server";
+
+/** Parse provenance from required InvestigationInput snapshots. */
+function parseProvenance(input: {
+  investigationId: string;
+  snapshot: { provenance: string } | null;
+}): ContentProvenance {
+  if (input.snapshot === null) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: `Investigation ${input.investigationId} has no InvestigationInput snapshot`,
+    });
+  }
+  return contentProvenanceSchema.parse(input.snapshot.provenance);
+}
 import { InvestigationWordLimitError } from "$lib/services/investigation-lifecycle.js";
 import { maybeIncrementUniqueViewScore } from "$lib/services/view-credit.js";
 import { attachOpenAiKeySourceIfPendingRun } from "$lib/services/user-key-source.js";
 import { validateOpenAiApiKeyForSettings } from "$lib/services/openai-key-validation.js";
-import { TRPCError } from "@trpc/server";
 import { registerObservedVersion, findPostVersionById } from "./post/content-storage.js";
 import {
   loadInvestigationWithClaims,
@@ -127,7 +143,7 @@ export const postRouter = router({
         externalId: postVersion.post.externalId,
         versionHash: postVersion.versionHash,
         postVersionId: postVersion.id,
-        provenance: postVersion.contentProvenance,
+        provenance: postVersion.serverVerifiedAt !== null ? "SERVER_VERIFIED" : "CLIENT_FALLBACK",
       };
     }),
 
@@ -174,7 +190,10 @@ export const postRouter = router({
       if (complete) {
         return {
           investigationState: "INVESTIGATED" as const,
-          provenance: complete.postVersion.contentProvenance,
+          provenance: parseProvenance({
+            investigationId: complete.id,
+            snapshot: complete.input,
+          }),
           claims: formatClaims(complete.claims),
         };
       }
@@ -213,7 +232,10 @@ export const postRouter = router({
         };
       }
 
-      const provenance = investigation.postVersion.contentProvenance;
+      const provenance = parseProvenance({
+        investigationId: investigation.id,
+        snapshot: investigation.input,
+      });
 
       switch (investigation.status) {
         case "COMPLETE":
@@ -279,7 +301,10 @@ export const postRouter = router({
         return {
           investigationId: complete.id,
           status: complete.status,
-          provenance: complete.postVersion.contentProvenance,
+          provenance: parseProvenance({
+            investigationId: complete.id,
+            snapshot: complete.input,
+          }),
           claims: formatClaims(complete.claims),
         };
       }
@@ -326,7 +351,10 @@ export const postRouter = router({
             return {
               investigationId: completed.id,
               status: completed.status,
-              provenance: completed.postVersion.contentProvenance,
+              provenance: parseProvenance({
+                investigationId: completed.id,
+                snapshot: completed.input,
+              }),
               claims: formatClaims(completed.claims),
             };
           }
@@ -336,7 +364,8 @@ export const postRouter = router({
             return {
               investigationId: investigation.id,
               status: investigation.status,
-              provenance: postVersion.contentProvenance,
+              provenance:
+                postVersion.serverVerifiedAt !== null ? "SERVER_VERIFIED" : "CLIENT_FALLBACK",
             };
           default:
             return unreachableInvestigationStatus(investigation.status);

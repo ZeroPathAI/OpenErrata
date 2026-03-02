@@ -130,6 +130,7 @@ test("fetchCanonicalContent returns SERVER_VERIFIED Wikipedia content and canoni
       provenance: "SERVER_VERIFIED",
       contentText: expectedContentText,
       contentHash: expectedContentHash,
+      sourceHtml: "<div class='mw-parser-output'><p>Server article text.</p></div>",
       canonicalIdentity: {
         platform: "WIKIPEDIA",
         language: "en",

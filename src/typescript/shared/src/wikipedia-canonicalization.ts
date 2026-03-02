@@ -20,8 +20,16 @@ interface WikipediaElementDescriptor {
 }
 
 /**
- * Extended descriptor that also carries text content and first-child-heading
- * information, needed for Parsoid wrapper detection and section-title checks.
+ * Descriptor sufficient for heading *level* detection (no text content needed).
+ * Used by `effectiveHeadingLevel` which only inspects tag names and classes.
+ */
+export interface WikipediaHeadingLevelDescriptor extends WikipediaElementDescriptor {
+  firstChildHeading: { tagName: string } | null;
+}
+
+/**
+ * Full descriptor that also carries text content, needed for heading *text*
+ * extraction and section-title exclusion checks.
  */
 export interface WikipediaNodeDescriptor extends WikipediaElementDescriptor {
   /** Text content of this node (used for direct heading text). */
@@ -54,8 +62,11 @@ function isParsoidHeadingWrapper(descriptor: WikipediaElementDescriptor): boolea
  * Returns the heading level of a node, handling both direct heading elements
  * (`<h2>`, `<h3>`, …) and Parsoid-style `<div class="mw-heading">` wrappers
  * where the level comes from the inner child heading.
+ *
+ * Accepts `WikipediaHeadingLevelDescriptor` — callers need only provide tag
+ * names and classes, not text content.
  */
-export function effectiveHeadingLevel(node: WikipediaNodeDescriptor): number | null {
+export function effectiveHeadingLevel(node: WikipediaHeadingLevelDescriptor): number | null {
   const direct = headingLevelFromTag(node.tagName);
   if (direct !== null) return direct;
   if (isParsoidHeadingWrapper(node) && node.firstChildHeading !== null) {

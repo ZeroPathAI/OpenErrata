@@ -1,15 +1,10 @@
 import { Prisma, type PrismaClient } from "$lib/generated/prisma/client";
-import { contentProvenanceSchema, platformSchema, type Platform } from "@openerrata/shared";
+import { platformSchema, type Platform } from "@openerrata/shared";
 
-type PublicInvestigationOrigin =
-  | {
-      provenance: "SERVER_VERIFIED";
-      serverVerifiedAt: Date;
-    }
-  | {
-      provenance: "CLIENT_FALLBACK";
-      fetchFailureReason: string;
-    };
+interface PublicInvestigationOrigin {
+  provenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK";
+  serverVerifiedAt: Date | null;
+}
 
 interface PublicTrustSignals {
   origin: PublicInvestigationOrigin;
@@ -114,44 +109,23 @@ function invariantViolation(message: string): never {
 
 function parsePublicOrigin(input: {
   investigationId: string;
-  contentProvenance: string;
+  provenance: string | undefined;
   serverVerifiedAt: Date | null;
-  fetchFailureReason: string | null;
 }): PublicInvestigationOrigin {
-  let provenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK";
-  try {
-    provenance = contentProvenanceSchema.parse(input.contentProvenance);
-  } catch {
+  // provenance lives on InvestigationInput (1:1); older investigations may lack it.
+  if (input.provenance === undefined) {
     invariantViolation(
-      `Investigation ${input.investigationId} has invalid contentProvenance ${input.contentProvenance}`,
+      `Investigation ${input.investigationId} has no InvestigationInput (missing provenance)`,
     );
   }
-
-  if (provenance === "SERVER_VERIFIED") {
-    if (input.serverVerifiedAt === null) {
-      invariantViolation(
-        `Investigation ${input.investigationId} is SERVER_VERIFIED with null serverVerifiedAt`,
-      );
-    }
-    return {
-      provenance: "SERVER_VERIFIED",
-      serverVerifiedAt: input.serverVerifiedAt,
-    };
-  }
-
-  if (input.fetchFailureReason === null) {
+  if (input.provenance !== "SERVER_VERIFIED" && input.provenance !== "CLIENT_FALLBACK") {
     invariantViolation(
-      `Investigation ${input.investigationId} is CLIENT_FALLBACK with null fetchFailureReason`,
-    );
-  }
-  if (input.fetchFailureReason.trim().length === 0) {
-    invariantViolation(
-      `Investigation ${input.investigationId} is CLIENT_FALLBACK with empty fetchFailureReason`,
+      `Investigation ${input.investigationId} has invalid provenance "${input.provenance}"`,
     );
   }
   return {
-    provenance: "CLIENT_FALLBACK",
-    fetchFailureReason: input.fetchFailureReason,
+    provenance: input.provenance,
+    serverVerifiedAt: input.serverVerifiedAt,
   };
 }
 
@@ -167,16 +141,14 @@ function requireCompleteCheckedAt(input: {
 
 function parsePublicLifecycle(input: {
   investigationId: string;
-  contentProvenance: string;
+  provenance: string | undefined;
   serverVerifiedAt: Date | null;
-  fetchFailureReason: string | null;
   checkedAt: Date | null;
 }): { origin: PublicInvestigationOrigin; checkedAt: Date } {
   const origin = parsePublicOrigin({
     investigationId: input.investigationId,
-    contentProvenance: input.contentProvenance,
+    provenance: input.provenance,
     serverVerifiedAt: input.serverVerifiedAt,
-    fetchFailureReason: input.fetchFailureReason,
   });
 
   const checkedAt = requireCompleteCheckedAt({
@@ -229,6 +201,7 @@ export async function getPublicInvestigationById(
           },
         },
       },
+      input: true,
       prompt: true,
       claims: { include: { sources: true } },
       _count: { select: { corroborationCredits: true } },
@@ -241,9 +214,8 @@ export async function getPublicInvestigationById(
 
   const lifecycle = parsePublicLifecycle({
     investigationId: investigation.id,
-    contentProvenance: investigation.postVersion.contentProvenance,
+    provenance: investigation.input.provenance,
     serverVerifiedAt: investigation.postVersion.serverVerifiedAt,
-    fetchFailureReason: investigation.postVersion.fetchFailureReason,
     checkedAt: investigation.checkedAt,
   });
 
@@ -318,11 +290,10 @@ export async function getPublicPostInvestigations(
               contentHash: true,
             },
           },
-          contentProvenance: true,
           serverVerifiedAt: true,
-          fetchFailureReason: true,
         },
       },
+      input: true,
       _count: {
         select: {
           claims: true,
@@ -341,9 +312,8 @@ export async function getPublicPostInvestigations(
     investigations: investigations.map((investigation) => {
       const lifecycle = parsePublicLifecycle({
         investigationId: investigation.id,
-        contentProvenance: investigation.postVersion.contentProvenance,
+        provenance: investigation.input.provenance,
         serverVerifiedAt: investigation.postVersion.serverVerifiedAt,
-        fetchFailureReason: investigation.postVersion.fetchFailureReason,
         checkedAt: investigation.checkedAt,
       });
       return {
@@ -408,9 +378,7 @@ export async function searchPublicInvestigations(
               contentHash: true,
             },
           },
-          contentProvenance: true,
           serverVerifiedAt: true,
-          fetchFailureReason: true,
           post: {
             select: {
               platform: true,
@@ -420,6 +388,7 @@ export async function searchPublicInvestigations(
           },
         },
       },
+      input: true,
       _count: {
         select: {
           claims: true,
@@ -433,9 +402,8 @@ export async function searchPublicInvestigations(
     investigations: investigations.map((investigation) => {
       const lifecycle = parsePublicLifecycle({
         investigationId: investigation.id,
-        contentProvenance: investigation.postVersion.contentProvenance,
+        provenance: investigation.input.provenance,
         serverVerifiedAt: investigation.postVersion.serverVerifiedAt,
-        fetchFailureReason: investigation.postVersion.fetchFailureReason,
         checkedAt: investigation.checkedAt,
       });
       return {

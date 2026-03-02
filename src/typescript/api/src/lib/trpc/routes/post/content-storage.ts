@@ -29,27 +29,16 @@ import {
 import { wordCount } from "$lib/services/investigation-lifecycle.js";
 import { isUniqueConstraintError } from "$lib/db/errors.js";
 import { toOptionalDate } from "$lib/date.js";
-import type { PrismaClient } from "$lib/generated/prisma/client";
+import type { PrismaClient, Prisma } from "$lib/generated/prisma/client";
 import { TRPCError } from "@trpc/server";
 import { createHash } from "node:crypto";
 import { prepareViewPostInput, type PreparedViewPostInput } from "./wikipedia.js";
-
-type PostMetadataInput = {
-  [P in Platform]: {
-    postId: string;
-    platform: P;
-    externalId: string;
-    observedImageUrls?: string[];
-    metadata: PlatformMetadataByPlatform[P];
-  };
-}[Platform];
 
 type UpsertPostInput = {
   [P in Platform]: {
     platform: P;
     externalId: string;
     url: string;
-    observedImageUrls?: string[];
     metadata: PlatformMetadataByPlatform[P];
   };
 }[Platform];
@@ -58,7 +47,7 @@ export interface ResolvedPostVersion {
   id: string;
   postId: string;
   versionHash: string;
-  contentProvenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK";
+  serverVerifiedAt: Date | null;
   contentBlob: {
     contentHash: string;
     contentText: string;
@@ -74,9 +63,16 @@ export interface ResolvedPostVersion {
 
 const UNIQUE_CONSTRAINT_RACE_RETRY_ATTEMPTS = 30;
 const UNIQUE_CONSTRAINT_RACE_RETRY_DELAY_MS = 20;
+type DbClient = PrismaClient | Prisma.TransactionClient;
 
 function sha256(input: string): string {
   return createHash("sha256").update(input).digest("hex");
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 function logServerVerifiedContentMismatch(mismatch: ServerVerifiedContentMismatch): void {
@@ -188,7 +184,7 @@ function versionHashFromContentAndImages(contentHash: string, occurrencesHash: s
 // ---------------------------------------------------------------------------
 
 async function upsertAuthorAndAttachToPost(
-  prisma: PrismaClient,
+  prisma: DbClient,
   input: {
     postId: string;
     platform: Platform;
@@ -220,16 +216,20 @@ async function upsertAuthorAndAttachToPost(
   });
 }
 
-async function linkAuthorAndMetadata(
-  prisma: PrismaClient,
-  input: PostMetadataInput,
+/**
+ * Upsert the Author record for a post and link it via Post.authorId.
+ * Extracted from the deleted linkAuthorAndMetadata; handles only author
+ * identity — platform-specific metadata lives in version meta tables.
+ */
+async function upsertAuthorForPost(
+  prisma: DbClient,
+  input: { postId: string } & UpsertPostInput,
 ): Promise<void> {
   switch (input.platform) {
     case "LESSWRONG": {
       const authorName = trimToOptionalNonEmpty(input.metadata.authorName);
       const authorSlug = trimToOptionalNonEmpty(input.metadata.authorSlug);
       const authorDisplayName = authorName ?? authorSlug;
-
       if (authorDisplayName !== undefined && authorDisplayName.length > 0) {
         const platformUserId = authorSlug ?? `name:${authorDisplayName.toLowerCase()}`;
         await upsertAuthorAndAttachToPost(prisma, {
@@ -239,66 +239,16 @@ async function linkAuthorAndMetadata(
           displayName: authorDisplayName,
         });
       }
-
-      const title = input.metadata.title?.trim();
-      const htmlContent = input.metadata.htmlContent;
-      const metadataAuthorName = authorName ?? authorSlug;
-
-      if (
-        title !== undefined &&
-        title.length > 0 &&
-        metadataAuthorName !== undefined &&
-        metadataAuthorName.length > 0
-      ) {
-        const lesswrongMetaData = {
-          slug: input.metadata.slug,
-          title,
-          htmlContent,
-          imageUrls: input.observedImageUrls ?? [],
-          authorName: metadataAuthorName,
-          authorSlug: authorSlug ?? null,
-          tags: input.metadata.tags,
-          publishedAt: toOptionalDate(input.metadata.publishedAt),
-        };
-        await prisma.lesswrongMeta.upsert({
-          where: { postId: input.postId },
-          create: {
-            postId: input.postId,
-            ...lesswrongMetaData,
-          },
-          update: lesswrongMetaData,
-        });
-      }
       return;
     }
     case "X": {
       const authorHandle = input.metadata.authorHandle;
       const authorDisplayName = trimToOptionalNonEmpty(input.metadata.authorDisplayName);
-
       await upsertAuthorAndAttachToPost(prisma, {
         postId: input.postId,
         platform: "X",
         platformUserId: authorHandle,
         displayName: authorDisplayName ?? authorHandle,
-      });
-
-      const xMetaData = {
-        text: input.metadata.text,
-        authorHandle,
-        authorDisplayName: authorDisplayName ?? null,
-        mediaUrls: input.metadata.mediaUrls,
-        likeCount: input.metadata.likeCount ?? null,
-        retweetCount: input.metadata.retweetCount ?? null,
-        postedAt: toOptionalDate(input.metadata.postedAt),
-      };
-      await prisma.xMeta.upsert({
-        where: { tweetId: input.externalId },
-        create: {
-          postId: input.postId,
-          tweetId: input.externalId,
-          ...xMetaData,
-        },
-        update: xMetaData,
       });
       return;
     }
@@ -308,57 +258,16 @@ async function linkAuthorAndMetadata(
       const platformUserId =
         authorSubstackHandle ??
         `publication:${input.metadata.publicationSubdomain}:name:${authorName.toLowerCase()}`;
-
       await upsertAuthorAndAttachToPost(prisma, {
         postId: input.postId,
         platform: "SUBSTACK",
         platformUserId,
         displayName: authorName,
       });
-
-      const substackMetaData = {
-        substackPostId: input.metadata.substackPostId,
-        publicationSubdomain: input.metadata.publicationSubdomain,
-        slug: input.metadata.slug,
-        title: input.metadata.title,
-        subtitle: input.metadata.subtitle ?? null,
-        imageUrls: input.observedImageUrls ?? [],
-        authorName,
-        authorSubstackHandle: authorSubstackHandle ?? null,
-        publishedAt: toOptionalDate(input.metadata.publishedAt),
-        likeCount: input.metadata.likeCount ?? null,
-        commentCount: input.metadata.commentCount ?? null,
-      };
-      await prisma.substackMeta.upsert({
-        where: { postId: input.postId },
-        create: {
-          postId: input.postId,
-          ...substackMetaData,
-        },
-        update: substackMetaData,
-      });
       return;
     }
-    case "WIKIPEDIA": {
-      const wikipediaMetaData = {
-        pageId: input.metadata.pageId,
-        language: input.metadata.language,
-        title: input.metadata.title,
-        displayTitle: input.metadata.displayTitle ?? null,
-        revisionId: input.metadata.revisionId,
-        lastModifiedAt: toOptionalDate(input.metadata.lastModifiedAt),
-        imageUrls: input.observedImageUrls ?? [],
-      };
-      await prisma.wikipediaMeta.upsert({
-        where: { postId: input.postId },
-        create: {
-          postId: input.postId,
-          ...wikipediaMetaData,
-        },
-        update: wikipediaMetaData,
-      });
+    case "WIKIPEDIA":
       return;
-    }
   }
 }
 
@@ -366,7 +275,7 @@ async function linkAuthorAndMetadata(
 // Post upsert
 // ---------------------------------------------------------------------------
 
-async function upsertPost(prisma: PrismaClient, input: UpsertPostInput) {
+async function upsertPost(prisma: DbClient, input: UpsertPostInput) {
   const post = await prisma.post.upsert({
     where: {
       platform_externalId: {
@@ -384,7 +293,7 @@ async function upsertPost(prisma: PrismaClient, input: UpsertPostInput) {
     },
   });
 
-  await linkAuthorAndMetadata(prisma, {
+  await upsertAuthorForPost(prisma, {
     postId: post.id,
     ...input,
   });
@@ -392,15 +301,10 @@ async function upsertPost(prisma: PrismaClient, input: UpsertPostInput) {
   return post;
 }
 
-async function upsertPostFromViewInput(prisma: PrismaClient, input: PreparedViewPostInput) {
-  const commonInput = {
-    url: input.url,
-    ...(input.observedImageUrls !== undefined && { observedImageUrls: input.observedImageUrls }),
-  };
-
+async function upsertPostFromViewInput(prisma: DbClient, input: PreparedViewPostInput) {
   if (input.platform === "LESSWRONG") {
     return upsertPost(prisma, {
-      ...commonInput,
+      url: input.url,
       platform: "LESSWRONG",
       externalId: input.externalId,
       metadata: input.metadata,
@@ -409,7 +313,7 @@ async function upsertPostFromViewInput(prisma: PrismaClient, input: PreparedView
 
   if (input.platform === "X") {
     return upsertPost(prisma, {
-      ...commonInput,
+      url: input.url,
       platform: "X",
       externalId: input.externalId,
       metadata: input.metadata,
@@ -418,7 +322,7 @@ async function upsertPostFromViewInput(prisma: PrismaClient, input: PreparedView
 
   if (input.platform === "WIKIPEDIA") {
     return upsertPost(prisma, {
-      ...commonInput,
+      url: input.url,
       platform: "WIKIPEDIA",
       externalId: input.derivedExternalId,
       metadata: input.metadata,
@@ -426,7 +330,7 @@ async function upsertPostFromViewInput(prisma: PrismaClient, input: PreparedView
   }
 
   return upsertPost(prisma, {
-    ...commonInput,
+    url: input.url,
     platform: "SUBSTACK",
     externalId: input.externalId,
     metadata: input.metadata,
@@ -484,6 +388,11 @@ async function createOrFindByUniqueConstraint<T>(input: {
   findExisting: () => Promise<T | null>;
   create: () => Promise<T>;
   assertEquivalent: (existing: T) => void;
+  /**
+   * Safe only outside of interactive transactions.
+   * Inside a transaction, unique violations abort the transaction until rollback.
+   */
+  retryReadAfterUniqueConflict?: boolean;
 }): Promise<T> {
   const existing = await input.findExisting();
   if (existing !== null) {
@@ -497,24 +406,25 @@ async function createOrFindByUniqueConstraint<T>(input: {
     if (!isUniqueConstraintError(error)) {
       throw error;
     }
-    // In concurrent transactions, the winning insert can briefly be invisible
-    // to this transaction right after a unique-constraint conflict.
+    if (input.retryReadAfterUniqueConflict !== true) {
+      throw error;
+    }
+    // For non-transactional callers, the winning insert can briefly be
+    // invisible right after a unique-constraint conflict.
     for (let attempt = 0; attempt < UNIQUE_CONSTRAINT_RACE_RETRY_ATTEMPTS; attempt += 1) {
       const raced = await input.findExisting();
       if (raced !== null) {
         input.assertEquivalent(raced);
         return raced;
       }
-      await new Promise((resolve) => {
-        setTimeout(resolve, UNIQUE_CONSTRAINT_RACE_RETRY_DELAY_MS);
-      });
+      await delay(UNIQUE_CONSTRAINT_RACE_RETRY_DELAY_MS);
     }
     throw error;
   }
 }
 
 async function getOrCreateContentBlob(
-  prisma: PrismaClient,
+  prisma: DbClient,
   input: {
     contentHash: string;
     contentText: string;
@@ -544,7 +454,7 @@ async function getOrCreateContentBlob(
   });
 }
 
-async function findImageOccurrenceSetByHash(prisma: PrismaClient, occurrencesHash: string) {
+async function findImageOccurrenceSetByHash(prisma: DbClient, occurrencesHash: string) {
   return prisma.imageOccurrenceSet.findUnique({
     where: { occurrencesHash },
     include: {
@@ -556,7 +466,7 @@ async function findImageOccurrenceSetByHash(prisma: PrismaClient, occurrencesHas
 }
 
 async function createImageOccurrenceSet(input: {
-  prisma: PrismaClient;
+  prisma: DbClient;
   occurrencesHash: string;
   normalizedOccurrences: NonNullable<ViewPostInput["observedImageOccurrences"]>;
 }) {
@@ -600,7 +510,7 @@ function assertOccurrenceSetMatches(input: {
 }
 
 async function getOrCreateImageOccurrenceSet(
-  prisma: PrismaClient,
+  prisma: DbClient,
   normalizedOccurrences: NonNullable<ViewPostInput["observedImageOccurrences"]>,
 ) {
   const occurrencesHash = imageOccurrencesHash(normalizedOccurrences);
@@ -623,11 +533,37 @@ async function getOrCreateImageOccurrenceSet(
 }
 
 // ---------------------------------------------------------------------------
+// HTML blob management
+// ---------------------------------------------------------------------------
+
+async function getOrCreateHtmlBlob(
+  prisma: DbClient,
+  html: string,
+): Promise<{ id: string; htmlHash: string }> {
+  const htmlHash = sha256(html);
+  return createOrFindByUniqueConstraint({
+    findExisting: () =>
+      prisma.htmlBlob.findUnique({
+        where: { htmlHash },
+        select: { id: true, htmlHash: true },
+      }),
+    create: () =>
+      prisma.htmlBlob.create({
+        data: { htmlHash, htmlContent: html },
+        select: { id: true, htmlHash: true },
+      }),
+    assertEquivalent: () => {
+      // Content-addressed: same hash means same content.
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Post version upsert
 // ---------------------------------------------------------------------------
 
 async function upsertPostVersion(
-  prisma: PrismaClient,
+  prisma: DbClient,
   input: {
     postId: string;
     canonical: CanonicalContentVersion;
@@ -656,7 +592,7 @@ async function upsertPostVersion(
     id: true,
     postId: true,
     versionHash: true,
-    contentProvenance: true,
+    serverVerifiedAt: true,
     contentBlob: {
       select: {
         contentHash: true,
@@ -680,60 +616,34 @@ async function upsertPostVersion(
     },
   };
 
-  let postVersion: ResolvedPostVersion;
-  try {
-    postVersion = await prisma.postVersion.upsert({
-      where: {
-        postId_versionHash: {
-          postId: input.postId,
-          versionHash,
-        },
-      },
-      create: {
+  const postVersion = await prisma.postVersion.upsert({
+    where: {
+      postId_versionHash: {
         postId: input.postId,
         versionHash,
-        contentBlobId: contentBlob.id,
-        imageOccurrenceSetId: occurrenceSet.id,
-        contentProvenance: input.canonical.provenance,
-        fetchFailureReason:
-          input.canonical.provenance === "CLIENT_FALLBACK"
-            ? input.canonical.fetchFailureReason
-            : null,
-        serverVerifiedAt: input.canonical.provenance === "SERVER_VERIFIED" ? now : null,
-        firstSeenAt: now,
-        lastSeenAt: now,
-        seenCount: 1,
       },
-      update: updateLastSeenData,
-      select: postVersionSelect,
-    });
-  } catch (error) {
-    if (!isUniqueConstraintError(error)) {
-      throw error;
-    }
-    postVersion = await prisma.postVersion.update({
-      where: {
-        postId_versionHash: {
-          postId: input.postId,
-          versionHash,
-        },
-      },
-      data: updateLastSeenData,
-      select: postVersionSelect,
-    });
-  }
+    },
+    create: {
+      postId: input.postId,
+      versionHash,
+      contentBlobId: contentBlob.id,
+      imageOccurrenceSetId: occurrenceSet.id,
+      serverVerifiedAt: input.canonical.provenance === "SERVER_VERIFIED" ? now : null,
+      firstSeenAt: now,
+      lastSeenAt: now,
+      seenCount: 1,
+    },
+    update: updateLastSeenData,
+    select: postVersionSelect,
+  });
 
-  if (
-    input.canonical.provenance === "SERVER_VERIFIED" &&
-    postVersion.contentProvenance === "CLIENT_FALLBACK"
-  ) {
-    postVersion = await prisma.postVersion.update({
+  // One-way latch: if we now have server verification but the PostVersion
+  // was originally created as CLIENT_FALLBACK, set serverVerifiedAt.
+  // The DB trigger prevents overwriting an existing non-null value.
+  if (input.canonical.provenance === "SERVER_VERIFIED" && postVersion.serverVerifiedAt === null) {
+    return prisma.postVersion.update({
       where: { id: postVersion.id },
-      data: {
-        contentProvenance: "SERVER_VERIFIED",
-        fetchFailureReason: null,
-        serverVerifiedAt: now,
-      },
+      data: { serverVerifiedAt: now },
       select: postVersionSelect,
     });
   }
@@ -741,12 +651,315 @@ async function upsertPostVersion(
   return postVersion;
 }
 
+function assertNoSourceHtmlConflict(input: {
+  platform: Platform;
+  postVersionId: string;
+  source: "server" | "client";
+  existingHtmlBlobId: string | null;
+  incomingHtmlBlobId: string | null;
+}): void {
+  if (
+    input.existingHtmlBlobId !== null &&
+    input.incomingHtmlBlobId !== null &&
+    input.existingHtmlBlobId !== input.incomingHtmlBlobId
+  ) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: `${input.platform} ${input.source} HTML snapshot mismatch for postVersion ${input.postVersionId}: existing=${input.existingHtmlBlobId}, incoming=${input.incomingHtmlBlobId}`,
+    });
+  }
+}
+
+async function createPlatformVersionMetadataIfMissing(
+  prisma: DbClient,
+  input: {
+    preparedInput: PreparedViewPostInput;
+    postVersionId: string;
+    htmlBlobIds: {
+      serverHtmlBlobId: string | null;
+      clientHtmlBlobId: string | null;
+    };
+  },
+): Promise<void> {
+  switch (input.preparedInput.platform) {
+    case "LESSWRONG": {
+      const metadata = input.preparedInput.metadata;
+      const { serverHtmlBlobId, clientHtmlBlobId } = input.htmlBlobIds;
+      if (serverHtmlBlobId === null && clientHtmlBlobId === null) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: `LessWrong version requires at least one HTML snapshot (postVersionId=${input.postVersionId})`,
+        });
+      }
+      const title = trimToOptionalNonEmpty(metadata.title);
+      const authorName = trimToOptionalNonEmpty(metadata.authorName);
+      const authorSlug = trimToOptionalNonEmpty(metadata.authorSlug);
+
+      const existingOrCreated = await createOrFindByUniqueConstraint({
+        findExisting: () =>
+          prisma.lesswrongVersionMeta.findUnique({
+            where: { postVersionId: input.postVersionId },
+            select: {
+              slug: true,
+              serverHtmlBlobId: true,
+              clientHtmlBlobId: true,
+            },
+          }),
+        create: () =>
+          prisma.lesswrongVersionMeta.create({
+            data: {
+              postVersionId: input.postVersionId,
+              slug: metadata.slug,
+              ...(title !== undefined && { title }),
+              ...(serverHtmlBlobId !== null && { serverHtmlBlobId }),
+              ...(clientHtmlBlobId !== null && { clientHtmlBlobId }),
+              imageUrls: input.preparedInput.observedImageUrls ?? [],
+              ...(authorName !== undefined && { authorName }),
+              ...(authorSlug !== undefined && { authorSlug }),
+              tags: metadata.tags,
+              publishedAt: toOptionalDate(metadata.publishedAt),
+            },
+            select: {
+              slug: true,
+              serverHtmlBlobId: true,
+              clientHtmlBlobId: true,
+            },
+          }),
+        assertEquivalent: (existing) => {
+          if (existing.slug !== metadata.slug) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: `LessWrong version slug mismatch for postVersion ${input.postVersionId}: existing=${existing.slug}, incoming=${metadata.slug}`,
+            });
+          }
+          assertNoSourceHtmlConflict({
+            platform: "LESSWRONG",
+            postVersionId: input.postVersionId,
+            source: "server",
+            existingHtmlBlobId: existing.serverHtmlBlobId,
+            incomingHtmlBlobId: serverHtmlBlobId,
+          });
+          assertNoSourceHtmlConflict({
+            platform: "LESSWRONG",
+            postVersionId: input.postVersionId,
+            source: "client",
+            existingHtmlBlobId: existing.clientHtmlBlobId,
+            incomingHtmlBlobId: clientHtmlBlobId,
+          });
+        },
+      });
+      await Promise.all([
+        serverHtmlBlobId !== null && existingOrCreated.serverHtmlBlobId === null
+          ? prisma.lesswrongVersionMeta.updateMany({
+              where: { postVersionId: input.postVersionId, serverHtmlBlobId: null },
+              data: { serverHtmlBlobId },
+            })
+          : null,
+        clientHtmlBlobId !== null && existingOrCreated.clientHtmlBlobId === null
+          ? prisma.lesswrongVersionMeta.updateMany({
+              where: { postVersionId: input.postVersionId, clientHtmlBlobId: null },
+              data: { clientHtmlBlobId },
+            })
+          : null,
+      ]);
+      return;
+    }
+    case "X": {
+      const metadata = input.preparedInput.metadata;
+      const tweetId = input.preparedInput.externalId;
+      const authorDisplayName = trimToOptionalNonEmpty(metadata.authorDisplayName);
+      await createOrFindByUniqueConstraint({
+        findExisting: () =>
+          prisma.xVersionMeta.findUnique({
+            where: { postVersionId: input.postVersionId },
+            select: { tweetId: true },
+          }),
+        create: () =>
+          prisma.xVersionMeta.create({
+            data: {
+              postVersionId: input.postVersionId,
+              tweetId,
+              text: metadata.text,
+              authorHandle: metadata.authorHandle,
+              authorDisplayName: authorDisplayName ?? null,
+              mediaUrls: metadata.mediaUrls,
+              likeCount: metadata.likeCount ?? null,
+              retweetCount: metadata.retweetCount ?? null,
+              postedAt: toOptionalDate(metadata.postedAt),
+            },
+            select: { tweetId: true },
+          }),
+        assertEquivalent: (existing) => {
+          if (existing.tweetId !== tweetId) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: `X version tweetId mismatch for postVersion ${input.postVersionId}: existing=${existing.tweetId}, incoming=${tweetId}`,
+            });
+          }
+        },
+      });
+      return;
+    }
+    case "SUBSTACK": {
+      const metadata = input.preparedInput.metadata;
+      const { serverHtmlBlobId, clientHtmlBlobId } = input.htmlBlobIds;
+      const authorSubstackHandle = trimToOptionalNonEmpty(metadata.authorSubstackHandle);
+
+      const existingOrCreated = await createOrFindByUniqueConstraint({
+        findExisting: () =>
+          prisma.substackVersionMeta.findUnique({
+            where: { postVersionId: input.postVersionId },
+            select: {
+              substackPostId: true,
+              serverHtmlBlobId: true,
+              clientHtmlBlobId: true,
+            },
+          }),
+        create: () =>
+          prisma.substackVersionMeta.create({
+            data: {
+              postVersionId: input.postVersionId,
+              substackPostId: metadata.substackPostId,
+              publicationSubdomain: metadata.publicationSubdomain,
+              slug: metadata.slug,
+              title: metadata.title,
+              subtitle: metadata.subtitle ?? null,
+              ...(serverHtmlBlobId !== null && { serverHtmlBlobId }),
+              ...(clientHtmlBlobId !== null && { clientHtmlBlobId }),
+              imageUrls: input.preparedInput.observedImageUrls ?? [],
+              authorName: metadata.authorName,
+              authorSubstackHandle: authorSubstackHandle ?? null,
+              publishedAt: toOptionalDate(metadata.publishedAt),
+              likeCount: metadata.likeCount ?? null,
+              commentCount: metadata.commentCount ?? null,
+            },
+            select: {
+              substackPostId: true,
+              serverHtmlBlobId: true,
+              clientHtmlBlobId: true,
+            },
+          }),
+        assertEquivalent: (existing) => {
+          if (existing.substackPostId !== metadata.substackPostId) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: `Substack version post id mismatch for postVersion ${input.postVersionId}: existing=${existing.substackPostId}, incoming=${metadata.substackPostId}`,
+            });
+          }
+          assertNoSourceHtmlConflict({
+            platform: "SUBSTACK",
+            postVersionId: input.postVersionId,
+            source: "server",
+            existingHtmlBlobId: existing.serverHtmlBlobId,
+            incomingHtmlBlobId: serverHtmlBlobId,
+          });
+          assertNoSourceHtmlConflict({
+            platform: "SUBSTACK",
+            postVersionId: input.postVersionId,
+            source: "client",
+            existingHtmlBlobId: existing.clientHtmlBlobId,
+            incomingHtmlBlobId: clientHtmlBlobId,
+          });
+        },
+      });
+      await Promise.all([
+        serverHtmlBlobId !== null && existingOrCreated.serverHtmlBlobId === null
+          ? prisma.substackVersionMeta.updateMany({
+              where: { postVersionId: input.postVersionId, serverHtmlBlobId: null },
+              data: { serverHtmlBlobId },
+            })
+          : null,
+        clientHtmlBlobId !== null && existingOrCreated.clientHtmlBlobId === null
+          ? prisma.substackVersionMeta.updateMany({
+              where: { postVersionId: input.postVersionId, clientHtmlBlobId: null },
+              data: { clientHtmlBlobId },
+            })
+          : null,
+      ]);
+      return;
+    }
+    case "WIKIPEDIA": {
+      const metadata = input.preparedInput.metadata;
+      const { serverHtmlBlobId, clientHtmlBlobId } = input.htmlBlobIds;
+
+      const existingOrCreated = await createOrFindByUniqueConstraint({
+        findExisting: () =>
+          prisma.wikipediaVersionMeta.findUnique({
+            where: { postVersionId: input.postVersionId },
+            select: {
+              revisionId: true,
+              serverHtmlBlobId: true,
+              clientHtmlBlobId: true,
+            },
+          }),
+        create: () =>
+          prisma.wikipediaVersionMeta.create({
+            data: {
+              postVersionId: input.postVersionId,
+              pageId: metadata.pageId,
+              language: metadata.language,
+              title: metadata.title,
+              displayTitle: metadata.displayTitle ?? null,
+              ...(serverHtmlBlobId !== null && { serverHtmlBlobId }),
+              ...(clientHtmlBlobId !== null && { clientHtmlBlobId }),
+              revisionId: metadata.revisionId,
+              lastModifiedAt: toOptionalDate(metadata.lastModifiedAt),
+              imageUrls: input.preparedInput.observedImageUrls ?? [],
+            },
+            select: {
+              revisionId: true,
+              serverHtmlBlobId: true,
+              clientHtmlBlobId: true,
+            },
+          }),
+        assertEquivalent: (existing) => {
+          if (existing.revisionId !== metadata.revisionId) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: `Wikipedia version revision mismatch for postVersion ${input.postVersionId}: existing=${existing.revisionId}, incoming=${metadata.revisionId}`,
+            });
+          }
+          assertNoSourceHtmlConflict({
+            platform: "WIKIPEDIA",
+            postVersionId: input.postVersionId,
+            source: "server",
+            existingHtmlBlobId: existing.serverHtmlBlobId,
+            incomingHtmlBlobId: serverHtmlBlobId,
+          });
+          assertNoSourceHtmlConflict({
+            platform: "WIKIPEDIA",
+            postVersionId: input.postVersionId,
+            source: "client",
+            existingHtmlBlobId: existing.clientHtmlBlobId,
+            incomingHtmlBlobId: clientHtmlBlobId,
+          });
+        },
+      });
+      await Promise.all([
+        serverHtmlBlobId !== null && existingOrCreated.serverHtmlBlobId === null
+          ? prisma.wikipediaVersionMeta.updateMany({
+              where: { postVersionId: input.postVersionId, serverHtmlBlobId: null },
+              data: { serverHtmlBlobId },
+            })
+          : null,
+        clientHtmlBlobId !== null && existingOrCreated.clientHtmlBlobId === null
+          ? prisma.wikipediaVersionMeta.updateMany({
+              where: { postVersionId: input.postVersionId, clientHtmlBlobId: null },
+              data: { clientHtmlBlobId },
+            })
+          : null,
+      ]);
+      return;
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Post version lookup
 // ---------------------------------------------------------------------------
 
 export async function findPostVersionById(
-  prisma: PrismaClient,
+  prisma: DbClient,
   postVersionId: string,
 ): Promise<ResolvedPostVersion | null> {
   return prisma.postVersion.findUnique({
@@ -755,7 +968,7 @@ export async function findPostVersionById(
       id: true,
       postId: true,
       versionHash: true,
-      contentProvenance: true,
+      serverVerifiedAt: true,
       contentBlob: {
         select: {
           contentHash: true,
@@ -788,6 +1001,77 @@ async function toObservedContentVersion(input: ViewPostInput): Promise<ObservedC
   return { contentText, contentHash };
 }
 
+/**
+ * Extract client-sent HTML from the ViewPostInput metadata, if any.
+ *
+ * Captures client-origin HTML independently from server-origin HTML so each
+ * source can be persisted without overwriting the other.
+ */
+function extractClientHtml(viewInput: ViewPostInput): string | undefined {
+  switch (viewInput.platform) {
+    case "LESSWRONG":
+      return viewInput.metadata.htmlContent;
+    case "SUBSTACK":
+      return viewInput.metadata.htmlContent ?? undefined;
+    case "X":
+    case "WIKIPEDIA":
+      return undefined;
+  }
+}
+
+interface HtmlSnapshotsForStorage {
+  serverHtml?: string;
+  clientHtml?: string;
+}
+
+async function resolveHtmlBlobIdsForStorage(
+  prisma: DbClient,
+  htmlSnapshotsForStorage: HtmlSnapshotsForStorage,
+): Promise<{ serverHtmlBlobId: string | null; clientHtmlBlobId: string | null }> {
+  const serverHtml = htmlSnapshotsForStorage.serverHtml;
+  const clientHtml = htmlSnapshotsForStorage.clientHtml;
+
+  // Avoid self-racing unique insert inside one transaction when both sources
+  // carry identical HTML bytes.
+  if (serverHtml !== undefined && clientHtml !== undefined && serverHtml === clientHtml) {
+    const sharedBlob = await getOrCreateHtmlBlob(prisma, serverHtml);
+    return {
+      serverHtmlBlobId: sharedBlob.id,
+      clientHtmlBlobId: sharedBlob.id,
+    };
+  }
+
+  const [serverHtmlBlob, clientHtmlBlob] = await Promise.all([
+    serverHtml !== undefined ? getOrCreateHtmlBlob(prisma, serverHtml) : null,
+    clientHtml !== undefined ? getOrCreateHtmlBlob(prisma, clientHtml) : null,
+  ]);
+  return {
+    serverHtmlBlobId: serverHtmlBlob?.id ?? null,
+    clientHtmlBlobId: clientHtmlBlob?.id ?? null,
+  };
+}
+
+/**
+ * Resolve source-scoped HTML snapshots for version metadata storage.
+ *
+ * SERVER_VERIFIED observations persist canonical `serverHtml` and, when
+ * available, also preserve the client DOM snapshot as `clientHtml`.
+ * CLIENT_FALLBACK observations persist client HTML only.
+ */
+function resolveHtmlSnapshotsForStorage(
+  viewInput: ViewPostInput,
+  canonical: CanonicalContentVersion,
+): HtmlSnapshotsForStorage {
+  const clientHtml = extractClientHtml(viewInput);
+  if (canonical.provenance === "SERVER_VERIFIED") {
+    return {
+      serverHtml: canonical.sourceHtml,
+      ...(clientHtml !== undefined && { clientHtml }),
+    };
+  }
+  return clientHtml === undefined ? {} : { clientHtml };
+}
+
 // ---------------------------------------------------------------------------
 // Main entry point: registerObservedVersion
 // ---------------------------------------------------------------------------
@@ -812,17 +1096,44 @@ export async function registerObservedVersion(
     onServerVerifiedContentMismatch: logServerVerifiedContentMismatch,
   });
 
+  const htmlSnapshotsForStorage = resolveHtmlSnapshotsForStorage(initiallyPreparedInput, canonical);
+
   const preparedInput = applyServerVerifiedWikipediaIdentity({
     preparedInput: initiallyPreparedInput,
     canonical,
   });
-  const post = await upsertPostFromViewInput(prisma, preparedInput);
+  for (let attempt = 0; attempt < UNIQUE_CONSTRAINT_RACE_RETRY_ATTEMPTS; attempt += 1) {
+    try {
+      return await prisma.$transaction(async (tx) => {
+        const post = await upsertPostFromViewInput(tx, preparedInput);
+        const postVersion = await upsertPostVersion(tx, {
+          postId: post.id,
+          canonical,
+          ...(preparedInput.observedImageOccurrences === undefined
+            ? {}
+            : { observedImageOccurrences: preparedInput.observedImageOccurrences }),
+        });
+        const htmlBlobIds = await resolveHtmlBlobIdsForStorage(tx, htmlSnapshotsForStorage);
+        await createPlatformVersionMetadataIfMissing(tx, {
+          preparedInput,
+          postVersionId: postVersion.id,
+          htmlBlobIds,
+        });
+        return postVersion;
+      });
+    } catch (error) {
+      if (
+        !isUniqueConstraintError(error) ||
+        attempt === UNIQUE_CONSTRAINT_RACE_RETRY_ATTEMPTS - 1
+      ) {
+        throw error;
+      }
+      await delay(UNIQUE_CONSTRAINT_RACE_RETRY_DELAY_MS);
+    }
+  }
 
-  return upsertPostVersion(prisma, {
-    postId: post.id,
-    canonical,
-    ...(preparedInput.observedImageOccurrences === undefined
-      ? {}
-      : { observedImageOccurrences: preparedInput.observedImageOccurrences }),
+  throw new TRPCError({
+    code: "INTERNAL_SERVER_ERROR",
+    message: "Failed to register observed version due to repeated unique-constraint races",
   });
 }

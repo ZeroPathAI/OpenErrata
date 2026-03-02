@@ -199,6 +199,24 @@ The model is instructed to keep unchanged claims stable and only modify, remove,
 that materially change due to the diff. The default full-investigation path remains unchanged when no
 prior complete `SERVER_VERIFIED` investigation exists.
 
+### 2.4.4 Structured Markdown Rendering
+
+The investigator prompt uses a single content section:
+
+1. **Markdown content when available** — generated from stored HTML snapshots
+   and used as the article content section.
+2. **Flat text fallback** — used only when markdown is unavailable (`markdownSource = NONE`).
+
+Markdown is produced from version-scoped HTML (`HtmlBlob` referenced by
+`*VersionMeta` rows), then snapshotted into immutable `InvestigationInput`
+(`markdown`, `markdownSource`, `markdownRendererVersion`) on first execution.
+Retries reuse that snapshot verbatim, so investigation input is stable across
+attempts even if markdown conversion logic changes later.
+
+Claim `text` and `context` still must anchor against normalized post text in the
+extension, so markdown formatting characters are stripped from model outputs
+before persistence when doing so preserves text anchoring.
+
 ### Why Single-Pass
 
 |                   | Extract-then-investigate (per-claim) | Single-pass (whole post)                                   |
@@ -488,14 +506,16 @@ Image handling uses a single required path:
 
 The system stores raw verification signals, so users can decide what to trust:
 
-- `contentProvenance`: whether the content was server-verified or client-fallback.
+- `provenance`: investigation input provenance (`SERVER_VERIFIED` or `CLIENT_FALLBACK`)
+  stored on immutable `InvestigationInput`.
 - `corroborationCredits`: one corroboration credit per distinct authenticated user who submitted
   matching content for that investigation.
-- `serverVerifiedAt`: timestamp of successful server-side verification (null if not yet verified).
+- `serverVerifiedAt`: timestamp latch on `PostVersion` set on successful server-side verification
+  (null if not yet verified).
 
 Public-facing endpoints do not enforce an eligibility threshold in v1. Any
 completed investigation can be returned, and public responses include raw trust
-signals (provenance + corroboration count + verification timestamps/reasons) so
+signals (provenance + corroboration count + verification timestamp) so
 consumers can apply their own trust policy.
 
 **Signal updates:** The raw signals change in two places:
@@ -504,12 +524,11 @@ consumers can apply their own trust policy.
   investigation and submits matching content, corroboration credit is added for that reporter
   (duplicate submissions from the same reporter are ignored).
 - **On successful server-side fetch**: if a previously-failed server fetch later succeeds
-  (e.g., on a subsequent `registerObservedVersion` where the server retries) **and the
-  server-computed content version matches the investigation's version**, `contentProvenance`
-  is updated to `SERVER_VERIFIED` and `serverVerifiedAt` is set. If the versions differ, the
-  existing investigation is left unchanged — it was run against different content.
+  (e.g., on a subsequent `registerObservedVersion` where the server retries),
+  matching `PostVersion` rows latch `serverVerifiedAt` from null to a timestamp.
+  Existing investigation provenance snapshots are immutable and are not rewritten.
 - **Interim display policy:** Interim reuse is only enabled when the prior completed investigation has
-  `contentProvenance = "SERVER_VERIFIED"`. `CLIENT_FALLBACK` investigations are never reused as
+  `provenance = "SERVER_VERIFIED"` on `InvestigationInput`. `CLIENT_FALLBACK` investigations are never reused as
   interim results on a new version.
 
 ## 2.10 Investigation Prioritization
@@ -667,10 +686,6 @@ model Post {
   lastViewedAt    DateTime?
   versions        PostVersion[]
   viewCredits     PostViewCredit[]
-  lesswrongMeta   LesswrongMeta?
-  xMeta           XMeta?
-  substackMeta    SubstackMeta?
-  wikipediaMeta   WikipediaMeta?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
@@ -725,75 +740,19 @@ model Author {
 
 ### Platform metadata
 
-```prisma
-model LesswrongMeta {
-  postId          String    @id
-  post            Post      @relation(fields: [postId], references: [id])
-  slug            String    @unique
-  title           String
-  htmlContent     String
-  imageUrls       String[]
-  wordCount       Int?      // Reserved in schema; v1 ingestion path does not currently populate this.
-  karma           Int?      // Reserved in schema; v1 ingestion path does not currently populate this.
-  authorName      String
-  authorSlug      String?
-  tags            String[]
-  publishedAt     DateTime?
-}
-
-model XMeta {
-  postId          String    @id
-  post            Post      @relation(fields: [postId], references: [id])
-  tweetId         String    @unique
-  text            String
-  authorHandle    String
-  authorDisplayName String?
-  mediaUrls       String[]
-  likeCount       Int?
-  retweetCount    Int?
-  postedAt        DateTime?
-}
-
-model SubstackMeta {
-  postId                String    @id
-  post                  Post      @relation(fields: [postId], references: [id])
-  substackPostId        String    @unique
-  publicationSubdomain  String
-  slug                  String
-  title                 String
-  subtitle              String?
-  imageUrls             String[]
-  authorName            String
-  authorSubstackHandle  String?
-  publishedAt           DateTime?
-  likeCount             Int?
-  commentCount          Int?
-
-  @@unique([publicationSubdomain, slug])
-}
-
-model WikipediaMeta {
-  postId         String    @id
-  post           Post      @relation(fields: [postId], references: [id])
-  pageId         String
-  language       String    // ISO 639 language code (e.g. "en", "de")
-  title          String    // Canonical page title (underscored form)
-  displayTitle   String?   // Human-readable title with formatting
-  revisionId     String    // MediaWiki revision ID observed by the extension
-  lastModifiedAt DateTime?
-  imageUrls      String[]
-
-  @@unique([language, pageId])
-}
-```
+Platform metadata is version-scoped only. Each `PostVersion` can have one
+platform-specific metadata row (`LesswrongVersionMeta`, `XVersionMeta`,
+`SubstackVersionMeta`, `WikipediaVersionMeta`). HTML snapshots are
+content-addressed in `HtmlBlob` and referenced by version metadata via
+source-scoped `serverHtmlBlobId` / `clientHtmlBlobId`.
 
 ### Content versioning
 
 Content text and image positions are stored in content-addressed tables, shared
 across `PostVersion` rows when identical. `PostVersion` is the central
 intermediary linking a `Post` to its `Investigation`: each version captures
-a snapshot of content + images + provenance, and at most one investigation may
-exist per version.
+a snapshot of content + images, and at most one investigation may exist per
+version.
 
 ```prisma
 model ContentBlob {
@@ -804,6 +763,20 @@ model ContentBlob {
   createdAt   DateTime @default(now())
 
   postVersions PostVersion[]
+}
+
+model HtmlBlob {
+  id          String   @id @default(cuid())
+  htmlHash    String   @unique    // SHA-256 of htmlContent
+  htmlContent String
+  createdAt   DateTime @default(now())
+
+  lesswrongServerVersionMetas LesswrongVersionMeta[] @relation("LesswrongServerHtml")
+  lesswrongClientVersionMetas LesswrongVersionMeta[] @relation("LesswrongClientHtml")
+  substackServerVersionMetas  SubstackVersionMeta[]  @relation("SubstackServerHtml")
+  substackClientVersionMetas  SubstackVersionMeta[]  @relation("SubstackClientHtml")
+  wikipediaServerVersionMetas WikipediaVersionMeta[] @relation("WikipediaServerHtml")
+  wikipediaClientVersionMetas WikipediaVersionMeta[] @relation("WikipediaClientHtml")
 }
 
 model ImageOccurrenceSet {
@@ -838,20 +811,99 @@ model PostVersion {
   contentBlob          ContentBlob        @relation(fields: [contentBlobId], references: [id])
   imageOccurrenceSetId String
   imageOccurrenceSet   ImageOccurrenceSet @relation(fields: [imageOccurrenceSetId], references: [id])
-  contentProvenance    ContentProvenance
-  fetchFailureReason   String?            // Populated when provenance is CLIENT_FALLBACK
-  serverVerifiedAt     DateTime?          // Set when server-side fetch succeeds
+  serverVerifiedAt     DateTime?          // One-way latch: null -> DateTime when canonical verification succeeds
   firstSeenAt          DateTime           @default(now())
   lastSeenAt           DateTime           @default(now())
   seenCount            Int                @default(1)
 
-  investigation      Investigation?
+  investigation        Investigation?
+  lesswrongVersionMeta LesswrongVersionMeta?
+  xVersionMeta         XVersionMeta?
+  substackVersionMeta  SubstackVersionMeta?
+  wikipediaVersionMeta WikipediaVersionMeta?
   versionViewCredits PostVersionViewCredit[]
 
   @@unique([postId, versionHash])
   @@unique([postId, contentBlobId, imageOccurrenceSetId])
   @@index([postId, lastSeenAt])
-  @@index([postId, contentProvenance, lastSeenAt])
+}
+
+model LesswrongVersionMeta {
+  postVersionId     String      @id
+  postVersion       PostVersion @relation(fields: [postVersionId], references: [id], onDelete: Cascade)
+  slug              String
+  title             String?
+  serverHtmlBlobId  String?
+  serverHtmlBlob    HtmlBlob?   @relation("LesswrongServerHtml", fields: [serverHtmlBlobId], references: [id], onDelete: Restrict)
+  clientHtmlBlobId  String?
+  clientHtmlBlob    HtmlBlob?   @relation("LesswrongClientHtml", fields: [clientHtmlBlobId], references: [id], onDelete: Restrict)
+  imageUrls         String[]
+  karma             Int?
+  authorName        String?
+  authorSlug        String?
+  tags              String[]
+  publishedAt       DateTime?
+  createdAt         DateTime    @default(now())
+
+  @@index([slug])
+}
+
+model XVersionMeta {
+  postVersionId      String      @id
+  postVersion        PostVersion @relation(fields: [postVersionId], references: [id], onDelete: Cascade)
+  tweetId            String
+  text               String
+  authorHandle       String
+  authorDisplayName  String?
+  mediaUrls          String[]
+  likeCount          Int?
+  retweetCount       Int?
+  postedAt           DateTime?
+  createdAt          DateTime    @default(now())
+}
+
+model SubstackVersionMeta {
+  postVersionId          String      @id
+  postVersion            PostVersion @relation(fields: [postVersionId], references: [id], onDelete: Cascade)
+  substackPostId         String
+  publicationSubdomain   String
+  slug                   String
+  title                  String
+  subtitle               String?
+  serverHtmlBlobId       String?
+  serverHtmlBlob         HtmlBlob?   @relation("SubstackServerHtml", fields: [serverHtmlBlobId], references: [id], onDelete: Restrict)
+  clientHtmlBlobId       String?
+  clientHtmlBlob         HtmlBlob?   @relation("SubstackClientHtml", fields: [clientHtmlBlobId], references: [id], onDelete: Restrict)
+  imageUrls              String[]
+  authorName             String
+  authorSubstackHandle   String?
+  publishedAt            DateTime?
+  likeCount              Int?
+  commentCount           Int?
+  createdAt              DateTime    @default(now())
+
+  @@index([publicationSubdomain, slug])
+  @@index([substackPostId])
+}
+
+model WikipediaVersionMeta {
+  postVersionId     String      @id
+  postVersion       PostVersion @relation(fields: [postVersionId], references: [id], onDelete: Cascade)
+  pageId            String
+  language          String
+  title             String
+  displayTitle      String?
+  serverHtmlBlobId  String?
+  serverHtmlBlob    HtmlBlob?   @relation("WikipediaServerHtml", fields: [serverHtmlBlobId], references: [id], onDelete: Restrict)
+  clientHtmlBlobId  String?
+  clientHtmlBlob    HtmlBlob?   @relation("WikipediaClientHtml", fields: [clientHtmlBlobId], references: [id], onDelete: Restrict)
+  revisionId        String
+  lastModifiedAt    DateTime?
+  imageUrls         String[]
+  createdAt         DateTime    @default(now())
+
+  @@index([language, pageId])
+  @@index([revisionId])
 }
 
 model PostVersionViewCredit {
@@ -885,6 +937,7 @@ model Investigation {
   id                    String                @id @default(cuid())
   postVersionId         String
   postVersion           PostVersion           @relation(fields: [postVersionId], references: [id])
+  input                 InvestigationInput?
   parentInvestigationId String?               // Prior completed investigation for update lineage
   parentInvestigation   Investigation?        @relation("InvestigationUpdateLineage", fields: [parentInvestigationId], references: [id])
   contentDiff           String?               // Line-oriented diff used for update-mode prompting
@@ -906,6 +959,17 @@ model Investigation {
 
   @@unique([postVersionId])     // At most one investigation per content version
   @@index([status])
+}
+
+model InvestigationInput {
+  investigationId         String        @id
+  investigation           Investigation @relation(fields: [investigationId], references: [id], onDelete: Cascade)
+  provenance              String        // SERVER_VERIFIED | CLIENT_FALLBACK
+  contentHash             String
+  markdownSource          String        // SERVER_HTML | CLIENT_HTML | NONE
+  markdown                String?       // null iff markdownSource = NONE
+  markdownRendererVersion String?       // null iff markdownSource = NONE
+  createdAt               DateTime      @default(now())
 }
 
 model InvestigationRun {
@@ -1184,7 +1248,6 @@ tables at read time:
 - `provenance` (`SERVER_VERIFIED` or `CLIENT_FALLBACK`)
 - `corroborationCount` (count of corroboration credits)
 - `serverVerifiedAt`
-- `fetchFailureReason`
 
 Public visibility applies only one hard constraint: `status = COMPLETE`.
 
@@ -1364,17 +1427,10 @@ type SearchInvestigationSummary {
   claimCount: Int!
 }
 
-type ServerVerifiedOrigin {
-  provenance: ContentProvenance! # SERVER_VERIFIED
-  serverVerifiedAt: DateTime!
+type InvestigationOrigin {
+  provenance: ContentProvenance!
+  serverVerifiedAt: DateTime
 }
-
-type ClientFallbackOrigin {
-  provenance: ContentProvenance! # CLIENT_FALLBACK
-  fetchFailureReason: String!
-}
-
-union InvestigationOrigin = ServerVerifiedOrigin | ClientFallbackOrigin
 
 type SearchInvestigationsResult {
   investigations: [SearchInvestigationSummary!]!
@@ -1414,7 +1470,7 @@ type Query {
 - `publicMetrics(...)` counts all complete investigations matching the filters.
 - `searchInvestigations.limit` must be in `[1, 100]`; `offset >= 0`.
 - Public responses include trust signals (`provenance`, `corroborationCount`,
-  `serverVerifiedAt`, `fetchFailureReason`) so clients can apply their own thresholds.
+  `serverVerifiedAt`) so clients can apply their own thresholds.
 
 In v1, public metrics focus on incidence rather than truth-rate leaderboards:
 
@@ -1447,9 +1503,10 @@ Interim update candidate query (latest complete server-verified investigation fo
 SELECT i.*
 FROM "Investigation" i
 JOIN "PostVersion" pv ON pv."id" = i."postVersionId"
+JOIN "InvestigationInput" ii ON ii."investigationId" = i."id"
 WHERE pv."postId" = $1
   AND i."status" = 'COMPLETE'
-  AND pv."contentProvenance" = 'SERVER_VERIFIED'
+  AND ii."provenance" = 'SERVER_VERIFIED'
 ORDER BY i."checkedAt" DESC
 LIMIT 1;
 ```

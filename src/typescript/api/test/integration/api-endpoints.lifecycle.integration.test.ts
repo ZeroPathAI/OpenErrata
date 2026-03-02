@@ -408,6 +408,44 @@ void test("orchestrateInvestigation ignores stale transient failure after anothe
   assert.equal(firstAttempt.outcome, "SUCCEEDED");
 });
 
+void test("investigateNow persists InvestigationInput snapshot at queue time", async () => {
+  const caller = createCaller({ isAuthenticated: true });
+  const lesswrongHtml = "<h1>Persisted snapshot</h1><p>Alpha beta gamma.</p>";
+  const viewInput = buildLesswrongViewInput({
+    externalId: "investigation-input-snapshot-persisted-1",
+    htmlContent: lesswrongHtml,
+  });
+
+  const investigateNowResult = await withMockLesswrongCanonicalHtml(lesswrongHtml, () =>
+    caller.post.investigateNow(viewInput),
+  );
+  assert.equal(investigateNowResult.status, "PENDING");
+
+  const investigation = await prisma.investigation.findUnique({
+    where: { id: investigateNowResult.investigationId },
+    select: {
+      id: true,
+      inputId: true,
+      input: {
+        select: {
+          investigationId: true,
+          provenance: true,
+          markdownSource: true,
+          markdown: true,
+          markdownRendererVersion: true,
+        },
+      },
+    },
+  });
+  assert.ok(investigation);
+  assert.equal(investigation.inputId, investigation.id);
+  assert.equal(investigation.input.investigationId, investigation.id);
+  assert.equal(investigation.input.provenance, "SERVER_VERIFIED");
+  assert.equal(investigation.input.markdownSource, "SERVER_HTML");
+  assert.equal(typeof investigation.input.markdown, "string");
+  assert.equal(typeof investigation.input.markdownRendererVersion, "string");
+});
+
 void test("ensureInvestigationQueued randomized state model preserves lifecycle invariants", async () => {
   const random = createDeterministicRandom(0x94ab73d1);
   const rounds = 18;
@@ -430,10 +468,6 @@ void test("ensureInvestigationQueued randomized state model preserves lifecycle 
     const enqueue = randomChance(random, 0.7);
     const includeOnPendingRun = randomChance(random, 0.6);
     const canonicalProvenance = randomChance(random, 0.5) ? "SERVER_VERIFIED" : "CLIENT_FALLBACK";
-    const canonicalFetchFailureReason =
-      canonicalProvenance === "CLIENT_FALLBACK"
-        ? `fuzz-fetch-failure-${round.toString()}`
-        : undefined;
     const roundTag = [
       `round=${round.toString()}`,
       `seedCase=${seedCase.name}`,
@@ -506,12 +540,6 @@ void test("ensureInvestigationQueued randomized state model preserves lifecycle 
       contentHash: post.contentHash,
       contentText: post.contentText,
       provenance: canonicalProvenance,
-      ...(canonicalProvenance === "CLIENT_FALLBACK"
-        ? {
-            fetchFailureReason:
-              canonicalFetchFailureReason ?? `fuzz-fetch-failure-fallback-${round.toString()}`,
-          }
-        : {}),
     });
     const result = await ensureInvestigationQueued({
       prisma,
@@ -592,8 +620,6 @@ void test("ensureInvestigationQueued randomized state model preserves lifecycle 
         status: true,
         postVersion: {
           select: {
-            contentProvenance: true,
-            fetchFailureReason: true,
             serverVerifiedAt: true,
           },
         },
@@ -617,29 +643,16 @@ void test("ensureInvestigationQueued randomized state model preserves lifecycle 
       `stored status mismatch (${roundTag})`,
     );
 
-    const expectedProvenance =
+    const expectedServerVerified =
       seedCase.status === null
-        ? canonicalProvenance
-        : seededExistingProvenance === "SERVER_VERIFIED"
-          ? "SERVER_VERIFIED"
-          : canonicalProvenance === "SERVER_VERIFIED"
-            ? "SERVER_VERIFIED"
-            : "CLIENT_FALLBACK";
-    assert.equal(
-      storedInvestigation.postVersion.contentProvenance,
-      expectedProvenance,
-      `stored provenance mismatch (${roundTag})`,
-    );
-    if (expectedProvenance === "SERVER_VERIFIED") {
+        ? canonicalProvenance === "SERVER_VERIFIED"
+        : seededExistingProvenance === "SERVER_VERIFIED" ||
+          canonicalProvenance === "SERVER_VERIFIED";
+    if (expectedServerVerified) {
       assert.notEqual(
         storedInvestigation.postVersion.serverVerifiedAt,
         null,
         `server-verified rows should have serverVerifiedAt (${roundTag})`,
-      );
-      assert.equal(
-        storedInvestigation.postVersion.fetchFailureReason,
-        null,
-        `server-verified rows should not retain fetch failures (${roundTag})`,
       );
     } else {
       assert.equal(
@@ -647,19 +660,6 @@ void test("ensureInvestigationQueued randomized state model preserves lifecycle 
         null,
         `client-fallback rows should not have serverVerifiedAt (${roundTag})`,
       );
-      if (seedCase.status === null) {
-        assert.equal(
-          storedInvestigation.postVersion.fetchFailureReason,
-          canonicalFetchFailureReason ?? null,
-          `new client-fallback row should preserve canonical failure reason (${roundTag})`,
-        );
-      } else {
-        assert.equal(
-          storedInvestigation.postVersion.fetchFailureReason,
-          "fetch unavailable",
-          `existing client-fallback row should preserve prior failure reason (${roundTag})`,
-        );
-      }
     }
 
     const storedRuns = await prisma.investigationRun.findMany({

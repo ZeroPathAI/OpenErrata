@@ -16,6 +16,7 @@ const runContextInclude = {
   investigation: {
     include: {
       ...investigationContextInclude,
+      input: true,
       parentInvestigation: {
         include: {
           claims: {

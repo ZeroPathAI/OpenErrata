@@ -1,4 +1,5 @@
-import { normalizeContent, isNonNullObject } from "@openerrata/shared";
+import { normalizeContent, isNonNullObject, utf8ByteLength } from "@openerrata/shared";
+import { ANNOTATION_SELECTOR } from "../annotation-dom";
 import type { AdapterExtractionResult, PlatformAdapter } from "./model";
 import {
   extractContentWithImageOccurrencesFromRoot,
@@ -46,6 +47,7 @@ const PRIVATE_OR_GATED_PATTERNS = [
   /subscriber-only post/i,
 ] as const;
 const ACCESS_CONTROL_TERMS = ["paywall", "subscriber", "subscription"] as const;
+const SUBSTACK_HTML_CONTENT_MAX_BYTES = 256 * 1024;
 
 function isHiddenElement(element: Element): boolean {
   return element.closest('[hidden], [aria-hidden="true"]') !== null;
@@ -309,6 +311,41 @@ function hasPrivateOrGatedMarkers(document: Document): boolean {
   return false;
 }
 
+/**
+ * Serialize the content root's HTML, stripping any OpenErrata annotation
+ * marks that may have been injected into the DOM. The stored HTML must
+ * represent the original page content, not our annotations.
+ */
+function serializeContentHtml(root: Element): string {
+  const annotations = root.querySelectorAll(ANNOTATION_SELECTOR);
+  if (annotations.length === 0) {
+    return root.innerHTML;
+  }
+
+  const clone = root.cloneNode(true);
+  if (!(clone instanceof Element)) return root.innerHTML;
+  for (const mark of clone.querySelectorAll(ANNOTATION_SELECTOR)) {
+    const parent = mark.parentNode;
+    if (parent === null) continue;
+    while (mark.firstChild !== null) {
+      parent.insertBefore(mark.firstChild, mark);
+    }
+    parent.removeChild(mark);
+  }
+  return clone.innerHTML;
+}
+
+/**
+ * htmlContent is optional in the API schema. Omit oversized payloads to avoid
+ * failing the entire viewPost request against the extension's hard body limit.
+ */
+function toTransportableHtmlContent(html: string): string | undefined {
+  if (html.length === 0) {
+    return undefined;
+  }
+  return utf8ByteLength(html) <= SUBSTACK_HTML_CONTENT_MAX_BYTES ? html : undefined;
+}
+
 export const substackAdapter: PlatformAdapter = {
   platformKey: "SUBSTACK",
   contentRootSelector: CONTENT_SELECTOR,
@@ -407,6 +444,7 @@ export const substackAdapter: PlatformAdapter = {
 
     const extractedContent = extractContentWithImageOccurrencesFromRoot(root, url);
     const contentText = extractedContent.contentText;
+    const htmlContent = toTransportableHtmlContent(serializeContentHtml(root));
 
     const subtitle = normalizeContent(document.querySelector(SUBTITLE_SELECTOR)?.textContent ?? "");
     const publishedAt = extractPublishedAt(document, root);
@@ -434,6 +472,7 @@ export const substackAdapter: PlatformAdapter = {
           title,
           authorName,
           ...(subtitle.length === 0 ? {} : { subtitle }),
+          ...(htmlContent === undefined ? {} : { htmlContent }),
           ...(authorSubstackHandle === undefined ? {} : { authorSubstackHandle }),
           ...(publishedAt === null ? {} : { publishedAt }),
           ...(interactionCounts.likeCount === undefined

@@ -1,16 +1,24 @@
 import { isUniqueConstraintError } from "$lib/db/errors.js";
-import type { Investigation, InvestigationRun, PrismaClient } from "$lib/generated/prisma/client";
+import type {
+  Investigation,
+  InvestigationRun,
+  Prisma,
+  PrismaClient,
+} from "$lib/generated/prisma/client";
 import {
   DEFAULT_INVESTIGATION_MODEL,
   DEFAULT_INVESTIGATION_PROVIDER,
   WORD_COUNT_LIMIT,
 } from "@openerrata/shared";
+import { resolveMarkdownForInvestigation } from "./markdown-resolution.js";
+import type { HtmlSnapshots } from "./prompt-context.js";
 import { enqueueInvestigationRun } from "./queue.js";
 import {
   isRecoverableProcessingRunState,
   recoveredProcessingRunData,
   runTimingForInvestigationStatus,
 } from "./investigation-state.js";
+import { randomUUID } from "node:crypto";
 
 export class InvestigationWordLimitError extends Error {
   readonly limit: number;
@@ -61,25 +69,177 @@ async function loadPostVersionWordCount(
   return postVersion.contentBlob.wordCount;
 }
 
+const postVersionForInputSnapshotSelect = {
+  post: {
+    select: {
+      platform: true,
+    },
+  },
+  serverVerifiedAt: true,
+  contentBlob: {
+    select: {
+      contentHash: true,
+    },
+  },
+  lesswrongVersionMeta: {
+    select: {
+      serverHtmlBlob: { select: { htmlContent: true } },
+      clientHtmlBlob: { select: { htmlContent: true } },
+    },
+  },
+  substackVersionMeta: {
+    select: {
+      serverHtmlBlob: { select: { htmlContent: true } },
+      clientHtmlBlob: { select: { htmlContent: true } },
+    },
+  },
+  wikipediaVersionMeta: {
+    select: {
+      serverHtmlBlob: { select: { htmlContent: true } },
+      clientHtmlBlob: { select: { htmlContent: true } },
+    },
+  },
+} satisfies Prisma.PostVersionSelect;
+
+type PostVersionForInputSnapshot = Prisma.PostVersionGetPayload<{
+  select: typeof postVersionForInputSnapshotSelect;
+}>;
+
+type InvestigationInputSnapshot =
+  | {
+      provenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK";
+      contentHash: string;
+      markdownSource: "NONE";
+    }
+  | {
+      provenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK";
+      contentHash: string;
+      markdownSource: "SERVER_HTML" | "CLIENT_HTML";
+      markdown: string;
+      markdownRendererVersion: string;
+    };
+
+function unreachablePlatform(platform: never): never {
+  throw new Error(`Unsupported post platform: ${String(platform)}`);
+}
+
+function resolveHtmlSnapshotsFromPostVersion(
+  postVersion: PostVersionForInputSnapshot,
+): HtmlSnapshots {
+  const platform = postVersion.post.platform;
+  let serverHtml: string | null;
+  let clientHtml: string | null;
+  switch (platform) {
+    case "LESSWRONG":
+      serverHtml = postVersion.lesswrongVersionMeta?.serverHtmlBlob?.htmlContent ?? null;
+      clientHtml = postVersion.lesswrongVersionMeta?.clientHtmlBlob?.htmlContent ?? null;
+      break;
+    case "SUBSTACK":
+      serverHtml = postVersion.substackVersionMeta?.serverHtmlBlob?.htmlContent ?? null;
+      clientHtml = postVersion.substackVersionMeta?.clientHtmlBlob?.htmlContent ?? null;
+      break;
+    case "WIKIPEDIA":
+      serverHtml = postVersion.wikipediaVersionMeta?.serverHtmlBlob?.htmlContent ?? null;
+      clientHtml = postVersion.wikipediaVersionMeta?.clientHtmlBlob?.htmlContent ?? null;
+      break;
+    case "X":
+      serverHtml = null;
+      clientHtml = null;
+      break;
+    default:
+      return unreachablePlatform(platform);
+  }
+
+  if (postVersion.serverVerifiedAt !== null) {
+    if (serverHtml === null) {
+      throw new Error(
+        `serverVerifiedAt is set but serverHtml is missing for platform ${platform} — violates DB invariant (serverVerifiedAt IS NOT NULL → serverHtmlBlobId IS NOT NULL)`,
+      );
+    }
+    return { serverVerifiedAt: postVersion.serverVerifiedAt, serverHtml, clientHtml };
+  }
+  return { serverVerifiedAt: null, serverHtml, clientHtml };
+}
+
+async function loadInvestigationInputSnapshot(
+  prisma: PrismaClient,
+  postVersionId: string,
+): Promise<InvestigationInputSnapshot> {
+  const postVersion = await prisma.postVersion.findUnique({
+    where: { id: postVersionId },
+    select: postVersionForInputSnapshotSelect,
+  });
+  if (postVersion === null) {
+    throw new Error(`PostVersion ${postVersionId} not found`);
+  }
+
+  const htmlSnapshots = resolveHtmlSnapshotsFromPostVersion(postVersion);
+  const markdownResolution = resolveMarkdownForInvestigation({
+    platform: postVersion.post.platform,
+    snapshots: htmlSnapshots,
+  });
+  const provenance =
+    htmlSnapshots.serverVerifiedAt !== null
+      ? ("SERVER_VERIFIED" as const)
+      : ("CLIENT_FALLBACK" as const);
+
+  if (markdownResolution.source === "NONE") {
+    return {
+      provenance,
+      contentHash: postVersion.contentBlob.contentHash,
+      markdownSource: "NONE",
+    };
+  }
+
+  return {
+    provenance,
+    contentHash: postVersion.contentBlob.contentHash,
+    markdownSource: markdownResolution.source,
+    markdown: markdownResolution.markdown,
+    markdownRendererVersion: markdownResolution.rendererVersion,
+  };
+}
+
 async function createInvestigation(
   prisma: PrismaClient,
   input: {
     postVersionId: string;
     promptId: string;
+    snapshot: InvestigationInputSnapshot;
     parentInvestigationId?: string;
     contentDiff?: string;
   },
 ): Promise<Investigation> {
-  return prisma.investigation.create({
-    data: {
-      postVersionId: input.postVersionId,
-      status: "PENDING",
-      parentInvestigationId: input.parentInvestigationId ?? null,
-      contentDiff: input.contentDiff ?? null,
-      promptId: input.promptId,
-      provider: DEFAULT_INVESTIGATION_PROVIDER,
-      model: DEFAULT_INVESTIGATION_MODEL,
-    },
+  const investigationId = randomUUID();
+  return prisma.$transaction(async (tx) => {
+    await tx.investigationInput.create({
+      data: {
+        investigationId,
+        provenance: input.snapshot.provenance,
+        contentHash: input.snapshot.contentHash,
+        markdownSource: input.snapshot.markdownSource,
+        ...(input.snapshot.markdownSource === "NONE"
+          ? {}
+          : {
+              markdown: input.snapshot.markdown,
+              markdownRendererVersion: input.snapshot.markdownRendererVersion,
+            }),
+      },
+    });
+
+    return tx.investigation.create({
+      data: {
+        id: investigationId,
+        inputId: investigationId,
+        postVersionId: input.postVersionId,
+        status: "PENDING",
+        parentInvestigationId: input.parentInvestigationId ?? null,
+        contentDiff: input.contentDiff ?? null,
+        promptId: input.promptId,
+        provider: DEFAULT_INVESTIGATION_PROVIDER,
+        model: DEFAULT_INVESTIGATION_MODEL,
+      },
+    });
   });
 }
 
@@ -228,9 +388,11 @@ async function ensureInvestigationRecord(input: EnsureInvestigationInput): Promi
     }
 
     try {
+      const snapshot = await loadInvestigationInputSnapshot(input.prisma, input.postVersionId);
       const createInput: Parameters<typeof createInvestigation>[1] = {
         postVersionId: input.postVersionId,
         promptId: input.promptId,
+        snapshot,
       };
       if (input.parentInvestigationId !== undefined) {
         createInput.parentInvestigationId = input.parentInvestigationId;

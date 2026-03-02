@@ -27,7 +27,7 @@ import { PageObserver } from "./observer";
 import { ContentSyncClient, type ParsedExtensionPageStatus } from "./sync";
 import { mapClaimsToDom } from "./dom-mapper";
 import { extractSubstackPostSlug } from "../lib/substack-url";
-import { ANNOTATION_SELECTOR, readAnnotationClaimId } from "./annotation-dom";
+import { ANNOTATION_CLAIM_ID_ATTRIBUTE, ANNOTATION_SELECTOR } from "./annotation-dom";
 
 const REFRESH_DEBOUNCE_MS = 200;
 const REAPPLY_DEBOUNCE_MS = 300;
@@ -192,20 +192,16 @@ function resolveClaimAnchor(range: Range): HTMLElement | null {
 }
 
 function resolveRenderedClaimAnchor(root: Element, claimId: string): HTMLElement | null {
-  const renderedClaims = root.querySelectorAll<HTMLElement>(ANNOTATION_SELECTOR);
-  for (const renderedClaim of renderedClaims) {
-    if (readAnnotationClaimId(renderedClaim) === claimId) {
-      return renderedClaim;
-    }
-  }
-  return null;
+  return root.querySelector<HTMLElement>(
+    `${ANNOTATION_SELECTOR}[${ANNOTATION_CLAIM_ID_ATTRIBUTE}="${CSS.escape(claimId)}"]`,
+  );
 }
 
-function scrollToClaimAnchor(anchor: HTMLElement): boolean {
+function scrollToClaimAnchor(anchor: HTMLElement, platform: Platform): boolean {
   anchor.scrollIntoView({
-    // Smooth scrolling can cause long main-thread stalls on very large pages
-    // with heavy scroll handlers (observed on long Substack posts).
-    behavior: "auto",
+    // Substack pages can have heavy scroll/layout handlers that cause long
+    // main-thread stalls with smooth scrolling. Use instant scroll there.
+    behavior: platform === "SUBSTACK" ? "auto" : "smooth",
     block: "center",
     inline: "nearest",
   });
@@ -220,10 +216,22 @@ function scrollToClaimAnchor(anchor: HTMLElement): boolean {
   return true;
 }
 
-function scrollToClaimRange(range: Range): boolean {
+function scrollToClaimRange(range: Range, platform: Platform): boolean {
   const anchor = resolveClaimAnchor(range);
   if (!anchor) return false;
-  return scrollToClaimAnchor(anchor);
+  return scrollToClaimAnchor(anchor, platform);
+}
+
+/**
+ * Schedule a deferred full re-render of annotations. Used by `focusClaim` when
+ * we know that at least one annotation mark is missing from the DOM — a
+ * conditional `reapplyIfMissing` would be a no-op if *other* marks still exist,
+ * so we force a complete clear-and-render instead.
+ */
+function queueAnnotationRerender(controller: AnnotationController, adapter: PlatformAdapter): void {
+  window.setTimeout(() => {
+    controller.render(adapter);
+  }, 0);
 }
 
 function areClaimsEqual(left: InvestigationClaim[], right: InvestigationClaim[]): boolean {
@@ -435,13 +443,26 @@ export class PageSessionController {
       return focusClaimResponseSchema.parse({ ok: false });
     }
 
+    const platform = this.#state.platform;
+
     if (this.#annotations.isVisible()) {
       const renderedClaimAnchor = resolveRenderedClaimAnchor(root, claimId);
       if (renderedClaimAnchor) {
         return focusClaimResponseSchema.parse({
-          ok: scrollToClaimAnchor(renderedClaimAnchor),
+          ok: scrollToClaimAnchor(renderedClaimAnchor, platform),
         });
       }
+
+      // Rendered mark is missing — try exact/context matching before giving up.
+      const [mappedClaim] = mapClaimsToDom([claim], root, { allowFuzzy: false });
+      if (mappedClaim?.matched && mappedClaim.range) {
+        queueAnnotationRerender(this.#annotations, this.#state.adapter);
+        return focusClaimResponseSchema.parse({
+          ok: scrollToClaimRange(mappedClaim.range, platform),
+        });
+      }
+
+      queueAnnotationRerender(this.#annotations, this.#state.adapter);
       this.scheduleRefresh(0);
       return focusClaimResponseSchema.parse({ ok: false });
     }
@@ -452,7 +473,7 @@ export class PageSessionController {
     }
 
     return focusClaimResponseSchema.parse({
-      ok: scrollToClaimRange(mappedClaim.range),
+      ok: scrollToClaimRange(mappedClaim.range, platform),
     });
   }
 

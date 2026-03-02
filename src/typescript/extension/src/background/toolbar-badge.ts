@@ -1,6 +1,6 @@
 import type { ExtensionPostStatus } from "@openerrata/shared";
 import browser from "webextension-polyfill";
-import { getUpgradeRequiredState } from "./upgrade-required-state.js";
+import { getUpgradeRequiredState, type UpgradeRequiredState } from "./upgrade-required-state.js";
 
 interface ToolbarBadgeState {
   text: string;
@@ -155,7 +155,7 @@ export function updateToolbarBadge(tabId: number, status: ExtensionPostStatus | 
 
 function toToolbarBadgeState(
   status: ExtensionPostStatus | null,
-  upgradeState: { active: boolean; message?: string },
+  upgradeState: UpgradeRequiredState,
 ): ToolbarBadgeState {
   if (upgradeState.active) {
     return {

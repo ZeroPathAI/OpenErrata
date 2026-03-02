@@ -17,7 +17,7 @@
     "api": {
       "entry": ["src/routes/**/*.ts", "test/**/*.ts"],
       "project": ["src/**/*.ts", "test/**/*.ts", "*.ts", "*.js"],
-      "ignoreDependencies": ["@prisma/client"],
+      "ignoreDependencies": ["@prisma/client", "@mixmark-io/domino"],
       "sveltekit": true
     },
     "extension": {

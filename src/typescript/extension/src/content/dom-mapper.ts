@@ -294,7 +294,7 @@ function fuzzyFind(haystack: string, needle: string): { offset: number; length: 
   if (needle.length === 0 || haystack.length === 0) return null;
 
   const maxDist = Math.ceil(needle.length * 0.4);
-  let bestDist = Infinity;
+  let bestDist = maxDist + 1;
   let bestOffset = -1;
   let bestLength = needle.length;
 
@@ -305,8 +305,10 @@ function fuzzyFind(haystack: string, needle: string): { offset: number; length: 
   for (let winLen = minWin; winLen <= maxWin; winLen++) {
     for (let i = 0; i <= haystack.length - winLen; i++) {
       const candidate = haystack.substring(i, i + winLen);
-      const dist = levenshtein(needle, candidate);
-      if (dist < bestDist) {
+      const candidateMaxDist = Math.min(maxDist, bestDist - 1);
+      if (candidateMaxDist < 0) break;
+      const dist = levenshteinWithin(needle, candidate, candidateMaxDist);
+      if (dist !== null && dist < bestDist) {
         bestDist = dist;
         bestOffset = i;
         bestLength = winLen;
@@ -316,7 +318,7 @@ function fuzzyFind(haystack: string, needle: string): { offset: number; length: 
     }
   }
 
-  if (bestDist <= maxDist && bestOffset !== -1) {
+  if (bestOffset !== -1) {
     return { offset: bestOffset, length: bestLength };
   }
 
@@ -324,21 +326,35 @@ function fuzzyFind(haystack: string, needle: string): { offset: number; length: 
 }
 
 /**
- * Standard dynamic-programming Levenshtein distance.
+ * Bounded dynamic-programming Levenshtein distance.
+ * Returns null when distance exceeds maxDist.
  */
-function levenshtein(a: string, b: string): number {
+function levenshteinWithin(a: string, b: string, maxDist: number): number | null {
   const m = a.length;
   const n = b.length;
+  if (Math.abs(m - n) > maxDist) {
+    return null;
+  }
 
-  // Use a single flat array for the DP matrix (two-row optimisation)
-  let prev = new Uint16Array(n + 1);
-  let curr = new Uint16Array(n + 1);
+  // Use two rows and evaluate only the bounded band around the diagonal.
+  let prev = new Array<number>(n + 1);
+  let curr = new Array<number>(n + 1);
 
-  for (let j = 0; j <= n; j++) prev[j] = j;
+  for (let j = 0; j <= n; j += 1) {
+    prev[j] = j;
+  }
 
-  for (let i = 1; i <= m; i++) {
+  for (let i = 1; i <= m; i += 1) {
     curr[0] = i;
-    for (let j = 1; j <= n; j++) {
+    const from = Math.max(1, i - maxDist);
+    const to = Math.min(n, i + maxDist);
+
+    for (let j = 1; j < from; j += 1) {
+      curr[j] = Number.POSITIVE_INFINITY;
+    }
+
+    let rowMin = Number.POSITIVE_INFINITY;
+    for (let j = from; j <= to; j += 1) {
       const cost = a[i - 1] === b[j - 1] ? 0 : 1;
       const prevAtJ = prev[j];
       const currAtJMinus1 = curr[j - 1];
@@ -347,20 +363,31 @@ function levenshtein(a: string, b: string): number {
         throw new Error("Levenshtein matrix index is out of bounds");
       }
 
-      curr[j] = Math.min(
+      const value = Math.min(
         prevAtJ + 1, // deletion
         currAtJMinus1 + 1, // insertion
         prevAtJMinus1 + cost, // substitution
       );
+      curr[j] = value;
+      rowMin = Math.min(rowMin, value);
     }
+
+    for (let j = to + 1; j <= n; j += 1) {
+      curr[j] = Number.POSITIVE_INFINITY;
+    }
+
+    if (rowMin > maxDist) {
+      return null;
+    }
+
     // Swap rows
     [prev, curr] = [curr, prev];
   }
 
-  const distance = prev[n];
-  if (distance === undefined) {
+  const result = prev[n];
+  if (result === undefined) {
     throw new Error("Levenshtein distance index is out of bounds");
   }
 
-  return distance;
+  return result <= maxDist ? result : null;
 }

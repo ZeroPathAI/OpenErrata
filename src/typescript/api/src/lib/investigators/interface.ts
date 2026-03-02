@@ -50,8 +50,17 @@ export type InvestigatorImageOccurrence =
       resolution: "missing" | "omitted";
     };
 
+export interface ImagePlaceholder {
+  index: number;
+  sourceUrl: string;
+}
+
 interface InvestigatorInputBase {
   contentText: string;
+  /** Markdown content for the LLM prompt (sole content representation). */
+  contentMarkdown?: string;
+  /** Image placeholders embedded in the markdown ([IMAGE:N] patterns). */
+  imagePlaceholders?: ImagePlaceholder[];
   platform: Platform;
   url: string;
   authorName?: string;

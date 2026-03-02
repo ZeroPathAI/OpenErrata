@@ -42,11 +42,14 @@ function installDom(html: string): () => void {
   };
 }
 
-function createClaim(text: string): InvestigationClaim {
+function createClaim(
+  text: string,
+  options?: { id?: InvestigationClaim["id"]; context?: string },
+): InvestigationClaim {
   return {
-    id: "claim-1" as InvestigationClaim["id"],
+    id: options?.id ?? ("claim-1" as InvestigationClaim["id"]),
     text,
-    context: text,
+    context: options?.context ?? text,
     summary: "Claim summary",
     reasoning: "Claim reasoning",
     sources: [

@@ -16,26 +16,17 @@ import {
   getPublicMetrics,
 } from "$lib/services/public-read-model.js";
 
-type PublicOrigin =
-  | {
-      provenance: "SERVER_VERIFIED";
-      serverVerifiedAt: Date;
-    }
-  | {
-      provenance: "CLIENT_FALLBACK";
-      fetchFailureReason: string;
-    };
+interface PublicOrigin {
+  provenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK";
+  serverVerifiedAt: Date | null;
+}
 
 function toOriginOutput(origin: PublicOrigin) {
-  if (origin.provenance === "SERVER_VERIFIED") {
-    return {
-      provenance: "SERVER_VERIFIED" as const,
-      serverVerifiedAt: origin.serverVerifiedAt.toISOString(),
-    };
-  }
   return {
-    provenance: "CLIENT_FALLBACK" as const,
-    fetchFailureReason: origin.fetchFailureReason,
+    provenance: origin.provenance,
+    ...(origin.serverVerifiedAt !== null && {
+      serverVerifiedAt: origin.serverVerifiedAt.toISOString(),
+    }),
   };
 }
 

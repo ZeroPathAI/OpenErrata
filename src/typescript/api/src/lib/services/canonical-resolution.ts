@@ -13,11 +13,12 @@ export interface ObservedContentVersion {
 export type CanonicalContentVersion =
   | (ObservedContentVersion & {
       provenance: "SERVER_VERIFIED";
-      canonicalIdentity?: CanonicalIdentity;
+      /** HTML fetched from the canonical source API (Parse API, LessWrong GraphQL). */
+      sourceHtml: string;
+      canonicalIdentity: CanonicalIdentity | null;
     })
   | (ObservedContentVersion & {
       provenance: "CLIENT_FALLBACK";
-      fetchFailureReason: string;
     });
 
 export interface ServerVerifiedContentMismatch {
@@ -95,16 +96,13 @@ export async function resolveCanonicalContentVersion(input: {
       contentText: serverResult.contentText,
       contentHash: serverResult.contentHash,
       provenance: "SERVER_VERIFIED",
-      ...(serverResult.canonicalIdentity === undefined
-        ? {}
-        : { canonicalIdentity: serverResult.canonicalIdentity }),
+      sourceHtml: serverResult.sourceHtml,
+      canonicalIdentity: serverResult.canonicalIdentity,
     };
   }
 
   return {
-    contentText: input.observed.contentText,
-    contentHash: input.observed.contentHash,
+    ...input.observed,
     provenance: "CLIENT_FALLBACK",
-    fetchFailureReason: serverResult.fetchFailureReason,
   };
 }

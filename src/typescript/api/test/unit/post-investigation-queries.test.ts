@@ -30,7 +30,7 @@ function buildResolvedPostVersion(contentText = "new line"): ResolvedPostVersion
     id: "post-version-id",
     postId: "post-id",
     versionHash: "version-hash",
-    contentProvenance: "SERVER_VERIFIED",
+    serverVerifiedAt: new Date(),
     contentBlob: {
       contentHash: "content-hash",
       contentText,

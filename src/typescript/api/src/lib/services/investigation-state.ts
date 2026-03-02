@@ -1,4 +1,3 @@
-import type { ContentProvenance } from "@openerrata/shared";
 import type { Investigation } from "$lib/generated/prisma/client";
 
 interface RunRecoveryState {
@@ -11,13 +10,6 @@ interface InvestigationRunTiming {
   queuedAt: Date | null;
   startedAt: Date | null;
   heartbeatAt: Date | null;
-}
-
-export function serverVerifiedAtForProvenance(
-  provenance: ContentProvenance,
-  now: Date = new Date(),
-): Date | null {
-  return provenance === "SERVER_VERIFIED" ? now : null;
 }
 
 export function runTimingForInvestigationStatus(

@@ -104,8 +104,9 @@ export class OpenAIInvestigator implements Investigator {
   async investigate(input: InvestigatorInput): Promise<InvestigatorOutput> {
     const openAiModelId = getOpenAiModelId();
     const maxResponseToolRounds = getMaxResponseToolRounds();
-    const userPrompt = buildUserPrompt({
+    const userPromptResult = buildUserPrompt({
       contentText: input.contentText,
+      ...(input.contentMarkdown !== undefined && { contentMarkdown: input.contentMarkdown }),
       platform: input.platform,
       url: input.url,
       ...(input.authorName !== undefined && { authorName: input.authorName }),
@@ -119,7 +120,13 @@ export class OpenAIInvestigator implements Investigator {
           }
         : {}),
     });
-    const initialInput = buildInitialInput(userPrompt, input.contentText, input.imageOccurrences);
+    const initialInput = buildInitialInput(
+      userPromptResult.prompt,
+      userPromptResult.contentString,
+      userPromptResult.contentOffset,
+      input.imageOccurrences,
+      input.imagePlaceholders,
+    );
     const validationImageContextNotes = buildValidationImageContextNotes(input.imageOccurrences);
     const client = this.client;
 
@@ -162,7 +169,7 @@ export class OpenAIInvestigator implements Investigator {
       completedAt: null,
       requestModel: openAiModelId,
       requestInstructions: INVESTIGATION_SYSTEM_PROMPT,
-      requestInput: userPrompt,
+      requestInput: userPromptResult.prompt,
       requestReasoningEffort: requestReasoning.effort,
       requestReasoningSummary: requestReasoning.summary,
       requestedTools: extractRequestedTools(requestedTools),
@@ -450,7 +457,7 @@ export class OpenAIInvestigator implements Investigator {
     const stageTwoAttemptAuditBase: Omit<InvestigatorAttemptAudit, "response" | "error"> = {
       ...stageOneAttemptAuditBase,
       requestInstructions: TWO_STEP_REQUEST_INSTRUCTIONS,
-      requestInput: buildTwoStepRequestInputAudit(userPrompt, stageTwoInputSummary),
+      requestInput: buildTwoStepRequestInputAudit(userPromptResult.prompt, stageTwoInputSummary),
     };
 
     // Fast path: no new claims require validation (for example, pure carry actions).
@@ -595,8 +602,27 @@ export class OpenAIInvestigator implements Investigator {
       );
     }
 
+    // Post-process claim quotes: strip accidental markdown formatting so
+    // claim text anchors against the normalized DOM text in the extension.
+    const cleanedResult = {
+      ...result,
+      claims: result.claims.map((claim) => {
+        const strippedText = stripMarkdownFormatting(claim.text);
+        const strippedContext = stripMarkdownFormatting(claim.context);
+        if (strippedText !== claim.text || strippedContext !== claim.context) {
+          const textAnchored = input.contentText.includes(strippedText);
+          if (textAnchored) {
+            return { ...claim, text: strippedText, context: strippedContext };
+          }
+          // Original text didn't anchor either — keep original, the extension
+          // handles unanchorable claims gracefully.
+        }
+        return claim;
+      }),
+    };
+
     return {
-      result,
+      result: cleanedResult,
       attemptAudit: parseInvestigatorAttemptAudit({
         ...stageTwoAttemptAuditBase,
         completedAt: new Date().toISOString(),
@@ -608,4 +634,23 @@ export class OpenAIInvestigator implements Investigator {
       }),
     };
   }
+}
+
+/**
+ * Strip common markdown formatting characters from LLM-generated claim quotes.
+ * Used when the prompt shows markdown content but claim text must match the
+ * normalized DOM text (which has no markdown syntax).
+ */
+function stripMarkdownFormatting(text: string): string {
+  return text
+    .replace(/^#{1,6}\s+/gm, "") // heading markers
+    .replace(/^>\s?/gm, "") // blockquote markers
+    .replace(/^[-*+]\s+/gm, "") // unordered list markers
+    .replace(/^\d+\.\s+/gm, "") // ordered list markers
+    .replace(/\*{1,2}([^*]+)\*{1,2}/g, "$1") // bold/italic with *
+    .replace(/__([^_]+)__/g, "$1") // bold with __
+    .replace(/_([^_]+)_/g, "$1") // italic with _
+    .replace(/`([^`]+)`/g, "$1") // inline code
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1") // links [text](url)
+    .trim();
 }

@@ -1,13 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { Platform } from "@openerrata/shared";
 import type { PrismaClient } from "../../src/lib/generated/prisma/client.js";
 import {
   getPublicInvestigationById,
   getPublicMetrics,
-  getPublicPostInvestigations,
   PublicReadModelInvariantError,
-  searchPublicInvestigations,
 } from "../../src/lib/services/public-read-model.js";
 
 interface InvestigationFindFirstResult {
@@ -15,10 +12,11 @@ interface InvestigationFindFirstResult {
   checkedAt: Date | null;
   provider: string;
   model: string;
+  input: {
+    provenance: string;
+  } | null;
   postVersion: {
-    contentProvenance: string;
     serverVerifiedAt: Date | null;
-    fetchFailureReason: string | null;
     contentBlob: {
       contentHash: string;
     };
@@ -51,13 +49,14 @@ interface InvestigationFindFirstResult {
 type InvestigationFindManyResult = {
   id: string;
   checkedAt: Date | null;
+  input: {
+    provenance: string;
+  } | null;
   postVersion: {
     contentBlob: {
       contentHash: string;
     };
-    contentProvenance: string;
     serverVerifiedAt: Date | null;
-    fetchFailureReason: string | null;
     post?: {
       platform: string;
       externalId: string;
@@ -126,10 +125,11 @@ test("getPublicInvestigationById maps a complete SERVER_VERIFIED investigation",
         checkedAt,
         provider: "OPENAI",
         model: "OPENAI_GPT_5",
+        input: {
+          provenance: "SERVER_VERIFIED",
+        },
         postVersion: {
-          contentProvenance: "SERVER_VERIFIED",
           serverVerifiedAt,
-          fetchFailureReason: null,
           contentBlob: {
             contentHash: "hash-1",
           },
@@ -190,10 +190,11 @@ test("getPublicInvestigationById throws on invalid lifecycle provenance data", a
         checkedAt: new Date("2026-02-27T09:30:00.000Z"),
         provider: "OPENAI",
         model: "OPENAI_GPT_5",
+        input: {
+          provenance: "UNKNOWN_PROVENANCE",
+        },
         postVersion: {
-          contentProvenance: "UNKNOWN_PROVENANCE",
           serverVerifiedAt: null,
-          fetchFailureReason: null,
           contentBlob: {
             contentHash: "hash-invalid",
           },
@@ -219,130 +220,7 @@ test("getPublicInvestigationById throws on invalid lifecycle provenance data", a
     getPublicInvestigationById(prisma, "inv_invalid"),
     (error: unknown) =>
       error instanceof PublicReadModelInvariantError &&
-      error.message.includes("invalid contentProvenance"),
-  );
-});
-
-test("getPublicPostInvestigations throws when lifecycle invariants are broken", async () => {
-  const prisma = createMockPrisma({
-    post: {
-      findUnique: async () => ({
-        platform: "LESSWRONG",
-        externalId: "post_1",
-        url: "https://www.lesswrong.com/posts/post_1",
-      }),
-    },
-    investigation: {
-      findFirst: async () => null,
-      findMany: async () => [
-        {
-          id: "inv_good",
-          checkedAt: new Date("2026-02-27T09:30:00.000Z"),
-          postVersion: {
-            contentBlob: {
-              contentHash: "hash-good",
-            },
-            contentProvenance: "SERVER_VERIFIED",
-            serverVerifiedAt: new Date("2026-02-27T09:00:00.000Z"),
-            fetchFailureReason: null,
-          },
-          _count: {
-            claims: 2,
-            corroborationCredits: 5,
-          },
-        },
-        {
-          id: "inv_bad",
-          checkedAt: new Date("2026-02-27T09:45:00.000Z"),
-          postVersion: {
-            contentBlob: {
-              contentHash: "hash-bad",
-            },
-            contentProvenance: "CLIENT_FALLBACK",
-            serverVerifiedAt: null,
-            fetchFailureReason: "   ",
-          },
-          _count: {
-            claims: 1,
-            corroborationCredits: 1,
-          },
-        },
-      ],
-    },
-  });
-
-  await assert.rejects(
-    getPublicPostInvestigations(prisma, {
-      platform: "LESSWRONG",
-      externalId: "post_1",
-    }),
-    (error: unknown) =>
-      error instanceof PublicReadModelInvariantError &&
-      error.message.includes("empty fetchFailureReason"),
-  );
-});
-
-test("searchPublicInvestigations throws when lifecycle invariants are broken", async () => {
-  const prisma = createMockPrisma({
-    investigation: {
-      findFirst: async () => null,
-      findMany: async () => [
-        {
-          id: "inv_search_ok",
-          checkedAt: new Date("2026-02-27T10:00:00.000Z"),
-          postVersion: {
-            contentBlob: {
-              contentHash: "hash-search-ok",
-            },
-            contentProvenance: "CLIENT_FALLBACK",
-            serverVerifiedAt: null,
-            fetchFailureReason: "canonical fetch timed out",
-            post: {
-              platform: "SUBSTACK",
-              externalId: "post_2",
-              url: "https://example.substack.com/p/post_2",
-            },
-          },
-          _count: {
-            claims: 1,
-            corroborationCredits: 2,
-          },
-        },
-        {
-          id: "inv_search_bad",
-          checkedAt: new Date("2026-02-27T10:05:00.000Z"),
-          postVersion: {
-            contentBlob: {
-              contentHash: "hash-search-bad",
-            },
-            contentProvenance: "SERVER_VERIFIED",
-            serverVerifiedAt: null,
-            fetchFailureReason: null,
-            post: {
-              platform: "SUBSTACK",
-              externalId: "post_3",
-              url: "https://example.substack.com/p/post_3",
-            },
-          },
-          _count: {
-            claims: 2,
-            corroborationCredits: 4,
-          },
-        },
-      ],
-    },
-  });
-
-  await assert.rejects(
-    searchPublicInvestigations(prisma, {
-      query: "climate",
-      platform: "SUBSTACK" as Platform,
-      limit: 10,
-      offset: 0,
-    }),
-    (error: unknown) =>
-      error instanceof PublicReadModelInvariantError &&
-      error.message.includes("null serverVerifiedAt"),
+      error.message.includes("invalid provenance"),
   );
 });
 

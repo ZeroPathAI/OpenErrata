@@ -17,6 +17,7 @@ import {
   persistFailedAttemptAndMarkInvestigationFailed,
   persistFailedAttemptAndReleaseLease,
 } from "./attempt-audit.js";
+import { extractImagePlaceholdersFromMarkdown } from "./markdown-resolution.js";
 
 let serverInvestigator: OpenAIInvestigator | null = null;
 
@@ -176,6 +177,16 @@ export async function orchestrateInvestigation(
         ? getServerInvestigator()
         : new OpenAIInvestigator(runKey.apiKey);
     const promptPostContext = toPromptPostContext(investigation.postVersion);
+
+    // ── Resolve or restore InvestigationInput snapshot ──
+    // All executions (first attempt and retries) must use the immutable
+    // InvestigationInput snapshot persisted at queue-time.
+    const contentMarkdown = investigation.input.markdown ?? undefined;
+    const imagePlaceholders =
+      contentMarkdown !== undefined
+        ? extractImagePlaceholdersFromMarkdown(contentMarkdown)
+        : undefined;
+
     const resolvedImageOccurrences = await resolvePromptImageOccurrences(
       investigation.id,
       promptPostContext.imageOccurrences,
@@ -191,6 +202,8 @@ export async function orchestrateInvestigation(
     const output = await investigator.investigate({
       contentText: investigation.postVersion.contentBlob.contentText,
       ...promptPostContext,
+      ...(contentMarkdown !== undefined && { contentMarkdown }),
+      ...(imagePlaceholders !== undefined && { imagePlaceholders }),
       imageOccurrences: resolvedImageOccurrences,
       ...(promptPostContext.hasVideo ? { hasVideo: true } : {}),
       ...(investigation.parentInvestigation !== null && {
