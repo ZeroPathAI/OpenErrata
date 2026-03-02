@@ -1,7 +1,7 @@
 import type { InvestigationResult } from "@openerrata/shared";
 import type { InvestigatorInput } from "./interface.js";
 
-export const INVESTIGATION_PROMPT_VERSION = "v1.13.0";
+export const INVESTIGATION_PROMPT_VERSION = "v1.14.0";
 
 export const INVESTIGATION_SYSTEM_PROMPT = `You are an investigator for OpenErrata, a browser extension that investigates posts its users read.
 
@@ -59,7 +59,7 @@ You will be given a post from the internet. Read the post carefully, and use the
    - For non-update investigations, return {"claims": []}.
    - For update investigations, return {"actions": []}.
 
-11. **Content quoting.** The article content may include markdown formatting (headings, lists, emphasis, etc.) for readability. When quoting claims, extract the raw text content only — do not include markdown syntax characters (#, >, -, *, **, etc.) in claim text or context values. Quotes must be verbatim substrings of the article's text content.`;
+11. **Content quoting.** The article content may include structural markdown formatting (headings, lists) and links for readability. Quotes in claim text and context must be verbatim substrings of the article's plain text — do not include structural markup characters (\`#\`, \`>\`, \`-\`) or link syntax (\`[text](url)\`) in quoted text.`;
 
 export const INVESTIGATION_VALIDATION_SYSTEM_PROMPT = `You are a validation reviewer for OpenErrata, a browser extension that highlights factually incorrect information from within a users' browser.
 

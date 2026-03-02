@@ -602,27 +602,8 @@ export class OpenAIInvestigator implements Investigator {
       );
     }
 
-    // Post-process claim quotes: strip accidental markdown formatting so
-    // claim text anchors against the normalized DOM text in the extension.
-    const cleanedResult = {
-      ...result,
-      claims: result.claims.map((claim) => {
-        const strippedText = stripMarkdownFormatting(claim.text);
-        const strippedContext = stripMarkdownFormatting(claim.context);
-        if (strippedText !== claim.text || strippedContext !== claim.context) {
-          const textAnchored = input.contentText.includes(strippedText);
-          if (textAnchored) {
-            return { ...claim, text: strippedText, context: strippedContext };
-          }
-          // Original text didn't anchor either — keep original, the extension
-          // handles unanchorable claims gracefully.
-        }
-        return claim;
-      }),
-    };
-
     return {
-      result: cleanedResult,
+      result,
       attemptAudit: parseInvestigatorAttemptAudit({
         ...stageTwoAttemptAuditBase,
         completedAt: new Date().toISOString(),
@@ -634,23 +615,4 @@ export class OpenAIInvestigator implements Investigator {
       }),
     };
   }
-}
-
-/**
- * Strip common markdown formatting characters from LLM-generated claim quotes.
- * Used when the prompt shows markdown content but claim text must match the
- * normalized DOM text (which has no markdown syntax).
- */
-function stripMarkdownFormatting(text: string): string {
-  return text
-    .replace(/^#{1,6}\s+/gm, "") // heading markers
-    .replace(/^>\s?/gm, "") // blockquote markers
-    .replace(/^[-*+]\s+/gm, "") // unordered list markers
-    .replace(/^\d+\.\s+/gm, "") // ordered list markers
-    .replace(/\*{1,2}([^*]+)\*{1,2}/g, "$1") // bold/italic with *
-    .replace(/__([^_]+)__/g, "$1") // bold with __
-    .replace(/_([^_]+)_/g, "$1") // italic with _
-    .replace(/`([^`]+)`/g, "$1") // inline code
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1") // links [text](url)
-    .trim();
 }

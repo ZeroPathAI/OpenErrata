@@ -30,7 +30,7 @@ interface HtmlToMarkdownResult {
  * or image placeholder format changes — ensures InvestigationInput snapshots
  * record which renderer produced the stored markdown.
  */
-export const MARKDOWN_RENDERER_VERSION = "1.0.0";
+export const MARKDOWN_RENDERER_VERSION = "1.1.0";
 
 // ── Turndown configuration ────────────────────────────────────────────────
 
@@ -61,6 +61,22 @@ function htmlToMarkdownWithImages(html: string): HtmlToMarkdownResult {
       placeholders.push({ index, sourceUrl: src });
       return ` [IMAGE:${index}] `;
     },
+  });
+
+  // Render inline emphasis elements as plain text. The LLM needs structural
+  // markdown (headings, lists) to understand document layout, but inline tokens
+  // (bold, italic, strikethrough, inline code) contaminate verbatim claim
+  // quotes: the LLM reads them and reproduces them, but claim text must anchor
+  // against plain DOM text in the extension which has no markdown syntax.
+  // Links are preserved — their URLs are useful investigative context.
+  service.addRule("inlineEmphasisAsPlainText", {
+    filter: ["strong", "b", "em", "i", "del", "s"],
+    replacement: (content) => content,
+  });
+
+  service.addRule("inlineCodeAsPlainText", {
+    filter: (node) => node.nodeName === "CODE" && node.parentNode?.nodeName !== "PRE",
+    replacement: (content) => content,
   });
 
   service.remove((node) => NON_CONTENT_TAGS.has(node.nodeName.toLowerCase()));
