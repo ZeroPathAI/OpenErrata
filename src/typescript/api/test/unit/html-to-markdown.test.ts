@@ -62,28 +62,32 @@ test("converts blockquotes to > prefixed text", () => {
 
 // ── Inline formatting ────────────────────────────────────────────────────
 
-test("converts bold tags to ** markers", () => {
+test("renders bold tags as plain text (no ** markers)", () => {
   const html = "<p>This is <strong>important</strong> text.</p>";
   const md = lesswrongHtmlToContentMarkdown(html).markdown;
-  assert.ok(md.includes("**important**"));
+  assert.ok(md.includes("important"));
+  assert.ok(!md.includes("**important**"));
 });
 
-test("converts <b> tags to ** markers", () => {
+test("renders <b> tags as plain text (no ** markers)", () => {
   const html = "<p>Also <b>bold</b> text.</p>";
   const md = lesswrongHtmlToContentMarkdown(html).markdown;
-  assert.ok(md.includes("**bold**"));
+  assert.ok(md.includes("bold"));
+  assert.ok(!md.includes("**bold**"));
 });
 
-test("converts italic tags to * markers", () => {
+test("renders italic tags as plain text (no * markers)", () => {
   const html = "<p>This is <em>emphasized</em> text.</p>";
   const md = lesswrongHtmlToContentMarkdown(html).markdown;
-  assert.ok(md.includes("*emphasized*"));
+  assert.ok(md.includes("emphasized"));
+  assert.ok(!md.includes("*emphasized*"));
 });
 
-test("converts <i> tags to * markers", () => {
+test("renders <i> tags as plain text (no * markers)", () => {
   const html = "<p>Also <i>italic</i> text.</p>";
   const md = lesswrongHtmlToContentMarkdown(html).markdown;
-  assert.ok(md.includes("*italic*"));
+  assert.ok(md.includes("italic"));
+  assert.ok(!md.includes("*italic*"));
 });
 
 test("converts links to markdown link syntax", () => {
@@ -220,8 +224,8 @@ test("lesswrongHtmlToContentMarkdown handles complex post structure", () => {
   `;
   const md = lesswrongHtmlToContentMarkdown(html).markdown;
   assert.ok(md.includes("# Post Title"));
-  assert.ok(md.includes("**bold**"));
-  assert.ok(md.includes("*italic*"));
+  assert.ok(md.includes("bold") && !md.includes("**bold**"));
+  assert.ok(md.includes("italic") && !md.includes("*italic*"));
   assert.ok(md.includes("## Section One"));
   assert.ok(md.includes("-   Point A"));
   assert.ok(md.includes("-   Point B"));
