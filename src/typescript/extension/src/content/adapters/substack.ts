@@ -83,20 +83,24 @@ function hasSubscribeCta(element: Element): boolean {
 }
 
 function decodeCandidates(raw: string): string[] {
-  const candidates = new Set<string>();
-  candidates.add(raw);
-
-  let decoded = raw;
+  // Return candidates from most-decoded to least-decoded so that callers
+  // applying regex patterns see fully-decoded URLs first. Applying a pattern to
+  // a raw percent-encoded string can yield false positives: e.g.
+  // %2Fastralcodexten.substack.com matches as "2fastralcodexten" instead of
+  // "astralcodexten" because [a-z0-9-]+ skips the % and captures "2f".
+  const steps: string[] = [];
+  let current = raw;
   for (let i = 0; i < 2; i += 1) {
     try {
-      decoded = decodeURIComponent(decoded);
-      candidates.add(decoded);
+      const next = decodeURIComponent(current);
+      if (next === current) break;
+      current = next;
+      steps.push(current);
     } catch {
       break;
     }
   }
-
-  return Array.from(candidates);
+  return [...steps.reverse(), raw];
 }
 
 function extractSubstackPostId(value: string): string | null {

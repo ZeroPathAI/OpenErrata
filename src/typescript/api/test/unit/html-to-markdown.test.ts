@@ -115,12 +115,70 @@ test("excludes NON_CONTENT_TAGS (script, style, noscript)", () => {
   assert.ok(md.includes("More text."));
 });
 
-test("skips img elements", () => {
-  const html = '<p>Before image.</p><img src="test.jpg" alt="test"/><p>After image.</p>';
-  const md = lesswrongHtmlToContentMarkdown(html).markdown;
-  assert.ok(!md.includes("test.jpg"));
-  assert.ok(md.includes("Before image."));
-  assert.ok(md.includes("After image."));
+test("replaces img elements with [IMAGE:N] placeholders", () => {
+  const { markdown, imagePlaceholders } = lesswrongHtmlToContentMarkdown(
+    '<p>Before image.</p><img src="test.jpg" alt="test"/><p>After image.</p>',
+  );
+  assert.ok(!markdown.includes("test.jpg"), "src URL should not appear in markdown");
+  assert.ok(markdown.includes("[IMAGE:0]"), "placeholder should appear in markdown");
+  assert.ok(markdown.includes("Before image."));
+  assert.ok(markdown.includes("After image."));
+  assert.equal(imagePlaceholders.length, 1);
+  assert.equal(imagePlaceholders[0]?.sourceUrl, "test.jpg");
+});
+
+test("strips anchor wrapper when link contains only an image", () => {
+  // Substack (and other platforms) wrap images in <a href="..."><img/></a>.
+  // The anchor URL is redundant because the image URL is already captured in
+  // imagePlaceholders, so the link markup should be removed and only the
+  // [IMAGE:N] placeholder should remain.
+  const html =
+    '<p>Caption text.</p><a href="https://cdn.example.com/big.jpg"><img src="https://cdn.example.com/thumb.jpg"/></a><p>After.</p>';
+  const { markdown, imagePlaceholders } = substackHtmlToContentMarkdown(html);
+  assert.ok(markdown.includes("[IMAGE:0]"), "placeholder should be present");
+  assert.ok(
+    !markdown.includes("](https://cdn.example.com/big.jpg)"),
+    "anchor href should be stripped",
+  );
+  assert.ok(
+    !markdown.includes("[ [IMAGE:0] ]"),
+    "placeholder should not be wrapped in link syntax",
+  );
+  assert.equal(imagePlaceholders.length, 1);
+  assert.equal(imagePlaceholders[0]?.sourceUrl, "https://cdn.example.com/thumb.jpg");
+});
+
+test("strips anchor wrapper for image-in-div structure (Substack CDN pattern)", () => {
+  // Substack images often appear as <a href="..."><div><img src="..."/></div></a>
+  // which is the structure causing "[ \n\n [IMAGE:0] \n\n](url)" in the output.
+  const html = `
+    <p>Here is the chart:</p>
+    <a href="https://substackcdn.com/big.png">
+      <div><img src="https://substackcdn.com/thumb.png"/></div>
+    </a>
+    <p>As you can see above.</p>
+  `;
+  const { markdown } = substackHtmlToContentMarkdown(html);
+  assert.ok(markdown.includes("[IMAGE:0]"));
+  assert.ok(!markdown.includes("](https://substackcdn.com/big.png)"));
+  // No stray newlines inside the placeholder from the inner div
+  assert.ok(
+    !/\[\n[^\]]*\[IMAGE:0\]/.exec(markdown),
+    "no newlines before placeholder inside link brackets",
+  );
+  assert.ok(markdown.includes("Here is the chart:"));
+  assert.ok(markdown.includes("As you can see above."));
+});
+
+test("preserves anchor when link contains text alongside an image", () => {
+  // An anchor with both text and an image should keep the link markup.
+  const html = '<p><a href="https://example.com">See chart <img src="chart.png"/></a></p>';
+  const { markdown } = lesswrongHtmlToContentMarkdown(html);
+  assert.ok(
+    markdown.includes("[See chart  [IMAGE:0]  ](https://example.com)") ||
+      markdown.includes("https://example.com"),
+    "link should be preserved when it has text content",
+  );
 });
 
 // ── Entity decoding ──────────────────────────────────────────────────────

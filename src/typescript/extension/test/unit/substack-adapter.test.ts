@@ -205,6 +205,42 @@ test("Substack adapter preserves word boundaries across adjacent block elements"
   assert.equal(ready.content.contentText, "Alpha Beta Gamma");
 });
 
+test("Substack adapter correctly extracts publication subdomain from percent-encoded CDN image URL on custom domain", () => {
+  // Custom Substack domains (e.g. astralcodexten.com) serve posts but embed the
+  // publication subdomain only inside CDN image URLs like:
+  //   https://substackcdn.com/.../https%3A%2F%2Fastralcodexten.substack.com%2Fpost_preview%2F...
+  // decodeCandidates must try the decoded form first; applying the publication regex
+  // to the raw percent-encoded string skips the `%` and captures `2fastralcodexten`
+  // instead of `astralcodexten`.
+  const postId = "123456";
+  const result = withWindow(
+    "https://www.astralcodexten.com/p/test-post",
+    `
+      <!doctype html>
+      <html>
+        <head>
+          <meta name="author" content="Example Author" />
+          <meta
+            name="twitter:image"
+            content="https://substackcdn.com/image/fetch/w_1456,c_limit,f_jpg,q_auto:good,fl_progressive:steep/https%3A%2F%2Fastralcodexten.substack.com%2Fpost_preview%2F${postId}%2Ftwitter.jpg"
+          />
+        </head>
+        <body>
+          <h1 class="post-title">Test Post</h1>
+          <div class="body markup">Post body text.</div>
+        </body>
+      </html>
+    `,
+    (document) => substackAdapter.extract(document),
+  );
+
+  const ready = assertReady(result);
+  assert.equal(ready.content.platform, "SUBSTACK");
+  assert.equal(ready.content.externalId, postId);
+  assert.equal(ready.content.metadata.publicationSubdomain, "astralcodexten");
+  assert.equal(ready.content.metadata.slug, "test-post");
+});
+
 test("Substack adapter omits htmlContent when serialized HTML exceeds transport budget", () => {
   const postId = "123456";
   const oversizedParagraph = "A".repeat(300 * 1024);

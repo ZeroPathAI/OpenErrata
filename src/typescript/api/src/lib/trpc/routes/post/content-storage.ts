@@ -651,13 +651,17 @@ async function upsertPostVersion(
   return postVersion;
 }
 
-function assertNoSourceHtmlConflict(input: {
+function assertNoServerHtmlConflict(input: {
   platform: Platform;
   postVersionId: string;
-  source: "server" | "client";
   existingHtmlBlobId: string | null;
   incomingHtmlBlobId: string | null;
 }): void {
+  // Only enforce immutability for server-fetched HTML. Client HTML is extracted
+  // from the live DOM on each visit, so dynamic page elements (timestamps, view
+  // counts, JS-rendered content) can produce a different blob for the same
+  // PostVersion. The first-write-wins guard below each call site handles that
+  // case correctly without treating it as an error.
   if (
     input.existingHtmlBlobId !== null &&
     input.incomingHtmlBlobId !== null &&
@@ -665,7 +669,7 @@ function assertNoSourceHtmlConflict(input: {
   ) {
     throw new TRPCError({
       code: "INTERNAL_SERVER_ERROR",
-      message: `${input.platform} ${input.source} HTML snapshot mismatch for postVersion ${input.postVersionId}: existing=${input.existingHtmlBlobId}, incoming=${input.incomingHtmlBlobId}`,
+      message: `${input.platform} server HTML snapshot mismatch for postVersion ${input.postVersionId}: existing=${input.existingHtmlBlobId}, incoming=${input.incomingHtmlBlobId}`,
     });
   }
 }
@@ -732,19 +736,11 @@ async function createPlatformVersionMetadataIfMissing(
               message: `LessWrong version slug mismatch for postVersion ${input.postVersionId}: existing=${existing.slug}, incoming=${metadata.slug}`,
             });
           }
-          assertNoSourceHtmlConflict({
+          assertNoServerHtmlConflict({
             platform: "LESSWRONG",
             postVersionId: input.postVersionId,
-            source: "server",
             existingHtmlBlobId: existing.serverHtmlBlobId,
             incomingHtmlBlobId: serverHtmlBlobId,
-          });
-          assertNoSourceHtmlConflict({
-            platform: "LESSWRONG",
-            postVersionId: input.postVersionId,
-            source: "client",
-            existingHtmlBlobId: existing.clientHtmlBlobId,
-            incomingHtmlBlobId: clientHtmlBlobId,
           });
         },
       });
@@ -846,19 +842,11 @@ async function createPlatformVersionMetadataIfMissing(
               message: `Substack version post id mismatch for postVersion ${input.postVersionId}: existing=${existing.substackPostId}, incoming=${metadata.substackPostId}`,
             });
           }
-          assertNoSourceHtmlConflict({
+          assertNoServerHtmlConflict({
             platform: "SUBSTACK",
             postVersionId: input.postVersionId,
-            source: "server",
             existingHtmlBlobId: existing.serverHtmlBlobId,
             incomingHtmlBlobId: serverHtmlBlobId,
-          });
-          assertNoSourceHtmlConflict({
-            platform: "SUBSTACK",
-            postVersionId: input.postVersionId,
-            source: "client",
-            existingHtmlBlobId: existing.clientHtmlBlobId,
-            incomingHtmlBlobId: clientHtmlBlobId,
           });
         },
       });
@@ -919,19 +907,11 @@ async function createPlatformVersionMetadataIfMissing(
               message: `Wikipedia version revision mismatch for postVersion ${input.postVersionId}: existing=${existing.revisionId}, incoming=${metadata.revisionId}`,
             });
           }
-          assertNoSourceHtmlConflict({
+          assertNoServerHtmlConflict({
             platform: "WIKIPEDIA",
             postVersionId: input.postVersionId,
-            source: "server",
             existingHtmlBlobId: existing.serverHtmlBlobId,
             incomingHtmlBlobId: serverHtmlBlobId,
-          });
-          assertNoSourceHtmlConflict({
-            platform: "WIKIPEDIA",
-            postVersionId: input.postVersionId,
-            source: "client",
-            existingHtmlBlobId: existing.clientHtmlBlobId,
-            incomingHtmlBlobId: clientHtmlBlobId,
           });
         },
       });

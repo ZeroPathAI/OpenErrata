@@ -28,3 +28,6 @@ pgdata/
 
 # Tooling cache
 **/.eslintcache
+
+# Local secrets (private keys, credentials — never commit)
+LOCAL_SECRETS/

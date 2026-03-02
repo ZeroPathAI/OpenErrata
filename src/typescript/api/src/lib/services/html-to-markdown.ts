@@ -30,7 +30,7 @@ interface HtmlToMarkdownResult {
  * or image placeholder format changes — ensures InvestigationInput snapshots
  * record which renderer produced the stored markdown.
  */
-export const MARKDOWN_RENDERER_VERSION = "1.1.0";
+export const MARKDOWN_RENDERER_VERSION = "1.2.0";
 
 // ── Turndown configuration ────────────────────────────────────────────────
 
@@ -60,6 +60,23 @@ function htmlToMarkdownWithImages(html: string): HtmlToMarkdownResult {
       const index = placeholders.length;
       placeholders.push({ index, sourceUrl: src });
       return ` [IMAGE:${index}] `;
+    },
+  });
+
+  // Strip the anchor wrapper when a link contains only image(s). Platforms like
+  // Substack wrap images in <a href="..."><img/></a> to make them clickable.
+  // Turndown's default link rule would produce "[ [IMAGE:0] ](url)" with extra
+  // blank lines from inner block containers (div, figure, etc.). The anchor URL
+  // is redundant — the image URL is already captured in imagePlaceholders for
+  // matching — so we discard it and return just the placeholder(s).
+  service.addRule("imageOnlyLink", {
+    filter: (node) =>
+      node.nodeName === "A" &&
+      (node as Element).querySelector("img") !== null &&
+      node.textContent.trim().length === 0,
+    replacement: (content) => {
+      const matches = content.match(/\[IMAGE:\d+\]/g);
+      return matches !== null ? matches.join(" ") : content;
     },
   });
 
