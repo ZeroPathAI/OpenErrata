@@ -453,8 +453,10 @@ ALTER TABLE "PostVersion" DROP COLUMN IF EXISTS "fetchFailureReason";
 DROP TABLE IF EXISTS "_legacy_version_source";
 DROP TABLE IF EXISTS "_legacy_post_version_map";
 
--- Drop the ContentProvenance enum type (no longer referenced).
-DROP TYPE IF EXISTS "ContentProvenance";
+-- Drop the ContentProvenance enum type. CASCADE covers any remaining
+-- dependencies (e.g. temp table columns that survived from migration 0015
+-- when Prisma reuses the same session across migrations).
+DROP TYPE IF EXISTS "ContentProvenance" CASCADE;
 
 -- ============================================================================
 -- Phase 5: serverVerifiedAt one-way latch trigger
