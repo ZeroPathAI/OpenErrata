@@ -651,29 +651,6 @@ async function upsertPostVersion(
   return postVersion;
 }
 
-function assertNoServerHtmlConflict(input: {
-  platform: Platform;
-  postVersionId: string;
-  existingHtmlBlobId: string | null;
-  incomingHtmlBlobId: string | null;
-}): void {
-  // Only enforce immutability for server-fetched HTML. Client HTML is extracted
-  // from the live DOM on each visit, so dynamic page elements (timestamps, view
-  // counts, JS-rendered content) can produce a different blob for the same
-  // PostVersion. The first-write-wins guard below each call site handles that
-  // case correctly without treating it as an error.
-  if (
-    input.existingHtmlBlobId !== null &&
-    input.incomingHtmlBlobId !== null &&
-    input.existingHtmlBlobId !== input.incomingHtmlBlobId
-  ) {
-    throw new TRPCError({
-      code: "INTERNAL_SERVER_ERROR",
-      message: `${input.platform} server HTML snapshot mismatch for postVersion ${input.postVersionId}: existing=${input.existingHtmlBlobId}, incoming=${input.incomingHtmlBlobId}`,
-    });
-  }
-}
-
 async function createPlatformVersionMetadataIfMissing(
   prisma: DbClient,
   input: {
@@ -736,21 +713,23 @@ async function createPlatformVersionMetadataIfMissing(
               message: `LessWrong version slug mismatch for postVersion ${input.postVersionId}: existing=${existing.slug}, incoming=${metadata.slug}`,
             });
           }
-          assertNoServerHtmlConflict({
-            platform: "LESSWRONG",
-            postVersionId: input.postVersionId,
-            existingHtmlBlobId: existing.serverHtmlBlobId,
-            incomingHtmlBlobId: serverHtmlBlobId,
-          });
         },
       });
       await Promise.all([
-        serverHtmlBlobId !== null && existingOrCreated.serverHtmlBlobId === null
-          ? prisma.lesswrongVersionMeta.updateMany({
-              where: { postVersionId: input.postVersionId, serverHtmlBlobId: null },
+        // Server HTML: always update to the latest server-fetched snapshot.
+        // The LessWrong GraphQL API can return different raw bytes for the same
+        // post content across time (API formatting drift), so "last server fetch
+        // wins" is correct here. Past investigations are unaffected — each has
+        // its own InvestigationInput markdown snapshot.
+        serverHtmlBlobId !== null && existingOrCreated.serverHtmlBlobId !== serverHtmlBlobId
+          ? prisma.lesswrongVersionMeta.update({
+              where: { postVersionId: input.postVersionId },
               data: { serverHtmlBlobId },
             })
           : null,
+        // Client HTML: first-write-wins. Client HTML is extracted from the live
+        // DOM and can vary across visits (dynamic elements, JS-rendered content),
+        // so we only store it once and never overwrite with a later snapshot.
         clientHtmlBlobId !== null && existingOrCreated.clientHtmlBlobId === null
           ? prisma.lesswrongVersionMeta.updateMany({
               where: { postVersionId: input.postVersionId, clientHtmlBlobId: null },
@@ -842,18 +821,12 @@ async function createPlatformVersionMetadataIfMissing(
               message: `Substack version post id mismatch for postVersion ${input.postVersionId}: existing=${existing.substackPostId}, incoming=${metadata.substackPostId}`,
             });
           }
-          assertNoServerHtmlConflict({
-            platform: "SUBSTACK",
-            postVersionId: input.postVersionId,
-            existingHtmlBlobId: existing.serverHtmlBlobId,
-            incomingHtmlBlobId: serverHtmlBlobId,
-          });
         },
       });
       await Promise.all([
-        serverHtmlBlobId !== null && existingOrCreated.serverHtmlBlobId === null
-          ? prisma.substackVersionMeta.updateMany({
-              where: { postVersionId: input.postVersionId, serverHtmlBlobId: null },
+        serverHtmlBlobId !== null && existingOrCreated.serverHtmlBlobId !== serverHtmlBlobId
+          ? prisma.substackVersionMeta.update({
+              where: { postVersionId: input.postVersionId },
               data: { serverHtmlBlobId },
             })
           : null,
@@ -907,18 +880,12 @@ async function createPlatformVersionMetadataIfMissing(
               message: `Wikipedia version revision mismatch for postVersion ${input.postVersionId}: existing=${existing.revisionId}, incoming=${metadata.revisionId}`,
             });
           }
-          assertNoServerHtmlConflict({
-            platform: "WIKIPEDIA",
-            postVersionId: input.postVersionId,
-            existingHtmlBlobId: existing.serverHtmlBlobId,
-            incomingHtmlBlobId: serverHtmlBlobId,
-          });
         },
       });
       await Promise.all([
-        serverHtmlBlobId !== null && existingOrCreated.serverHtmlBlobId === null
-          ? prisma.wikipediaVersionMeta.updateMany({
-              where: { postVersionId: input.postVersionId, serverHtmlBlobId: null },
+        serverHtmlBlobId !== null && existingOrCreated.serverHtmlBlobId !== serverHtmlBlobId
+          ? prisma.wikipediaVersionMeta.update({
+              where: { postVersionId: input.postVersionId },
               data: { serverHtmlBlobId },
             })
           : null,
