@@ -342,6 +342,7 @@ void test("post.registerObservedVersion enriches existing Wikipedia version html
   const caller = createCaller();
   const canonicalHtml = "<div class='mw-parser-output'><p>Server canonical article text.</p></div>";
   const clientHtml = "<div class='mw-parser-output'><p>Server canonical article text.</p></div>";
+  const pageId = Date.now().toString();
   const input = {
     platform: "WIKIPEDIA" as const,
     url: "https://en.wikipedia.org/wiki/OpenErrata_html_enrichment",
@@ -349,7 +350,7 @@ void test("post.registerObservedVersion enriches existing Wikipedia version html
     metadata: {
       language: "en",
       title: "OpenErrata html enrichment",
-      pageId: "777777",
+      pageId,
       revisionId: "888888",
       displayTitle: "OpenErrata html enrichment",
       htmlContent: clientHtml,
@@ -388,7 +389,7 @@ void test("post.registerObservedVersion enriches existing Wikipedia version html
 
   const fallbackVersion = await loadLatestPostVersionByIdentity({
     platform: "WIKIPEDIA",
-    externalId: "en:777777",
+    externalId: `en:${pageId}`,
   });
   assert.ok(fallbackVersion);
   const fallbackMeta = await prisma.wikipediaVersionMeta.findUnique({
@@ -416,7 +417,7 @@ void test("post.registerObservedVersion enriches existing Wikipedia version html
       JSON.stringify({
         parse: {
           text: canonicalHtml,
-          pageid: 777777,
+          pageid: Number(pageId),
           revid: 888888,
         },
       }),
@@ -441,7 +442,7 @@ void test("post.registerObservedVersion enriches existing Wikipedia version html
 
   const verifiedVersion = await loadLatestPostVersionByIdentity({
     platform: "WIKIPEDIA",
-    externalId: "en:777777",
+    externalId: `en:${pageId}`,
   });
   assert.ok(verifiedVersion);
   assert.equal(verifiedVersion.id, fallbackVersion.id);
@@ -457,6 +458,322 @@ void test("post.registerObservedVersion enriches existing Wikipedia version html
   assert.equal(verifiedMeta.serverHtmlBlob?.htmlContent, canonicalHtml);
   // Client HTML persists from the initial fallback observation.
   assert.equal(verifiedMeta.clientHtmlBlob?.htmlContent ?? null, clientHtml);
+});
+
+void test("post.registerObservedVersion keeps LessWrong mutable version metadata current for stable versions", async () => {
+  const caller = createCaller();
+  const canonicalHtml =
+    "<article><h1>Stable LessWrong Title</h1><p>Stable canonical article body.</p></article>";
+  const firstClientHtml = "<article><p>Client HTML snapshot one.</p></article>";
+  const secondClientHtml = "<article><p>Client HTML snapshot two.</p></article>";
+
+  const firstInputBase = buildLesswrongViewInput({
+    externalId: "view-post-lesswrong-mutable-metadata-1",
+    htmlContent: firstClientHtml,
+  });
+  const firstInput = {
+    ...firstInputBase,
+    observedImageUrls: ["https://images.example.test/lesswrong-old.png"],
+    metadata: {
+      ...firstInputBase.metadata,
+      slug: `${firstInputBase.externalId}-old-slug`,
+      title: "Old LessWrong Title",
+      authorName: "Old Author",
+      authorSlug: "old-author",
+      tags: ["old-tag"],
+      publishedAt: "2026-02-20T00:00:00.000Z",
+    },
+  };
+
+  const firstResult = await withMockLesswrongCanonicalHtml(canonicalHtml, () =>
+    caller.post.registerObservedVersion(firstInput),
+  );
+  assert.equal(firstResult.provenance, "SERVER_VERIFIED");
+
+  const secondInputBase = buildLesswrongViewInput({
+    externalId: "view-post-lesswrong-mutable-metadata-1",
+    htmlContent: secondClientHtml,
+  });
+  const secondInput = {
+    ...secondInputBase,
+    observedImageUrls: ["https://images.example.test/lesswrong-new.png"],
+    metadata: {
+      ...secondInputBase.metadata,
+      slug: `${secondInputBase.externalId}-new-slug`,
+      title: "New LessWrong Title",
+      authorName: "New Author",
+      authorSlug: "new-author",
+      tags: ["new-tag-a", "new-tag-b"],
+      publishedAt: "2026-02-21T00:00:00.000Z",
+    },
+  };
+
+  const secondResult = await withMockLesswrongCanonicalHtml(canonicalHtml, () =>
+    caller.post.registerObservedVersion(secondInput),
+  );
+  assert.equal(secondResult.provenance, "SERVER_VERIFIED");
+  assert.equal(secondResult.postVersionId, firstResult.postVersionId);
+
+  const latestVersion = await loadLatestPostVersionByIdentity({
+    platform: "LESSWRONG",
+    externalId: firstInput.externalId,
+  });
+  assert.ok(latestVersion);
+  const meta = await prisma.lesswrongVersionMeta.findUnique({
+    where: { postVersionId: latestVersion.id },
+    select: {
+      slug: true,
+      title: true,
+      authorName: true,
+      authorSlug: true,
+      tags: true,
+      publishedAt: true,
+      imageUrls: true,
+      serverHtmlBlob: { select: { htmlContent: true } },
+      clientHtmlBlob: { select: { htmlContent: true } },
+    },
+  });
+  assert.ok(meta);
+  assert.equal(meta.slug, secondInput.metadata.slug);
+  assert.equal(meta.title, secondInput.metadata.title);
+  assert.equal(meta.authorName, secondInput.metadata.authorName);
+  assert.equal(meta.authorSlug, secondInput.metadata.authorSlug);
+  assert.deepEqual(meta.tags, secondInput.metadata.tags);
+  assert.equal(meta.publishedAt?.toISOString(), "2026-02-21T00:00:00.000Z");
+  assert.deepEqual(meta.imageUrls, secondInput.observedImageUrls);
+  assert.equal(meta.serverHtmlBlob?.htmlContent, canonicalHtml);
+  // Client HTML remains first-write-wins.
+  assert.equal(meta.clientHtmlBlob?.htmlContent ?? null, firstClientHtml);
+});
+
+void test("post.registerObservedVersion keeps Substack mutable version metadata current for stable versions", async () => {
+  const caller = createCaller();
+  const externalId = withIntegrationPrefix("view-post-substack-mutable-metadata-1");
+  const stableContent = normalizeContent("Stable Substack article body.");
+  const firstClientHtml = "<article><p>Substack snapshot one.</p></article>";
+  const secondClientHtml = "<article><p>Substack snapshot two.</p></article>";
+
+  const firstInput = {
+    platform: "SUBSTACK" as const,
+    externalId,
+    url: "https://openerrata-integration.substack.com/p/mutable-version-meta",
+    observedContentText: stableContent,
+    observedImageUrls: ["https://images.example.test/substack-old.png"],
+    metadata: {
+      substackPostId: "40001",
+      publicationSubdomain: "openerrata-integration",
+      slug: "mutable-version-meta-old",
+      title: "Old Substack Title",
+      subtitle: "Old Substack Subtitle",
+      htmlContent: firstClientHtml,
+      authorName: "Old Substack Author",
+      authorSubstackHandle: "old-substack-author",
+      publishedAt: "2026-02-10T00:00:00.000Z",
+      likeCount: 2,
+      commentCount: 3,
+    },
+  };
+
+  const firstResult = await caller.post.registerObservedVersion(firstInput);
+  assert.equal(firstResult.provenance, "CLIENT_FALLBACK");
+
+  const secondInput = {
+    platform: "SUBSTACK" as const,
+    externalId,
+    url: "https://openerrata-integration.substack.com/p/mutable-version-meta",
+    observedContentText: stableContent,
+    observedImageUrls: ["https://images.example.test/substack-new.png"],
+    metadata: {
+      substackPostId: "40001",
+      publicationSubdomain: "openerrata-updated",
+      slug: "mutable-version-meta-new",
+      title: "New Substack Title",
+      htmlContent: secondClientHtml,
+      authorName: "New Substack Author",
+      publishedAt: "2026-02-11T00:00:00.000Z",
+      likeCount: 9,
+      commentCount: 11,
+    },
+  };
+
+  const secondResult = await caller.post.registerObservedVersion(secondInput);
+  assert.equal(secondResult.provenance, "CLIENT_FALLBACK");
+  assert.equal(secondResult.postVersionId, firstResult.postVersionId);
+
+  const latestVersion = await loadLatestPostVersionByIdentity({
+    platform: "SUBSTACK",
+    externalId,
+  });
+  assert.ok(latestVersion);
+  const meta = await prisma.substackVersionMeta.findUnique({
+    where: { postVersionId: latestVersion.id },
+    select: {
+      publicationSubdomain: true,
+      slug: true,
+      title: true,
+      subtitle: true,
+      authorName: true,
+      authorSubstackHandle: true,
+      publishedAt: true,
+      likeCount: true,
+      commentCount: true,
+      imageUrls: true,
+      serverHtmlBlob: { select: { htmlContent: true } },
+      clientHtmlBlob: { select: { htmlContent: true } },
+    },
+  });
+  assert.ok(meta);
+  assert.equal(meta.publicationSubdomain, secondInput.metadata.publicationSubdomain);
+  assert.equal(meta.slug, secondInput.metadata.slug);
+  assert.equal(meta.title, secondInput.metadata.title);
+  assert.equal(meta.subtitle, null);
+  assert.equal(meta.authorName, secondInput.metadata.authorName);
+  assert.equal(meta.authorSubstackHandle, null);
+  assert.equal(meta.publishedAt?.toISOString(), "2026-02-11T00:00:00.000Z");
+  assert.equal(meta.likeCount, secondInput.metadata.likeCount);
+  assert.equal(meta.commentCount, secondInput.metadata.commentCount);
+  assert.deepEqual(meta.imageUrls, secondInput.observedImageUrls);
+  assert.equal(meta.serverHtmlBlob?.htmlContent ?? null, null);
+  // Client HTML remains first-write-wins.
+  assert.equal(meta.clientHtmlBlob?.htmlContent ?? null, firstClientHtml);
+});
+
+void test("post.registerObservedVersion updates Wikipedia revision metadata for stable versions", async () => {
+  const caller = createCaller();
+  const canonicalHtml = "<div class='mw-parser-output'><p>Stable article text.</p></div>";
+  const firstClientHtml = "<div class='mw-parser-output'><p>Client snapshot one.</p></div>";
+  const secondClientHtml = "<div class='mw-parser-output'><p>Client snapshot two.</p></div>";
+  const pageId = (Date.now() + 1).toString();
+  const url = `https://en.wikipedia.org/wiki/OpenErrata_revision_meta_sync?curid=${pageId}`;
+  const firstInput = {
+    platform: "WIKIPEDIA" as const,
+    url,
+    observedContentText: normalizeContent("Stable article text."),
+    observedImageUrls: ["https://images.example.test/wiki-old.png"],
+    metadata: {
+      language: "en",
+      title: "OpenErrata_revision_meta_sync",
+      pageId,
+      revisionId: "10001",
+      displayTitle: "OpenErrata Revision Meta Sync",
+      lastModifiedAt: "2026-02-25T00:00:00.000Z",
+      htmlContent: firstClientHtml,
+    },
+  };
+
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async (fetchInput, fetchInit) => {
+    const requestUrl =
+      typeof fetchInput === "string"
+        ? fetchInput
+        : fetchInput instanceof URL
+          ? fetchInput.toString()
+          : fetchInput.url;
+    if (!requestUrl.startsWith("https://en.wikipedia.org/w/api.php")) {
+      return originalFetch(fetchInput, fetchInit);
+    }
+    return new Response(
+      JSON.stringify({
+        parse: {
+          text: canonicalHtml,
+          pageid: Number(pageId),
+          revid: 10001,
+        },
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  };
+
+  const firstResult = await (async () => {
+    try {
+      return await caller.post.registerObservedVersion(firstInput);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  })();
+  assert.equal(firstResult.provenance, "SERVER_VERIFIED");
+
+  const secondInput = {
+    platform: "WIKIPEDIA" as const,
+    url,
+    observedContentText: normalizeContent("Stable article text."),
+    observedImageUrls: ["https://images.example.test/wiki-new.png"],
+    metadata: {
+      language: "en",
+      title: "OpenErrata_revision_meta_sync_v2",
+      pageId,
+      revisionId: "10002",
+      displayTitle: "OpenErrata Revision Meta Sync v2",
+      lastModifiedAt: "2026-02-26T00:00:00.000Z",
+      htmlContent: secondClientHtml,
+    },
+  };
+
+  globalThis.fetch = async (fetchInput, fetchInit) => {
+    const requestUrl =
+      typeof fetchInput === "string"
+        ? fetchInput
+        : fetchInput instanceof URL
+          ? fetchInput.toString()
+          : fetchInput.url;
+    if (!requestUrl.startsWith("https://en.wikipedia.org/w/api.php")) {
+      return originalFetch(fetchInput, fetchInit);
+    }
+    return new Response(
+      JSON.stringify({
+        parse: {
+          text: canonicalHtml,
+          pageid: Number(pageId),
+          revid: 10002,
+        },
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  };
+
+  const secondResult = await (async () => {
+    try {
+      return await caller.post.registerObservedVersion(secondInput);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  })();
+  assert.equal(secondResult.provenance, "SERVER_VERIFIED");
+  assert.equal(secondResult.postVersionId, firstResult.postVersionId);
+
+  const latestVersion = await loadLatestPostVersionByIdentity({
+    platform: "WIKIPEDIA",
+    externalId: `en:${pageId}`,
+  });
+  assert.ok(latestVersion);
+  const meta = await prisma.wikipediaVersionMeta.findUnique({
+    where: { postVersionId: latestVersion.id },
+    select: {
+      title: true,
+      displayTitle: true,
+      revisionId: true,
+      lastModifiedAt: true,
+      imageUrls: true,
+      serverHtmlBlob: { select: { htmlContent: true } },
+      clientHtmlBlob: { select: { htmlContent: true } },
+    },
+  });
+  assert.ok(meta);
+  assert.equal(meta.title, secondInput.metadata.title);
+  assert.equal(meta.displayTitle, secondInput.metadata.displayTitle);
+  assert.equal(meta.revisionId, secondInput.metadata.revisionId);
+  assert.equal(meta.lastModifiedAt?.toISOString(), "2026-02-26T00:00:00.000Z");
+  assert.deepEqual(meta.imageUrls, secondInput.observedImageUrls);
+  assert.equal(meta.serverHtmlBlob?.htmlContent, canonicalHtml);
+  // Client HTML remains first-write-wins.
+  assert.equal(meta.clientHtmlBlob?.htmlContent ?? null, firstClientHtml);
 });
 
 void test("post.registerObservedVersion rejects extension clients below minimum supported version", async () => {

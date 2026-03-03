@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { nextRecoveryAfter } from "../../src/lib/services/run-lease.js";
+import { nextRecoveryAfter, runLeaseClaimWhere } from "../../src/lib/services/run-lease.js";
 
 /**
  * Invariants under test:
@@ -34,4 +34,22 @@ test("nextRecoveryAfter recovery window is approximately 60 seconds", () => {
   // Allow some clock jitter: between 59s and 61s
   assert.ok(deltaMs >= 59_000, `recovery too soon: ${deltaMs.toString()}ms`);
   assert.ok(deltaMs <= 61_000, `recovery too far: ${deltaMs.toString()}ms`);
+});
+
+test("runLeaseClaimWhere requires unheld-or-expired lease for PENDING and PROCESSING runs", () => {
+  const now = new Date("2026-03-03T08:00:00.000Z");
+
+  assert.deepEqual(runLeaseClaimWhere("run-123", now), {
+    id: "run-123",
+    OR: [
+      {
+        investigation: { is: { status: "PENDING" } },
+        OR: [{ leaseOwner: null }, { leaseExpiresAt: null }, { leaseExpiresAt: { lte: now } }],
+      },
+      {
+        investigation: { is: { status: "PROCESSING" } },
+        OR: [{ leaseOwner: null }, { leaseExpiresAt: null }, { leaseExpiresAt: { lte: now } }],
+      },
+    ],
+  });
 });

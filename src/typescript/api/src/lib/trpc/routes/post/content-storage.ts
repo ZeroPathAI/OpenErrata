@@ -681,8 +681,6 @@ async function createPlatformVersionMetadataIfMissing(
           prisma.lesswrongVersionMeta.findUnique({
             where: { postVersionId: input.postVersionId },
             select: {
-              slug: true,
-              serverHtmlBlobId: true,
               clientHtmlBlobId: true,
             },
           }),
@@ -701,8 +699,6 @@ async function createPlatformVersionMetadataIfMissing(
               publishedAt: toOptionalDate(metadata.publishedAt),
             },
             select: {
-              slug: true,
-              serverHtmlBlobId: true,
               clientHtmlBlobId: true,
             },
           }),
@@ -714,23 +710,24 @@ async function createPlatformVersionMetadataIfMissing(
         },
       });
 
-      // Latest-wins update for mutable metadata + server HTML. Version meta
-      // is a "best available snapshot" for the PostVersion; re-registrations
-      // should reflect the current state of the post on LessWrong.
-      const needsServerHtml =
-        serverHtmlBlobId !== null && existingOrCreated.serverHtmlBlobId !== serverHtmlBlobId;
-      const needsSlug = existingOrCreated.slug !== metadata.slug;
+      // Latest-wins update for mutable metadata. Server HTML is "best available":
+      // we only overwrite when a new non-null server snapshot is available.
+      const mutableMetadata = {
+        slug: metadata.slug,
+        title: title ?? null,
+        ...(serverHtmlBlobId !== null && { serverHtmlBlobId }),
+        imageUrls: input.preparedInput.observedImageUrls ?? [],
+        authorName: authorName ?? null,
+        authorSlug: authorSlug ?? null,
+        tags: metadata.tags,
+        publishedAt: toOptionalDate(metadata.publishedAt),
+      } satisfies Prisma.LesswrongVersionMetaUpdateInput;
 
       await Promise.all([
-        needsServerHtml || needsSlug
-          ? prisma.lesswrongVersionMeta.update({
-              where: { postVersionId: input.postVersionId },
-              data: {
-                ...(needsServerHtml && { serverHtmlBlobId }),
-                ...(needsSlug && { slug: metadata.slug }),
-              },
-            })
-          : null,
+        prisma.lesswrongVersionMeta.update({
+          where: { postVersionId: input.postVersionId },
+          data: mutableMetadata,
+        }),
         // Client HTML: first-write-wins. Client HTML is extracted from the live
         // DOM and can vary across visits (dynamic elements, JS-rendered content),
         // so we only store it once and never overwrite with a later snapshot.
@@ -790,7 +787,6 @@ async function createPlatformVersionMetadataIfMissing(
             where: { postVersionId: input.postVersionId },
             select: {
               substackPostId: true,
-              serverHtmlBlobId: true,
               clientHtmlBlobId: true,
             },
           }),
@@ -814,7 +810,6 @@ async function createPlatformVersionMetadataIfMissing(
             },
             select: {
               substackPostId: true,
-              serverHtmlBlobId: true,
               clientHtmlBlobId: true,
             },
           }),
@@ -827,13 +822,25 @@ async function createPlatformVersionMetadataIfMissing(
           }
         },
       });
+      const mutableMetadata = {
+        publicationSubdomain: metadata.publicationSubdomain,
+        slug: metadata.slug,
+        title: metadata.title,
+        subtitle: metadata.subtitle ?? null,
+        ...(serverHtmlBlobId !== null && { serverHtmlBlobId }),
+        imageUrls: input.preparedInput.observedImageUrls ?? [],
+        authorName: metadata.authorName,
+        authorSubstackHandle: authorSubstackHandle ?? null,
+        publishedAt: toOptionalDate(metadata.publishedAt),
+        likeCount: metadata.likeCount ?? null,
+        commentCount: metadata.commentCount ?? null,
+      } satisfies Prisma.SubstackVersionMetaUpdateInput;
+
       await Promise.all([
-        serverHtmlBlobId !== null && existingOrCreated.serverHtmlBlobId !== serverHtmlBlobId
-          ? prisma.substackVersionMeta.update({
-              where: { postVersionId: input.postVersionId },
-              data: { serverHtmlBlobId },
-            })
-          : null,
+        prisma.substackVersionMeta.update({
+          where: { postVersionId: input.postVersionId },
+          data: mutableMetadata,
+        }),
         clientHtmlBlobId !== null && existingOrCreated.clientHtmlBlobId === null
           ? prisma.substackVersionMeta.updateMany({
               where: { postVersionId: input.postVersionId, clientHtmlBlobId: null },
@@ -852,8 +859,8 @@ async function createPlatformVersionMetadataIfMissing(
           prisma.wikipediaVersionMeta.findUnique({
             where: { postVersionId: input.postVersionId },
             select: {
-              revisionId: true,
-              serverHtmlBlobId: true,
+              pageId: true,
+              language: true,
               clientHtmlBlobId: true,
             },
           }),
@@ -872,27 +879,34 @@ async function createPlatformVersionMetadataIfMissing(
               imageUrls: input.preparedInput.observedImageUrls ?? [],
             },
             select: {
-              revisionId: true,
-              serverHtmlBlobId: true,
+              pageId: true,
+              language: true,
               clientHtmlBlobId: true,
             },
           }),
         assertEquivalent: (existing) => {
-          if (existing.revisionId !== metadata.revisionId) {
+          if (existing.pageId !== metadata.pageId || existing.language !== metadata.language) {
             throw new TRPCError({
               code: "INTERNAL_SERVER_ERROR",
-              message: `Wikipedia version revision mismatch for postVersion ${input.postVersionId}: existing=${existing.revisionId}, incoming=${metadata.revisionId}`,
+              message: `Wikipedia version identity mismatch for postVersion ${input.postVersionId}: existing=${existing.language}:${existing.pageId}, incoming=${metadata.language}:${metadata.pageId}`,
             });
           }
         },
       });
+      const mutableMetadata = {
+        title: metadata.title,
+        displayTitle: metadata.displayTitle ?? null,
+        ...(serverHtmlBlobId !== null && { serverHtmlBlobId }),
+        revisionId: metadata.revisionId,
+        lastModifiedAt: toOptionalDate(metadata.lastModifiedAt),
+        imageUrls: input.preparedInput.observedImageUrls ?? [],
+      } satisfies Prisma.WikipediaVersionMetaUpdateInput;
+
       await Promise.all([
-        serverHtmlBlobId !== null && existingOrCreated.serverHtmlBlobId !== serverHtmlBlobId
-          ? prisma.wikipediaVersionMeta.update({
-              where: { postVersionId: input.postVersionId },
-              data: { serverHtmlBlobId },
-            })
-          : null,
+        prisma.wikipediaVersionMeta.update({
+          where: { postVersionId: input.postVersionId },
+          data: mutableMetadata,
+        }),
         clientHtmlBlobId !== null && existingOrCreated.clientHtmlBlobId === null
           ? prisma.wikipediaVersionMeta.updateMany({
               where: { postVersionId: input.postVersionId, clientHtmlBlobId: null },

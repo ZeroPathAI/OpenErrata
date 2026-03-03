@@ -344,7 +344,9 @@
       {:else if view.kind === "unsupported"}
         <section class="state-panel">
           <p class="state-title">No Supported Post</p>
-          <p class="state-subtitle">Open a LessWrong, X, or Substack post to get started.</p>
+          <p class="state-subtitle">
+            Open a LessWrong, X, Substack, or Wikipedia post to get started.
+          </p>
         </section>
       {:else if view.kind === "skipped"}
         <section class="state-panel">

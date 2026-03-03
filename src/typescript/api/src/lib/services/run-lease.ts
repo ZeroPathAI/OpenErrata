@@ -43,6 +43,28 @@ export function nextRecoveryAfter(): Date {
   return new Date(Date.now() + RUN_RECOVERY_GRACE_MS);
 }
 
+function leaseIsUnheldOrExpiredWhere(now: Date): Prisma.InvestigationRunWhereInput {
+  return {
+    OR: [{ leaseOwner: null }, { leaseExpiresAt: null }, { leaseExpiresAt: { lte: now } }],
+  };
+}
+
+export function runLeaseClaimWhere(runId: string, now: Date): Prisma.InvestigationRunWhereInput {
+  return {
+    id: runId,
+    OR: [
+      {
+        investigation: { is: { status: "PENDING" } },
+        ...leaseIsUnheldOrExpiredWhere(now),
+      },
+      {
+        investigation: { is: { status: "PROCESSING" } },
+        ...leaseIsUnheldOrExpiredWhere(now),
+      },
+    ],
+  };
+}
+
 export async function tryClaimRunLease(
   runId: string,
   workerIdentity: string,
@@ -50,18 +72,7 @@ export async function tryClaimRunLease(
   const now = new Date();
   const prisma = getPrisma();
   const claimed = await prisma.investigationRun.updateMany({
-    where: {
-      id: runId,
-      OR: [
-        {
-          investigation: { is: { status: "PENDING" } },
-        },
-        {
-          investigation: { is: { status: "PROCESSING" } },
-          OR: [{ leaseOwner: null }, { leaseExpiresAt: null }, { leaseExpiresAt: { lte: now } }],
-        },
-      ],
-    },
+    where: runLeaseClaimWhere(runId, now),
     data: {
       leaseOwner: workerIdentity,
       leaseExpiresAt: nextLeaseExpiry(),
