@@ -10,12 +10,10 @@ import { ExtensionRuntimeError } from "../../src/lib/runtime-error.js";
 test("parseViewPostResponse returns parsed NOT_INVESTIGATED payload", () => {
   const parsed = parseViewPostResponse({
     investigationState: "NOT_INVESTIGATED",
-    claims: null,
     priorInvestigationResult: null,
   });
 
   assert.equal(parsed.investigationState, "NOT_INVESTIGATED");
-  assert.equal(parsed.claims, null);
 });
 
 test("parseViewPostResponse preserves runtime error payloads", () => {
@@ -106,7 +104,6 @@ test("parseCachedStatusResponse returns parsed cached POST status", () => {
     externalId: "1900000000000000000",
     pageUrl: "https://x.com/example/status/1900000000000000000",
     investigationState: "NOT_INVESTIGATED",
-    claims: null,
     priorInvestigationResult: null,
   });
 

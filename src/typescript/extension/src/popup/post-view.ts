@@ -1,13 +1,18 @@
-import type { ExtensionPageStatus } from "@openerrata/shared";
+import type { ExtensionPageStatus, InvestigationClaimPayload } from "@openerrata/shared";
 
 type PostStatus = Extract<ExtensionPageStatus, { kind: "POST" }>;
-export type PopupClaim = NonNullable<PostStatus["claims"]>[number];
+type InvestigatedPostStatus = Extract<PostStatus, { investigationState: "INVESTIGATED" }>;
+export type PopupClaim = InvestigatedPostStatus["claims"][number];
 
 export type PostPopupView =
   | { kind: "found_claims"; claims: PopupClaim[] }
   | { kind: "clean" }
   | { kind: "failed" }
-  | { kind: "investigating" }
+  | {
+      kind: "investigating";
+      pendingClaims: InvestigationClaimPayload[];
+      confirmedClaims: InvestigationClaimPayload[];
+    }
   | { kind: "not_investigated"; canRequest: boolean };
 
 export function computePostView(matched: PostStatus, canRequest: boolean): PostPopupView {
@@ -21,7 +26,11 @@ export function computePostView(matched: PostStatus, canRequest: boolean): PostP
     return { kind: "failed" };
   }
   if (matched.investigationState === "INVESTIGATING") {
-    return { kind: "investigating" };
+    return {
+      kind: "investigating",
+      pendingClaims: matched.pendingClaims,
+      confirmedClaims: matched.confirmedClaims,
+    };
   }
   return { kind: "not_investigated", canRequest };
 }

@@ -17,3 +17,11 @@ export const INVESTIGATION_MODEL_VALUES = [
   "ANTHROPIC_CLAUDE_OPUS",
 ] as const;
 export type InvestigationModel = (typeof INVESTIGATION_MODEL_VALUES)[number];
+
+export const SUPPORTED_IMAGE_MIME_TYPE_VALUES = [
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+] as const;
+export type SupportedImageMimeType = (typeof SUPPORTED_IMAGE_MIME_TYPE_VALUES)[number];

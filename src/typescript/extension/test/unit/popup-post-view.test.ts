@@ -13,7 +13,6 @@ function createPostStatus(
     externalId: "lw-1",
     pageUrl: "https://www.lesswrong.com/posts/lw-1/example",
     investigationState,
-    claims: null,
   });
 }
 

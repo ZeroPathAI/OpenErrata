@@ -11,6 +11,10 @@ export type InvestigationClaim = InvestigatedViewPostOutput["claims"][number];
 
 export type InvestigationResult = z.infer<typeof import("./schemas.js").investigationResultSchema>;
 
+export type InvestigationClaimPayload = z.infer<
+  typeof import("./schemas.js").investigationClaimPayloadSchema
+>;
+
 export type ClaimId = z.infer<typeof import("./schemas.js").claimIdSchema>;
 
 // ── Platform metadata contracts ───────────────────────────────────────────

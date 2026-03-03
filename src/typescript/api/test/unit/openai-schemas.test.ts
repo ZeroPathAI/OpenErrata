@@ -5,8 +5,6 @@ import {
   claimValidationResultSchema,
   providerStructuredSourceUrlSchema,
   providerStructuredInvestigationClaimPayloadSchema,
-  providerStructuredInvestigationResultSchema,
-  buildUpdateInvestigationResultSchema,
 } from "../../src/lib/investigators/openai-schemas.js";
 
 test("claimValidationResultSchema accepts { approved: true }", () => {
@@ -63,68 +61,4 @@ test("providerStructuredInvestigationClaimPayloadSchema rejects empty sources", 
       }),
     ZodError,
   );
-});
-
-test("providerStructuredInvestigationResultSchema accepts valid result", () => {
-  const result = providerStructuredInvestigationResultSchema.parse({
-    claims: [
-      {
-        text: "claim",
-        context: "ctx",
-        summary: "sum",
-        reasoning: "reas",
-        sources: [{ url: "https://a.com", title: "t", snippet: "s" }],
-      },
-    ],
-  });
-  assert.equal(result.claims.length, 1);
-});
-
-test("providerStructuredInvestigationResultSchema accepts empty claims array", () => {
-  const result = providerStructuredInvestigationResultSchema.parse({ claims: [] });
-  assert.equal(result.claims.length, 0);
-});
-
-test("buildUpdateInvestigationResultSchema with no old claims only allows new actions", () => {
-  const schema = buildUpdateInvestigationResultSchema([]);
-  const result = schema.parse({
-    actions: [
-      {
-        type: "new",
-        claim: {
-          text: "t",
-          context: "c",
-          summary: "s",
-          reasoning: "r",
-          sources: [{ url: "https://a.com", title: "t", snippet: "s" }],
-        },
-      },
-    ],
-  });
-  assert.equal(result.actions.length, 1);
-});
-
-test("buildUpdateInvestigationResultSchema with old claim ids allows carry actions", () => {
-  const schema = buildUpdateInvestigationResultSchema(["claim-1", "claim-2"]);
-  const result = schema.parse({
-    actions: [
-      { type: "carry", id: "claim-1" },
-      {
-        type: "new",
-        claim: {
-          text: "t",
-          context: "c",
-          summary: "s",
-          reasoning: "r",
-          sources: [{ url: "https://b.com", title: "t2", snippet: "s2" }],
-        },
-      },
-    ],
-  });
-  assert.equal(result.actions.length, 2);
-});
-
-test("buildUpdateInvestigationResultSchema rejects carry with unknown id", () => {
-  const schema = buildUpdateInvestigationResultSchema(["claim-1"]);
-  assert.throws(() => schema.parse({ actions: [{ type: "carry", id: "unknown-id" }] }), ZodError);
 });

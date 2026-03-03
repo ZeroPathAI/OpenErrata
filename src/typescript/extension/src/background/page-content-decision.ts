@@ -23,7 +23,8 @@ export function decidePageContentSnapshot(input: {
         investigationState: "INVESTIGATING",
         status: input.existingForSession.status,
         provenance: input.existingForSession.provenance,
-        claims: null,
+        pendingClaims: input.existingForSession.pendingClaims,
+        confirmedClaims: input.existingForSession.confirmedClaims,
         priorInvestigationResult: null,
       };
     }
@@ -34,7 +35,6 @@ export function decidePageContentSnapshot(input: {
     snapshot = {
       investigationState: "FAILED",
       provenance: input.existingForSession.provenance,
-      claims: null,
     };
   } else {
     snapshot = input.result;

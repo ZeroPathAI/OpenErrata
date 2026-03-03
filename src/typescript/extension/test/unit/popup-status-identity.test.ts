@@ -16,7 +16,6 @@ function createPostStatus(
     externalId,
     pageUrl,
     investigationState: "NOT_INVESTIGATED",
-    claims: null,
     priorInvestigationResult: null,
   });
 }

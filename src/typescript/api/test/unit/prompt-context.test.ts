@@ -253,3 +253,216 @@ test("resolveHtmlSnapshotsFromVersionMeta throws when serverVerifiedAt is set bu
     );
   }
 });
+
+// ── Additional invariants ────────────────────────────────────────────────────
+//
+// 6. **Image occurrence mapping**: toPromptPostContext must faithfully forward
+//    image occurrences from the DB shape to the prompt shape, including the
+//    optional captionText field (omitted when null in DB).
+//
+// 7. **authorName omission**: When the post has no author, authorName must be
+//    absent from the returned context (not undefined or empty string).
+//
+// 8. **X hasVideo=false when media has no video URLs**: The X branch must
+//    correctly report hasVideo=false when mediaUrls contains only images.
+//
+// 9. **resolveHtmlSnapshotsFromVersionMeta: X always returns null/null**:
+//    X posts never have server/client HTML blobs.
+//
+// 10. **resolveHtmlSnapshotsFromVersionMeta: server-verified path returns
+//     typed discriminated union**: When serverVerifiedAt is non-null, the
+//     returned type has serverHtml: string (not null).
+
+test("toPromptPostContext maps image occurrences faithfully", () => {
+  const input: PromptPostContextInput = {
+    serverVerifiedAt: null,
+    contentBlob: { contentText: "text", contentHash: "hash" },
+    imageOccurrenceSet: {
+      occurrences: [
+        {
+          originalIndex: 0,
+          normalizedTextOffset: 42,
+          sourceUrl: "https://example.com/img.png",
+          captionText: "A caption",
+        },
+        {
+          originalIndex: 1,
+          normalizedTextOffset: 100,
+          sourceUrl: "https://example.com/img2.png",
+          captionText: null,
+        },
+      ],
+    },
+    lesswrongVersionMeta: null,
+    xVersionMeta: null,
+    substackVersionMeta: {
+      publishedAt: null,
+      serverHtmlBlob: null,
+      clientHtmlBlob: null,
+    },
+    wikipediaVersionMeta: null,
+    post: {
+      platform: "SUBSTACK",
+      url: "https://example.substack.com/p/test",
+      author: null,
+    },
+  };
+
+  const ctx = toPromptPostContext(input);
+  assert.equal(ctx.imageOccurrences.length, 2);
+
+  assert.equal(ctx.imageOccurrences[0]?.originalIndex, 0);
+  assert.equal(ctx.imageOccurrences[0].normalizedTextOffset, 42);
+  assert.equal(ctx.imageOccurrences[0].sourceUrl, "https://example.com/img.png");
+  assert.equal(ctx.imageOccurrences[0].captionText, "A caption");
+
+  assert.equal(ctx.imageOccurrences[1]?.originalIndex, 1);
+  assert.equal(ctx.imageOccurrences[1].captionText, undefined, "null captionText is omitted");
+});
+
+test("toPromptPostContext omits authorName when author is null", () => {
+  for (const platform of PLATFORM_VALUES) {
+    const ctx = toPromptPostContext({
+      serverVerifiedAt: null,
+      contentBlob: { contentText: "text", contentHash: "hash" },
+      imageOccurrenceSet: { occurrences: [] },
+      lesswrongVersionMeta: null,
+      xVersionMeta: null,
+      substackVersionMeta: null,
+      wikipediaVersionMeta: null,
+      post: {
+        platform,
+        url: sampleUrlForPlatform(platform),
+        author: null,
+      },
+    });
+    assert.equal(ctx.authorName, undefined, `platform=${platform}`);
+  }
+});
+
+test("toPromptPostContext: X hasVideo=false when media contains only images", () => {
+  const ctx = toPromptPostContext({
+    serverVerifiedAt: null,
+    contentBlob: { contentText: "tweet", contentHash: "hash" },
+    imageOccurrenceSet: { occurrences: [] },
+    lesswrongVersionMeta: null,
+    xVersionMeta: {
+      postedAt: null,
+      mediaUrls: ["https://pbs.twimg.com/media/photo.jpg"],
+    },
+    substackVersionMeta: null,
+    wikipediaVersionMeta: null,
+    post: {
+      platform: "X",
+      url: "https://x.com/u/status/1",
+      author: { displayName: "User" },
+    },
+  });
+
+  assert.equal(ctx.hasVideo, false);
+});
+
+test("toPromptPostContext: X hasVideo=false when mediaUrls is empty", () => {
+  const ctx = toPromptPostContext({
+    serverVerifiedAt: null,
+    contentBlob: { contentText: "tweet", contentHash: "hash" },
+    imageOccurrenceSet: { occurrences: [] },
+    lesswrongVersionMeta: null,
+    xVersionMeta: {
+      postedAt: null,
+      mediaUrls: [],
+    },
+    substackVersionMeta: null,
+    wikipediaVersionMeta: null,
+    post: {
+      platform: "X",
+      url: "https://x.com/u/status/2",
+      author: null,
+    },
+  });
+
+  assert.equal(ctx.hasVideo, false);
+});
+
+test("toPromptPostContext: non-X platforms have hasVideo=false", () => {
+  const NON_X: Platform[] = ["LESSWRONG", "SUBSTACK", "WIKIPEDIA"];
+  for (const platform of NON_X) {
+    const { input } = platformTimestampFixtures[platform];
+    const ctx = toPromptPostContext(input);
+    assert.equal(ctx.hasVideo, false, `platform=${platform}`);
+  }
+});
+
+test("resolveHtmlSnapshotsFromVersionMeta: X returns null/null regardless of serverVerifiedAt", () => {
+  const input: HtmlSnapshotsInput = {
+    serverVerifiedAt: null,
+    contentBlob: { contentText: "tweet", contentHash: "hash" },
+    imageOccurrenceSet: { occurrences: [] },
+    lesswrongVersionMeta: null,
+    xVersionMeta: { postedAt: null, mediaUrls: [] },
+    substackVersionMeta: null,
+    wikipediaVersionMeta: null,
+    post: {
+      platform: "X",
+      url: "https://x.com/u/status/1",
+      author: null,
+    },
+  };
+
+  const result = resolveHtmlSnapshotsFromVersionMeta(input);
+  assert.equal(result.serverVerifiedAt, null);
+  assert.equal(result.serverHtml, null);
+  assert.equal(result.clientHtml, null);
+});
+
+test("resolveHtmlSnapshotsFromVersionMeta: server-verified returns non-null serverHtml", () => {
+  const input: HtmlSnapshotsInput = {
+    serverVerifiedAt: new Date("2026-02-20T12:00:00.000Z"),
+    contentBlob: { contentText: "unused", contentHash: "hash" },
+    imageOccurrenceSet: { occurrences: [] },
+    lesswrongVersionMeta: {
+      publishedAt: null,
+      serverHtmlBlob: { htmlContent: "<h1>Server</h1>" },
+      clientHtmlBlob: { htmlContent: "<h1>Client</h1>" },
+    },
+    xVersionMeta: null,
+    substackVersionMeta: null,
+    wikipediaVersionMeta: null,
+    post: {
+      platform: "LESSWRONG",
+      url: "https://www.lesswrong.com/posts/example",
+      author: null,
+    },
+  };
+
+  const result = resolveHtmlSnapshotsFromVersionMeta(input);
+  assert.notEqual(result.serverVerifiedAt, null);
+  assert.equal(result.serverHtml, "<h1>Server</h1>");
+  assert.equal(result.clientHtml, "<h1>Client</h1>");
+});
+
+test("resolveHtmlSnapshotsFromVersionMeta: unverified returns nullable serverHtml", () => {
+  const input: HtmlSnapshotsInput = {
+    serverVerifiedAt: null,
+    contentBlob: { contentText: "unused", contentHash: "hash" },
+    imageOccurrenceSet: { occurrences: [] },
+    lesswrongVersionMeta: {
+      publishedAt: null,
+      serverHtmlBlob: null,
+      clientHtmlBlob: { htmlContent: "<h1>Client</h1>" },
+    },
+    xVersionMeta: null,
+    substackVersionMeta: null,
+    wikipediaVersionMeta: null,
+    post: {
+      platform: "LESSWRONG",
+      url: "https://www.lesswrong.com/posts/example",
+      author: null,
+    },
+  };
+
+  const result = resolveHtmlSnapshotsFromVersionMeta(input);
+  assert.equal(result.serverVerifiedAt, null);
+  assert.equal(result.serverHtml, null);
+  assert.equal(result.clientHtml, "<h1>Client</h1>");
+});

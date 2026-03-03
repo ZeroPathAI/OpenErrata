@@ -4,9 +4,17 @@ import { isRecordNotFoundError } from "$lib/db/errors.js";
 import { downloadAndStoreImages, type ResolvedDownloadedImage } from "./image-downloader.js";
 import { consumeOpenAiKeySource, resolveInvestigationRunKey } from "./user-key-source.js";
 import { InvestigatorExecutionError, OpenAIInvestigator } from "$lib/investigators/openai.js";
-import type { InvestigatorImageOccurrence } from "$lib/investigators/interface.js";
-import { claimIdSchema, MAX_IMAGES_PER_INVESTIGATION } from "@openerrata/shared";
+import type {
+  InvestigationProgressCallbacks,
+  InvestigatorImageOccurrence,
+} from "$lib/investigators/interface.js";
+import {
+  claimIdSchema,
+  MAX_IMAGES_PER_INVESTIGATION,
+  type SupportedImageMimeType,
+} from "@openerrata/shared";
 import type { ImageBlob } from "$lib/generated/prisma/client";
+import { CLEARED_PROGRESS_CLAIMS } from "./investigation-lifecycle.js";
 import { createHash } from "node:crypto";
 
 import { formatErrorForLog, isNonRetryableProviderError } from "./orchestrator-errors.js";
@@ -57,7 +65,7 @@ async function replaceInvestigationImages(
   });
 }
 
-function toDataUri(bytes: Uint8Array, mimeType: string): string {
+function toDataUri(bytes: Uint8Array, mimeType: SupportedImageMimeType): string {
   return `data:${mimeType};base64,${Buffer.from(bytes).toString("base64")}`;
 }
 
@@ -139,6 +147,23 @@ export async function orchestrateInvestigation(
     workerIdentity: string;
   },
 ): Promise<void> {
+  const inFlightProgressWrites = new Set<Promise<void>>();
+  let progressWriteFailures = 0;
+
+  function trackProgressWrite(write: Promise<void>): void {
+    inFlightProgressWrites.add(write);
+    void write.finally(() => {
+      inFlightProgressWrites.delete(write);
+    });
+  }
+
+  async function flushProgressWrites(): Promise<void> {
+    if (inFlightProgressWrites.size === 0) {
+      return;
+    }
+    await Promise.allSettled([...inFlightProgressWrites]);
+  }
+
   const claimResult = await tryClaimRunLease(runId, options.workerIdentity);
   if (claimResult === "MISSING") {
     logger.info(`Investigation run ${runId} no longer exists; skipping stale job`);
@@ -161,12 +186,14 @@ export async function orchestrateInvestigation(
 
   const prisma = getPrisma();
   const investigation = run.investigation;
-  if (investigation.status !== "PROCESSING") {
-    await prisma.investigation.update({
-      where: { id: investigation.id },
-      data: { status: "PROCESSING" },
-    });
-  }
+  // Always set status=PROCESSING and clear stale progressClaims.
+  // When re-claiming a PROCESSING investigation with an expired lease
+  // (stale worker takeover), the dead worker's progressClaims would
+  // otherwise persist and be visible to clients until overwritten.
+  await prisma.investigation.update({
+    where: { id: investigation.id },
+    data: { status: "PROCESSING", progressClaims: CLEARED_PROGRESS_CLAIMS },
+  });
 
   const heartbeat = startRunHeartbeat(run.id, options.workerIdentity, logger);
 
@@ -199,30 +226,54 @@ export async function orchestrateInvestigation(
       throw new Error(`Update investigation ${investigation.id} is missing parent investigation`);
     }
 
-    const output = await investigator.investigate({
-      contentText: investigation.postVersion.contentBlob.contentText,
-      ...promptPostContext,
-      ...(contentMarkdown !== undefined && { contentMarkdown }),
-      ...(imagePlaceholders !== undefined && { imagePlaceholders }),
-      imageOccurrences: resolvedImageOccurrences,
-      ...(promptPostContext.hasVideo ? { hasVideo: true } : {}),
-      ...(investigation.parentInvestigation !== null && {
-        isUpdate: true,
-        ...(investigation.contentDiff === null ? {} : { contentDiff: investigation.contentDiff }),
-        oldClaims: investigation.parentInvestigation.claims.map((claim) => ({
-          id: claimIdSchema.parse(claim.id),
-          text: claim.text,
-          context: claim.context,
-          summary: claim.summary,
-          reasoning: claim.reasoning,
-          sources: claim.sources.map((source) => ({
-            url: source.url,
-            title: source.title,
-            snippet: source.snippet,
+    const progressCallbacks: InvestigationProgressCallbacks = {
+      onProgressUpdate: (pending, confirmed) => {
+        // Guard on status=PROCESSING to avoid writing progressClaims
+        // after a terminal transition (COMPLETE/FAILED).
+        const write = prisma.investigation
+          .updateMany({
+            where: { id: investigation.id, status: "PROCESSING" },
+            data: { progressClaims: { pending, confirmed } },
+          })
+          .then(() => undefined)
+          .catch((err: unknown) => {
+            progressWriteFailures += 1;
+            console.warn("progressClaims write failed:", err);
+          });
+        trackProgressWrite(write);
+      },
+    };
+
+    const output = await investigator.investigate(
+      {
+        contentText: investigation.postVersion.contentBlob.contentText,
+        ...promptPostContext,
+        ...(contentMarkdown !== undefined && { contentMarkdown }),
+        ...(imagePlaceholders !== undefined && { imagePlaceholders }),
+        imageOccurrences: resolvedImageOccurrences,
+        ...(promptPostContext.hasVideo ? { hasVideo: true } : {}),
+        ...(investigation.parentInvestigation !== null && {
+          isUpdate: true,
+          ...(investigation.contentDiff === null ? {} : { contentDiff: investigation.contentDiff }),
+          oldClaims: investigation.parentInvestigation.claims.map((claim) => ({
+            id: claimIdSchema.parse(claim.id),
+            text: claim.text,
+            context: claim.context,
+            summary: claim.summary,
+            reasoning: claim.reasoning,
+            sources: claim.sources.map((source) => ({
+              url: source.url,
+              title: source.title,
+              snippet: source.snippet,
+            })),
           })),
-        })),
-      }),
-    });
+        }),
+      },
+      progressCallbacks,
+    );
+
+    // Ensure all progress writes settle before terminal transition.
+    await flushProgressWrites();
 
     // Guard-first: atomically transition PROCESSING → COMPLETE.
     // If another worker already moved this investigation to a terminal
@@ -235,6 +286,7 @@ export async function orchestrateInvestigation(
           status: "COMPLETE",
           checkedAt: new Date(),
           modelVersion: output.modelVersion ?? null,
+          progressClaims: CLEARED_PROGRESS_CLAIMS,
         },
       });
 
@@ -245,7 +297,6 @@ export async function orchestrateInvestigation(
       await persistAttemptAudit(tx, {
         investigationId: investigation.id,
         attemptNumber: options.attemptNumber,
-        outcome: "SUCCEEDED",
         attemptAudit: output.attemptAudit,
       });
 
@@ -295,6 +346,9 @@ export async function orchestrateInvestigation(
       );
     }
   } catch (error) {
+    // Drain callback writes so FAILED/lease-release transition is the final state.
+    await flushProgressWrites();
+
     if (isRecordNotFoundError(error)) {
       logger.info(
         `Investigation ${investigation.id} disappeared during processing; skipping stale job`,
@@ -364,5 +418,10 @@ export async function orchestrateInvestigation(
     throw error;
   } finally {
     heartbeat.stop();
+    if (progressWriteFailures > 0) {
+      logger.warn(
+        `${progressWriteFailures.toString()} progressClaims write(s) failed during investigation ${investigation.id}`,
+      );
+    }
   }
 }

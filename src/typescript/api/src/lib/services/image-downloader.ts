@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
-import { MAX_IMAGE_BYTES } from "@openerrata/shared";
+import {
+  MAX_IMAGE_BYTES,
+  SUPPORTED_IMAGE_MIME_TYPE_VALUES,
+  type SupportedImageMimeType,
+} from "@openerrata/shared";
 import { getPrisma } from "$lib/db/client.js";
 import { isUniqueConstraintError } from "$lib/db/errors.js";
 import type { ImageBlob } from "$lib/generated/prisma/client";
@@ -10,10 +14,18 @@ import { uploadImage } from "./blob-storage.js";
 const IMAGE_DOWNLOAD_TIMEOUT_MS = 15_000;
 const MAX_REDIRECT_HOPS = 5;
 
-function parseImageContentType(contentTypeHeader: string | null): string | null {
+const SUPPORTED_MIME_TYPE_SET: ReadonlySet<string> = new Set(SUPPORTED_IMAGE_MIME_TYPE_VALUES);
+
+function isSupportedImageMimeType(value: string): value is SupportedImageMimeType {
+  return SUPPORTED_MIME_TYPE_SET.has(value);
+}
+
+export function parseImageContentType(
+  contentTypeHeader: string | null,
+): SupportedImageMimeType | null {
   if (contentTypeHeader === null || contentTypeHeader.length === 0) return null;
   const normalized = contentTypeHeader.split(";")[0]?.trim().toLowerCase() ?? "";
-  if (!normalized.startsWith("image/")) return null;
+  if (!isSupportedImageMimeType(normalized)) return null;
   return normalized;
 }
 
@@ -77,7 +89,9 @@ async function readResponseBytesWithinLimit(
   return bytes;
 }
 
-async function downloadImage(url: string): Promise<{ bytes: Uint8Array; mimeType: string } | null> {
+async function downloadImage(
+  url: string,
+): Promise<{ bytes: Uint8Array; mimeType: SupportedImageMimeType } | null> {
   try {
     let currentUrl = new URL(url);
 
@@ -163,7 +177,7 @@ async function findOrCreateImageBlob(input: {
   contentHash: string;
   originalUrl: string;
   bytes: Uint8Array;
-  mimeType: string;
+  mimeType: SupportedImageMimeType;
 }): Promise<ImageBlob | null> {
   const prisma = getPrisma();
   const existing = await prisma.imageBlob.findUnique({
@@ -196,7 +210,7 @@ async function findOrCreateImageBlob(input: {
 export interface ResolvedDownloadedImage {
   blob: ImageBlob;
   bytes: Uint8Array;
-  mimeType: string;
+  mimeType: SupportedImageMimeType;
   contentHash: string;
 }
 

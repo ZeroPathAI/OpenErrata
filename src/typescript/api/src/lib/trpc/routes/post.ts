@@ -59,6 +59,7 @@ import {
   unreachableInvestigationStatus,
   requireCompleteCheckedAtIso,
   prismaInvestigationRepository,
+  parseProgressClaims,
 } from "./post/investigation-queries.js";
 
 // ---------------------------------------------------------------------------
@@ -155,7 +156,6 @@ export const postRouter = router({
       if (postVersion === null) {
         return {
           investigationState: "NOT_INVESTIGATED" as const,
-          claims: null,
           priorInvestigationResult: null,
         };
       }
@@ -210,7 +210,6 @@ export const postRouter = router({
 
       return {
         investigationState: "NOT_INVESTIGATED" as const,
-        claims: null,
         priorInvestigationResult: toPriorInvestigationResult(sourceInvestigation),
       };
     }),
@@ -227,7 +226,6 @@ export const postRouter = router({
       if (!investigation) {
         return {
           investigationState: "NOT_INVESTIGATED" as const,
-          claims: null,
           priorInvestigationResult: null,
         };
       }
@@ -246,12 +244,14 @@ export const postRouter = router({
             checkedAt: requireCompleteCheckedAtIso(investigation.id, investigation.checkedAt),
           };
         case "PENDING":
-        case "PROCESSING":
+        case "PROCESSING": {
+          const progress = parseProgressClaims(investigation.progressClaims);
           return {
             investigationState: "INVESTIGATING" as const,
             status: investigation.status,
             provenance,
-            claims: null,
+            pendingClaims: progress.pendingClaims,
+            confirmedClaims: progress.confirmedClaims,
             priorInvestigationResult:
               investigation.parentInvestigation !== null &&
               investigation.parentInvestigation.status === "COMPLETE"
@@ -262,11 +262,11 @@ export const postRouter = router({
                 : null,
             checkedAt: investigation.checkedAt?.toISOString(),
           };
+        }
         case "FAILED":
           return {
             investigationState: "FAILED" as const,
             provenance,
-            claims: null,
             checkedAt: investigation.checkedAt?.toISOString(),
           };
         default:

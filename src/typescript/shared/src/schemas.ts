@@ -61,7 +61,7 @@ const claimSourceSchema = z
   })
   .strict();
 
-const investigationClaimPayloadSchema = z
+export const investigationClaimPayloadSchema = z
   .object({
     text: z.string().min(1),
     context: z.string().min(1),
@@ -228,7 +228,6 @@ export const priorInvestigationResultSchema = z
 const investigationStatusNotInvestigatedSchema = z
   .object({
     investigationState: z.literal("NOT_INVESTIGATED"),
-    claims: z.null(),
     priorInvestigationResult: priorInvestigationResultSchema.nullable(),
   })
   .strict();
@@ -238,7 +237,8 @@ const investigationStatusInvestigatingSchema = z
     investigationState: z.literal("INVESTIGATING"),
     status: z.union([z.literal("PENDING"), z.literal("PROCESSING")]),
     provenance: contentProvenanceSchema,
-    claims: z.null(),
+    pendingClaims: z.array(investigationClaimPayloadSchema),
+    confirmedClaims: z.array(investigationClaimPayloadSchema),
     priorInvestigationResult: priorInvestigationResultSchema.nullable(),
   })
   .strict();
@@ -247,7 +247,6 @@ const investigationStatusFailedSchema = z
   .object({
     investigationState: z.literal("FAILED"),
     provenance: contentProvenanceSchema,
-    claims: z.null(),
   })
   .strict();
 
@@ -502,7 +501,6 @@ const extensionPostNotInvestigatedSchema = extensionPostStatusBaseSchema
   .extend({
     investigationState: z.literal("NOT_INVESTIGATED"),
     status: z.undefined().optional(),
-    claims: z.null(),
     priorInvestigationResult: priorInvestigationResultSchema.nullable(),
   })
   .strict();
@@ -512,7 +510,8 @@ const extensionPostInvestigatingSchema = extensionPostStatusBaseSchema
     investigationState: z.literal("INVESTIGATING"),
     status: z.union([z.literal("PENDING"), z.literal("PROCESSING")]),
     provenance: contentProvenanceSchema,
-    claims: z.null(),
+    pendingClaims: z.array(investigationClaimPayloadSchema),
+    confirmedClaims: z.array(investigationClaimPayloadSchema),
     priorInvestigationResult: priorInvestigationResultSchema.nullable(),
   })
   .strict();
@@ -521,7 +520,6 @@ const extensionPostFailedSchema = extensionPostStatusBaseSchema
   .extend({
     investigationState: z.literal("FAILED"),
     provenance: contentProvenanceSchema.optional(),
-    claims: z.null(),
   })
   .strict();
 

@@ -31,3 +31,6 @@ pgdata/
 
 # Local secrets (private keys, credentials — never commit)
 LOCAL_SECRETS/
+
+# Debug/test payloads
+src/typescript/payload*.json

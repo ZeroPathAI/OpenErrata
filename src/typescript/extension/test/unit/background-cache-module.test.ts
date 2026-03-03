@@ -97,7 +97,6 @@ function createPostStatus(tabSessionId: number): ExtensionPostStatus {
     externalId,
     pageUrl: "https://x.com/example/status/123",
     investigationState: "NOT_INVESTIGATED",
-    claims: null,
     priorInvestigationResult: null,
   };
   return status;

@@ -99,9 +99,8 @@ test("buildUserPrompt update mode includes carry/new contract and collision-safe
   });
 
   assert.match(prompt, /## Update handling instructions/);
-  assert.match(prompt, /## Update output contract/);
-  assert.match(prompt, /"type": "carry"/);
-  assert.match(prompt, /"type": "new"/);
+  assert.match(prompt, /retain_correction/);
+  assert.match(prompt, /submit_correction/);
 
   const markers = extractRawSectionMarkers(prompt, "Content diff");
   assert.equal(collidingText.includes(markers.beginMarker), false);

@@ -81,7 +81,7 @@ function logServerVerifiedContentMismatch(mismatch: ServerVerifiedContentMismatc
       ? mismatch.url
       : `externalId=${mismatch.externalId}; url=${mismatch.url}`;
 
-  console.error(
+  console.warn(
     `Canonical integrity mismatch for ${mismatch.platform}; continuing with server-verified content. ${identity}; observedHash=${mismatch.observedHash}; serverHash=${mismatch.serverHash}`,
   );
 }
@@ -111,7 +111,7 @@ function applyServerVerifiedWikipediaIdentity(input: {
     return input.preparedInput;
   }
 
-  console.error(
+  console.warn(
     `Wikipedia metadata identity mismatch; continuing with server-verified page identity. url=${input.preparedInput.url}; clientPageId=${input.preparedInput.metadata.pageId}; serverPageId=${serverIdentity.pageId}`,
   );
 

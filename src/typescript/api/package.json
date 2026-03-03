@@ -38,6 +38,7 @@
     "graphql-yoga": "^5.18.0",
     "ipaddr.js": "^2.3.0",
     "openai": "^6.22.0",
+    "p-limit": "^7.3.0",
     "parse5": "^8.0.0",
     "pg": "^8.18.0",
     "turndown": "^7.2.2",

@@ -22,7 +22,8 @@ test("decidePageContentPostCacheAction resumes polling for INVESTIGATING statuse
       investigationState: "INVESTIGATING",
       status: "PROCESSING",
       provenance: "SERVER_VERIFIED",
-      claims: null,
+      pendingClaims: [],
+      confirmedClaims: [],
       priorInvestigationResult: null,
     },
     investigationIdSchema.parse("inv-1"),
@@ -48,7 +49,6 @@ test("decidePageContentPostCacheAction resumes polling for INVESTIGATING statuse
 test("decidePageContentPostCacheAction auto-investigates when eligible and not resumable", () => {
   const status = buildStatus({
     investigationState: "NOT_INVESTIGATED",
-    claims: null,
     priorInvestigationResult: null,
   });
 

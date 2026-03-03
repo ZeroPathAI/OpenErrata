@@ -40,7 +40,6 @@ function createPostStatus(
     const status: ExtensionPostStatus = {
       ...base,
       investigationState: "NOT_INVESTIGATED",
-      claims: null,
       priorInvestigationResult: null,
     };
     return status;
@@ -52,7 +51,8 @@ function createPostStatus(
       investigationState: "INVESTIGATING",
       status: "PENDING",
       provenance: "SERVER_VERIFIED",
-      claims: null,
+      pendingClaims: [],
+      confirmedClaims: [],
       priorInvestigationResult: null,
     };
     return status;
@@ -63,7 +63,6 @@ function createPostStatus(
       ...base,
       investigationState: "FAILED",
       provenance: "SERVER_VERIFIED",
-      claims: null,
     };
     return status;
   }

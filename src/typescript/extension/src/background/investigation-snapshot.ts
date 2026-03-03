@@ -28,27 +28,19 @@ export function snapshotFromInvestigateNowResult(
     case "PENDING":
     case "PROCESSING": {
       const updateFallback = readPriorInvestigationResult(existing);
-      return updateFallback === null
-        ? {
-            investigationState: "INVESTIGATING",
-            status: result.status,
-            provenance: result.provenance,
-            claims: null,
-            priorInvestigationResult: null,
-          }
-        : {
-            investigationState: "INVESTIGATING",
-            status: result.status,
-            provenance: result.provenance,
-            claims: null,
-            priorInvestigationResult: updateFallback,
-          };
+      return {
+        investigationState: "INVESTIGATING",
+        status: result.status,
+        provenance: result.provenance,
+        pendingClaims: [],
+        confirmedClaims: [],
+        priorInvestigationResult: updateFallback,
+      };
     }
     case "FAILED":
       return {
         investigationState: "FAILED",
         provenance: result.provenance,
-        claims: null,
       };
   }
 }
@@ -66,23 +58,36 @@ export function toInvestigationStatusForCaching(
   if (snapshot === null || snapshot === undefined) {
     return null;
   }
-  const priorInvestigationResult = readPriorInvestigationResult(snapshot);
-  if (priorInvestigationResult === null) return null;
-  if (snapshot.investigationState === "NOT_INVESTIGATED") {
-    return {
-      investigationState: "NOT_INVESTIGATED",
-      claims: null,
-      priorInvestigationResult,
-    };
+  switch (snapshot.investigationState) {
+    case "NOT_INVESTIGATED":
+      return {
+        investigationState: "NOT_INVESTIGATED",
+        priorInvestigationResult: readPriorInvestigationResult(snapshot),
+      };
+    case "INVESTIGATING":
+      return {
+        investigationState: "INVESTIGATING",
+        status: snapshot.status,
+        provenance: snapshot.provenance,
+        pendingClaims: snapshot.pendingClaims,
+        confirmedClaims: snapshot.confirmedClaims,
+        priorInvestigationResult: readPriorInvestigationResult(snapshot),
+      };
+    case "INVESTIGATED":
+      return {
+        investigationState: "INVESTIGATED",
+        provenance: snapshot.provenance,
+        claims: snapshot.claims,
+      };
+    case "FAILED":
+      // ExtensionPostStatus FAILED has optional provenance; InvestigationStatusOutput
+      // requires it. If provenance is absent, we can't construct a valid cache entry.
+      if (!("provenance" in snapshot) || snapshot.provenance === undefined) {
+        return null;
+      }
+      return {
+        investigationState: "FAILED",
+        provenance: snapshot.provenance,
+      };
   }
-  if (snapshot.investigationState === "INVESTIGATING") {
-    return {
-      investigationState: "INVESTIGATING",
-      status: snapshot.status,
-      provenance: snapshot.provenance,
-      claims: null,
-      priorInvestigationResult,
-    };
-  }
-  return null;
 }

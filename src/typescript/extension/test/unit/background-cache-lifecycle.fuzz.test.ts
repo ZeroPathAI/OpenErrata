@@ -53,7 +53,8 @@ function createPostStatus(input: {
       investigationState: "INVESTIGATING",
       status: "PENDING",
       provenance: "CLIENT_FALLBACK",
-      claims: null,
+      pendingClaims: [],
+      confirmedClaims: [],
       priorInvestigationResult: null,
     });
   }
@@ -71,7 +72,6 @@ function createPostStatus(input: {
     return extensionPostStatusSchema.parse({
       ...base,
       investigationState: "NOT_INVESTIGATED",
-      claims: null,
       priorInvestigationResult: null,
     });
   }
@@ -80,7 +80,6 @@ function createPostStatus(input: {
     ...base,
     investigationState: "FAILED",
     provenance: "CLIENT_FALLBACK",
-    claims: null,
   });
 }
 

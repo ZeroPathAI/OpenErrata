@@ -141,7 +141,6 @@ void test("post.recordViewAndGetStatus stores content and reports not investigat
   const result = await caller.post.recordViewAndGetStatus(input);
 
   assert.equal(result.investigationState, "NOT_INVESTIGATED");
-  assert.equal(result.claims, null);
 
   const post = await prisma.post.findUnique({
     where: {
@@ -184,7 +183,6 @@ void test("post.recordViewAndGetStatus for LessWrong derives observed content fr
   );
 
   assert.equal(result.investigationState, "NOT_INVESTIGATED");
-  assert.equal(result.claims, null);
 
   const post = await prisma.post.findUnique({
     where: {
@@ -228,10 +226,10 @@ void test("post.registerObservedVersion uses server canonical content when clien
     htmlContent: "<article><p>Observed browser content that differs from server.</p></article>",
   });
 
-  const loggedErrors: string[] = [];
-  const originalConsoleError = console.error;
-  console.error = (...args: unknown[]): void => {
-    loggedErrors.push(args.map((value) => String(value)).join(" "));
+  const loggedWarnings: string[] = [];
+  const originalConsoleWarn = console.warn;
+  console.warn = (...args: unknown[]): void => {
+    loggedWarnings.push(args.map((value) => String(value)).join(" "));
   };
 
   const result = await (async () => {
@@ -240,15 +238,15 @@ void test("post.registerObservedVersion uses server canonical content when clien
         caller.post.registerObservedVersion(input),
       );
     } finally {
-      console.error = originalConsoleError;
+      console.warn = originalConsoleWarn;
     }
   })();
 
   assert.equal(result.provenance, "SERVER_VERIFIED");
-  assert.equal(loggedErrors.length, 1);
-  assert.match(loggedErrors[0] ?? "", /LESSWRONG/);
-  assert.match(loggedErrors[0] ?? "", /observedHash=/);
-  assert.match(loggedErrors[0] ?? "", /serverHash=/);
+  assert.equal(loggedWarnings.length, 1);
+  assert.match(loggedWarnings[0] ?? "", /LESSWRONG/);
+  assert.match(loggedWarnings[0] ?? "", /observedHash=/);
+  assert.match(loggedWarnings[0] ?? "", /serverHash=/);
 
   const latestVersion = await loadLatestPostVersionByIdentity({
     platform: input.platform,
@@ -524,7 +522,6 @@ void test("post.recordViewAndGetStatus applies strict hash lookup and does not r
   const result = await caller.post.recordViewAndGetStatus(updatedInput);
 
   assert.equal(result.investigationState, "NOT_INVESTIGATED");
-  assert.equal(result.claims, null);
 });
 
 void test("post.recordViewAndGetStatus deduplicates unique-view credit for repeated views by same viewer", async () => {
@@ -608,7 +605,6 @@ void test("post.recordViewAndGetStatus returns interim old claims from latest co
   );
 
   assert.equal(result.investigationState, "NOT_INVESTIGATED");
-  assert.equal(result.claims, null);
   const interimResult = result.priorInvestigationResult;
   assert.notEqual(interimResult, null);
   assert.ok(interimResult);
@@ -679,7 +675,6 @@ void test("post.recordViewAndGetStatus does not reuse CLIENT_FALLBACK investigat
   );
 
   assert.equal(result.investigationState, "NOT_INVESTIGATED");
-  assert.equal(result.claims, null);
   assert.equal(result.priorInvestigationResult, null);
 });
 
@@ -720,7 +715,6 @@ void test("post.recordViewAndGetStatus reuses latest complete SERVER_VERIFIED in
   const result = await caller.post.recordViewAndGetStatus(currentInput);
 
   assert.equal(result.investigationState, "NOT_INVESTIGATED");
-  assert.equal(result.claims, null);
   const interimResult = result.priorInvestigationResult;
   assert.notEqual(interimResult, null);
   assert.ok(interimResult);
@@ -784,7 +778,6 @@ void test("post.recordViewAndGetStatus uses newest complete SERVER_VERIFIED inve
   );
 
   assert.equal(result.investigationState, "NOT_INVESTIGATED");
-  assert.equal(result.claims, null);
   const newestInterimResult = result.priorInvestigationResult;
   assert.notEqual(newestInterimResult, null);
   assert.ok(newestInterimResult);
@@ -938,7 +931,8 @@ void test("post.getInvestigation returns priorInvestigationResult for update inv
   assert.equal(nonUpdateResult.investigationState, "INVESTIGATING");
   assert.equal(nonUpdateResult.status, "PENDING");
   assert.equal(nonUpdateResult.provenance, "SERVER_VERIFIED");
-  assert.equal(nonUpdateResult.claims, null);
+  assert.deepStrictEqual(nonUpdateResult.pendingClaims, []);
+  assert.deepStrictEqual(nonUpdateResult.confirmedClaims, []);
   assert.equal(nonUpdateResult.priorInvestigationResult, null);
 });
 

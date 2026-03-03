@@ -309,6 +309,11 @@ model Investigation {
   // INV-INV-CHECKED-AT-CONSISTENCY: checkedAt is set iff status = COMPLETE.
   // Enforced by CHECK constraint "Investigation_checked_at_consistency_check".
   checkedAt             DateTime?
+  // Transient progress state during active PROCESSING. Contains
+  // { pending: ClaimPayload[], confirmed: ClaimPayload[] } while the
+  // orchestrator is running. Nullified on every lifecycle transition
+  // (COMPLETE, FAILED, lease release, stale-run recovery, requeue).
+  progressClaims        Json?
   run                   InvestigationRun?
   attempts              InvestigationAttempt[]
   updates               Investigation[]        @relation("InvestigationUpdateLineage")

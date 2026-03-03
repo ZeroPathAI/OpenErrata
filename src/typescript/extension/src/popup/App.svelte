@@ -175,7 +175,7 @@
 
   async function requestInvestigation() {
     // Give immediate feedback before the content script round-trip.
-    view = { kind: "investigating" };
+    view = { kind: "investigating", pendingClaims: [], confirmedClaims: [] };
 
     try {
       const response = await sendContentControlMessage({
@@ -385,13 +385,42 @@
           <button class="btn" onclick={requestInvestigation}>Investigate Again</button>
         </section>
       {:else if view.kind === "investigating"}
-        <section class="state-panel">
-          <p class="state-title">Not Yet Investigated</p>
-          <div class="status-row">
+        {@const claimCount = view.pendingClaims.length + view.confirmedClaims.length}
+        {#if claimCount === 0}
+          <section class="state-panel">
+            <p class="state-title">Not Yet Investigated</p>
+            <div class="status-row">
+              <span class="spinner"></span>
+              <span class="status-text investigating">Investigating...</span>
+            </div>
+          </section>
+        {:else}
+          <div class="result-badge investigating-badge">
             <span class="spinner"></span>
-            <span class="status-text investigating">Investigating...</span>
+            <span
+              ><strong>{claimCount}</strong> claim{claimCount !== 1 ? "s" : ""} found so far</span
+            >
           </div>
-        </section>
+          <ul class="claims">
+            {#each view.confirmedClaims as claim, i (`confirmed-${i}`)}
+              <li>
+                <div class="claim-progress-item">
+                  <span class="claim-dot confirmed-dot"></span>
+                  <span class="claim-progress-text">{claim.summary}</span>
+                </div>
+              </li>
+            {/each}
+            {#each view.pendingClaims as claim, i (`pending-${i}`)}
+              <li>
+                <div class="claim-progress-item">
+                  <span class="claim-dot pending-dot"></span>
+                  <span class="claim-progress-text">{claim.summary}</span>
+                  <span class="validating-label">validating...</span>
+                </div>
+              </li>
+            {/each}
+          </ul>
+        {/if}
       {:else if view.kind === "not_investigated"}
         <section class="state-panel">
           <p class="state-title">Not Yet Investigated</p>
@@ -649,6 +678,48 @@
   }
   .clean-dot {
     background: #22c55e;
+  }
+
+  .result-badge.investigating-badge {
+    color: #78350f;
+    background: #fffbeb;
+    border: 1px solid #fde68a;
+  }
+
+  .claim-progress-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 9px 12px 9px 12px;
+  }
+
+  .claim-dot {
+    display: inline-block;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    margin-top: 6px;
+  }
+  .confirmed-dot {
+    background: #ef4444;
+  }
+  .pending-dot {
+    background: #f59e0b;
+  }
+
+  .claim-progress-text {
+    font-size: 13px;
+    line-height: 1.45;
+    color: #334155;
+    flex: 1;
+  }
+
+  .validating-label {
+    font-size: 11px;
+    color: #d97706;
+    flex-shrink: 0;
+    margin-top: 1px;
   }
 
   .claims {

@@ -1,9 +1,9 @@
 import { isUniqueConstraintError } from "$lib/db/errors.js";
-import type {
-  Investigation,
-  InvestigationRun,
+import {
   Prisma,
-  PrismaClient,
+  type Investigation,
+  type InvestigationRun,
+  type PrismaClient,
 } from "$lib/generated/prisma/client";
 import {
   DEFAULT_INVESTIGATION_MODEL,
@@ -19,6 +19,15 @@ import {
   runTimingForInvestigationStatus,
 } from "./investigation-state.js";
 import { randomUUID } from "node:crypto";
+
+/**
+ * Value to assign to `progressClaims` in every Investigation status transition.
+ * Setting it to DbNull clears transient progress state and prevents stale
+ * progressClaims from being visible after the investigation leaves PROCESSING.
+ *
+ * Usage: `data: { status: "...", progressClaims: CLEARED_PROGRESS_CLAIMS }`
+ */
+export const CLEARED_PROGRESS_CLAIMS = Prisma.DbNull;
 
 export class InvestigationWordLimitError extends Error {
   readonly limit: number;
@@ -306,7 +315,7 @@ async function tryRecoverExpiredProcessingRun(
         id: input.investigationId,
         status: "PROCESSING",
       },
-      data: { status: "PENDING" },
+      data: { status: "PENDING", progressClaims: CLEARED_PROGRESS_CLAIMS },
     });
 
     const run = await tx.investigationRun.findUnique({
@@ -417,6 +426,7 @@ async function ensureInvestigationRecord(input: EnsureInvestigationInput): Promi
         contentDiff: input.contentDiff ?? null,
         status: "PENDING",
         checkedAt: null,
+        progressClaims: CLEARED_PROGRESS_CLAIMS,
       },
     });
   }

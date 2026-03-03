@@ -65,7 +65,6 @@ test("decidePageContentSnapshot prefers result interim snapshot when available",
   const priorInvestigationResult = buildPriorInvestigationResult();
   const result: ViewPostOutput = {
     investigationState: "NOT_INVESTIGATED",
-    claims: null,
     priorInvestigationResult: priorInvestigationResult,
   };
 
@@ -73,7 +72,6 @@ test("decidePageContentSnapshot prefers result interim snapshot when available",
     result,
     resultUpdateInterim: {
       investigationState: "NOT_INVESTIGATED",
-      claims: null,
       priorInvestigationResult: priorInvestigationResult,
     },
     existingForSession: null,
@@ -82,7 +80,6 @@ test("decidePageContentSnapshot prefers result interim snapshot when available",
 
   assert.deepEqual(decision.snapshot, {
     investigationState: "NOT_INVESTIGATED",
-    claims: null,
     priorInvestigationResult,
   });
   assert.equal(decision.shouldAutoInvestigate, true);
@@ -94,19 +91,20 @@ test("decidePageContentSnapshot preserves existing INVESTIGATING status when int
     investigationState: "INVESTIGATING",
     status: "PROCESSING",
     provenance: "SERVER_VERIFIED",
-    claims: null,
+    pendingClaims: [],
+    confirmedClaims: [],
     priorInvestigationResult,
   });
   const existingForSessionUpdateInterim: InvestigationStatusOutput = {
     investigationState: "INVESTIGATING",
     status: "PROCESSING",
     provenance: "SERVER_VERIFIED",
-    claims: null,
+    pendingClaims: [],
+    confirmedClaims: [],
     priorInvestigationResult,
   };
   const result: ViewPostOutput = {
     investigationState: "NOT_INVESTIGATED",
-    claims: null,
     priorInvestigationResult: null,
   };
 
@@ -126,12 +124,12 @@ test("decidePageContentSnapshot falls back to synthetic INVESTIGATING snapshot w
     investigationState: "INVESTIGATING",
     status: "PENDING",
     provenance: "SERVER_VERIFIED",
-    claims: null,
+    pendingClaims: [],
+    confirmedClaims: [],
     priorInvestigationResult: null,
   });
   const result: ViewPostOutput = {
     investigationState: "NOT_INVESTIGATED",
-    claims: null,
     priorInvestigationResult: null,
   };
 
@@ -146,7 +144,8 @@ test("decidePageContentSnapshot falls back to synthetic INVESTIGATING snapshot w
     investigationState: "INVESTIGATING",
     status: "PENDING",
     provenance: "SERVER_VERIFIED",
-    claims: null,
+    pendingClaims: [],
+    confirmedClaims: [],
     priorInvestigationResult: null,
   });
   assert.equal(decision.shouldAutoInvestigate, true);
@@ -156,11 +155,9 @@ test("decidePageContentSnapshot reuses FAILED provenance from existing status", 
   const existing = buildExistingStatus({
     investigationState: "FAILED",
     provenance: "CLIENT_FALLBACK",
-    claims: null,
   });
   const result: ViewPostOutput = {
     investigationState: "NOT_INVESTIGATED",
-    claims: null,
     priorInvestigationResult: null,
   };
 
@@ -174,7 +171,6 @@ test("decidePageContentSnapshot reuses FAILED provenance from existing status", 
   assert.deepEqual(decision.snapshot, {
     investigationState: "FAILED",
     provenance: "CLIENT_FALLBACK",
-    claims: null,
   });
   assert.equal(decision.shouldAutoInvestigate, true);
 });
@@ -184,7 +180,8 @@ test("decidePageContentSnapshot falls back to raw result when no preservation pa
     investigationState: "INVESTIGATING",
     status: "PENDING",
     provenance: "SERVER_VERIFIED",
-    claims: null,
+    pendingClaims: [],
+    confirmedClaims: [],
     priorInvestigationResult: null,
   };
 

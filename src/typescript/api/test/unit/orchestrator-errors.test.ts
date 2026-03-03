@@ -12,6 +12,10 @@ import {
   InvestigatorStructuredOutputError,
 } from "../../src/lib/investigators/openai.js";
 import type { InvestigatorAttemptAudit } from "../../src/lib/investigators/interface.js";
+import {
+  ExpiredOpenAiKeySourceError,
+  InvalidOpenAiKeySourceError,
+} from "../../src/lib/services/user-key-source.js";
 
 function makeDummyAttemptAudit(): InvestigatorAttemptAudit {
   return {
@@ -156,6 +160,22 @@ test("isNonRetryableProviderError returns false for plain Error without status",
 
 test("isNonRetryableProviderError unwraps InvestigatorExecutionError", () => {
   const cause = new InvestigatorStructuredOutputError("bad output");
+  const error = new InvestigatorExecutionError("wrapper", makeDummyAttemptAudit(), cause);
+  assert.equal(isNonRetryableProviderError(error), true);
+});
+
+test("isNonRetryableProviderError returns true for ExpiredOpenAiKeySourceError", () => {
+  const error = new ExpiredOpenAiKeySourceError("run-123");
+  assert.equal(isNonRetryableProviderError(error), true);
+});
+
+test("isNonRetryableProviderError returns true for InvalidOpenAiKeySourceError", () => {
+  const error = new InvalidOpenAiKeySourceError("run-456", "key revoked");
+  assert.equal(isNonRetryableProviderError(error), true);
+});
+
+test("isNonRetryableProviderError detects key source errors wrapped in InvestigatorExecutionError", () => {
+  const cause = new ExpiredOpenAiKeySourceError("run-789");
   const error = new InvestigatorExecutionError("wrapper", makeDummyAttemptAudit(), cause);
   assert.equal(isNonRetryableProviderError(error), true);
 });

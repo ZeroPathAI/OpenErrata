@@ -3,6 +3,7 @@ import type {
   ContentProvenance,
   ExtensionPostStatus,
   ExtensionRuntimeErrorCode,
+  InvestigationClaimPayload,
   InvestigationStatusOutput,
   ViewPostInput,
   ViewPostOutput,
@@ -34,6 +35,8 @@ type PostStatusInput =
       investigationState: "INVESTIGATING";
       status: "PENDING" | "PROCESSING";
       provenance: ContentProvenance;
+      pendingClaims: InvestigationClaimPayload[];
+      confirmedClaims: InvestigationClaimPayload[];
       priorInvestigationResult: PriorInvestigationResult | null;
     })
   | (PostStatusIdentity & {
@@ -43,7 +46,7 @@ type PostStatusInput =
   | (PostStatusIdentity & {
       investigationState: "INVESTIGATED";
       provenance: ContentProvenance;
-      claims: NonNullable<InvestigationStatusOutput["claims"]>;
+      claims: Extract<InvestigationStatusOutput, { investigationState: "INVESTIGATED" }>["claims"];
     });
 
 type InvestigationSnapshot = InvestigationStatusOutput | ViewPostOutput;
@@ -100,7 +103,6 @@ export function createPostStatus(input: PostStatusInput): ExtensionPostStatus {
       return extensionPostStatusSchema.parse({
         ...base,
         investigationState: "NOT_INVESTIGATED",
-        claims: null,
         priorInvestigationResult: input.priorInvestigationResult,
       });
     case "INVESTIGATING":
@@ -109,14 +111,14 @@ export function createPostStatus(input: PostStatusInput): ExtensionPostStatus {
         investigationState: "INVESTIGATING",
         status: input.status,
         provenance: input.provenance,
-        claims: null,
+        pendingClaims: input.pendingClaims,
+        confirmedClaims: input.confirmedClaims,
         priorInvestigationResult: input.priorInvestigationResult,
       });
     case "FAILED":
       return extensionPostStatusSchema.parse({
         ...base,
         investigationState: "FAILED",
-        claims: null,
       });
     case "INVESTIGATED":
       return extensionPostStatusSchema.parse({
@@ -157,6 +159,8 @@ export function createPostStatusFromInvestigation(
         investigationState: "INVESTIGATING",
         status: input.status,
         provenance: input.provenance,
+        pendingClaims: input.pendingClaims,
+        confirmedClaims: input.confirmedClaims,
         priorInvestigationResult: input.priorInvestigationResult ?? null,
       });
     case "FAILED":

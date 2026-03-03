@@ -168,7 +168,7 @@ void test("orchestrateInvestigation skips work when lease is held by another wor
   try {
     await orchestrateInvestigation(
       run.id,
-      { info() {}, error() {} },
+      { info() {}, warn() {}, error() {} },
       {
         isLastAttempt: false,
         attemptNumber: 1,
@@ -264,7 +264,7 @@ void test("orchestrateInvestigation passes update context to investigator for up
   try {
     await orchestrateInvestigation(
       run.id,
-      { info() {}, error() {} },
+      { info() {}, warn() {}, error() {} },
       {
         isLastAttempt: false,
         attemptNumber: 1,
@@ -287,6 +287,110 @@ void test("orchestrateInvestigation passes update context to investigator for up
   });
   assert.ok(storedInvestigation);
   assert.equal(storedInvestigation.status, "COMPLETE");
+});
+
+void test("orchestrateInvestigation does not persist late progress updates after completion", async () => {
+  const post = await seedPost({
+    platform: "X",
+    externalId: "orchestrator-late-progress-1",
+    url: "https://x.com/openerrata/status/orchestrator-late-progress-1",
+    contentText: "Late progress callbacks must not overwrite terminal null state.",
+  });
+  const investigation = await seedInvestigation({
+    postId: post.id,
+    contentHash: post.contentHash,
+    contentText: post.contentText,
+    provenance: "CLIENT_FALLBACK",
+    status: "PENDING",
+    promptLabel: "orchestrator-late-progress",
+  });
+  const run = await seedInvestigationRun({
+    investigationId: investigation.id,
+  });
+
+  let resolveLateCallbackFired: () => void = () => {};
+  const lateCallbackFired = new Promise<void>((resolve) => {
+    resolveLateCallbackFired = resolve;
+  });
+
+  const originalInvestigateDescriptor = Object.getOwnPropertyDescriptor(
+    OpenAIInvestigator.prototype,
+    "investigate",
+  );
+  assert.ok(originalInvestigateDescriptor);
+  assert.equal(typeof originalInvestigateDescriptor.value, "function");
+  OpenAIInvestigator.prototype.investigate = async (_input: InvestigatorInput, callbacks) => {
+    const latePending = [
+      {
+        text: "Late pending claim",
+        context: "Late pending context",
+        summary: "Late pending summary",
+        reasoning: "Late pending reasoning",
+        sources: [
+          {
+            url: "https://example.com/late-pending",
+            title: "Late Pending Source",
+            snippet: "Late pending snippet",
+          },
+        ],
+      },
+    ];
+    const lateConfirmed = [
+      {
+        text: "Late confirmed claim",
+        context: "Late confirmed context",
+        summary: "Late confirmed summary",
+        reasoning: "Late confirmed reasoning",
+        sources: [
+          {
+            url: "https://example.com/late-confirmed",
+            title: "Late Confirmed Source",
+            snippet: "Late confirmed snippet",
+          },
+        ],
+      },
+    ];
+
+    setTimeout(() => {
+      callbacks?.onProgressUpdate(latePending, lateConfirmed);
+      resolveLateCallbackFired();
+    }, 25);
+
+    return {
+      result: { claims: [] },
+      attemptAudit: buildSucceededAttemptAudit("late-progress"),
+      modelVersion: "test-model-version",
+    };
+  };
+
+  try {
+    await orchestrateInvestigation(
+      run.id,
+      { info() {}, warn() {}, error() {} },
+      {
+        isLastAttempt: false,
+        attemptNumber: 1,
+        workerIdentity: withIntegrationPrefix("worker-late-progress"),
+      },
+    );
+    await lateCallbackFired;
+    // Allow the asynchronous callback write attempt to settle.
+    await sleep(50);
+  } finally {
+    Object.defineProperty(
+      OpenAIInvestigator.prototype,
+      "investigate",
+      originalInvestigateDescriptor,
+    );
+  }
+
+  const storedInvestigation = await prisma.investigation.findUnique({
+    where: { id: investigation.id },
+    select: { status: true, progressClaims: true },
+  });
+  assert.ok(storedInvestigation);
+  assert.equal(storedInvestigation.status, "COMPLETE");
+  assert.equal(storedInvestigation.progressClaims, null);
 });
 
 void test("orchestrateInvestigation ignores stale transient failure after another worker completes", async () => {
@@ -349,7 +453,7 @@ void test("orchestrateInvestigation ignores stale transient failure after anothe
   try {
     const firstWorker = orchestrateInvestigation(
       run.id,
-      { info() {}, error() {} },
+      { info() {}, warn() {}, error() {} },
       {
         isLastAttempt: false,
         attemptNumber: 1,
@@ -370,7 +474,7 @@ void test("orchestrateInvestigation ignores stale transient failure after anothe
 
     await orchestrateInvestigation(
       run.id,
-      { info() {}, error() {} },
+      { info() {}, warn() {}, error() {} },
       {
         isLastAttempt: false,
         attemptNumber: 1,

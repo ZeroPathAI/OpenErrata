@@ -67,19 +67,21 @@ tRPC handler → `postRouter` or `publicRouter` → Prisma → PostgreSQL.
    - `services/orchestrator-errors.ts` — Error classification:
      `isNonRetryableProviderError`, `formatErrorForLog`, `unwrapError`.
 4. The investigator (`src/lib/investigators/openai.ts`) runs a two-stage OpenAI
-   Responses workflow: (a) tool-enabled fact-check generation, then (b) per-claim
-   validation that filters each candidate claim against OpenErrata principles
-   before it is included in the final result. Delegates to focused sub-modules:
-   - `investigators/openai-schemas.ts` — Zod schemas for structured outputs
-     (avoids `format: "uri"` which OpenAI rejects). Includes
-     `buildUpdateInvestigationResultSchema` for carry/new update actions.
+   Responses workflow: (a) tool-enabled fact-check with `submit_correction` and
+   `retain_correction` tool calls for incremental claim submission, then
+   (b) per-claim validation (started in parallel as claims are submitted) that
+   filters each candidate claim against OpenErrata principles before it is
+   included in the final result. Delegates to focused sub-modules:
+   - `investigators/openai-schemas.ts` — Zod schemas for provider-facing
+     validation (avoids `format: "uri"` which OpenAI rejects).
    - `investigators/openai-input-builder.ts` — Builds multimodal request input,
      interleaving inline image parts, caption text, and budget markers within
      the post content.
    - `investigators/openai-response-audit.ts` — Parses raw Responses API records
      into typed audit structs; handles multi-round offset tracking and merging.
-   - `investigators/openai-tool-dispatch.ts` — Extracts and executes pending
-     `function_call` output items.
+   - `investigators/openai-tool-dispatch.ts` — Defines `submit_correction` and
+     `retain_correction` tool definitions; extracts and executes pending
+     `function_call` output items for research tools (web_search, fetch_url).
    - `investigators/openai-claim-validator.ts` — Per-claim Stage 2 validation
      (concurrency-limited to 4); returns `{ approved: boolean }` per claim.
 

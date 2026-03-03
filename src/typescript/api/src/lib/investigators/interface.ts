@@ -223,14 +223,17 @@ export type InvestigatorToolCallAudit = z.infer<typeof investigatorToolCallAudit
 export type InvestigatorUsageAudit = z.infer<typeof investigatorUsageAuditSchema>;
 export type InvestigatorResponseAudit = z.infer<typeof investigatorResponseAuditSchema>;
 export type InvestigatorErrorAudit = z.infer<typeof investigatorErrorAuditSchema>;
-export type InvestigatorAttemptSucceededAudit = z.infer<
-  typeof investigatorAttemptSucceededAuditSchema
->;
-export type InvestigatorAttemptFailedAudit = z.infer<typeof investigatorAttemptFailedAuditSchema>;
 export type InvestigatorAttemptAudit = z.infer<typeof investigatorAttemptAuditSchema>;
 
 export function parseInvestigatorAttemptAudit(value: unknown): InvestigatorAttemptAudit {
   return investigatorAttemptAuditSchema.parse(value);
+}
+
+export interface InvestigationProgressCallbacks {
+  onProgressUpdate: (
+    pending: InvestigationResult["claims"],
+    confirmed: InvestigationResult["claims"],
+  ) => void;
 }
 
 export interface InvestigatorOutput {
@@ -240,7 +243,10 @@ export interface InvestigatorOutput {
 }
 
 export interface Investigator {
-  investigate(input: InvestigatorInput): Promise<InvestigatorOutput>;
+  investigate(
+    input: InvestigatorInput,
+    callbacks?: InvestigationProgressCallbacks,
+  ): Promise<InvestigatorOutput>;
   readonly provider: InvestigationProvider;
   readonly model: InvestigationModel;
 }

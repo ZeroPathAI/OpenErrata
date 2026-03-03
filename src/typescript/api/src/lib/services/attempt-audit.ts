@@ -1,54 +1,26 @@
 import { getPrisma } from "$lib/db/client";
 import {
   parseInvestigatorAttemptAudit,
-  type InvestigatorAttemptFailedAudit,
   type InvestigatorAttemptAudit,
-  type InvestigatorAttemptSucceededAudit,
 } from "$lib/investigators/interface.js";
 import { toDate, toOptionalDate } from "$lib/date.js";
 import type { Prisma } from "$lib/generated/prisma/client";
 import { consumeOpenAiKeySource } from "./user-key-source.js";
 import { nextRecoveryAfter } from "./run-lease.js";
-
-function isFailedAttemptAudit(
-  attemptAudit: InvestigatorAttemptAudit,
-): attemptAudit is InvestigatorAttemptFailedAudit {
-  return attemptAudit.error !== null;
-}
-
-function isSucceededAttemptAudit(
-  attemptAudit: InvestigatorAttemptAudit,
-): attemptAudit is InvestigatorAttemptSucceededAudit {
-  return attemptAudit.error === null;
-}
+import { CLEARED_PROGRESS_CLAIMS } from "./investigation-lifecycle.js";
 
 export async function persistAttemptAudit(
   tx: Prisma.TransactionClient,
   input: {
     investigationId: string;
     attemptNumber: number;
-    outcome: "SUCCEEDED" | "FAILED";
     attemptAudit: InvestigatorAttemptAudit;
   },
 ): Promise<void> {
   const attemptAudit = parseInvestigatorAttemptAudit(input.attemptAudit);
-  const failedAttemptAudit = isFailedAttemptAudit(attemptAudit) ? attemptAudit : null;
-  const succeededAttemptAudit = isSucceededAttemptAudit(attemptAudit) ? attemptAudit : null;
-  if (input.outcome === "SUCCEEDED" && failedAttemptAudit) {
-    throw new Error(
-      `Attempt ${input.attemptNumber.toString()} is SUCCEEDED but contains error audit`,
-    );
-  }
-  if (input.outcome === "FAILED" && succeededAttemptAudit) {
-    throw new Error(`Attempt ${input.attemptNumber.toString()} is FAILED but has no error audit`);
-  }
-  if (
-    input.outcome === "SUCCEEDED" &&
-    succeededAttemptAudit === null &&
-    failedAttemptAudit === null
-  ) {
-    throw new Error(`Attempt ${input.attemptNumber.toString()} has invalid outcome state`);
-  }
+  // outcome is derived from the audit's discriminated union — error !== null
+  // means FAILED. No separate parameter needed, no inconsistent state possible.
+  const outcome = attemptAudit.error !== null ? "FAILED" : "SUCCEEDED";
 
   const attempt = await tx.investigationAttempt.upsert({
     where: {
@@ -60,7 +32,7 @@ export async function persistAttemptAudit(
     create: {
       investigationId: input.investigationId,
       attemptNumber: input.attemptNumber,
-      outcome: input.outcome,
+      outcome,
       requestModel: attemptAudit.requestModel,
       requestInstructions: attemptAudit.requestInstructions,
       requestInput: attemptAudit.requestInput,
@@ -74,7 +46,7 @@ export async function persistAttemptAudit(
       completedAt: toOptionalDate(attemptAudit.completedAt, { strict: true }),
     },
     update: {
-      outcome: input.outcome,
+      outcome,
       requestModel: attemptAudit.requestModel,
       requestInstructions: attemptAudit.requestInstructions,
       requestInput: attemptAudit.requestInput,
@@ -246,7 +218,7 @@ export async function persistFailedAttemptAndMarkInvestigationFailed(input: {
     // already moved this investigation to COMPLETE or FAILED.
     const transitioned = await tx.investigation.updateMany({
       where: { id: input.investigationId, status: "PROCESSING" },
-      data: { status: "FAILED" },
+      data: { status: "FAILED", progressClaims: CLEARED_PROGRESS_CLAIMS },
     });
 
     if (transitioned.count === 0) {
@@ -257,7 +229,6 @@ export async function persistFailedAttemptAndMarkInvestigationFailed(input: {
       await persistAttemptAudit(tx, {
         investigationId: input.investigationId,
         attemptNumber: input.attemptNumber,
-        outcome: "FAILED",
         attemptAudit: input.attemptAudit,
       });
     }
@@ -289,7 +260,7 @@ export async function persistFailedAttemptAndReleaseLease(input: {
     // serialize cleanly with stale workers.
     const active = await tx.investigation.updateMany({
       where: { id: input.investigationId, status: "PROCESSING" },
-      data: { status: "PROCESSING" },
+      data: { status: "PROCESSING", progressClaims: CLEARED_PROGRESS_CLAIMS },
     });
     if (active.count === 0) {
       return false;
@@ -299,7 +270,6 @@ export async function persistFailedAttemptAndReleaseLease(input: {
       await persistAttemptAudit(tx, {
         investigationId: input.investigationId,
         attemptNumber: input.attemptNumber,
-        outcome: "FAILED",
         attemptAudit: input.attemptAudit,
       });
     }

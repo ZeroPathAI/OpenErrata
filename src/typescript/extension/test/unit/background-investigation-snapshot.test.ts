@@ -31,7 +31,6 @@ test("snapshotFromInvestigateNowResult preserves interim oldClaims while pending
     externalId: "post-update-1",
     pageUrl: "https://www.lesswrong.com/posts/post-update-1/example",
     investigationState: "NOT_INVESTIGATED" as const,
-    claims: null,
     priorInvestigationResult: {
       oldClaims,
       sourceInvestigationId: investigationIdSchema.parse("inv-old-1"),
@@ -76,10 +75,8 @@ test("snapshotFromInvestigateNowResult falls back to empty pending state without
   assert.equal(snapshot.status, "PENDING");
   assert.equal(snapshot.provenance, "CLIENT_FALLBACK");
   assert.equal(snapshot.priorInvestigationResult, null);
-  assert.equal("claims" in snapshot, true);
-  if ("claims" in snapshot) {
-    assert.equal(snapshot.claims, null);
-  }
+  assert.deepEqual(snapshot.pendingClaims, []);
+  assert.deepEqual(snapshot.confirmedClaims, []);
 });
 
 test("status transition preserves interim oldClaims from NOT_INVESTIGATED to INVESTIGATING", () => {
@@ -105,7 +102,6 @@ test("status transition preserves interim oldClaims from NOT_INVESTIGATED to INV
     externalId: "post-update-2",
     pageUrl: "https://www.lesswrong.com/posts/post-update-2/example",
     investigationState: "NOT_INVESTIGATED",
-    claims: null,
     priorInvestigationResult: {
       oldClaims,
       sourceInvestigationId: investigationIdSchema.parse("inv-old-2"),

@@ -6,7 +6,13 @@
  * corroboration recording, and investigation queueing with update metadata.
  */
 
-import { claimIdSchema, type InvestigationClaim } from "@openerrata/shared";
+import {
+  claimIdSchema,
+  investigationClaimPayloadSchema,
+  type InvestigationClaim,
+  type InvestigationClaimPayload,
+} from "@openerrata/shared";
+import { z } from "zod";
 import { ensureInvestigationQueued } from "$lib/services/investigation-lifecycle.js";
 import { isUniqueConstraintError } from "$lib/db/errors.js";
 import type { Prisma, PrismaClient } from "$lib/generated/prisma/client";
@@ -241,6 +247,37 @@ export function prismaInvestigationRepository(prisma: PrismaClient): Investigati
       }
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Progress claims parsing
+// ---------------------------------------------------------------------------
+
+const progressClaimsDbSchema = z
+  .object({
+    pending: z.array(investigationClaimPayloadSchema),
+    confirmed: z.array(investigationClaimPayloadSchema),
+  })
+  .strict();
+
+export function parseProgressClaims(raw: unknown): {
+  pendingClaims: InvestigationClaimPayload[];
+  confirmedClaims: InvestigationClaimPayload[];
+} {
+  if (raw === null || raw === undefined) {
+    return { pendingClaims: [], confirmedClaims: [] };
+  }
+  const result = progressClaimsDbSchema.safeParse(raw);
+  if (!result.success) {
+    console.warn(
+      "progressClaims failed schema validation:",
+      result.error.message,
+      "raw:",
+      JSON.stringify(raw).slice(0, 200),
+    );
+    return { pendingClaims: [], confirmedClaims: [] };
+  }
+  return { pendingClaims: result.data.pending, confirmedClaims: result.data.confirmed };
 }
 
 // ---------------------------------------------------------------------------
