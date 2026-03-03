@@ -47,6 +47,7 @@ import {
   isClaimToolCall,
   submitCorrectionToolDefinition,
   buildRetainCorrectionToolDefinition,
+  buildFunctionCallOutput,
   SUBMIT_CORRECTION_TOOL_NAME,
   RETAIN_CORRECTION_TOOL_NAME,
   type FunctionCallOutput,
@@ -311,11 +312,12 @@ export class OpenAIInvestigator implements Investigator {
               `Malformed ${SUBMIT_CORRECTION_TOOL_NAME} tool call (call_id=${call.callId}):`,
               error instanceof Error ? error.message : error,
             );
-            outputs.push({
-              type: "function_call_output",
-              call_id: call.callId,
-              output: JSON.stringify({ error: "Invalid claim payload" }),
-            });
+            outputs.push(
+              buildFunctionCallOutput(
+                call.callId,
+                JSON.stringify({ error: "Invalid claim payload" }),
+              ),
+            );
             continue;
           }
 
@@ -336,8 +338,11 @@ export class OpenAIInvestigator implements Investigator {
 
           const pvIndex = pendingValidations.length;
           validationPromise.then(
-            () => {
+            (result) => {
               settledIndices.add(pvIndex);
+              if (result.error === null && result.approved) {
+                confirmedClaims.push(claim);
+              }
               callbacks?.onProgressUpdate(getPending(), getConfirmed());
             },
             () => {
@@ -347,11 +352,7 @@ export class OpenAIInvestigator implements Investigator {
           );
           pendingValidations.push({ claim, promise: validationPromise });
           callbacks?.onProgressUpdate(getPending(), getConfirmed());
-          outputs.push({
-            type: "function_call_output",
-            call_id: call.callId,
-            output: '{"acknowledged":true}',
-          });
+          outputs.push(buildFunctionCallOutput(call.callId, '{"acknowledged":true}'));
         }
 
         // Handle retain_correction: validate ID, add to confirmed directly.
@@ -360,11 +361,12 @@ export class OpenAIInvestigator implements Investigator {
           try {
             const raw: unknown = JSON.parse(call.argumentsJson);
             if (!isRecord(raw) || typeof raw["id"] !== "string") {
-              outputs.push({
-                type: "function_call_output",
-                call_id: call.callId,
-                output: JSON.stringify({ error: "Invalid retain arguments: missing id" }),
-              });
+              outputs.push(
+                buildFunctionCallOutput(
+                  call.callId,
+                  JSON.stringify({ error: "Invalid retain arguments: missing id" }),
+                ),
+              );
               continue;
             }
             retainId = raw["id"];
@@ -373,29 +375,32 @@ export class OpenAIInvestigator implements Investigator {
               `Malformed ${RETAIN_CORRECTION_TOOL_NAME} tool call (call_id=${call.callId}):`,
               error instanceof Error ? error.message : error,
             );
-            outputs.push({
-              type: "function_call_output",
-              call_id: call.callId,
-              output: JSON.stringify({ error: "Invalid retain arguments" }),
-            });
+            outputs.push(
+              buildFunctionCallOutput(
+                call.callId,
+                JSON.stringify({ error: "Invalid retain arguments" }),
+              ),
+            );
             continue;
           }
           const oldClaim = oldClaimsById.get(retainId);
           if (!oldClaim) {
-            outputs.push({
-              type: "function_call_output",
-              call_id: call.callId,
-              output: JSON.stringify({ error: `Unknown claim ID: ${retainId}` }),
-            });
+            outputs.push(
+              buildFunctionCallOutput(
+                call.callId,
+                JSON.stringify({ error: `Unknown claim ID: ${retainId}` }),
+              ),
+            );
             continue;
           }
 
           if (retainedIds.has(retainId)) {
-            outputs.push({
-              type: "function_call_output",
-              call_id: call.callId,
-              output: JSON.stringify({ error: `Claim ${retainId} already retained` }),
-            });
+            outputs.push(
+              buildFunctionCallOutput(
+                call.callId,
+                JSON.stringify({ error: `Claim ${retainId} already retained` }),
+              ),
+            );
             continue;
           }
 
@@ -403,11 +408,7 @@ export class OpenAIInvestigator implements Investigator {
           const { id: _claimId, ...claimPayload } = oldClaim;
           confirmedClaims.push(claimPayload);
           callbacks?.onProgressUpdate(getPending(), getConfirmed());
-          outputs.push({
-            type: "function_call_output",
-            call_id: call.callId,
-            output: '{"acknowledged":true}',
-          });
+          outputs.push(buildFunctionCallOutput(call.callId, '{"acknowledged":true}'));
         }
 
         // Dispatch web_search/fetch_url as before.
@@ -560,17 +561,9 @@ export class OpenAIInvestigator implements Investigator {
       );
     }
 
-    // Move approved claims from pending to confirmed.
-    for (const [i, { claim }] of pendingValidations.entries()) {
-      const result = validationResults[i];
-      if (result === undefined) continue;
-      if (result.error === null && result.approved) {
-        confirmedClaims.push(claim);
-      }
-    }
-
-    // Notify final state.
-    callbacks?.onProgressUpdate([], getConfirmed());
+    // Approved claims have already been added to `confirmedClaims` by the
+    // per-validation `.then()` callbacks above (which fire before `Promise.all`
+    // resolves because they were attached first). No additional loop needed.
 
     let result: InvestigationResult;
     try {

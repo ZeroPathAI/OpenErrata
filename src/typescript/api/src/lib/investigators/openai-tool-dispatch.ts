@@ -105,6 +105,10 @@ export interface FunctionCallOutput {
   output: string;
 }
 
+export function buildFunctionCallOutput(callId: string, output: string): FunctionCallOutput {
+  return { type: "function_call_output", call_id: callId, output };
+}
+
 export function extractPendingFunctionToolCalls(
   responseRecord: Record<string, unknown>,
 ): PendingFunctionToolCall[] {
@@ -156,19 +160,11 @@ export async function executeFunctionToolCall(
 ): Promise<FunctionCallOutput> {
   if (call.name === FETCH_URL_TOOL_NAME) {
     const toolOutput = await executeFetchUrlTool(call.argumentsJson);
-    return {
-      type: "function_call_output",
-      call_id: call.callId,
-      output: JSON.stringify(toolOutput),
-    };
+    return buildFunctionCallOutput(call.callId, JSON.stringify(toolOutput));
   }
 
-  return {
-    type: "function_call_output",
-    call_id: call.callId,
-    output: JSON.stringify({
-      ok: false,
-      error: `Unknown function tool: ${call.name}`,
-    }),
-  };
+  return buildFunctionCallOutput(
+    call.callId,
+    JSON.stringify({ ok: false, error: `Unknown function tool: ${call.name}` }),
+  );
 }
