@@ -658,6 +658,123 @@ test("mergeResponseAudits uses final audit metadata and flattens arrays", () => 
   assert.equal(merged.usage.inputTokens, 30);
 });
 
+// --- offset + merge pipeline (multi-round global index uniqueness) ---
+// The investigation pipeline calls offsetResponseAuditIndices on each API round
+// with a cumulative offset equal to the running total of output items from prior
+// rounds, then merges all audits. If the offset is computed incorrectly (e.g.
+// off-by-one, uses wrong count), outputIndex values will collide across rounds,
+// corrupting the audit trail.
+
+test("offset + merge pipeline produces globally unique outputIndex values across rounds", () => {
+  // Simulate a 3-round tool loop where each round has different output sizes.
+  const round1 = makeEmptyResponseAudit({ responseId: "resp-round-1" });
+  round1.outputItems = [
+    { outputIndex: 0, providerItemId: "msg-1", itemType: "message", itemStatus: "completed" },
+    { outputIndex: 1, providerItemId: "fc-1", itemType: "function_call", itemStatus: "completed" },
+    { outputIndex: 2, providerItemId: "fc-2", itemType: "function_call", itemStatus: "completed" },
+  ];
+  round1.toolCalls = [
+    {
+      outputIndex: 1,
+      providerToolCallId: "fc-1",
+      toolType: "function_call",
+      status: "completed",
+      rawPayload: {},
+      capturedAt: new Date().toISOString(),
+      providerStartedAt: null,
+      providerCompletedAt: null,
+    },
+    {
+      outputIndex: 2,
+      providerToolCallId: "fc-2",
+      toolType: "function_call",
+      status: "completed",
+      rawPayload: {},
+      capturedAt: new Date().toISOString(),
+      providerStartedAt: null,
+      providerCompletedAt: null,
+    },
+  ];
+  round1.outputTextParts = [
+    { outputIndex: 0, partIndex: 0, partType: "output_text", text: "round 1 text" },
+  ];
+
+  const round2 = makeEmptyResponseAudit({ responseId: "resp-round-2" });
+  round2.outputItems = [
+    { outputIndex: 0, providerItemId: "msg-2", itemType: "message", itemStatus: "completed" },
+    {
+      outputIndex: 1,
+      providerItemId: "ws-1",
+      itemType: "web_search_call",
+      itemStatus: "completed",
+    },
+  ];
+  round2.toolCalls = [
+    {
+      outputIndex: 1,
+      providerToolCallId: "ws-1",
+      toolType: "web_search_call",
+      status: "completed",
+      rawPayload: {},
+      capturedAt: new Date().toISOString(),
+      providerStartedAt: null,
+      providerCompletedAt: null,
+    },
+  ];
+
+  const round3 = makeEmptyResponseAudit({
+    responseId: "resp-round-3",
+    responseStatus: "completed",
+  });
+  round3.outputItems = [
+    { outputIndex: 0, providerItemId: "msg-3", itemType: "message", itemStatus: "completed" },
+  ];
+  round3.outputTextParts = [
+    { outputIndex: 0, partIndex: 0, partType: "output_text", text: "final result" },
+  ];
+
+  // Apply cumulative offsets (same pattern as openai.ts investigate loop).
+  let offset = 0;
+  const offsetRound1 = offsetResponseAuditIndices(round1, offset);
+  offset += round1.outputItems.length; // offset = 3
+
+  const offsetRound2 = offsetResponseAuditIndices(round2, offset);
+  offset += round2.outputItems.length; // offset = 5
+
+  const offsetRound3 = offsetResponseAuditIndices(round3, offset);
+
+  const merged = mergeResponseAudits([offsetRound1, offsetRound2, offsetRound3]);
+
+  // All indices must be unique — no collisions between rounds.
+  // Note: some indices may repeat across sub-record types within the same round
+  // (e.g. outputItems[0] and outputTextParts[0] share outputIndex=0 because
+  // they refer to the same output item). The invariant is that the SAME
+  // sub-record type has no duplicate indices after merge.
+  const outputItemIndices = merged.outputItems.map((item) => item.outputIndex);
+  assert.equal(
+    new Set(outputItemIndices).size,
+    outputItemIndices.length,
+    "outputItems must have unique outputIndex values after offset + merge",
+  );
+
+  const toolCallIndices = merged.toolCalls.map((call) => call.outputIndex);
+  assert.equal(
+    new Set(toolCallIndices).size,
+    toolCallIndices.length,
+    "toolCalls must have unique outputIndex values after offset + merge",
+  );
+
+  // Verify specific offset arithmetic: round 1 items at 0,1,2; round 2 at 3,4; round 3 at 5.
+  assert.deepStrictEqual(
+    merged.outputItems.map((item) => item.outputIndex),
+    [0, 1, 2, 3, 4, 5],
+  );
+
+  // Metadata comes from the final audit.
+  assert.equal(merged.responseId, "resp-round-3");
+  assert.equal(merged.responseStatus, "completed");
+});
+
 // --- helpers ---
 
 function makeEmptyResponseAudit(

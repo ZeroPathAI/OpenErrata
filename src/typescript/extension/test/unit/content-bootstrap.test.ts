@@ -43,7 +43,6 @@ test("bootOpenErrataController boots a new controller and stores it on target", 
   const result = bootOpenErrataController(target, () => next);
 
   assert.equal(result, next);
-  assert.equal(target.__openerrata_loaded, true);
   assert.equal(target.__openerrata_controller, next);
   assert.equal(next.bootCalls, 1);
   assert.equal(next.disposeCalls, 0);
@@ -64,21 +63,6 @@ test("bootOpenErrataController disposes existing controller before booting repla
   assert.equal(next.bootCalls, 1);
   assert.equal(target.__openerrata_controller, next);
   assert.deepEqual(events, ["dispose:previous", "boot:next"]);
-});
-
-test("bootOpenErrataController ignores stale loaded flag and still boots", () => {
-  const events: string[] = [];
-  const target: OpenErrataBootstrapTarget<TestController> = {
-    __openerrata_loaded: true,
-  };
-  const next = createController("next", events);
-
-  bootOpenErrataController(target, () => next);
-
-  assert.equal(next.bootCalls, 1);
-  assert.equal(target.__openerrata_controller, next);
-  assert.equal(target.__openerrata_loaded, true);
-  assert.deepEqual(events, ["boot:next"]);
 });
 
 test("bootOpenErrataController still boots replacement when previous dispose throws", () => {

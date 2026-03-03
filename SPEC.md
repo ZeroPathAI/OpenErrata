@@ -821,8 +821,6 @@ model PostVersion {
   xVersionMeta         XVersionMeta?
   substackVersionMeta  SubstackVersionMeta?
   wikipediaVersionMeta WikipediaVersionMeta?
-  versionViewCredits PostVersionViewCredit[]
-
   @@unique([postId, versionHash])
   @@unique([postId, contentBlobId, imageOccurrenceSetId])
   @@index([postId, lastSeenAt])
@@ -906,19 +904,6 @@ model WikipediaVersionMeta {
   @@index([revisionId])
 }
 
-model PostVersionViewCredit {
-  id            String      @id @default(cuid())
-  postVersionId String
-  postVersion   PostVersion @relation(fields: [postVersionId], references: [id], onDelete: Cascade)
-  viewerKey     String
-  ipRangeKey    String
-  bucketDay     DateTime
-  createdAt     DateTime    @default(now())
-
-  @@unique([postVersionId, viewerKey, bucketDay])
-  @@index([postVersionId, bucketDay])
-  @@index([postVersionId, ipRangeKey, bucketDay])
-}
 ```
 
 ### Investigation & claims

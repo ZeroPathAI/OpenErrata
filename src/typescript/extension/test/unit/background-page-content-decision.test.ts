@@ -7,7 +7,10 @@ import {
   type InvestigationStatusOutput,
   type ViewPostOutput,
 } from "@openerrata/shared";
-import { createPostStatusFromInvestigation } from "../../src/background/post-status";
+import {
+  createPostStatus,
+  createPostStatusFromInvestigation,
+} from "../../src/background/post-status";
 import { decidePageContentSnapshot } from "../../src/background/page-content-decision";
 
 function buildPriorInvestigationResult() {
@@ -172,6 +175,32 @@ test("decidePageContentSnapshot reuses FAILED provenance from existing status", 
     investigationState: "FAILED",
     provenance: "CLIENT_FALLBACK",
   });
+  assert.equal(decision.shouldAutoInvestigate, true);
+});
+
+test("decidePageContentSnapshot falls through to fresh result for API_ERROR existing status", () => {
+  const apiErrorExisting = createPostStatus({
+    tabSessionId: 10,
+    platform: "LESSWRONG",
+    externalId: "post-1",
+    pageUrl: "https://www.lesswrong.com/posts/post-1/example",
+    investigationState: "API_ERROR",
+  });
+
+  const result: ViewPostOutput = {
+    investigationState: "NOT_INVESTIGATED",
+    priorInvestigationResult: null,
+  };
+
+  const decision = decidePageContentSnapshot({
+    result,
+    resultUpdateInterim: null,
+    existingForSession: apiErrorExisting,
+    existingForSessionUpdateInterim: null,
+  });
+
+  // API_ERROR does not preserve existing status — falls through to raw result.
+  assert.deepEqual(decision.snapshot, result);
   assert.equal(decision.shouldAutoInvestigate, true);
 });
 

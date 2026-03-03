@@ -37,6 +37,17 @@ enum InvestigationModel {
   ANTHROPIC_CLAUDE_OPUS
 }
 
+enum ContentProvenance {
+  SERVER_VERIFIED
+  CLIENT_FALLBACK
+}
+
+enum MarkdownSource {
+  SERVER_HTML
+  CLIENT_HTML
+  NONE
+}
+
 enum InvestigationAttemptOutcome {
   SUCCEEDED
   FAILED
@@ -171,7 +182,6 @@ model PostVersion {
   xVersionMeta         XVersionMeta?
   substackVersionMeta  SubstackVersionMeta?
   wikipediaVersionMeta WikipediaVersionMeta?
-  versionViewCredits   PostVersionViewCredit[]
 
   @@unique([postId, versionHash])
   @@unique([postId, contentBlobId, imageOccurrenceSetId])
@@ -258,20 +268,6 @@ model WikipediaVersionMeta {
   @@index([revisionId])
 }
 
-model PostVersionViewCredit {
-  id            String      @id @default(cuid())
-  postVersionId String
-  postVersion   PostVersion @relation(fields: [postVersionId], references: [id], onDelete: Cascade)
-  viewerKey     String
-  ipRangeKey    String
-  bucketDay     DateTime
-  createdAt     DateTime    @default(now())
-
-  @@unique([postVersionId, viewerKey, bucketDay])
-  @@index([postVersionId, bucketDay])
-  @@index([postVersionId, ipRangeKey, bucketDay])
-}
-
 model Prompt {
   id             String          @id @default(cuid())
   version        String          @unique
@@ -331,9 +327,9 @@ model InvestigationInput {
   investigationId         String   @id
   investigation           Investigation? @relation("InvestigationInputOwner")
   // Immutable after insert; enforced by trigger "reject_investigation_input_updates_trigger".
-  provenance              String // SERVER_VERIFIED | CLIENT_FALLBACK
+  provenance              ContentProvenance
   contentHash             String
-  markdownSource          String // SERVER_HTML | CLIENT_HTML | NONE
+  markdownSource          MarkdownSource
   markdown                String? // null iff markdownSource = NONE
   markdownRendererVersion String? // null iff markdownSource = NONE
   createdAt               DateTime @default(now())

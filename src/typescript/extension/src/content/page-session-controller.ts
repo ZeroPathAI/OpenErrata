@@ -822,7 +822,7 @@ export class PageSessionController {
       return;
     }
 
-    if (status.investigationState === "FAILED") {
+    if (status.investigationState === "FAILED" || status.investigationState === "API_ERROR") {
       this.#annotations.clearAll();
     }
   }

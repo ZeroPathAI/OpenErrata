@@ -7,4 +7,5 @@ export const EXTENSION_TRPC_PATH = {
   GET_INVESTIGATION: "post.getInvestigation",
   INVESTIGATE_NOW: "post.investigateNow",
   VALIDATE_SETTINGS: "post.validateSettings",
+  BATCH_STATUS: "post.batchStatus",
 } as const satisfies Record<string, ExtensionApiProcedurePath>;

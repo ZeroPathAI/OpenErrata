@@ -22,6 +22,7 @@ import {
 import { InvestigatorStructuredOutputError } from "./openai-errors.js";
 import {
   INVESTIGATION_SYSTEM_PROMPT,
+  INVESTIGATION_UPDATE_SYSTEM_PROMPT,
   INVESTIGATION_VALIDATION_SYSTEM_PROMPT,
   buildUserPrompt,
 } from "./prompt.js";
@@ -63,12 +64,6 @@ const isRecord = isNonNullObject;
 
 const DEFAULT_REASONING_EFFORT = "medium";
 const DEFAULT_REASONING_SUMMARY = "detailed";
-const TWO_STEP_REQUEST_INSTRUCTIONS = `=== Stage 1: Fact-check instructions ===
-${INVESTIGATION_SYSTEM_PROMPT}
-
-=== Stage 2: Validation instructions ===
-${INVESTIGATION_VALIDATION_SYSTEM_PROMPT}`;
-
 export { InvestigatorStructuredOutputError } from "./openai-errors.js";
 
 function getOpenAiModelId(): string {
@@ -122,6 +117,8 @@ export class OpenAIInvestigator implements Investigator {
   ): Promise<InvestigatorOutput> {
     const openAiModelId = this.overrideModelId ?? getOpenAiModelId();
     const maxResponseToolRounds = this.overrideMaxToolRounds ?? getMaxResponseToolRounds();
+    const systemPrompt =
+      input.isUpdate === true ? INVESTIGATION_UPDATE_SYSTEM_PROMPT : INVESTIGATION_SYSTEM_PROMPT;
     const userPromptResult = buildUserPrompt({
       contentText: input.contentText,
       ...(input.contentMarkdown !== undefined && { contentMarkdown: input.contentMarkdown }),
@@ -177,7 +174,7 @@ export class OpenAIInvestigator implements Investigator {
     const baseResponseRequest = {
       model: openAiModelId,
       stream: false as const,
-      instructions: INVESTIGATION_SYSTEM_PROMPT,
+      instructions: systemPrompt,
       tools: requestedTools,
       reasoning: requestReasoning,
     };
@@ -187,7 +184,7 @@ export class OpenAIInvestigator implements Investigator {
       startedAt,
       completedAt: null,
       requestModel: openAiModelId,
-      requestInstructions: INVESTIGATION_SYSTEM_PROMPT,
+      requestInstructions: systemPrompt,
       requestInput: userPromptResult.prompt,
       requestReasoningEffort: requestReasoning.effort,
       requestReasoningSummary: requestReasoning.summary,
@@ -538,7 +535,7 @@ export class OpenAIInvestigator implements Investigator {
 
     const stageTwoAttemptAuditBase: Omit<InvestigatorAttemptAudit, "response" | "error"> = {
       ...stageOneAttemptAuditBase,
-      requestInstructions: TWO_STEP_REQUEST_INSTRUCTIONS,
+      requestInstructions: `=== Stage 1: Fact-check instructions ===\n${systemPrompt}\n\n=== Stage 2: Validation instructions ===\n${INVESTIGATION_VALIDATION_SYSTEM_PROMPT}`,
       requestInput: buildTwoStepRequestInputAudit(userPromptResult.prompt, stageTwoInputSummary),
     };
 

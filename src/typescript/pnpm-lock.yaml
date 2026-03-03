@@ -196,6 +196,9 @@ importers:
       svelte:
         specifier: ^5.53.0
         version: 5.53.0
+      svelte-check:
+        specifier: ^4.4.1
+        version: 4.4.1(picomatch@4.0.3)(svelte@5.53.0)(typescript@5.9.3)
       tsx:
         specifier: ^4.21.0
         version: 4.21.0

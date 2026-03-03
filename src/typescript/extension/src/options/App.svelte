@@ -70,8 +70,8 @@
           text: validation.openaiApiKeyMessage,
         };
       default: {
-        const neverStatus: never = validation.openaiApiKeyStatus;
-        throw new Error(`Unhandled OpenAI validation status: ${neverStatus}`);
+        const neverValidation: never = validation;
+        throw new Error(`Unhandled OpenAI validation status: ${String(neverValidation)}`);
       }
     }
   }

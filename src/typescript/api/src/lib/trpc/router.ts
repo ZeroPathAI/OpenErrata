@@ -58,6 +58,16 @@ const validateSettingsOutputMatches: IsExactly<
   ExtensionApiProcedureContract[typeof EXTENSION_TRPC_PATH.VALIDATE_SETTINGS]["output"]
 > = true;
 
+const batchStatusInputMatches: IsExactly<
+  RouterInputs["post"]["batchStatus"],
+  ExtensionApiProcedureContract[typeof EXTENSION_TRPC_PATH.BATCH_STATUS]["input"]
+> = true;
+
+const batchStatusOutputMatches: IsExactly<
+  RouterOutputs["post"]["batchStatus"],
+  ExtensionApiProcedureContract[typeof EXTENSION_TRPC_PATH.BATCH_STATUS]["output"]
+> = true;
+
 void registerObservedVersionInputMatches;
 void recordViewAndGetStatusInputMatches;
 void getInvestigationInputMatches;
@@ -67,3 +77,5 @@ void registerObservedVersionOutputMatches;
 void recordViewAndGetStatusOutputMatches;
 void investigateNowOutputMatches;
 void validateSettingsOutputMatches;
+void batchStatusInputMatches;
+void batchStatusOutputMatches;

@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { describe, test } from "node:test";
 import { WIKIPEDIA_EXCLUDED_SECTION_TITLES } from "@openerrata/shared";
+import {
+  lesswrongHtmlToNormalizedText,
+  wikipediaHtmlToNormalizedText,
+} from "../../src/lib/services/content-fetcher.js";
 import {
   lesswrongHtmlToContentMarkdown,
   wikipediaHtmlToContentMarkdown,
@@ -296,4 +300,253 @@ test("substackHtmlToContentMarkdown renders same as lesswrong for shared element
   assert.ok(md.includes("## Title"));
   assert.ok(md.includes("Paragraph one."));
   assert.ok(md.includes("Paragraph two."));
+});
+
+// ── Multi-image placeholder sequentiality ────────────────────────────────
+// buildInitialInput (openai-input-builder) matches [IMAGE:N] placeholders
+// back to the imagePlaceholders array via `find(p => p.index === N)`. If
+// indices skip values, repeat, or don't match the array entries, images are
+// silently lost or mismatched in the prompt.
+
+test("multiple images produce sequential 0-based [IMAGE:N] placeholders with matching array entries", () => {
+  const html = `
+    <p>First paragraph.</p>
+    <img src="https://cdn.example.com/photo1.jpg" alt="Photo 1"/>
+    <p>Middle text.</p>
+    <img src="https://cdn.example.com/chart2.png" alt="Chart 2"/>
+    <p>More text.</p>
+    <img src="https://cdn.example.com/diagram3.svg" alt="Diagram 3"/>
+    <p>Final paragraph.</p>
+  `;
+  const { markdown, imagePlaceholders } = lesswrongHtmlToContentMarkdown(html);
+
+  // Exactly 3 placeholders in the markdown
+  const placeholderMatches = [...markdown.matchAll(/\[IMAGE:(\d+)\]/g)];
+  assert.equal(placeholderMatches.length, 3);
+
+  // Indices must be sequential: 0, 1, 2
+  assert.equal(placeholderMatches[0]?.[1], "0");
+  assert.equal(placeholderMatches[1]?.[1], "1");
+  assert.equal(placeholderMatches[2]?.[1], "2");
+
+  // imagePlaceholders array must have matching entries
+  assert.equal(imagePlaceholders.length, 3);
+
+  const [ph0, ph1, ph2] = imagePlaceholders as [
+    (typeof imagePlaceholders)[0],
+    (typeof imagePlaceholders)[0],
+    (typeof imagePlaceholders)[0],
+  ];
+  assert.equal(ph0.index, 0);
+  assert.equal(ph0.sourceUrl, "https://cdn.example.com/photo1.jpg");
+  assert.equal(ph1.index, 1);
+  assert.equal(ph1.sourceUrl, "https://cdn.example.com/chart2.png");
+  assert.equal(ph2.index, 2);
+  assert.equal(ph2.sourceUrl, "https://cdn.example.com/diagram3.svg");
+
+  // Placeholders must appear in document order between surrounding text
+  const idx0 = markdown.indexOf("[IMAGE:0]");
+  const idx1 = markdown.indexOf("[IMAGE:1]");
+  const idx2 = markdown.indexOf("[IMAGE:2]");
+  assert.ok(idx0 < idx1);
+  assert.ok(idx1 < idx2);
+  assert.ok(markdown.indexOf("First paragraph.") < idx0);
+  assert.ok(idx2 < markdown.indexOf("Final paragraph."));
+});
+
+test("imagePlaceholders index equals array position for all images", () => {
+  // When buildInitialInput does `imagePlaceholders.find(p => p.index === N)`,
+  // it relies on each placeholder's .index matching the [IMAGE:N] in the
+  // markdown. This test verifies the identity: placeholder[i].index === i.
+  const html = `
+    <div>
+      <img src="a.png"/>
+      <img src="b.png"/>
+      <img src="c.png"/>
+      <img src="d.png"/>
+      <img src="e.png"/>
+    </div>
+  `;
+  const { imagePlaceholders } = lesswrongHtmlToContentMarkdown(html);
+  assert.equal(imagePlaceholders.length, 5);
+  for (let i = 0; i < imagePlaceholders.length; i++) {
+    assert.equal(imagePlaceholders[i]?.index, i, `imagePlaceholders[${i}].index must equal ${i}`);
+  }
+});
+
+// ── Markdown prose ⊆ normalized text invariant ─────────────────────────
+// The LLM receives markdown and echoes word tokens in claim text. If the
+// markdown contains syntax characters (**, `, etc.) that aren't in the
+// normalized DOM text, claim anchoring breaks because substring matching
+// fails. This invariant ensures every prose word in the markdown output is
+// findable in the normalized text produced from the same HTML.
+
+/**
+ * Strip markdown structural syntax, returning only prose word tokens.
+ * Removes: heading markers (#), list markers (- / 1.), blockquote (>),
+ * link URLs ](url), [IMAGE:N] placeholders, and residual punctuation-only
+ * tokens.
+ */
+function extractProseWords(markdown: string): string[] {
+  let stripped = markdown;
+  // Remove [IMAGE:N] placeholders
+  stripped = stripped.replace(/\[IMAGE:\d+\]/g, "");
+  // Remove link URLs: ](http...) or ](//...)
+  stripped = stripped.replace(/\]\([^)]*\)/g, "]");
+  // Remove link bracket syntax
+  stripped = stripped.replace(/[[\]]/g, "");
+  // Remove heading markers
+  stripped = stripped.replace(/^#{1,6}\s/gm, "");
+  // Remove blockquote markers
+  stripped = stripped.replace(/^>\s*/gm, "");
+  // Remove unordered list markers
+  stripped = stripped.replace(/^-\s+/gm, "");
+  // Remove ordered list markers
+  stripped = stripped.replace(/^\d+\.\s+/gm, "");
+  // Remove horizontal rules
+  stripped = stripped.replace(/^---+$/gm, "");
+
+  return stripped
+    .split(/\s+/)
+    .map((w) => w.trim())
+    .filter((w) => w.length > 0);
+}
+
+function assertMarkdownProseSubsetOfNormalizedText(
+  html: string,
+  platform: "lesswrong" | "wikipedia",
+): void {
+  const toMarkdown =
+    platform === "lesswrong" ? lesswrongHtmlToContentMarkdown : wikipediaHtmlToContentMarkdown;
+  const toNormalized =
+    platform === "lesswrong" ? lesswrongHtmlToNormalizedText : wikipediaHtmlToNormalizedText;
+
+  const wrapHtml = platform === "wikipedia" ? `<div class="mw-parser-output">${html}</div>` : html;
+
+  const { markdown } = toMarkdown(wrapHtml);
+  const normalizedText = toNormalized(wrapHtml);
+  const proseWords = extractProseWords(markdown);
+
+  for (const word of proseWords) {
+    assert.ok(
+      normalizedText.includes(word),
+      `Prose word "${word}" from ${platform} markdown not found in normalized text.\n` +
+        `  markdown: ${JSON.stringify(markdown)}\n` +
+        `  normalized: ${JSON.stringify(normalizedText)}`,
+    );
+  }
+}
+
+const PROSE_SUBSET_HTML_CASES: { name: string; html: string }[] = [
+  {
+    name: "bold + italic",
+    html: "<p>This is <strong>important</strong> and <em>emphasized</em>.</p>",
+  },
+  {
+    name: "inline code",
+    html: "<p>Use <code>foo()</code> function.</p>",
+  },
+  {
+    name: "strikethrough",
+    html: "<p><del>old claim</del> replaced.</p>",
+  },
+  {
+    name: "mixed block + inline",
+    html: `
+      <h2>Section Title</h2>
+      <p>A paragraph with <strong>bold</strong> words.</p>
+      <ul><li>An <em>italic</em> item</li><li>Another item</li></ul>
+    `,
+  },
+  {
+    name: "image-only anchor",
+    html: '<a href="https://example.com/big.jpg"><img src="https://example.com/thumb.jpg"/></a>',
+  },
+  {
+    name: "nested emphasis",
+    html: "<p><strong><em>deeply nested</em></strong></p>",
+  },
+  {
+    name: "empty emphasis",
+    html: "<p>text <strong></strong> more text</p>",
+  },
+  {
+    name: "complex mixed content",
+    html: `
+      <h1>Main Heading</h1>
+      <blockquote><p>A quoted passage with <strong>emphasis</strong>.</p></blockquote>
+      <ol><li>First <code>item</code></li><li>Second item</li></ol>
+      <p>Final paragraph with <em>italic</em> and <strong>bold</strong>.</p>
+      <img src="chart.png"/>
+    `,
+  },
+];
+
+for (const { name, html } of PROSE_SUBSET_HTML_CASES) {
+  for (const platform of ["lesswrong", "wikipedia"] as const) {
+    test(`markdown prose ⊆ normalized text: ${name} (${platform})`, () => {
+      assertMarkdownProseSubsetOfNormalizedText(html, platform);
+    });
+  }
+}
+
+// Substack uses the same Turndown pipeline as LessWrong, and the same
+// parse5 text extractor (lesswrongHtmlToNormalizedText). Verify the invariant
+// holds through the substackHtmlToContentMarkdown entry point too.
+for (const { name, html } of PROSE_SUBSET_HTML_CASES) {
+  test(`markdown prose ⊆ normalized text: ${name} (substack)`, () => {
+    const { markdown } = substackHtmlToContentMarkdown(html);
+    const normalizedText = lesswrongHtmlToNormalizedText(html);
+    const proseWords = extractProseWords(markdown);
+
+    for (const word of proseWords) {
+      assert.ok(
+        normalizedText.includes(word),
+        `Prose word "${word}" from substack markdown not found in normalized text.\n` +
+          `  markdown: ${JSON.stringify(markdown)}\n` +
+          `  normalized: ${JSON.stringify(normalizedText)}`,
+      );
+    }
+  });
+}
+
+// ── Inline syntax absence invariant ─────────────────────────────────────
+// The inlineEmphasisAsPlainText and inlineCodeAsPlainText Turndown rules
+// must strip ALL emphasis/code syntax. Rather than testing tags one by one,
+// iterate every relevant tag and assert the corresponding markdown syntax
+// characters never wrap content.
+
+describe("inline emphasis/code tags never produce markdown syntax", () => {
+  const EMPHASIS_TAGS_AND_SYNTAX: [tag: string, syntaxChar: string][] = [
+    ["strong", "**"],
+    ["b", "**"],
+    ["em", "*"],
+    ["i", "*"],
+    ["del", "~~"],
+    ["s", "~~"],
+    ["code", "`"],
+  ];
+
+  for (const [tag, syntaxChar] of EMPHASIS_TAGS_AND_SYNTAX) {
+    test(`<${tag}> does not produce ${syntaxChar} wrapping`, () => {
+      const html = `<p>before <${tag}>wrapped content</${tag}> after</p>`;
+      for (const toMarkdown of [
+        lesswrongHtmlToContentMarkdown,
+        wikipediaHtmlToContentMarkdown,
+        substackHtmlToContentMarkdown,
+      ]) {
+        const { markdown } = toMarkdown(
+          tag === "code" ? html : html, // same HTML for all
+        );
+        assert.ok(
+          markdown.includes("wrapped content"),
+          `<${tag}> content should appear in markdown`,
+        );
+        assert.ok(
+          !markdown.includes(`${syntaxChar}wrapped content${syntaxChar}`),
+          `<${tag}> should not produce ${syntaxChar}wrapped content${syntaxChar} in markdown:\n  ${markdown}`,
+        );
+      }
+    });
+  }
 });

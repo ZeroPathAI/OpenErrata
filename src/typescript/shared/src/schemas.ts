@@ -501,7 +501,6 @@ const extensionPostStatusBaseSchema = z
 const extensionPostNotInvestigatedSchema = extensionPostStatusBaseSchema
   .extend({
     investigationState: z.literal("NOT_INVESTIGATED"),
-    status: z.undefined().optional(),
     priorInvestigationResult: priorInvestigationResultSchema.nullable(),
   })
   .strict();
@@ -520,7 +519,13 @@ const extensionPostInvestigatingSchema = extensionPostStatusBaseSchema
 const extensionPostFailedSchema = extensionPostStatusBaseSchema
   .extend({
     investigationState: z.literal("FAILED"),
-    provenance: contentProvenanceSchema.optional(),
+    provenance: contentProvenanceSchema,
+  })
+  .strict();
+
+const extensionPostApiErrorSchema = extensionPostStatusBaseSchema
+  .extend({
+    investigationState: z.literal("API_ERROR"),
   })
   .strict();
 
@@ -536,6 +541,7 @@ export const extensionPostStatusSchema = z.discriminatedUnion("investigationStat
   extensionPostNotInvestigatedSchema,
   extensionPostInvestigatingSchema,
   extensionPostFailedSchema,
+  extensionPostApiErrorSchema,
   extensionPostInvestigatedSchema,
 ]);
 
@@ -730,7 +736,7 @@ export const searchInvestigationsInputSchema = z
 export const getMetricsInputSchema = z
   .object({
     platform: platformSchema.optional(),
-    authorId: z.string().optional(),
+    authorId: z.string().min(1).optional(),
     windowStart: z.iso.datetime().optional(),
     windowEnd: z.iso.datetime().optional(),
   })
@@ -799,7 +805,7 @@ export const publicGetPostInvestigationsOutputSchema = z
       z
         .object({
           id: investigationIdSchema,
-          contentHash: z.string().min(1),
+          contentHash: versionHashSchema,
           corroborationCount: z.number().int().nonnegative(),
           checkedAt: z.iso.datetime(),
           claimCount: z.number().int().nonnegative(),
@@ -816,7 +822,7 @@ export const publicSearchInvestigationsOutputSchema = z
       z
         .object({
           id: investigationIdSchema,
-          contentHash: z.string().min(1),
+          contentHash: versionHashSchema,
           checkedAt: z.iso.datetime(),
           platform: platformSchema,
           externalId: postIdSchema,

@@ -4,7 +4,6 @@ export interface OpenErrataControllerLifecycle {
 }
 
 export interface OpenErrataBootstrapTarget<TController extends OpenErrataControllerLifecycle> {
-  __openerrata_loaded?: boolean;
   __openerrata_controller?: TController;
 }
 
@@ -22,7 +21,6 @@ export function bootOpenErrataController<TController extends OpenErrataControlle
 
   const controller = createController();
   target.__openerrata_controller = controller;
-  target.__openerrata_loaded = true;
   controller.boot();
   return controller;
 }

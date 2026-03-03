@@ -98,9 +98,9 @@ test("buildUserPrompt update mode includes carry/new contract and collision-safe
     contentDiff: diffText,
   });
 
-  assert.match(prompt, /## Update handling instructions/);
-  assert.match(prompt, /retain_correction/);
-  assert.match(prompt, /submit_correction/);
+  // Update handling instructions moved to INVESTIGATION_UPDATE_SYSTEM_PROMPT;
+  // the user prompt now only carries update metadata + content diff.
+  assert.match(prompt, /## Update metadata/);
 
   const markers = extractRawSectionMarkers(prompt, "Content diff");
   assert.equal(collidingText.includes(markers.beginMarker), false);

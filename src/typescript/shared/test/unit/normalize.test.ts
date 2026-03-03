@@ -74,6 +74,72 @@ test("hashContent produces different hashes for different inputs", async () => {
   assert.notEqual(a, b);
 });
 
+// ── Typographic replacement completeness ────────────────────────────────
+// Every Unicode code point in TYPOGRAPHIC_REPLACEMENTS must map to its
+// documented ASCII equivalent. This catches if someone extends a character
+// class regex but forgets to verify the replacement.
+
+test("typographic replacement covers all documented code points", () => {
+  // Left double quotation mark → "
+  assert.equal(normalizeContent("\u201C"), '"');
+  // Right double quotation mark → "
+  assert.equal(normalizeContent("\u201D"), '"');
+  // Left single quotation mark → '
+  assert.equal(normalizeContent("\u2018"), "'");
+  // Right single quotation mark → '
+  assert.equal(normalizeContent("\u2019"), "'");
+  // Hyphen (U+2010) → -
+  assert.equal(normalizeContent("\u2010"), "-");
+  // Non-breaking hyphen (U+2011) → -
+  assert.equal(normalizeContent("\u2011"), "-");
+  // Figure dash (U+2012) → -
+  assert.equal(normalizeContent("\u2012"), "-");
+  // En dash (U+2013) → -
+  assert.equal(normalizeContent("\u2013"), "-");
+  // Em dash (U+2014) → -
+  assert.equal(normalizeContent("\u2014"), "-");
+  // Horizontal bar (U+2015) → -
+  assert.equal(normalizeContent("\u2015"), "-");
+  // Horizontal ellipsis (U+2026) → ...
+  assert.equal(normalizeContent("\u2026"), "...");
+});
+
+// ── Comprehensive idempotence ───────────────────────────────────────────
+// normalizeContent(normalizeContent(x)) === normalizeContent(x) must hold
+// for inputs mixing all typographic characters, zero-width characters,
+// combining marks, and various whitespace. This extends the basic
+// idempotence test above to a comprehensive input.
+
+test("normalizeContent is idempotent under comprehensive typographic + whitespace input", () => {
+  const comprehensive = [
+    // All typographic quote pairs
+    "\u201CHello,\u201D she said. \u2018It\u2019s fine.\u2019",
+    // All dash variants in sequence
+    "a\u2010b\u2011c\u2012d\u2013e\u2014f\u2015g",
+    // Ellipsis with surrounding context
+    "wait\u2026 what\u2026",
+    // Zero-width characters interspersed
+    "\u200Bhello\u200Cworld\u200D\uFEFF",
+    // Combining characters (café via combining acute)
+    "Cafe\u0301 is great",
+    // Mixed whitespace
+    "line1\n\tline2\r\nline3   line4",
+    // Non-breaking space
+    "non\u00A0breaking\u00A0space",
+    // All of the above combined
+    "\u201CSmart\u201D \u200B quotes\u2014and\u2026 Cafe\u0301\n\tdashes\u2010\u2015",
+  ].join(" ");
+
+  const normalizedOnce = normalizeContent(comprehensive);
+  const normalizedTwice = normalizeContent(normalizedOnce);
+
+  assert.equal(
+    normalizedOnce,
+    normalizedTwice,
+    "normalizeContent must be idempotent for comprehensive typographic input",
+  );
+});
+
 test("hashContent hashes exact input bytes without implicit normalization", async () => {
   const normalized = normalizeContent("line one\nline two");
   const rawWithExtraWhitespace = "line one  \nline two";

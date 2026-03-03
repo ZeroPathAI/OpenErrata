@@ -10,8 +10,8 @@
   import type { ClaimId, ExtensionMessage, ExtensionSkippedReason } from "@openerrata/shared";
   import browser from "webextension-polyfill";
   import { describeError } from "../lib/describe-error";
-  import { isSupportedPostUrl, parseSupportedPageIdentity } from "../lib/post-identity";
-  import { computePostView, type PopupClaim, type PostPopupView } from "./post-view";
+  import { parseSupportedPageIdentity } from "../lib/post-identity";
+  import { computePostView, type PostPopupView } from "./post-view";
   import { isSubstackPostPathUrl, statusMatchesIdentity } from "./status-identity";
   import { loadExtensionSettings } from "../lib/settings";
   import { UPGRADE_REQUIRED_STORAGE_KEY } from "../lib/runtime-error";
@@ -89,7 +89,7 @@
 
   // ── Reactive state ────────────────────────────────────────────────────────
 
-  let view: PopupView = $state({ kind: "loading" });
+  let view = $state<PopupView>({ kind: "loading" });
   let pageTitle = $state<string | null>(null);
   let showHighlights = $state(true);
 
@@ -114,7 +114,7 @@
       const title = extractPageTitle(tab?.title, tabUrl);
 
       const supportedIdentity = parseSupportedPageIdentity(tabUrl);
-      const onSupportedPage = isSupportedPostUrl(tabUrl) || isSubstackPostPathUrl(tabUrl);
+      const onSupportedPage = supportedIdentity !== null || isSubstackPostPathUrl(tabUrl);
 
       const response = await browser.runtime.sendMessage({
         v: EXTENSION_MESSAGE_PROTOCOL_VERSION,

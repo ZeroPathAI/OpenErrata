@@ -7,7 +7,6 @@ import {
   investigationStatusOutputSchema,
   isNonNullObject,
   trimToOptionalNonEmpty,
-  type ContentProvenance,
   type ExtensionPageStatus,
   type ExtensionPostStatus,
   type GetInvestigationOutput,
@@ -433,7 +432,6 @@ async function cacheApiErrorStatus(input: {
   externalId: string;
   pageUrl: string;
   investigationId?: string;
-  provenance?: ContentProvenance;
   skipIfStale?: boolean;
   noteSession?: boolean;
   stopPolling?: boolean;
@@ -457,9 +455,6 @@ async function cacheApiErrorStatus(input: {
   };
   if (input.investigationId !== undefined) {
     statusInput.investigationId = input.investigationId;
-  }
-  if (input.provenance !== undefined) {
-    statusInput.provenance = input.provenance;
   }
 
   await cachePostStatus(input.tabId, apiErrorToPostStatus(statusInput));

@@ -2,14 +2,11 @@ import { extensionPostStatusSchema } from "@openerrata/shared";
 import type {
   ContentProvenance,
   ExtensionPostStatus,
-  ExtensionRuntimeErrorCode,
   InvestigationClaimPayload,
   InvestigationStatusOutput,
   ViewPostInput,
   ViewPostOutput,
 } from "@openerrata/shared";
-import { ApiClientError } from "./api-client-error.js";
-
 type PriorInvestigationResult = NonNullable<
   Extract<
     InvestigationStatusOutput,
@@ -23,7 +20,6 @@ interface PostStatusIdentity {
   externalId: string;
   pageUrl: string;
   investigationId?: string;
-  provenance?: ContentProvenance;
 }
 
 type PostStatusInput =
@@ -41,7 +37,10 @@ type PostStatusInput =
     })
   | (PostStatusIdentity & {
       investigationState: "FAILED";
-      provenance?: ContentProvenance;
+      provenance: ContentProvenance;
+    })
+  | (PostStatusIdentity & {
+      investigationState: "API_ERROR";
     })
   | (PostStatusIdentity & {
       investigationState: "INVESTIGATED";
@@ -51,14 +50,7 @@ type PostStatusInput =
 
 type InvestigationSnapshot = InvestigationStatusOutput | ViewPostOutput;
 
-const fallbackFailureState = { investigationState: "FAILED" as const };
-const failureStateByErrorCode = {
-  PAYLOAD_TOO_LARGE: fallbackFailureState,
-  UPGRADE_REQUIRED: fallbackFailureState,
-  MALFORMED_EXTENSION_VERSION: fallbackFailureState,
-  INVALID_EXTENSION_MESSAGE: fallbackFailureState,
-  UNSUPPORTED_PROTOCOL_VERSION: fallbackFailureState,
-} as const satisfies Record<ExtensionRuntimeErrorCode, { investigationState: "FAILED" }>;
+const API_ERROR_INVESTIGATION_STATE = { investigationState: "API_ERROR" as const };
 
 function toPostStatusBase(input: PostStatusIdentity): {
   kind: "POST";
@@ -67,7 +59,6 @@ function toPostStatusBase(input: PostStatusIdentity): {
   externalId: string;
   pageUrl: string;
   investigationId?: string;
-  provenance?: ContentProvenance;
 } {
   const base: {
     kind: "POST";
@@ -76,7 +67,6 @@ function toPostStatusBase(input: PostStatusIdentity): {
     externalId: string;
     pageUrl: string;
     investigationId?: string;
-    provenance?: ContentProvenance;
   } = {
     kind: "POST",
     tabSessionId: input.tabSessionId,
@@ -87,9 +77,6 @@ function toPostStatusBase(input: PostStatusIdentity): {
 
   if (input.investigationId !== undefined) {
     base.investigationId = input.investigationId;
-  }
-  if (input.provenance !== undefined) {
-    base.provenance = input.provenance;
   }
 
   return base;
@@ -119,11 +106,18 @@ export function createPostStatus(input: PostStatusInput): ExtensionPostStatus {
       return extensionPostStatusSchema.parse({
         ...base,
         investigationState: "FAILED",
+        provenance: input.provenance,
+      });
+    case "API_ERROR":
+      return extensionPostStatusSchema.parse({
+        ...base,
+        investigationState: "API_ERROR",
       });
     case "INVESTIGATED":
       return extensionPostStatusSchema.parse({
         ...base,
         investigationState: "INVESTIGATED",
+        provenance: input.provenance,
         claims: input.claims,
       });
   }
@@ -140,9 +134,6 @@ export function createPostStatusFromInvestigation(
   };
   if (input.investigationId !== undefined) {
     identity.investigationId = input.investigationId;
-  }
-  if (input.provenance !== undefined) {
-    identity.provenance = input.provenance;
   }
 
   switch (input.investigationState) {
@@ -178,15 +169,6 @@ export function createPostStatusFromInvestigation(
   }
 }
 
-function apiErrorToFailureState(errorCode: ExtensionRuntimeErrorCode | undefined): {
-  investigationState: "FAILED";
-} {
-  if (errorCode === undefined) {
-    return fallbackFailureState;
-  }
-
-  return failureStateByErrorCode[errorCode];
-}
 export function apiErrorToPostStatus(input: {
   error: unknown;
   tabSessionId: number;
@@ -194,21 +176,19 @@ export function apiErrorToPostStatus(input: {
   externalId: string;
   pageUrl: string;
   investigationId?: string;
-  provenance?: ContentProvenance;
 }): ExtensionPostStatus {
-  const errorCode = input.error instanceof ApiClientError ? input.error.errorCode : undefined;
+  // API errors (network failures, version mismatches, etc.) produce API_ERROR,
+  // not FAILED. FAILED is reserved for investigations that ran and failed on the
+  // server, which always have provenance.
   const statusInput: PostStatusInput = {
     tabSessionId: input.tabSessionId,
     platform: input.platform,
     externalId: input.externalId,
     pageUrl: input.pageUrl,
-    ...apiErrorToFailureState(errorCode),
+    ...API_ERROR_INVESTIGATION_STATE,
   };
   if (input.investigationId !== undefined) {
     statusInput.investigationId = input.investigationId;
-  }
-  if (input.provenance !== undefined) {
-    statusInput.provenance = input.provenance;
   }
   return createPostStatus(statusInput);
 }

@@ -28,15 +28,13 @@ export function decidePageContentSnapshot(input: {
         priorInvestigationResult: null,
       };
     }
-  } else if (
-    input.existingForSession?.investigationState === "FAILED" &&
-    input.existingForSession.provenance !== undefined
-  ) {
+  } else if (input.existingForSession?.investigationState === "FAILED") {
     snapshot = {
       investigationState: "FAILED",
       provenance: input.existingForSession.provenance,
     };
   } else {
+    // API_ERROR and NOT_INVESTIGATED fall through to the fresh result.
     snapshot = input.result;
   }
 

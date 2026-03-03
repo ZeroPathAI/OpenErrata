@@ -69,7 +69,3 @@ export function parseSupportedPageIdentity(url: string): SupportedPageIdentity |
 
   return null;
 }
-
-export function isSupportedPostUrl(url: string): boolean {
-  return parseSupportedPageIdentity(url) !== null;
-}

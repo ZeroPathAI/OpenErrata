@@ -7,17 +7,31 @@ import {
 } from "../../src/background/post-status.js";
 import { ApiClientError } from "../../src/background/api-client-error.js";
 
-test("createPostStatus builds FAILED without status", () => {
+test("createPostStatus builds FAILED with required provenance", () => {
   const status = createPostStatus({
     tabSessionId: 2,
     platform: "LESSWRONG",
     externalId: "lw-2",
     pageUrl: "https://www.lesswrong.com/posts/lw-2/example",
     investigationState: "FAILED",
+    provenance: "SERVER_VERIFIED",
   });
 
   assert.equal(status.investigationState, "FAILED");
-  assert.equal("status" in status, false);
+  assert.equal(status.provenance, "SERVER_VERIFIED");
+});
+
+test("createPostStatus builds API_ERROR without provenance", () => {
+  const status = createPostStatus({
+    tabSessionId: 2,
+    platform: "LESSWRONG",
+    externalId: "lw-2",
+    pageUrl: "https://www.lesswrong.com/posts/lw-2/example",
+    investigationState: "API_ERROR",
+  });
+
+  assert.equal(status.investigationState, "API_ERROR");
+  assert.equal("provenance" in status, false);
 });
 
 test("createPostStatusFromInvestigation maps pending status to INVESTIGATING", () => {
@@ -84,7 +98,7 @@ test("createPostStatusFromInvestigation maps undefined status to NOT_INVESTIGATE
   assert.equal(status.priorInvestigationResult, null);
 });
 
-test("apiErrorToPostStatus maps ApiClientError without a recognized code to FAILED state", () => {
+test("apiErrorToPostStatus maps ApiClientError to API_ERROR state", () => {
   const error = new ApiClientError("mismatch", {});
   const status = apiErrorToPostStatus({
     error,
@@ -94,10 +108,10 @@ test("apiErrorToPostStatus maps ApiClientError without a recognized code to FAIL
     pageUrl: "https://www.lesswrong.com/posts/lw-1/example",
   });
 
-  assert.equal(status.investigationState, "FAILED");
+  assert.equal(status.investigationState, "API_ERROR");
 });
 
-test("apiErrorToPostStatus maps generic errors to FAILED state", () => {
+test("apiErrorToPostStatus maps generic errors to API_ERROR state", () => {
   const status = apiErrorToPostStatus({
     error: new Error("network timeout"),
     tabSessionId: 1,
@@ -106,10 +120,10 @@ test("apiErrorToPostStatus maps generic errors to FAILED state", () => {
     pageUrl: "https://www.lesswrong.com/posts/lw-1/example",
   });
 
-  assert.equal(status.investigationState, "FAILED");
+  assert.equal(status.investigationState, "API_ERROR");
 });
 
-test("apiErrorToPostStatus maps PAYLOAD_TOO_LARGE ApiClientError to FAILED state", () => {
+test("apiErrorToPostStatus maps PAYLOAD_TOO_LARGE ApiClientError to API_ERROR state", () => {
   const status = apiErrorToPostStatus({
     error: new ApiClientError("too large", {
       errorCode: "PAYLOAD_TOO_LARGE",
@@ -120,10 +134,10 @@ test("apiErrorToPostStatus maps PAYLOAD_TOO_LARGE ApiClientError to FAILED state
     pageUrl: "https://www.lesswrong.com/posts/lw-1/example",
   });
 
-  assert.equal(status.investigationState, "FAILED");
+  assert.equal(status.investigationState, "API_ERROR");
 });
 
-test("apiErrorToPostStatus maps MALFORMED_EXTENSION_VERSION ApiClientError to FAILED state", () => {
+test("apiErrorToPostStatus maps MALFORMED_EXTENSION_VERSION ApiClientError to API_ERROR state", () => {
   const status = apiErrorToPostStatus({
     error: new ApiClientError("malformed extension version", {
       errorCode: "MALFORMED_EXTENSION_VERSION",
@@ -134,10 +148,10 @@ test("apiErrorToPostStatus maps MALFORMED_EXTENSION_VERSION ApiClientError to FA
     pageUrl: "https://www.lesswrong.com/posts/lw-1/example",
   });
 
-  assert.equal(status.investigationState, "FAILED");
+  assert.equal(status.investigationState, "API_ERROR");
 });
 
-test("apiErrorToPostStatus preserves investigationId and provenance", () => {
+test("apiErrorToPostStatus preserves investigationId", () => {
   const status = apiErrorToPostStatus({
     error: new Error("server error"),
     tabSessionId: 1,
@@ -145,10 +159,8 @@ test("apiErrorToPostStatus preserves investigationId and provenance", () => {
     externalId: "lw-1",
     pageUrl: "https://www.lesswrong.com/posts/lw-1/example",
     investigationId: "inv-123",
-    provenance: "SERVER_VERIFIED",
   });
 
-  assert.equal(status.investigationState, "FAILED");
+  assert.equal(status.investigationState, "API_ERROR");
   assert.equal(status.investigationId, "inv-123");
-  assert.equal(status.provenance, "SERVER_VERIFIED");
 });

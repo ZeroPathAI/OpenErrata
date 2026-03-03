@@ -99,6 +99,9 @@ export type SettingsValidationOutput = z.infer<
   typeof import("./schemas.js").settingsValidationOutputSchema
 >;
 
+export type BatchStatusInputWire = z.input<typeof import("./schemas.js").batchStatusInputSchema>;
+export type BatchStatusOutput = z.infer<typeof import("./schemas.js").batchStatusOutputSchema>;
+
 // ── Extension/API tRPC contract ───────────────────────────────────────────
 
 export interface ExtensionApiProcedureContract {
@@ -128,6 +131,11 @@ export interface ExtensionApiProcedureContract {
     // eslint-disable-next-line @typescript-eslint/no-invalid-void-type
     input: void;
     output: SettingsValidationOutput;
+  };
+  "post.batchStatus": {
+    kind: "query";
+    input: BatchStatusInputWire;
+    output: BatchStatusOutput;
   };
 }
 

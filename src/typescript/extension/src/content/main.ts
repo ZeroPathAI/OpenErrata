@@ -8,7 +8,6 @@ type RuntimeMessageListener = Parameters<typeof browser.runtime.onMessage.addLis
 
 declare global {
   interface Window {
-    __openerrata_loaded?: boolean;
     __openerrata_controller?: PageSessionController;
     __openerrata_messageListener?: RuntimeMessageListener;
   }

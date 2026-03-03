@@ -5,7 +5,10 @@ import {
   snapshotFromInvestigateNowResult,
   toInvestigationStatusForCaching,
 } from "../../src/background/investigation-snapshot.js";
-import { createPostStatusFromInvestigation } from "../../src/background/post-status.js";
+import {
+  createPostStatus,
+  createPostStatusFromInvestigation,
+} from "../../src/background/post-status.js";
 
 test("snapshotFromInvestigateNowResult preserves interim oldClaims while pending", () => {
   const oldClaims = [
@@ -134,4 +137,17 @@ test("status transition preserves interim oldClaims from NOT_INVESTIGATED to INV
   if (pendingPriorResult === null) throw new Error("expected priorInvestigationResult");
   assert.deepEqual(pendingPriorResult.oldClaims, oldClaims);
   assert.equal(pendingPriorResult.sourceInvestigationId, investigationIdSchema.parse("inv-old-2"));
+});
+
+test("toInvestigationStatusForCaching returns null for API_ERROR (transient, not cacheable)", () => {
+  const apiErrorStatus = createPostStatus({
+    tabSessionId: 20,
+    platform: "X",
+    externalId: "api-err-1",
+    pageUrl: "https://x.com/example/status/api-err-1",
+    investigationState: "API_ERROR",
+  });
+
+  const cached = toInvestigationStatusForCaching(apiErrorStatus);
+  assert.equal(cached, null);
 });

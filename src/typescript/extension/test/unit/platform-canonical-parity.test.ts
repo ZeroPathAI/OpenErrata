@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { describe, test } from "node:test";
 import type { JSDOM } from "jsdom";
 import {
   lesswrongHtmlToNormalizedText,
   wikipediaHtmlToNormalizedText,
 } from "../../../api/src/lib/services/content-fetcher.js";
+import { extractContentWithImageOccurrencesFromRoot } from "../../src/content/adapters/utils.js";
 import { lesswrongAdapter } from "../../src/content/adapters/lesswrong.js";
 import { wikipediaAdapter } from "../../src/content/adapters/wikipedia.js";
 import { assertReady, withWindow } from "../helpers/adapter-harness.js";
@@ -175,3 +176,85 @@ for (const fixtureKey of Object.values(E2E_WIKIPEDIA_FIXTURE_KEYS)) {
     assert.equal(clientText, serverText);
   });
 }
+
+// ── Synthetic structural parity ─────────────────────────────────────────
+// Corner cases where client TreeWalker and server parse5 historically
+// diverged. Each case exercises a specific structural pattern that can
+// cause block-separator injection asymmetry. Tests run the same HTML
+// through both JSDOM extraction (client) and parse5 (server) and assert
+// identical normalized output.
+
+function extractClientTextFromBody(html: string, url: string): string {
+  return withWindow(url, `<!doctype html><html><body>${html}</body></html>`, (document) => {
+    return extractContentWithImageOccurrencesFromRoot(document.body, url).contentText;
+  });
+}
+
+const STRUCTURAL_PARITY_CASES: { name: string; html: string }[] = [
+  {
+    name: "block-inline boundary",
+    html: "<div>about</div><span>inline</span>",
+  },
+  {
+    name: "empty block element",
+    html: "<p></p><p>text</p>",
+  },
+  {
+    name: "nested blocks",
+    html: "<p>a</p><div><p>b</p></div>",
+  },
+  {
+    name: "table + paragraph",
+    html: "<table><tr><td>x</td></tr></table><p>y</p>",
+  },
+  {
+    name: "inline within block",
+    html: "<p>word1<strong>word2</strong>word3</p>",
+  },
+];
+
+describe("synthetic structural parity: client JSDOM vs server parse5", () => {
+  for (const { name, html } of STRUCTURAL_PARITY_CASES) {
+    test(`LessWrong path: ${name}`, () => {
+      const clientText = extractClientTextFromBody(
+        html,
+        "https://www.lesswrong.com/posts/test/structural",
+      );
+      const serverText = lesswrongHtmlToNormalizedText(html);
+      assert.equal(
+        clientText,
+        serverText,
+        `Structural parity failed for "${name}":\n` +
+          `  client: ${JSON.stringify(clientText)}\n` +
+          `  server: ${JSON.stringify(serverText)}`,
+      );
+    });
+  }
+
+  for (const { name, html } of STRUCTURAL_PARITY_CASES) {
+    test(`Wikipedia path: ${name}`, () => {
+      const wikiHtml = `<div class="mw-parser-output">${html}</div>`;
+
+      const clientText = withWindow(
+        "https://en.wikipedia.org/wiki/Test",
+        `<!doctype html><html><body><div id="mw-content-text">${wikiHtml}</div></body></html>`,
+        (document) => {
+          const root = document.querySelector(".mw-parser-output");
+          if (!root) throw new Error("Missing .mw-parser-output");
+          return extractContentWithImageOccurrencesFromRoot(
+            root,
+            "https://en.wikipedia.org/wiki/Test",
+          ).contentText;
+        },
+      );
+      const serverText = wikipediaHtmlToNormalizedText(wikiHtml);
+      assert.equal(
+        clientText,
+        serverText,
+        `Structural parity failed for "${name}" (Wikipedia):\n` +
+          `  client: ${JSON.stringify(clientText)}\n` +
+          `  server: ${JSON.stringify(serverText)}`,
+      );
+    });
+  }
+});

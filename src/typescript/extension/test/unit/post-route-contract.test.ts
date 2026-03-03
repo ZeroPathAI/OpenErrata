@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { getAdapter } from "../../src/content/adapters/index";
-import { isSupportedPostUrl, parseSupportedPageIdentity } from "../../src/lib/post-identity";
+import { parseSupportedPageIdentity } from "../../src/lib/post-identity";
 import { isSubstackPostPathUrl } from "../../src/popup/status-identity";
 
 interface SupportedCase {
@@ -101,7 +101,7 @@ test("supported post URL identity parser and adapter matching stay aligned", () 
       platform: supported.platform,
       externalId: supported.externalId,
     });
-    assert.equal(isSupportedPostUrl(supported.url), true);
+    assert.notEqual(parseSupportedPageIdentity(supported.url), null);
 
     const adapter = getAdapter(supported.url);
     assert.notEqual(adapter, null);
@@ -112,7 +112,6 @@ test("supported post URL identity parser and adapter matching stay aligned", () 
 test("unsupported URLs are rejected consistently", () => {
   for (const url of unsupportedUrls) {
     assert.equal(parseSupportedPageIdentity(url), null);
-    assert.equal(isSupportedPostUrl(url), false);
     assert.equal(getAdapter(url), null);
   }
 });
@@ -120,7 +119,6 @@ test("unsupported URLs are rejected consistently", () => {
 test("custom-domain Substack post paths stay eligible for non-identity matching", () => {
   const customDomainSubstackUrl = "https://astralcodexten.com/p/example-post";
   assert.equal(parseSupportedPageIdentity(customDomainSubstackUrl), null);
-  assert.equal(isSupportedPostUrl(customDomainSubstackUrl), false);
   assert.equal(getAdapter(customDomainSubstackUrl), null);
   assert.equal(isSubstackPostPathUrl(customDomainSubstackUrl), true);
 });

@@ -7,6 +7,9 @@ export type CheckStatus = (typeof CHECK_STATUS_VALUES)[number];
 export const CONTENT_PROVENANCE_VALUES = ["SERVER_VERIFIED", "CLIENT_FALLBACK"] as const;
 export type ContentProvenance = (typeof CONTENT_PROVENANCE_VALUES)[number];
 
+export const MARKDOWN_SOURCE_VALUES = ["SERVER_HTML", "CLIENT_HTML", "NONE"] as const;
+export type MarkdownSource = (typeof MARKDOWN_SOURCE_VALUES)[number];
+
 export const INVESTIGATION_PROVIDER_VALUES = ["OPENAI", "ANTHROPIC"] as const;
 export type InvestigationProvider = (typeof INVESTIGATION_PROVIDER_VALUES)[number];
 

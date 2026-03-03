@@ -39,7 +39,7 @@ function makeClaimPayload(index: number): InvestigationClaimPayload {
 }
 
 function createPostStatus(
-  state: "NOT_INVESTIGATED" | "INVESTIGATING" | "FAILED" | "INVESTIGATED",
+  state: "NOT_INVESTIGATED" | "INVESTIGATING" | "FAILED" | "INVESTIGATED" | "API_ERROR",
   options: {
     claimCount?: number;
     pendingClaimCount?: number;
@@ -94,6 +94,14 @@ function createPostStatus(
       ...base,
       investigationState: "FAILED",
       provenance: "SERVER_VERIFIED",
+    };
+    return status;
+  }
+
+  if (state === "API_ERROR") {
+    const status: ExtensionPostStatus = {
+      ...base,
+      investigationState: "API_ERROR",
     };
     return status;
   }
@@ -348,6 +356,35 @@ test("updateToolbarBadge renders count/success/failure badge states", async () =
       { tabId: 20, text: "3" },
       { tabId: 21, text: "✓" },
       { tabId: 22, text: "!" },
+    ]);
+  } finally {
+    intervals.restore();
+  }
+});
+
+test("updateToolbarBadge renders API_ERROR with same badge as FAILED", async () => {
+  const calls = installChromeActionMock();
+  const intervals = installIntervalMocks();
+
+  try {
+    const { updateToolbarBadge } = await importToolbarBadgeModule();
+
+    updateToolbarBadge(30, createPostStatus("FAILED"));
+    await flushAsyncQueue();
+    updateToolbarBadge(31, createPostStatus("API_ERROR"));
+    await flushAsyncQueue();
+
+    const colors = calls.setBadgeBackgroundColor.map((call) => requireSetBadgeColorCall(call));
+    assert.equal(colors.length, 2);
+    const failedColor = colors[0];
+    const apiErrorColor = colors[1];
+    assert.ok(failedColor);
+    assert.ok(apiErrorColor);
+    assert.equal(failedColor.color, apiErrorColor.color);
+
+    assert.deepEqual(calls.setBadgeText, [
+      { tabId: 30, text: "!" },
+      { tabId: 31, text: "!" },
     ]);
   } finally {
     intervals.restore();

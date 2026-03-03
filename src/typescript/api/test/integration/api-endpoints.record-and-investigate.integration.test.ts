@@ -341,6 +341,7 @@ void test("post.registerObservedVersion corrects Wikipedia identity to server-ve
 void test("post.registerObservedVersion enriches existing Wikipedia version htmlContent when first observation is fallback", async () => {
   const caller = createCaller();
   const canonicalHtml = "<div class='mw-parser-output'><p>Server canonical article text.</p></div>";
+  const clientHtml = "<div class='mw-parser-output'><p>Server canonical article text.</p></div>";
   const input = {
     platform: "WIKIPEDIA" as const,
     url: "https://en.wikipedia.org/wiki/OpenErrata_html_enrichment",
@@ -351,6 +352,7 @@ void test("post.registerObservedVersion enriches existing Wikipedia version html
       pageId: "777777",
       revisionId: "888888",
       displayTitle: "OpenErrata html enrichment",
+      htmlContent: clientHtml,
     },
   };
 
@@ -398,7 +400,7 @@ void test("post.registerObservedVersion enriches existing Wikipedia version html
   });
   assert.ok(fallbackMeta);
   assert.equal(fallbackMeta.serverHtmlBlob?.htmlContent ?? null, null);
-  assert.equal(fallbackMeta.clientHtmlBlob?.htmlContent ?? null, null);
+  assert.equal(fallbackMeta.clientHtmlBlob?.htmlContent ?? null, clientHtml);
 
   globalThis.fetch = async (fetchInput, fetchInit) => {
     const url =
@@ -453,7 +455,8 @@ void test("post.registerObservedVersion enriches existing Wikipedia version html
   });
   assert.ok(verifiedMeta);
   assert.equal(verifiedMeta.serverHtmlBlob?.htmlContent, canonicalHtml);
-  assert.equal(verifiedMeta.clientHtmlBlob?.htmlContent ?? null, null);
+  // Client HTML persists from the initial fallback observation.
+  assert.equal(verifiedMeta.clientHtmlBlob?.htmlContent ?? null, clientHtml);
 });
 
 void test("post.registerObservedVersion rejects extension clients below minimum supported version", async () => {

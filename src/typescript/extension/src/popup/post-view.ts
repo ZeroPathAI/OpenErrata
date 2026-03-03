@@ -22,7 +22,7 @@ export function computePostView(matched: PostStatus, canRequest: boolean): PostP
   if (matched.investigationState === "INVESTIGATED") {
     return { kind: "clean" };
   }
-  if (matched.investigationState === "FAILED") {
+  if (matched.investigationState === "FAILED" || matched.investigationState === "API_ERROR") {
     return { kind: "failed" };
   }
   if (matched.investigationState === "INVESTIGATING") {

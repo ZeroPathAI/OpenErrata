@@ -80,7 +80,7 @@ function stopIconAnimation(tabId: number): void {
  * - INVESTIGATING:          "…" blue    — investigation in progress
  * - INVESTIGATED + claims:  "N" red     — N claims found
  * - INVESTIGATED + 0 claims: "✓" green  — clean, no claims
- * - FAILED:                 "!" red     — investigation failed
+ * - FAILED / API_ERROR:     "!" red     — investigation failed or API error
  * - NOT_INVESTIGATED / null: ""         — no badge
  * - UPGRADE_REQUIRED (global): "!" red  — extension version is below server minimum
  */
@@ -182,7 +182,7 @@ function toToolbarBadgeState(
     };
   }
 
-  if (status.investigationState === "FAILED") {
+  if (status.investigationState === "FAILED" || status.investigationState === "API_ERROR") {
     return {
       text: "!",
       color: "#ef4444",

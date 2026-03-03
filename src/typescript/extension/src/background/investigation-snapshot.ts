@@ -80,14 +80,13 @@ export function toInvestigationStatusForCaching(
         claims: snapshot.claims,
       };
     case "FAILED":
-      // ExtensionPostStatus FAILED has optional provenance; InvestigationStatusOutput
-      // requires it. If provenance is absent, we can't construct a valid cache entry.
-      if (!("provenance" in snapshot) || snapshot.provenance === undefined) {
-        return null;
-      }
       return {
         investigationState: "FAILED",
         provenance: snapshot.provenance,
       };
+    case "API_ERROR":
+      // API errors are transient client-side states that don't map to a
+      // server-side investigation status. Nothing to cache.
+      return null;
   }
 }
