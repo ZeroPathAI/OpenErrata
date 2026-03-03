@@ -7,7 +7,7 @@ export interface VersionIdentityImageOccurrence {
   captionText?: string | null | undefined;
 }
 
-export interface CanonicalVersionIdentityImageOccurrence {
+interface CanonicalVersionIdentityImageOccurrence {
   originalIndex: number;
   normalizedTextOffset: number;
   sourceUrl: string;

@@ -25,7 +25,7 @@ export const observedContentTextSchema = z
     message: `Observed content text must be at most ${MAX_OBSERVED_CONTENT_TEXT_UTF8_BYTES.toString()} UTF-8 bytes`,
   });
 
-export const observedImageOccurrenceSchema = z
+const observedImageOccurrenceSchema = z
   .object({
     originalIndex: z.number().int().nonnegative(),
     normalizedTextOffset: z.number().int().nonnegative(),
@@ -46,7 +46,7 @@ export const claimIdSchema = z.string().min(1).brand<"ClaimId">();
 export const versionHashSchema = z.string().regex(/^[a-f0-9]{64}$/i);
 export const extensionMessageProtocolVersionSchema = z.literal(EXTENSION_MESSAGE_PROTOCOL_VERSION);
 
-export const claimSourceSchema = z
+const claimSourceSchema = z
   .object({
     url: z.url(),
     title: z.string().min(1),
