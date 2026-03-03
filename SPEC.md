@@ -162,7 +162,7 @@ The following are explicitly out of scope:
 
 ## 2.4 LLM Investigation Approach
 
-Four key design decisions:
+Six key design decisions:
 
 1. **We don't build our own search-and-scrape infrastructure.** Frontier models
    now ship with native tool use (web search, browsing) maintained by the
@@ -187,6 +187,14 @@ Four key design decisions:
 5. **Edited posts use incremental updates.** If a post is edited and a prior
    complete `SERVER_VERIFIED` investigation exists, we run an "update investigation"
    that uses the previous claims plus a content diff to avoid unnecessary churn.
+6. **Two-stage pipeline: investigation + validation.** Each investigation runs
+   in two stages. Stage 1 is the agentic fact-check call where the model uses
+   `submit_correction` (fresh) or `submit_correction`/`retain_correction` (update)
+   tools to incrementally submit candidate claims as it finds them. Stage 2 is a
+   per-claim validation pass: each candidate claim is independently reviewed by a
+   separate model call against strict quality criteria, and only claims that pass
+   validation (`{approved: true}`) are persisted. This two-stage approach reduces
+   false positives beyond what the investigator prompt alone achieves.
 
 ### 2.4.3 Update-Aware Prompting
 
@@ -199,6 +207,39 @@ For update investigations only, the prompt includes:
 The model is instructed to keep unchanged claims stable and only modify, remove, or add claims
 that materially change due to the diff. The default full-investigation path remains unchanged when no
 prior complete `SERVER_VERIFIED` investigation exists.
+
+### 2.4.3.1 Incremental Claim Submission
+
+The investigator submits claims incrementally via tool calls rather than returning
+a single structured output at the end:
+
+- **`submit_correction`** — called as each incorrect claim is found during
+  investigation. The model does not batch or defer claims; it calls this tool
+  immediately upon finding evidence of incorrectness.
+- **`retain_correction(id)`** — update investigations only. Called for each prior
+  claim that is still valid and unchanged. Prior claims not retained are
+  automatically removed.
+
+This incremental approach enables real-time progress visibility: as Stage 1
+runs, the extension can display `pendingClaims` (submitted but not yet validated)
+and `confirmedClaims` (passed Stage 2 validation) to the user.
+
+### 2.4.3.2 Stage 2: Per-Claim Validation
+
+Each candidate claim submitted by Stage 1 is independently validated by a
+separate model call with a strict quality-filter prompt. Validation runs are
+started in parallel (concurrency-limited to 4) as claims are submitted during
+Stage 1, so validation overlaps with ongoing investigation.
+
+The validation prompt instructs the model to approve the claim only if it
+provides concrete contradictory evidence from credible sources, and to reject
+it if the evidence is weak, ambiguous, disputed, or if the claim text is not
+verbatim from the original post. The validator returns `{approved: true}` or
+`{approved: false}`.
+
+Only approved claims are included in the final investigation result. This
+strict filter is the primary mechanism for maintaining the low false-positive
+rate that the system's credibility depends on.
 
 ### 2.4.4 Structured Markdown Rendering
 
@@ -643,6 +684,11 @@ out of scope for v1, but the following baseline measures are required:
    plaintext keys must never be persisted server-side in application data or durable logs.
 6. **SSRF-safe image fetch.** Investigation-time image downloading must block private/internal
    network targets and enforce count/size limits before upload to blob storage.
+7. **Transport limits.** The following limits are enforced on API inputs:
+   - `MAX_OBSERVED_CONTENT_TEXT_CHARS` / `MAX_OBSERVED_CONTENT_TEXT_UTF8_BYTES`: 500,000
+   - `MAX_IMAGES_PER_INVESTIGATION`: 10
+   - `MAX_IMAGE_BYTES`: 20 MB
+   - `MAX_BATCH_STATUS_POSTS`: 100
 
 These measures are not sufficient against a determined attacker but are adequate for v1. Stronger
 measures (proof-of-work, behavioral analysis) are planned for future versions.
@@ -919,42 +965,49 @@ model Prompt {
 }
 
 model Investigation {
-  id                    String                @id @default(cuid())
+  id                    String                 @id @default(cuid())
   postVersionId         String
-  postVersion           PostVersion           @relation(fields: [postVersionId], references: [id])
-  input                 InvestigationInput?
-  parentInvestigationId String?               // Prior completed investigation for update lineage
-  parentInvestigation   Investigation?        @relation("InvestigationUpdateLineage", fields: [parentInvestigationId], references: [id])
-  contentDiff           String?               // Line-oriented diff used for update-mode prompting
+  postVersion           PostVersion            @relation(fields: [postVersionId], references: [id])
+  inputId               String                 @unique
+  input                 InvestigationInput     @relation("InvestigationInputOwner", fields: [inputId], references: [investigationId], onDelete: Restrict)
+  parentInvestigationId String?                // Prior completed investigation for update lineage
+  parentInvestigation   Investigation?         @relation("InvestigationUpdateLineage", fields: [parentInvestigationId], references: [id])
+  contentDiff           String?                // Line-oriented diff used for update-mode prompting
   status                CheckStatus
   promptId              String
-  prompt                Prompt                @relation(fields: [promptId], references: [id])
+  prompt                Prompt                 @relation(fields: [promptId], references: [id])
   provider              InvestigationProvider
   model                 InvestigationModel
-  modelVersion          String?               // Provider-reported model revision/version when available
-  checkedAt             DateTime?             // Null until completion
+  modelVersion          String?                // Provider-reported model revision/version when available
+  checkedAt             DateTime?              // Null until completion
+  // Transient progress state during active PROCESSING. Contains
+  // { pending: ClaimPayload[], confirmed: ClaimPayload[] } while the
+  // orchestrator is running. Nullified on every lifecycle transition
+  // (COMPLETE, FAILED, lease release, stale-run recovery, requeue).
+  progressClaims        Json?
   run                   InvestigationRun?
   attempts              InvestigationAttempt[]
-  updates               Investigation[]       @relation("InvestigationUpdateLineage")
+  updates               Investigation[]        @relation("InvestigationUpdateLineage")
   claims                Claim[]
   images                InvestigationImage[]
   corroborationCredits  CorroborationCredit[]
-  createdAt             DateTime              @default(now())
-  updatedAt             DateTime              @updatedAt
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
 
   @@unique([postVersionId])     // At most one investigation per content version
   @@index([status])
 }
 
 model InvestigationInput {
-  investigationId         String        @id
-  investigation           Investigation @relation(fields: [investigationId], references: [id], onDelete: Cascade)
-  provenance              String        // SERVER_VERIFIED | CLIENT_FALLBACK
+  investigationId         String             @id
+  investigation           Investigation?     @relation("InvestigationInputOwner")
+  // Immutable after insert; enforced by trigger "reject_investigation_input_updates_trigger".
+  provenance              ContentProvenance
   contentHash             String
-  markdownSource          String        // SERVER_HTML | CLIENT_HTML | NONE
-  markdown                String?       // null iff markdownSource = NONE
-  markdownRendererVersion String?       // null iff markdownSource = NONE
-  createdAt               DateTime      @default(now())
+  markdownSource          MarkdownSource
+  markdown                String?            // null iff markdownSource = NONE
+  markdownRendererVersion String?            // null iff markdownSource = NONE
+  createdAt               DateTime           @default(now())
 }
 
 model InvestigationRun {
@@ -1015,9 +1068,9 @@ model InvestigationImage {
 }
 
 model InvestigationAttempt {
-  id                      String   @id @default(cuid())
+  id                      String                              @id @default(cuid())
   investigationId         String
-  investigation           Investigation @relation(fields: [investigationId], references: [id])
+  investigation           Investigation                       @relation(fields: [investigationId], references: [id], onDelete: Cascade)
   attemptNumber           Int
   outcome                 InvestigationAttemptOutcome
   requestModel            String   // Provider request model id (e.g. gpt-5-*)
@@ -1036,58 +1089,61 @@ model InvestigationAttempt {
   toolCalls               InvestigationAttemptToolCall[]
   usage                   InvestigationAttemptUsage?
   error                   InvestigationAttemptError?
-  createdAt               DateTime @default(now())
-  updatedAt               DateTime @updatedAt
+  createdAt               DateTime                            @default(now())
+  updatedAt               DateTime                            @updatedAt
 
   @@unique([investigationId, attemptNumber])
   @@index([investigationId, startedAt])
 }
 
 model InvestigationAttemptRequestedTool {
-  id                String   @id @default(cuid())
-  attemptId         String
-  attempt           InvestigationAttempt @relation(fields: [attemptId], references: [id])
-  requestOrder      Int
-  toolType          String
-  rawDefinition     Json     // Full provider tool-definition payload for this request position
+  id            String               @id @default(cuid())
+  attemptId     String
+  attempt       InvestigationAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  requestOrder  Int
+  toolType      String
+  rawDefinition Json     // Full provider tool-definition payload for this request position
+  createdAt     DateTime             @default(now())
 
   @@unique([attemptId, requestOrder])
   @@index([attemptId])
 }
 
 model InvestigationAttemptOutputItem {
-  id                String   @id @default(cuid())
-  attemptId         String
-  attempt           InvestigationAttempt @relation(fields: [attemptId], references: [id])
-  outputIndex       Int
-  providerItemId    String?
-  itemType          String   // Provider-defined output item type
-  itemStatus        String?
-  textParts         InvestigationAttemptOutputTextPart[]
+  id                 String                                 @id @default(cuid())
+  attemptId          String
+  attempt            InvestigationAttempt                   @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  outputIndex        Int
+  providerItemId     String?
+  itemType           String   // Provider-defined output item type
+  itemStatus         String?
+  textParts          InvestigationAttemptOutputTextPart[]
   reasoningSummaries InvestigationAttemptReasoningSummary[]
-  toolCall          InvestigationAttemptToolCall?
+  toolCall           InvestigationAttemptToolCall?
+  createdAt          DateTime                               @default(now())
 
   @@unique([attemptId, outputIndex])
   @@index([attemptId])
 }
 
 model InvestigationAttemptOutputTextPart {
-  id            String   @id @default(cuid())
-  outputItemId  String
-  outputItem    InvestigationAttemptOutputItem @relation(fields: [outputItemId], references: [id])
-  partIndex     Int
-  partType      String   // output_text | refusal
-  text          String
-  annotations   InvestigationAttemptOutputTextAnnotation[]
+  id           String                                     @id @default(cuid())
+  outputItemId String
+  outputItem   InvestigationAttemptOutputItem             @relation(fields: [outputItemId], references: [id], onDelete: Cascade)
+  partIndex    Int
+  partType     String   // output_text | refusal
+  text         String
+  annotations  InvestigationAttemptOutputTextAnnotation[]
+  createdAt    DateTime                                   @default(now())
 
   @@unique([outputItemId, partIndex])
   @@index([outputItemId])
 }
 
 model InvestigationAttemptOutputTextAnnotation {
-  id              String   @id @default(cuid())
+  id              String                             @id @default(cuid())
   textPartId      String
-  textPart        InvestigationAttemptOutputTextPart @relation(fields: [textPartId], references: [id])
+  textPart        InvestigationAttemptOutputTextPart @relation(fields: [textPartId], references: [id], onDelete: Cascade)
   annotationIndex Int
   annotationType  String   // url_citation | file_citation | file_path | ...
   startIndex      Int?
@@ -1095,28 +1151,30 @@ model InvestigationAttemptOutputTextAnnotation {
   url             String?
   title           String?
   fileId          String?
+  createdAt       DateTime                           @default(now())
 
   @@unique([textPartId, annotationIndex])
   @@index([textPartId])
 }
 
 model InvestigationAttemptReasoningSummary {
-  id            String   @id @default(cuid())
-  outputItemId  String
-  outputItem    InvestigationAttemptOutputItem @relation(fields: [outputItemId], references: [id])
-  summaryIndex  Int
-  text          String
+  id           String                         @id @default(cuid())
+  outputItemId String
+  outputItem   InvestigationAttemptOutputItem @relation(fields: [outputItemId], references: [id], onDelete: Cascade)
+  summaryIndex Int
+  text         String
+  createdAt    DateTime                       @default(now())
 
   @@unique([outputItemId, summaryIndex])
   @@index([outputItemId])
 }
 
 model InvestigationAttemptToolCall {
-  id                  String   @id @default(cuid())
+  id                  String                         @id @default(cuid())
   attemptId           String
-  attempt             InvestigationAttempt @relation(fields: [attemptId], references: [id])
-  outputItemId        String   @unique
-  outputItem          InvestigationAttemptOutputItem @relation(fields: [outputItemId], references: [id])
+  attempt             InvestigationAttempt           @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  outputItemId        String
+  outputItem          InvestigationAttemptOutputItem @relation(fields: [outputItemId], references: [id], onDelete: Cascade)
   outputIndex         Int
   providerToolCallId  String?
   toolType            String
@@ -1125,29 +1183,33 @@ model InvestigationAttemptToolCall {
   capturedAt          DateTime
   providerStartedAt   DateTime?
   providerCompletedAt DateTime?
+  createdAt           DateTime                       @default(now())
 
   @@unique([attemptId, outputIndex])
+  @@unique([outputItemId])
   @@index([attemptId])
 }
 
 model InvestigationAttemptUsage {
-  id                    String   @id @default(cuid())
-  attemptId             String   @unique
-  attempt               InvestigationAttempt @relation(fields: [attemptId], references: [id])
+  id                    String               @id @default(cuid())
+  attemptId             String               @unique
+  attempt               InvestigationAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
   inputTokens           Int
   outputTokens          Int
   totalTokens           Int
   cachedInputTokens     Int?
   reasoningOutputTokens Int?
+  createdAt             DateTime             @default(now())
 }
 
 model InvestigationAttemptError {
-  id           String   @id @default(cuid())
-  attemptId    String   @unique
-  attempt      InvestigationAttempt @relation(fields: [attemptId], references: [id])
+  id           String               @id @default(cuid())
+  attemptId    String               @unique
+  attempt      InvestigationAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
   errorName    String
   errorMessage String
   statusCode   Int?
+  createdAt    DateTime             @default(now())
 }
 
 model CorroborationCredit {
@@ -1177,15 +1239,15 @@ model Claim {
 }
 
 model Source {
-  id              String    @id @default(cuid())
-  claimId         String
-  claim           Claim     @relation(fields: [claimId], references: [id])
-  url             String
-  title           String
-  snippet         String
-  snapshotText    String?   // Immutable excerpt/body used during the run (if retained)
-  snapshotHash    String?   // Hash of snapshotText or archived source bytes
-  retrievedAt     DateTime
+  id           String   @id @default(cuid())
+  claimId      String
+  claim        Claim    @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  url          String
+  title        String
+  snippet      String
+  snapshotText String?  // Immutable excerpt/body used during the run (if retained)
+  snapshotHash String?  // Hash of snapshotText or archived source bytes
+  retrievedAt  DateTime
 
   @@index([claimId])
 }
@@ -1201,6 +1263,12 @@ enum CheckStatus {
 enum ContentProvenance {
   SERVER_VERIFIED
   CLIENT_FALLBACK
+}
+
+enum MarkdownSource {
+  SERVER_HTML
+  CLIENT_HTML
+  NONE
 }
 
 enum InvestigationProvider {
@@ -1273,7 +1341,11 @@ postRouter.registerObservedVersion
 postRouter.recordViewAndGetStatus
   Input:  { postVersionId }
   Output:
-    | { investigationState: "NOT_INVESTIGATED", claims: null,
+    | { investigationState: "NOT_INVESTIGATED",
+        priorInvestigationResult: { oldClaims: Claim[], sourceInvestigationId: string } | null }
+    | { investigationState: "INVESTIGATING", status: "PENDING" | "PROCESSING",
+        provenance: ContentProvenance,
+        pendingClaims: ClaimPayload[], confirmedClaims: ClaimPayload[],
         priorInvestigationResult: { oldClaims: Claim[], sourceInvestigationId: string } | null }
     | { investigationState: "INVESTIGATED", provenance: ContentProvenance, claims: Claim[] }
 
@@ -1281,15 +1353,16 @@ postRouter.recordViewAndGetStatus
 postRouter.getInvestigation
   Input:  { investigationId }
   Output:
-    | { investigationState: "NOT_INVESTIGATED", claims: null,
+    | { investigationState: "NOT_INVESTIGATED",
         priorInvestigationResult: { oldClaims: Claim[], sourceInvestigationId: string } | null,
         checkedAt?: DateTime }
     | { investigationState: "INVESTIGATING", status: "PENDING" | "PROCESSING",
-        provenance: ContentProvenance, claims: null,
+        provenance: ContentProvenance,
+        pendingClaims: ClaimPayload[], confirmedClaims: ClaimPayload[],
         priorInvestigationResult: { oldClaims: Claim[], sourceInvestigationId: string } | null,
         checkedAt?: DateTime }
     | { investigationState: "FAILED", provenance: ContentProvenance,
-        claims: null, checkedAt?: DateTime }
+        checkedAt?: DateTime }
     | { investigationState: "INVESTIGATED", provenance: ContentProvenance,
         claims: Claim[], checkedAt: DateTime }
 
@@ -1319,7 +1392,7 @@ postRouter.validateSettings
 // Uses composite key (platform + externalId + versionHash) because it serves
 // the public tRPC API and does not participate in the extension's PK-based flow.
 postRouter.batchStatus
-  Input:  { posts: { platform, externalId, versionHash }[] }
+  Input:  { posts: { platform, externalId, versionHash }[] }  // min 1, max 100
   Output: { statuses: (
               | { platform, externalId, investigationState: "NOT_INVESTIGATED", incorrectClaimCount: 0 }
               | { platform, externalId, investigationState: "INVESTIGATED", incorrectClaimCount }
@@ -1585,13 +1658,24 @@ not automatic selector retries.
 Each content script implements:
 
 ```typescript
+type AdapterNotReadyReason =
+  | "hydrating"
+  | "ambiguous_dom"
+  | "unsupported"
+  | "missing_identity";
+
+type AdapterExtractionResult =
+  | { kind: "ready"; content: PlatformContent }
+  | { kind: "not_ready"; reason: AdapterNotReadyReason };
+
 interface PlatformAdapter {
+  platformKey: Platform;
+  contentRootSelector: string;
   matches(url: string): boolean;
   detectFromDom?(document: Document): boolean;
   detectPrivateOrGated?(document: Document): boolean;
-  extract(document: Document): PlatformContent | null;
+  extract(document: Document): AdapterExtractionResult;
   getContentRoot(document: Document): Element | null;
-  platformKey: string;
 }
 
 interface ImageOccurrence {
@@ -1618,12 +1702,42 @@ Adapter selection is URL-first (`matches(url)`), then optional DOM-fingerprint f
 
 ### Content normalization (shared package)
 
+Both client (extension) and server (API) must produce identical normalized text from
+the same HTML. Two shared components ensure this:
+
+**Block separator injection:** `CONTENT_BLOCK_SEPARATOR_TAGS` defines block-level HTML
+elements whose boundaries are treated as word separators during extraction. Both the
+extension (DOM TreeWalker) and API (parse5 traversal) inject a space character at the
+entry of these elements, ensuring compact HTML without whitespace text nodes still
+normalizes identically.
+
 ```typescript
+const CONTENT_BLOCK_SEPARATOR_TAGS = new Set([
+  "p", "li", "h1", "h2", "h3", "h4", "h5", "h6",
+  "figcaption", "blockquote", "tr", "td", "th", "div",
+]);
+
+const NON_CONTENT_TAGS = new Set(["script", "style", "noscript"]);
+```
+
+**Text normalization:** After extraction, raw text is normalized via `normalizeContent`:
+
+```typescript
+const TYPOGRAPHIC_REPLACEMENTS: [RegExp, string][] = [
+  [/[\u201C\u201D]/g, '"'],                        // Left/right double quotes → "
+  [/[\u2018\u2019]/g, "'"],                        // Left/right single quotes → '
+  [/[\u2010-\u2015]/g, "-"],                       // Hyphens + en/em dashes → -
+  [/\u2026/g, "..."],                              // Horizontal ellipsis → ...
+];
+
 function normalizeContent(raw: string): string {
-  return raw
-    .normalize("NFC")
-    .replace(/[\u200B-\u200D\uFEFF]/g, "")
-    .replace(/\s+/g, " ")
+  let text = raw.normalize("NFC");
+  for (const [pattern, replacement] of TYPOGRAPHIC_REPLACEMENTS) {
+    text = text.replace(pattern, replacement);
+  }
+  return text
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")  // Remove zero-width characters
+    .replace(/\s+/g, " ")                    // Collapse whitespace
     .trim();
 }
 ```
@@ -1635,6 +1749,22 @@ This includes textless/image-only posts for now.
 Adapters may also detect private/gated access (e.g., protected or subscriber-only
 views). In that case, the extension must skip sending content to the API and emit
 `PAGE_SKIPPED` with `reason: "private_or_gated"`.
+
+**All skip reasons:**
+
+| Reason                 | Condition                                         |
+| ---------------------- | ------------------------------------------------- |
+| `has_video`            | Any video/iframe embed detected                   |
+| `word_count`           | Normalized text exceeds `WORD_COUNT_LIMIT` (10000)|
+| `no_text`              | Content normalizes to empty string                |
+| `private_or_gated`     | Private/protected/subscriber-only content         |
+| `unsupported_content`  | Content type not supported by the adapter         |
+
+### Extension message protocol versioning
+
+All extension messages include a `v` field set to `EXTENSION_MESSAGE_PROTOCOL_VERSION`
+(currently `1`). This enables the API to reject or handle messages from outdated
+extension versions.
 
 Future work: design a dedicated UI/UX flow for fact-checking image-only posts
 without relying on text-span highlighting.
@@ -1703,9 +1833,10 @@ JavaScript globals (`mw.config`).
    `wgNamespaceNumber`, `wgPageName`, `wgRevisionTimestamp`) and filters out
    non-article namespaces (namespace !== 0).
 4. Content root: `#mw-content-text .mw-parser-output`. Excluded sections
-   (References, External links, See also, Further reading, Notes, Bibliography)
-   and non-article elements (navboxes, infobox metadata, edit links, etc.) are
-   pruned before text extraction.
+   (References, External links, Further reading, Notes, Bibliography, Sources,
+   Citations) and non-article elements (navboxes, infobox metadata, edit links,
+   etc.) are pruned before text extraction. "See also" is intentionally
+   **not** excluded — it contains substantive content about related topics.
 5. Server-side canonical fetch uses the MediaWiki `action=parse` API pinned to
    the observed `revisionId`, ensuring content verification matches exactly the
    revision the user saw.
@@ -1766,10 +1897,20 @@ openerrata/
 │       │   ├── src/
 │       │   │   ├── background/        # Service worker
 │       │   │   │   ├── index.ts
-│       │   │   │   ├── api-client.ts  # tRPC client
-│       │   │   │   └── cache.ts       # IndexedDB local cache
+│       │   │   │   ├── api-client.ts           # tRPC client
+│       │   │   │   ├── api-client-core.ts      # HTTP transport layer
+│       │   │   │   ├── cache.ts                # browser.storage.local cache
+│       │   │   │   ├── cache-store.ts
+│       │   │   │   ├── investigation-polling.ts # 5s poll for PENDING/PROCESSING
+│       │   │   │   ├── investigation-state.ts
+│       │   │   │   ├── message-dispatch.ts     # Runtime message routing
+│       │   │   │   ├── page-content-action.ts  # PAGE_CONTENT handler
+│       │   │   │   ├── page-content-decision.ts
+│       │   │   │   ├── post-status.ts
+│       │   │   │   └── toolbar-badge.ts
 │       │   │   ├── content/
 │       │   │   │   ├── adapters/      # Platform adapters (one per site)
+│       │   │   │   │   ├── model.ts   # PlatformAdapter interface + AdapterExtractionResult
 │       │   │   │   │   ├── lesswrong.ts
 │       │   │   │   │   ├── x.ts
 │       │   │   │   │   ├── substack.ts
@@ -1777,20 +1918,28 @@ openerrata/
 │       │   │   │   │   ├── utils.ts   # Shared extraction helpers (image occurrences)
 │       │   │   │   │   └── index.ts   # Registry
 │       │   │   │   ├── annotator.ts   # Annotation rendering
+│       │   │   │   ├── annotations.ts
+│       │   │   │   ├── annotation-dom.ts
 │       │   │   │   ├── dom-mapper.ts  # Claim text → DOM ranges
-│       │   │   │   ├── main.ts        # Entry point
-│       │   │   │   └── annotations.css
+│       │   │   │   ├── page-session-controller.ts  # Per-page session lifecycle
+│       │   │   │   ├── observer.ts    # MutationObserver for SPA re-renders
+│       │   │   │   ├── main.ts        # Entry point (IIFE)
+│       │   │   │   └── bootstrap.ts
 │       │   │   ├── popup/
 │       │   │   │   ├── index.html
 │       │   │   │   ├── App.svelte
-│       │   │   │   └── components/
+│       │   │   │   └── main.ts
 │       │   │   ├── options/
 │       │   │   │   ├── index.html
-│       │   │   │   └── App.svelte
+│       │   │   │   ├── App.svelte
+│       │   │   │   └── main.ts
 │       │   │   ├── lib/
-│       │   │   │   ├── types.ts
-│       │   │   │   ├── messages.ts    # Extension message protocol (Zod)
-│       │   │   │   └── constants.ts
+│       │   │   │   ├── settings.ts             # Settings storage shape + defaults
+│       │   │   │   ├── settings-core.ts
+│       │   │   │   ├── view-post-input.ts
+│       │   │   │   ├── post-identity.ts
+│       │   │   │   ├── protocol-version.ts
+│       │   │   │   └── substack-url.ts
 │       │   │   └── manifest.json
 │       │   ├── vite.config.ts
 │       │   ├── tailwind.config.ts
@@ -1799,22 +1948,63 @@ openerrata/
 │       │
 │       ├── api/                       # Backend API service
 │       │   ├── src/
-│       │   │   ├── routes/            # SvelteKit routes (health, webhooks)
+│       │   │   ├── routes/            # SvelteKit routes (health, graphql)
+│       │   │   │   └── graphql/+server.ts     # Public GraphQL endpoint
 │       │   │   ├── lib/
 │       │   │   │   ├── trpc/
 │       │   │   │   │   ├── router.ts
+│       │   │   │   │   ├── context.ts
+│       │   │   │   │   ├── init.ts
 │       │   │   │   │   └── routes/
-│       │   │   │   │       └── post.ts
+│       │   │   │   │       ├── post.ts         # Extension-facing tRPC router
+│       │   │   │   │       ├── post/
+│       │   │   │   │       │   ├── content-storage.ts     # Barrel for content-storage/
+│       │   │   │   │       │   ├── content-storage/       # Content canonicalization pipeline
+│       │   │   │   │       │   │   ├── register-observed-version.ts
+│       │   │   │   │       │   │   ├── content-preparation.ts
+│       │   │   │   │       │   │   ├── blobs.ts
+│       │   │   │   │       │   │   ├── occurrences.ts
+│       │   │   │   │       │   │   ├── post-upsert.ts
+│       │   │   │   │       │   │   ├── post-version.ts
+│       │   │   │   │       │   │   ├── metadata.ts
+│       │   │   │   │       │   │   ├── hashing.ts
+│       │   │   │   │       │   │   └── shared.ts
+│       │   │   │   │       │   ├── investigation-queries.ts
+│       │   │   │   │       │   └── wikipedia.ts
+│       │   │   │   │       └── public.ts       # Legacy public tRPC router
 │       │   │   │   ├── investigators/
 │       │   │   │   │   ├── interface.ts
-│       │   │   │   │   ├── openai.ts          # v1
-│       │   │   │   │   └── anthropic.ts       # planned
+│       │   │   │   │   ├── prompt.ts                  # System prompts (fresh, update, validation)
+│       │   │   │   │   ├── openai.ts                  # v1 OpenAI Responses investigator
+│       │   │   │   │   ├── openai-schemas.ts          # Provider-facing Zod schemas
+│       │   │   │   │   ├── openai-input-builder.ts    # Multimodal request input builder
+│       │   │   │   │   ├── openai-response-audit.ts   # Response → audit struct parsing
+│       │   │   │   │   ├── openai-tool-dispatch.ts    # submit_correction/retain_correction tools
+│       │   │   │   │   ├── openai-claim-validator.ts  # Stage 2 per-claim validation
+│       │   │   │   │   └── openai-errors.ts
 │       │   │   │   ├── services/
-│       │   │   │   │   ├── orchestrator.ts
-│       │   │   │   │   ├── selector.ts        # Investigation selection cron
-│       │   │   │   │   └── queue.ts
-│       │   │   │   ├── cache/
-│       │   │   │   │   └── investigation-cache.ts
+│       │   │   │   │   ├── orchestrator.ts            # Main investigation orchestrator
+│       │   │   │   │   ├── orchestrator-errors.ts     # Error classification
+│       │   │   │   │   ├── run-lease.ts               # Atomic lease claim/release + heartbeat
+│       │   │   │   │   ├── prompt-context.ts          # Post metadata extraction for prompts
+│       │   │   │   │   ├── attempt-audit.ts           # Audit record persistence
+│       │   │   │   │   ├── markdown-resolution.ts     # Trust-policy-based markdown resolution
+│       │   │   │   │   ├── investigation-lifecycle.ts # Status transitions + progressClaims
+│       │   │   │   │   ├── selector.ts                # Investigation selection cron
+│       │   │   │   │   ├── queue.ts                   # graphile-worker integration
+│       │   │   │   │   ├── queue-lifecycle.ts
+│       │   │   │   │   ├── content-fetcher.ts         # Server-side HTML fetch + parse5 extraction
+│       │   │   │   │   ├── canonical-resolution.ts    # Server-verified vs client-fallback
+│       │   │   │   │   ├── html-to-markdown.ts        # Turndown-based HTML → Markdown
+│       │   │   │   │   ├── blob-storage.ts            # S3/R2 image storage
+│       │   │   │   │   ├── image-downloader.ts        # SSRF-safe image fetch
+│       │   │   │   │   ├── view-credit.ts
+│       │   │   │   │   └── prompt.ts                  # Prompt table upsert
+│       │   │   │   ├── graphql/
+│       │   │   │   │   └── public-schema.ts
+│       │   │   │   ├── network/
+│       │   │   │   │   ├── host-safety.ts             # SSRF protection
+│       │   │   │   │   └── ip.ts
 │       │   │   │   └── db/
 │       │   │   │       └── client.ts
 │       │   │   └── hooks.server.ts
@@ -1828,9 +2018,25 @@ openerrata/
 │       │
 │       ├── shared/                    # Shared types between extension + API
 │       │   ├── src/
-│       │   │   ├── types.ts           # InvestigationResult, Claim, PlatformContent, etc.
-│       │   │   ├── schemas.ts         # Zod schemas
-│       │   │   └── normalize.ts       # normalizeContent()
+│       │   │   ├── index.ts           # Barrel re-export
+│       │   │   ├── enums.ts           # Platform, CheckStatus, ContentProvenance, etc.
+│       │   │   ├── types.ts           # InvestigationResult, PlatformContent, etc.
+│       │   │   ├── constants.ts       # WORD_COUNT_LIMIT, POLL_INTERVAL_MS, etc.
+│       │   │   ├── normalize.ts       # normalizeContent(), CONTENT_BLOCK_SEPARATOR_TAGS
+│       │   │   ├── schemas.ts         # Barrel re-export for schemas/
+│       │   │   ├── schemas/
+│       │   │   │   ├── common.ts              # Branded IDs, platform metadata schemas
+│       │   │   │   ├── investigation.ts       # registerObservedVersion, recordViewAndGetStatus, etc.
+│       │   │   │   ├── settings.ts            # validateSettings, batchStatus
+│       │   │   │   ├── extension-protocol.ts  # Extension message protocol + status schemas
+│       │   │   │   └── public-api.ts
+│       │   │   ├── version-identity.ts
+│       │   │   ├── wikipedia-canonicalization.ts  # Excluded sections, heading detection
+│       │   │   ├── image-occurrence-validation.ts
+│       │   │   ├── extension-version.ts
+│       │   │   ├── trpc-paths.ts
+│       │   │   ├── type-guards.ts
+│       │   │   └── optional-non-empty.ts
 │       │   ├── tsconfig.json
 │       │   └── package.json
 │       │
@@ -1886,12 +2092,12 @@ Each sub-project's `tsconfig.json` extends the shared base:
 8. ~~**Primary public metric**~~ — Track fact-check incidence (% investigated posts with >=1 flag).
 9. ~~**Reproducibility target**~~ — Best-effort reproducibility via persisted run artifacts (prompt,
    model metadata, tool trace, source snapshots).
+10. ~~**LessWrong API vs. DOM scraping**~~ — Server-side verification uses LessWrong's GraphQL API
+    to fetch canonical HTML. Server content is authoritative for LessWrong (and Wikipedia via
+    MediaWiki Parse API).
 
 ### Open
 
-1. **LessWrong API vs. DOM scraping** — Using LW's GraphQL API server-side would verify against what
-   LessWrong actually serves, not what appears in the user's DOM. Trade-off: adds a request + API
-   dependency. Worth investigating.
-2. **Future analysis types** — What ships after fact-checking? Candidates: source quality, logical
+1. **Future analysis types** — What ships after fact-checking? Candidates: source quality, logical
    structure, steelmanning, background context. TBD.
-3. **Investigation prompt** — The exact system prompt. Needs careful iteration.
+2. **Investigation prompt** — The exact system prompt. Needs careful iteration.
