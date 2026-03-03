@@ -38,6 +38,32 @@ test("normalizeContent removes all targeted zero-width characters", () => {
   assert.equal(normalizeContent(`a${zwsp}b${zwnj}c${zwj}d${bom}e`), "abcde");
 });
 
+test("normalizeContent replaces curly double quotes with straight quotes", () => {
+  assert.equal(normalizeContent("\u201CHello,\u201D she said"), '"Hello," she said');
+});
+
+test("normalizeContent replaces curly single quotes with straight quotes", () => {
+  assert.equal(normalizeContent("it\u2019s a \u2018test\u2019"), "it's a 'test'");
+});
+
+test("normalizeContent replaces em and en dashes with hyphens", () => {
+  assert.equal(normalizeContent("a\u2014b\u2013c"), "a-b-c");
+});
+
+test("normalizeContent replaces Unicode hyphens with ASCII hyphen", () => {
+  // U+2010 hyphen, U+2011 non-breaking hyphen, U+2012 figure dash, U+2015 horizontal bar
+  assert.equal(normalizeContent("\u2010\u2011\u2012\u2015"), "----");
+});
+
+test("normalizeContent replaces horizontal ellipsis with three dots", () => {
+  assert.equal(normalizeContent("wait\u2026 what"), "wait... what");
+});
+
+test("normalizeContent applies typographic replacements together with other steps", () => {
+  const raw = "  \u201CSmart\u201D\u200B quotes\u2014and\u2026 dashes  ";
+  assert.equal(normalizeContent(raw), '"Smart" quotes-and... dashes');
+});
+
 test("hashContent produces 64-character lowercase hex string", async () => {
   const hash = await hashContent("test");
   assert.match(hash, /^[a-f0-9]{64}$/);

@@ -32,7 +32,7 @@ test("lesswrongHtmlToNormalizedText removes HTML comments", () => {
 test("lesswrongHtmlToNormalizedText decodes supported named and numeric entities", () => {
   const html = "Tea&nbsp;&amp;&nbsp;Biscuits &#x2014; &#8212;";
 
-  assert.equal(lesswrongHtmlToNormalizedText(html), "Tea & Biscuits \u2014 \u2014");
+  assert.equal(lesswrongHtmlToNormalizedText(html), "Tea & Biscuits - -");
 });
 
 test("lesswrongHtmlToNormalizedText decodes common accented named entities", () => {
