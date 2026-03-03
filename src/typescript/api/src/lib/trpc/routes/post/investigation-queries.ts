@@ -269,13 +269,10 @@ export function parseProgressClaims(raw: unknown): {
   }
   const result = progressClaimsDbSchema.safeParse(raw);
   if (!result.success) {
-    console.warn(
-      "progressClaims failed schema validation:",
-      result.error.message,
-      "raw:",
-      JSON.stringify(raw).slice(0, 200),
-    );
-    return { pendingClaims: [], confirmedClaims: [] };
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: `progressClaims failed schema validation: ${result.error.message}`,
+    });
   }
   return { pendingClaims: result.data.pending, confirmedClaims: result.data.confirmed };
 }

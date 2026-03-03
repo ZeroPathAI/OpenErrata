@@ -457,7 +457,7 @@ export const substackAdapter: PlatformAdapter = {
 
     const imageUrls = extractedContent.imageUrls;
     const hasVideo = root.querySelector("video, iframe") !== null;
-    const mediaState = imageUrls.length > 0 ? "has_images" : hasVideo ? "has_video" : "text_only";
+    const mediaState = hasVideo ? "has_video" : imageUrls.length > 0 ? "has_images" : "text_only";
 
     return {
       kind: "ready",

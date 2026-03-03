@@ -8,6 +8,7 @@ import {
   investigationQueriesInternals,
   loadInvestigationWithClaims,
   maybeRecordCorroboration,
+  parseProgressClaims,
   requireCompleteCheckedAtIso,
   selectSourceInvestigationForUpdate,
   toPriorInvestigationResult,
@@ -136,6 +137,13 @@ test("unreachableInvestigationStatus throws explicit internal error", () => {
   assert.throws(
     () => unreachableInvestigationStatus("UNKNOWN" as never),
     /Unexpected investigation status: UNKNOWN/,
+  );
+});
+
+test("parseProgressClaims fails fast on malformed progress payload", () => {
+  assert.throws(
+    () => parseProgressClaims({ pending: ["bad"], confirmed: [] }),
+    /progressClaims failed schema validation/,
   );
 });
 

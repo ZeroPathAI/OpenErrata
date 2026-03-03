@@ -46,7 +46,7 @@ function buildExistingStatus(snapshot: InvestigationStatusOutput): ExtensionPost
   });
 }
 
-test("decidePageContentSnapshot preserves INVESTIGATED results and does not auto-investigate", () => {
+test("decidePageContentSnapshot preserves INVESTIGATED results and does not auto-investigate, even with interim snapshot", () => {
   const result: ViewPostOutput = {
     investigationState: "INVESTIGATED",
     provenance: "SERVER_VERIFIED",
@@ -55,7 +55,11 @@ test("decidePageContentSnapshot preserves INVESTIGATED results and does not auto
 
   const decision = decidePageContentSnapshot({
     result,
-    resultUpdateInterim: null,
+    resultUpdateInterim: {
+      investigationState: "INVESTIGATED",
+      provenance: "SERVER_VERIFIED",
+      claims: [],
+    },
     existingForSession: null,
     existingForSessionUpdateInterim: null,
   });

@@ -40,7 +40,8 @@ export function decidePageContentSnapshot(input: {
 
   return {
     snapshot,
-    shouldAutoInvestigate:
-      input.result.investigationState === "NOT_INVESTIGATED" || input.resultUpdateInterim !== null,
+    // Auto-investigate should only run for the server's current-version miss.
+    // Interim snapshots are display data and must not trigger new work.
+    shouldAutoInvestigate: input.result.investigationState === "NOT_INVESTIGATED",
   };
 }

@@ -61,6 +61,7 @@ page and change the API URL.
 | LessWrong | URL match (`lesswrong.com`) |
 | X (Twitter) | URL match (`x.com`, `twitter.com`) |
 | Substack | URL match (`*.substack.com/p/*`) + DOM fingerprint for custom domains |
+| Wikipedia | URL match (`*.wikipedia.org/wiki/*`, `*.wikipedia.org/w/index.php*`) |
 
 ## Public API
 

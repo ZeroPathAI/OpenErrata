@@ -1,6 +1,5 @@
 import { execFileSync } from "node:child_process";
 import {
-  copyFileSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -11,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, resolve } from "node:path";
+import { resolve } from "node:path";
 import process from "node:process";
 import { URL, fileURLToPath } from "node:url";
 
@@ -159,9 +158,8 @@ requireExistingFile(resolve(firefoxDistDir, "manifest.json"), "Firefox manifest 
 const chromeZipPath = resolve(outputDir, `openerrata-extension-chrome-${packageVersion}.zip`);
 const chromeCrxPath = resolve(outputDir, `openerrata-extension-chrome-${packageVersion}.crx`);
 const firefoxZipPath = resolve(outputDir, `openerrata-extension-firefox-${packageVersion}.zip`);
-const firefoxXpiPath = resolve(outputDir, `openerrata-extension-firefox-${packageVersion}.xpi`);
 
-for (const artifactPath of [chromeZipPath, chromeCrxPath, firefoxZipPath, firefoxXpiPath]) {
+for (const artifactPath of [chromeZipPath, chromeCrxPath, firefoxZipPath]) {
   removeIfExists(artifactPath);
 }
 
@@ -171,10 +169,6 @@ try {
 
   zipDirectory(chromeDistDir, chromeZipPath);
   zipDirectory(firefoxDistDir, firefoxZipPath);
-  copyFileSync(firefoxZipPath, firefoxXpiPath);
-  globalThis.console.log(
-    `[package-artifacts] copied ${basename(firefoxZipPath)} -> ${basename(firefoxXpiPath)}`,
-  );
 
   const crxSigningKeyPath = resolveCrxSigningKeyPath(tempDir, {
     requireConfiguredSigningKey: requireConfiguredCrxSigningKey,
@@ -187,4 +181,3 @@ try {
 reportArtifact("Chrome zip", chromeZipPath);
 reportArtifact("Chrome crx", chromeCrxPath);
 reportArtifact("Firefox zip", firefoxZipPath);
-reportArtifact("Firefox xpi", firefoxXpiPath);

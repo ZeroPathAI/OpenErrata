@@ -90,10 +90,9 @@ jobs:
           chrome_zip="$GITHUB_WORKSPACE/openerrata-extension-chrome-${{ steps.version.outputs.version }}.zip"
           chrome_crx="$GITHUB_WORKSPACE/openerrata-extension-chrome-${{ steps.version.outputs.version }}.crx"
           firefox_zip="$GITHUB_WORKSPACE/openerrata-extension-firefox-${{ steps.version.outputs.version }}.zip"
-          firefox_xpi="$GITHUB_WORKSPACE/openerrata-extension-firefox-${{ steps.version.outputs.version }}.xpi"
           limit_bytes=5242880
 
-          for artifact in "$chrome_zip" "$chrome_crx" "$firefox_zip" "$firefox_xpi"; do
+          for artifact in "$chrome_zip" "$chrome_crx" "$firefox_zip"; do
             bytes="$(stat -c%s "$artifact")"
             if [ "$bytes" -gt "$limit_bytes" ]; then
               echo "$(basename "$artifact") exceeds 5 MiB: ${bytes} bytes"
@@ -104,7 +103,6 @@ jobs:
       - name: Verify Firefox package integrity
         run: |
           unzip -t "$GITHUB_WORKSPACE/openerrata-extension-firefox-${{ steps.version.outputs.version }}.zip"
-          unzip -t "$GITHUB_WORKSPACE/openerrata-extension-firefox-${{ steps.version.outputs.version }}.xpi"
 
       - name: Lint Firefox extension package
         run: npx -y web-ext@8.9.0 lint --source-dir extension/dist/firefox
@@ -117,7 +115,6 @@ jobs:
             ${{ github.workspace }}/openerrata-extension-chrome-${{ steps.version.outputs.version }}.zip
             ${{ github.workspace }}/openerrata-extension-chrome-${{ steps.version.outputs.version }}.crx
             ${{ github.workspace }}/openerrata-extension-firefox-${{ steps.version.outputs.version }}.zip
-            ${{ github.workspace }}/openerrata-extension-firefox-${{ steps.version.outputs.version }}.xpi
 
   release:
     needs: [build-and-test]
@@ -140,7 +137,6 @@ jobs:
             openerrata-extension-chrome-${{ needs.build-and-test.outputs.version }}.zip
             openerrata-extension-chrome-${{ needs.build-and-test.outputs.version }}.crx
             openerrata-extension-firefox-${{ needs.build-and-test.outputs.version }}.zip
-            openerrata-extension-firefox-${{ needs.build-and-test.outputs.version }}.xpi
           generate_release_notes: true
 
   publish:

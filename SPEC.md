@@ -61,7 +61,8 @@ misleading.
 
 v1 ships fact-checking for posts on LessWrong, X, Substack, and Wikipedia.
 Investigations use post text plus attached images when available. Posts classified
-as `has_video` (video/iframe detected and no extracted images) are skipped.
+as `has_video` (any detected video/iframe embed) are skipped, even when text and
+images are also present.
 
 Users can trigger investigations in two ways (both async queued):
 
@@ -181,7 +182,7 @@ Four key design decisions:
 4. **Investigations are multimodal for images.** When image attachments are
    available, we include image URLs in the model input (`input_image`)
    alongside text. Video is not analyzed in v1; posts classified as
-   `has_video` (video/iframe detected and no extracted images) are visibly
+   `has_video` (any detected video/iframe embed) are visibly
    skipped.
 5. **Edited posts use incremental updates.** If a post is edited and a prior
    complete `SERVER_VERIFIED` investigation exists, we run an "update investigation"
@@ -279,9 +280,8 @@ The prompt principles (exact wording TBD):
   system and will be selectively highlighted.
 - **Claims must remain text-grounded.** Even when images are provided to the investigator, flagged
   claims must still be exact verbatim quotes from the post text so DOM matching remains reliable.
-- **Video is non-analyzable in v1.** Posts classified as `has_video` (video/iframe detected and no
-  extracted images) are skipped even when text is present. When extracted images are present, the
-  post is investigated using text + images, and video remains unanalyzed.
+- **Video is non-analyzable in v1.** Posts classified as `has_video` (any detected video/iframe
+  embed) are skipped even when text is present and even when extracted images are present.
 
 ## 2.5 User Interface
 
@@ -1606,7 +1606,7 @@ interface PlatformContent {
   externalId: string;
   url: string;
   contentText: string; // Client-observed normalized plain text; must be non-empty
-  mediaState: "text_only" | "has_images" | "has_video"; // "has_video" means video/iframe detected and imageUrls is empty; text may still be present.
+  mediaState: "text_only" | "has_images" | "has_video"; // Precedence: "has_video" if any video/iframe is detected; otherwise "has_images" when imageUrls is non-empty; otherwise "text_only".
   imageUrls: string[];
   imageOccurrences?: ImageOccurrence[]; // Positional image data; sent to API as observedImageOccurrences
   metadata: Record<string, unknown>;
@@ -1653,9 +1653,9 @@ DOM manipulation is reliable.
 5. Extract image URLs (`<img src>`), filter malformed/data URLs, and compute `mediaState`.
 6. Send `{ platform: "LESSWRONG", externalId, url, metadata.htmlContent, observedImageUrls? }` to background worker.
 
-**Media behavior:** Posts with images are investigated. Posts detected as private/gated are
-skipped (`reason: "private_or_gated"`). Among public posts, only `has_video` posts
-(video/iframe without images, even when text is present) are skipped.
+**Media behavior:** Posts with images and no video are investigated. Posts detected as private/gated
+are skipped (`reason: "private_or_gated"`). Among public posts, any `has_video` post
+(video/iframe detected, even when images and/or text are present) is skipped.
 
 **React reconciliation:** LessWrong uses React 16+. Use `MutationObserver` to detect re-renders and
 re-apply annotations. Store annotations in extension state, not DOM.
@@ -1669,9 +1669,9 @@ X uses a React SPA with aggressive DOM recycling.
 3. Target `[data-testid="tweetText"]`. Acknowledge this selector is fragile and may need
    maintenance.
 
-**Media behavior:** Extract image URLs separately from video detection. Investigate image posts.
-Skip private/protected tweets (`reason: "private_or_gated"`). Among accessible tweets, skip
-only `has_video` tweets (video present, no extracted images, even when tweet text exists).
+**Media behavior:** Extract image URLs separately from video detection. Investigate image-only
+tweets. Skip private/protected tweets (`reason: "private_or_gated"`). Among accessible tweets, skip
+any `has_video` tweet (video present, even when extracted images and/or tweet text exist).
 
 ## 3.11 Substack Content Script
 
@@ -1712,7 +1712,7 @@ JavaScript globals (`mw.config`).
 6. Wikipedia articles have no single author; no `Author` row is linked.
 
 **Media behavior:** Same rules as other platforms — extract image URLs and
-occurrences from the article body; `has_video` articles are skipped.
+occurrences from the article body; any `has_video` article is skipped.
 
 ## 3.13 Extension Manifest (v3)
 

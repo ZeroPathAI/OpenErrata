@@ -106,6 +106,39 @@ test("Wikipedia adapter extracts article content and excludes references section
   assert.equal(ready.content.contentText.includes("Reference that should be excluded."), false);
 });
 
+test("Wikipedia adapter classifies mixed image and video pages as has_video", () => {
+  const result = withMwConfig(
+    "https://en.wikipedia.org/wiki/Climate_change",
+    `<!doctype html>
+      <html>
+        <body>
+          <h1 id="firstHeading">Climate change</h1>
+          <div id="mw-content-text">
+            <div class="mw-parser-output">
+              <p>Human activity is warming the planet.</p>
+              <figure>
+                <img src="/images/example.jpg" />
+                <figcaption>Observed warming trend.</figcaption>
+              </figure>
+              <video controls><source src="/video/example.mp4" type="video/mp4"></video>
+            </div>
+          </div>
+        </body>
+      </html>`,
+    {
+      wgNamespaceNumber: 0,
+      wgArticleId: 12345,
+      wgRevisionId: 67890,
+      wgRevisionTimestamp: "20260115010203",
+      wgContentLanguage: "en",
+    },
+    (document) => wikipediaAdapter.extract(document),
+  );
+
+  const ready = assertReady(result);
+  assert.equal(ready.content.mediaState, "has_video");
+});
+
 test("Wikipedia adapter extracts content when metadata is only available through inline RLCONF", () => {
   const result = withInlineConfigScript(
     "https://en.wikipedia.org/wiki/Climate_change",

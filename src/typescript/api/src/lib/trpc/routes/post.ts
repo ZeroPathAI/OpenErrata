@@ -335,40 +335,41 @@ export const postRouter = router({
           },
         });
 
-        switch (investigation.status) {
-          case "COMPLETE": {
-            const completed = await loadInvestigationWithClaims(
-              prismaInvestigationRepository(ctx.prisma),
-              investigation.id,
-            );
-            if (!completed) {
-              throw new TRPCError({
-                code: "INTERNAL_SERVER_ERROR",
-                message: `Investigation ${investigation.id} disappeared after completion lookup`,
-              });
-            }
+        const loadedInvestigation = await loadInvestigationWithClaims(
+          prismaInvestigationRepository(ctx.prisma),
+          investigation.id,
+        );
+        if (!loadedInvestigation) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: `Investigation ${investigation.id} disappeared after ensureInvestigationsWithUpdateMetadata`,
+          });
+        }
 
+        const provenance = parseProvenance({
+          investigationId: loadedInvestigation.id,
+          snapshot: loadedInvestigation.input,
+        });
+
+        switch (loadedInvestigation.status) {
+          case "COMPLETE": {
             return {
-              investigationId: completed.id,
-              status: completed.status,
-              provenance: parseProvenance({
-                investigationId: completed.id,
-                snapshot: completed.input,
-              }),
-              claims: formatClaims(completed.claims),
+              investigationId: loadedInvestigation.id,
+              status: loadedInvestigation.status,
+              provenance,
+              claims: formatClaims(loadedInvestigation.claims),
             };
           }
           case "PENDING":
           case "PROCESSING":
           case "FAILED":
             return {
-              investigationId: investigation.id,
-              status: investigation.status,
-              provenance:
-                postVersion.serverVerifiedAt !== null ? "SERVER_VERIFIED" : "CLIENT_FALLBACK",
+              investigationId: loadedInvestigation.id,
+              status: loadedInvestigation.status,
+              provenance,
             };
           default:
-            return unreachableInvestigationStatus(investigation.status);
+            return unreachableInvestigationStatus(loadedInvestigation.status);
         }
       } catch (error) {
         if (error instanceof InvestigationWordLimitError) {

@@ -339,8 +339,11 @@ export const lesswrongAdapter: PlatformAdapter = {
 
     const imageUrls = extractedContent.imageUrls;
     const hasVideoMedia = canonicalRoot.querySelector("video, iframe") !== null;
-    const mediaState =
-      imageUrls.length > 0 ? "has_images" : hasVideoMedia ? "has_video" : "text_only";
+    const mediaState = hasVideoMedia
+      ? "has_video"
+      : imageUrls.length > 0
+        ? "has_images"
+        : "text_only";
     const metadata = {
       slug,
       htmlContent: canonicalVersioningHtml,

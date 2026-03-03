@@ -268,10 +268,19 @@ export async function orchestrateInvestigation(
   // When re-claiming a PROCESSING investigation with an expired lease
   // (stale worker takeover), the dead worker's progressClaims would
   // otherwise persist and be visible to clients until overwritten.
-  await prisma.investigation.update({
-    where: { id: investigation.id },
+  const transitionedToProcessing = await prisma.investigation.updateMany({
+    where: {
+      id: investigation.id,
+      OR: [{ status: "PENDING" }, { status: "PROCESSING" }],
+    },
     data: { status: "PROCESSING", progressClaims: CLEARED_PROGRESS_CLAIMS },
   });
+  if (transitionedToProcessing.count === 0) {
+    logger.info(
+      `Investigation ${investigation.id} moved to terminal state before processing began; skipping`,
+    );
+    return;
+  }
 
   const heartbeat = startRunHeartbeat(run.id, options.workerIdentity, logger);
 

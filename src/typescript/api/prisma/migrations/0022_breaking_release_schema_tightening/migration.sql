@@ -2,7 +2,8 @@
 --
 -- 1. Drop unused PostVersionViewCredit table.
 -- 2. Convert InvestigationInput.provenance and .markdownSource from TEXT to Prisma enums.
--- 3. Add missing HTML blob presence CHECK constraints on SubstackVersionMeta and WikipediaVersionMeta.
+-- 3. Document why HTML blob presence CHECK constraints are intentionally not added for
+--    SubstackVersionMeta and WikipediaVersionMeta.
 
 -- ── 1. Drop PostVersionViewCredit ───────────────────────────────────────────
 

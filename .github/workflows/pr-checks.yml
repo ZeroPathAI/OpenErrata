@@ -33,6 +33,7 @@ jobs:
               - 'src/typescript/**'
               - 'src/helm/openerrata/**'
               - '.github/workflows/**'
+              - '.github/actions/**'
 
       - name: Check for promote PR
         id: gate

@@ -136,6 +136,7 @@ jobs:
               - 'src/typescript/pnpm-workspace.yaml'
               - 'src/typescript/api/Dockerfile'
               - '.github/workflows/deploy.yml'
+              - '.github/actions/**'
 
   decide-deploy:
     needs: [resolve-target, detect-changes]
