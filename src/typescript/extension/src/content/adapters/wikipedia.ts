@@ -6,6 +6,7 @@ import {
   normalizeContent,
   normalizeWikipediaSectionTitle,
   shouldExcludeWikipediaElement,
+  utf8ByteLength,
   type WikipediaNodeDescriptor,
 } from "@openerrata/shared";
 import type { AdapterExtractionResult, PlatformAdapter } from "./model";
@@ -39,6 +40,25 @@ const VIDEO_SELECTOR = [
   ".mw-tmh-play",
 ].join(",");
 const INLINE_WIKIPEDIA_CONFIG_SCRIPT_HINTS = ["RLCONF", "mw.config.set"] as const;
+
+/** Maximum serialized HTML size (UTF-8 bytes) for client-side HTML transport. */
+const WIKIPEDIA_HTML_CONTENT_MAX_BYTES = 256 * 1024;
+
+/**
+ * Convert pruned Wikipedia HTML to a transportable string, or undefined if
+ * the serialized HTML exceeds the byte-size cap.
+ *
+ * Unlike Substack's serializeContentHtml, no annotation stripping is needed
+ * here: pruneWikipediaContent already operates on a cloneElement() detached
+ * from the live DOM, so OpenErrata annotations are never present.
+ */
+function toTransportableHtmlContent(prunedRoot: Element): string | undefined {
+  const html = prunedRoot.innerHTML;
+  if (html.length === 0) {
+    return undefined;
+  }
+  return utf8ByteLength(html) <= WIKIPEDIA_HTML_CONTENT_MAX_BYTES ? html : undefined;
+}
 
 // ── MediaWiki config reading ──────────────────────────────────────────────
 //
@@ -398,6 +418,7 @@ export const wikipediaAdapter: PlatformAdapter = {
 
     const lastModifiedAt = toIsoDate(mwConfig.wgRevisionTimestamp);
     const displayTitle = displayTitleFromDocument(document);
+    const htmlContent = toTransportableHtmlContent(prunedRoot);
 
     return {
       kind: "ready",
@@ -416,6 +437,7 @@ export const wikipediaAdapter: PlatformAdapter = {
           revisionId,
           ...(displayTitle === undefined ? {} : { displayTitle }),
           ...(lastModifiedAt === null || lastModifiedAt.length === 0 ? {} : { lastModifiedAt }),
+          ...(htmlContent === undefined ? {} : { htmlContent }),
         },
       },
     };

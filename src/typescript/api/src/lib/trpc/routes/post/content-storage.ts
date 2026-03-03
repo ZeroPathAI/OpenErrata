@@ -961,11 +961,10 @@ async function toObservedContentVersion(input: ViewPostInput): Promise<ObservedC
 function extractClientHtml(viewInput: ViewPostInput): string | undefined {
   switch (viewInput.platform) {
     case "LESSWRONG":
-      return viewInput.metadata.htmlContent;
     case "SUBSTACK":
-      return viewInput.metadata.htmlContent ?? undefined;
-    case "X":
     case "WIKIPEDIA":
+      return viewInput.metadata.htmlContent;
+    case "X":
       return undefined;
   }
 }
@@ -1045,6 +1044,11 @@ export async function registerObservedVersion(
     observed,
     fetchCanonicalContent,
     onServerVerifiedContentMismatch: logServerVerifiedContentMismatch,
+    onClientFallback: (reason) => {
+      console.warn(
+        `Client fallback for ${initiallyPreparedInput.platform}; url=${initiallyPreparedInput.url}; reason=${reason}`,
+      );
+    },
   });
 
   const htmlSnapshotsForStorage = resolveHtmlSnapshotsForStorage(initiallyPreparedInput, canonical);

@@ -135,6 +135,7 @@ const wikipediaMetadataSchema = z
     revisionId: z.string().regex(/^\d+$/),
     displayTitle: z.string().min(1).optional(),
     lastModifiedAt: z.iso.datetime().optional(),
+    htmlContent: z.string().min(1).optional(),
   })
   .strict();
 

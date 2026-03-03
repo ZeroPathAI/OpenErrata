@@ -6,14 +6,16 @@ import { consumeOpenAiKeySource, resolveInvestigationRunKey } from "./user-key-s
 import { InvestigatorExecutionError, OpenAIInvestigator } from "$lib/investigators/openai.js";
 import type {
   InvestigationProgressCallbacks,
+  InvestigatorAttemptAudit,
   InvestigatorImageOccurrence,
 } from "$lib/investigators/interface.js";
 import {
   claimIdSchema,
   MAX_IMAGES_PER_INVESTIGATION,
+  type InvestigationResult,
   type SupportedImageMimeType,
 } from "@openerrata/shared";
-import type { ImageBlob } from "$lib/generated/prisma/client";
+import type { ImageBlob, Prisma } from "$lib/generated/prisma/client";
 import { CLEARED_PROGRESS_CLAIMS } from "./investigation-lifecycle.js";
 import { createHash } from "node:crypto";
 
@@ -136,6 +138,82 @@ async function resolvePromptImageOccurrences(
       contentHash: resolved.contentHash,
     };
   });
+}
+
+/**
+ * Guard-first persist: atomically transition PROCESSING → COMPLETE.
+ * If another worker already moved this investigation to a terminal state,
+ * the updateMany matches 0 rows and we return false without writing claims
+ * or audit — the transaction commits as a no-op.
+ *
+ * Exported for testability: the guard pattern is a critical concurrency
+ * invariant that prevents duplicate claim writes when two workers race.
+ */
+export async function persistCompletedInvestigation(
+  tx: Prisma.TransactionClient,
+  params: {
+    investigationId: string;
+    runId: string;
+    claims: InvestigationResult["claims"];
+    attemptNumber: number;
+    attemptAudit: InvestigatorAttemptAudit;
+    modelVersion: string | null;
+  },
+): Promise<boolean> {
+  const transitioned = await tx.investigation.updateMany({
+    where: { id: params.investigationId, status: "PROCESSING" },
+    data: {
+      status: "COMPLETE",
+      checkedAt: new Date(),
+      modelVersion: params.modelVersion,
+      progressClaims: CLEARED_PROGRESS_CLAIMS,
+    },
+  });
+
+  if (transitioned.count === 0) {
+    return false;
+  }
+
+  await persistAttemptAudit(tx, {
+    investigationId: params.investigationId,
+    attemptNumber: params.attemptNumber,
+    attemptAudit: params.attemptAudit,
+  });
+
+  for (const claim of params.claims) {
+    await tx.claim.create({
+      data: {
+        investigationId: params.investigationId,
+        text: claim.text,
+        context: claim.context,
+        summary: claim.summary,
+        reasoning: claim.reasoning,
+        sources: {
+          create: claim.sources.map((s) => ({
+            url: s.url,
+            title: s.title,
+            snippet: s.snippet,
+            snapshotText: s.snippet,
+            snapshotHash: hashSnapshotText(s.snippet),
+            retrievedAt: new Date(),
+          })),
+        },
+      },
+    });
+  }
+
+  await tx.investigationRun.update({
+    where: { id: params.runId },
+    data: {
+      leaseOwner: null,
+      leaseExpiresAt: null,
+      recoverAfterAt: null,
+      heartbeatAt: new Date(),
+    },
+  });
+
+  await consumeOpenAiKeySource(tx, params.runId);
+  return true;
 }
 
 export async function orchestrateInvestigation(
@@ -275,66 +353,16 @@ export async function orchestrateInvestigation(
     // Ensure all progress writes settle before terminal transition.
     await flushProgressWrites();
 
-    // Guard-first: atomically transition PROCESSING → COMPLETE.
-    // If another worker already moved this investigation to a terminal
-    // state, the updateMany matches 0 rows and we bail without writing
-    // claims or audit — the transaction commits as a no-op.
-    const completed = await prisma.$transaction(async (tx) => {
-      const transitioned = await tx.investigation.updateMany({
-        where: { id: investigation.id, status: "PROCESSING" },
-        data: {
-          status: "COMPLETE",
-          checkedAt: new Date(),
-          modelVersion: output.modelVersion ?? null,
-          progressClaims: CLEARED_PROGRESS_CLAIMS,
-        },
-      });
-
-      if (transitioned.count === 0) {
-        return false;
-      }
-
-      await persistAttemptAudit(tx, {
+    const completed = await prisma.$transaction((tx) =>
+      persistCompletedInvestigation(tx, {
         investigationId: investigation.id,
+        runId: run.id,
+        claims: output.result.claims,
         attemptNumber: options.attemptNumber,
         attemptAudit: output.attemptAudit,
-      });
-
-      for (const claim of output.result.claims) {
-        await tx.claim.create({
-          data: {
-            investigationId: investigation.id,
-            text: claim.text,
-            context: claim.context,
-            summary: claim.summary,
-            reasoning: claim.reasoning,
-            sources: {
-              create: claim.sources.map((s) => ({
-                url: s.url,
-                title: s.title,
-                snippet: s.snippet,
-                snapshotText: s.snippet,
-                snapshotHash: hashSnapshotText(s.snippet),
-                retrievedAt: new Date(),
-              })),
-            },
-          },
-        });
-      }
-
-      await tx.investigationRun.update({
-        where: { id: run.id },
-        data: {
-          leaseOwner: null,
-          leaseExpiresAt: null,
-          recoverAfterAt: null,
-          heartbeatAt: new Date(),
-        },
-      });
-
-      await consumeOpenAiKeySource(tx, run.id);
-      return true;
-    });
+        modelVersion: output.modelVersion ?? null,
+      }),
+    );
 
     if (completed) {
       logger.info(

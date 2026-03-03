@@ -535,6 +535,94 @@ function makeWikipediaHtml(config: {
     </html>`;
 }
 
+// ── Client HTML for fallback ──────────────────────────────────────────────────
+// The Wikipedia adapter serializes the pruned DOM innerHTML into metadata.htmlContent
+// so the server can use it as a CLIENT_HTML fallback when the Parse API is unavailable.
+
+test("Wikipedia adapter includes htmlContent from pruned DOM in metadata", () => {
+  const result = withMwConfig(
+    "https://en.wikipedia.org/wiki/Climate_change",
+    `<!doctype html>
+      <html>
+        <body>
+          <h1 id="firstHeading">Climate change</h1>
+          <div id="mw-content-text">
+            <div class="mw-parser-output">
+              <p>Human activity is warming the planet.</p>
+              <h2><span class="mw-headline">Evidence</span></h2>
+              <p>Global temperatures are rising.</p>
+              <h2><span class="mw-headline">References</span></h2>
+              <ol class="references">
+                <li>Reference that should be excluded.</li>
+              </ol>
+            </div>
+          </div>
+        </body>
+      </html>`,
+    {
+      wgNamespaceNumber: 0,
+      wgArticleId: 12345,
+      wgRevisionId: 67890,
+      wgRevisionTimestamp: "20260115010203",
+      wgContentLanguage: "en",
+    },
+    (document) => wikipediaAdapter.extract(document),
+  );
+
+  const ready = assertReady(result);
+  assert.equal(ready.content.platform, "WIKIPEDIA");
+  const { htmlContent } = ready.content.metadata;
+  assert.notEqual(htmlContent, undefined, "htmlContent should be present");
+  assert.ok(
+    typeof htmlContent === "string" && htmlContent.length > 0,
+    "htmlContent should be non-empty",
+  );
+  // The HTML should come from the pruned clone — references section should be removed
+  assert.ok(
+    !htmlContent.includes("Reference that should be excluded."),
+    "pruned HTML should exclude references section",
+  );
+  assert.ok(
+    htmlContent.includes("Human activity is warming the planet."),
+    "pruned HTML should include article content",
+  );
+});
+
+test("Wikipedia adapter omits htmlContent when serialized HTML exceeds byte limit", () => {
+  // Generate content that exceeds 256 KB when serialized.
+  const largeParagraph = `<p>${"A".repeat(300_000)}</p>`;
+  const result = withMwConfig(
+    "https://en.wikipedia.org/wiki/Large_article",
+    `<!doctype html>
+      <html>
+        <body>
+          <h1 id="firstHeading">Large article</h1>
+          <div id="mw-content-text">
+            <div class="mw-parser-output">
+              ${largeParagraph}
+            </div>
+          </div>
+        </body>
+      </html>`,
+    {
+      wgNamespaceNumber: 0,
+      wgArticleId: 99999,
+      wgRevisionId: 11111,
+      wgRevisionTimestamp: "20260115010203",
+      wgContentLanguage: "en",
+    },
+    (document) => wikipediaAdapter.extract(document),
+  );
+
+  const ready = assertReady(result);
+  assert.equal(ready.content.platform, "WIKIPEDIA");
+  assert.equal(
+    ready.content.metadata.htmlContent,
+    undefined,
+    "htmlContent should be omitted when HTML exceeds 256 KB",
+  );
+});
+
 test("Wikipedia adapter reads fresh config on each extract() call (stateless across SPA navigations)", () => {
   // Use JSDOM directly so we can mutate the same Document's URL via
   // dom.reconfigure() to simulate pushState navigation.

@@ -154,6 +154,7 @@ multiple levels:
 - Mocks of components that have individual properties that we want to verify,
   like a guard that panics() on invalid SQL statements sent to the DB
 - Integreation tests of direct components of the SPEC.md
+- End to end tests of browser functionality on previously downloaded pages
 
 Our primary test suite should be:
 - Fast, easy to run
@@ -161,6 +162,11 @@ Our primary test suite should be:
 - Produce as few false positives as possible (i.e., fail the code when it complies with the spec). This can happen because either:
   - The test is jittery
   - The test is testing things that are not actually part of the spec, and are just incidental implementation details
+
+Tests are not for testing the type system. Any runtime behaviors that can be
+guaranteed by making the type system stricter or the architecture better should
+be architected into the program itself. The tests are for gathering information
+about all of the things that can't be guaranteed by types & architecture alone.
 
 New code that you write should be written so that it's easily tested. Keep the
 test coverage of the code high.

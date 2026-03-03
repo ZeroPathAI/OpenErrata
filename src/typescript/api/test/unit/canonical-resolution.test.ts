@@ -244,3 +244,54 @@ test("resolveCanonicalContentVersion forwards required Wikipedia canonical fetch
     },
   });
 });
+
+// ── onClientFallback callback ─────────────────────────────────────────────────
+
+test("resolveCanonicalContentVersion calls onClientFallback with failure reason when fetch fails", async () => {
+  const viewInput = buildWikipediaViewInput("Observed text");
+  const observed = {
+    contentText: "Observed text",
+    contentHash: "observed-hash",
+  };
+  let capturedReason: string | null = null;
+
+  await resolveCanonicalContentVersion({
+    viewInput,
+    observed,
+    fetchCanonicalContent: async () => ({
+      provenance: "CLIENT_FALLBACK",
+      fetchFailureReason: "Wikipedia parse API returned 503",
+    }),
+    onClientFallback: (reason) => {
+      capturedReason = reason;
+    },
+  });
+
+  assert.equal(capturedReason, "Wikipedia parse API returned 503");
+});
+
+test("resolveCanonicalContentVersion does not call onClientFallback on successful server verification", async () => {
+  const viewInput = buildXViewInput("Observed text");
+  const observed = {
+    contentText: "Observed text",
+    contentHash: "observed-hash",
+  };
+  let callbackCalled = false;
+
+  await resolveCanonicalContentVersion({
+    viewInput,
+    observed,
+    fetchCanonicalContent: async () => ({
+      provenance: "SERVER_VERIFIED",
+      contentText: "Observed text",
+      contentHash: "observed-hash",
+      sourceHtml: "<p>Observed text</p>",
+      canonicalIdentity: null,
+    }),
+    onClientFallback: () => {
+      callbackCalled = true;
+    },
+  });
+
+  assert.equal(callbackCalled, false);
+});

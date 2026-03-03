@@ -78,6 +78,7 @@ export async function resolveCanonicalContentVersion(input: {
   observed: ObservedContentVersion;
   fetchCanonicalContent: CanonicalFetcher;
   onServerVerifiedContentMismatch?: (mismatch: ServerVerifiedContentMismatch) => void;
+  onClientFallback?: (reason: string) => void;
 }): Promise<CanonicalContentVersion> {
   const serverResult = await input.fetchCanonicalContent(toCanonicalFetchInput(input.viewInput));
 
@@ -100,6 +101,8 @@ export async function resolveCanonicalContentVersion(input: {
       canonicalIdentity: serverResult.canonicalIdentity,
     };
   }
+
+  input.onClientFallback?.(serverResult.fetchFailureReason);
 
   return {
     ...input.observed,

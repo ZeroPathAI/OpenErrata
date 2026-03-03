@@ -104,17 +104,24 @@ export class OpenAIInvestigator implements Investigator {
   readonly model = DEFAULT_INVESTIGATION_MODEL;
 
   private client: OpenAI;
+  private readonly overrideModelId: string | undefined;
+  private readonly overrideMaxToolRounds: number | undefined;
 
-  constructor(apiKey: string) {
-    this.client = new OpenAI({ apiKey });
+  constructor(
+    apiKey: string,
+    overrides?: { client?: OpenAI; modelId?: string; maxToolRounds?: number },
+  ) {
+    this.client = overrides?.client ?? new OpenAI({ apiKey });
+    this.overrideModelId = overrides?.modelId;
+    this.overrideMaxToolRounds = overrides?.maxToolRounds;
   }
 
   async investigate(
     input: InvestigatorInput,
     callbacks?: InvestigationProgressCallbacks,
   ): Promise<InvestigatorOutput> {
-    const openAiModelId = getOpenAiModelId();
-    const maxResponseToolRounds = getMaxResponseToolRounds();
+    const openAiModelId = this.overrideModelId ?? getOpenAiModelId();
+    const maxResponseToolRounds = this.overrideMaxToolRounds ?? getMaxResponseToolRounds();
     const userPromptResult = buildUserPrompt({
       contentText: input.contentText,
       ...(input.contentMarkdown !== undefined && { contentMarkdown: input.contentMarkdown }),
@@ -193,6 +200,13 @@ export class OpenAIInvestigator implements Investigator {
     const settledIndices = new Set<number>();
     const confirmedClaims: StageOneClaim[] = [];
     let nextClaimIndex = 0;
+
+    // Track the order each claim was submitted (validated or retained) so
+    // we can sort confirmedClaims into a stable, deterministic order after
+    // all validation promises settle. Without this, the result order depends
+    // on which p-limit slot finishes first — a race condition.
+    const claimSubmissionOrder = new Map<StageOneClaim, number>();
+    let nextSubmissionIndex = 0;
 
     // For update investigations: track old claims and retained IDs.
     type OldClaim = Extract<InvestigatorInput, { isUpdate: true }>["oldClaims"][number];
@@ -321,6 +335,9 @@ export class OpenAIInvestigator implements Investigator {
             continue;
           }
 
+          claimSubmissionOrder.set(claim, nextSubmissionIndex);
+          nextSubmissionIndex += 1;
+
           const claimIndex = nextClaimIndex;
           nextClaimIndex += 1;
 
@@ -406,6 +423,8 @@ export class OpenAIInvestigator implements Investigator {
 
           retainedIds.add(retainId);
           const { id: _claimId, ...claimPayload } = oldClaim;
+          claimSubmissionOrder.set(claimPayload, nextSubmissionIndex);
+          nextSubmissionIndex += 1;
           confirmedClaims.push(claimPayload);
           callbacks?.onProgressUpdate(getPending(), getConfirmed());
           outputs.push(buildFunctionCallOutput(call.callId, '{"acknowledged":true}'));
@@ -496,6 +515,18 @@ export class OpenAIInvestigator implements Investigator {
 
     // ── Await remaining validations ───────────────────────────────────
     const validationResults = await Promise.all(pendingValidations.map((pv) => pv.promise));
+
+    // Sort confirmed claims into stable submission order. The .then()
+    // callbacks that populate confirmedClaims fire in non-deterministic
+    // settlement order; this ensures the final result is reproducible.
+    confirmedClaims.sort((a, b) => {
+      const orderA = claimSubmissionOrder.get(a);
+      const orderB = claimSubmissionOrder.get(b);
+      if (orderA === undefined || orderB === undefined) {
+        throw new Error("Invariant violation: confirmed claim missing submission order");
+      }
+      return orderA - orderB;
+    });
 
     const validationInputSummary = validationResults
       .map((r) => `Claim ${r.claimIndex.toString()}: ${r.approved ? "approved" : "rejected"}`)

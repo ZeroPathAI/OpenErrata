@@ -87,6 +87,65 @@ function describeFetchError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * Whether an HTTP status code represents a transient error worth retrying.
+ * Retries on 429 (rate limit) and 5xx (server errors).
+ */
+function isTransientHttpStatus(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
+const TRANSIENT_RETRY_DELAYS_MS = [200, 400, 800] as const;
+
+/**
+ * Fetch wrapper that retries on transient failures (network errors, HTTP 429,
+ * HTTP 5xx) with exponential backoff. Non-transient errors (4xx except 429,
+ * parse failures) propagate immediately.
+ *
+ * Returns the successful Response, or throws the last error / returns the
+ * last non-ok Response if all attempts fail.
+ */
+async function fetchWithTransientRetry(
+  input: string | URL | Request,
+  init?: RequestInit,
+): Promise<Response> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= TRANSIENT_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      const response = await fetch(input, init);
+      if (response.ok || !isTransientHttpStatus(response.status)) {
+        return response;
+      }
+      // Transient HTTP error — retry if attempts remain.
+      lastError = new Error(`HTTP ${response.status.toString()}`);
+      if (attempt < TRANSIENT_RETRY_DELAYS_MS.length) {
+        const delayMs = TRANSIENT_RETRY_DELAYS_MS[attempt];
+        if (delayMs !== undefined) {
+          await new Promise<void>((resolve) => {
+            setTimeout(resolve, delayMs);
+          });
+        }
+        continue;
+      }
+      return response;
+    } catch (error) {
+      // Network error — retry if attempts remain.
+      lastError = error;
+      if (attempt < TRANSIENT_RETRY_DELAYS_MS.length) {
+        const delayMs = TRANSIENT_RETRY_DELAYS_MS[attempt];
+        if (delayMs !== undefined) {
+          await new Promise<void>((resolve) => {
+            setTimeout(resolve, delayMs);
+          });
+        }
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw lastError;
+}
+
 function parseNonNegativeIntegerId(value: unknown): string | null {
   if (typeof value === "number" && Number.isInteger(value) && value >= 0) {
     return value.toString();
@@ -247,7 +306,7 @@ async function fetchLesswrongContent(
   const postId = input.externalId;
   let response: Response;
   try {
-    response = await fetch("https://www.lesswrong.com/graphql", {
+    response = await fetchWithTransientRetry("https://www.lesswrong.com/graphql", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -364,7 +423,7 @@ async function fetchWikipediaContent(
 
   let response: Response;
   try {
-    response = await fetch(endpoint);
+    response = await fetchWithTransientRetry(endpoint);
   } catch (error) {
     return {
       success: false,

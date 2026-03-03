@@ -94,6 +94,132 @@ test("lesswrongHtmlToNormalizedText excludes noscript tag content", () => {
   assert.equal(result, "Article text. More text.");
 });
 
+// ── Transient retry behavior ──────────────────────────────────────────────────
+// fetchWithTransientRetry wraps fetch with up to 3 retries on transient errors
+// (network failures, HTTP 429, HTTP 5xx). Non-transient errors propagate immediately.
+
+function makeWikipediaParseResponse(): Response {
+  return new Response(
+    JSON.stringify({
+      parse: {
+        text: "<div class='mw-parser-output'><p>Server article text.</p></div>",
+        pageid: 99999,
+        revid: 67890,
+      },
+    }),
+    {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    },
+  );
+}
+
+const WIKIPEDIA_FETCH_INPUT = {
+  platform: "WIKIPEDIA" as const,
+  url: "https://en.wikipedia.org/wiki/OpenErrata",
+  metadata: {
+    language: "en",
+    title: "OpenErrata",
+    pageId: "12345",
+    revisionId: "67890",
+  },
+};
+
+test("fetchCanonicalContent retries transient network failure then succeeds", async () => {
+  const originalFetch = globalThis.fetch;
+  let callCount = 0;
+  try {
+    globalThis.fetch = async (): Promise<Response> => {
+      callCount += 1;
+      if (callCount === 1) {
+        throw new Error("ECONNRESET");
+      }
+      return makeWikipediaParseResponse();
+    };
+
+    const result = await fetchCanonicalContent(WIKIPEDIA_FETCH_INPUT);
+    assert.equal(result.provenance, "SERVER_VERIFIED");
+    assert.equal(callCount, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("fetchCanonicalContent retries HTTP 429 then succeeds", async () => {
+  const originalFetch = globalThis.fetch;
+  let callCount = 0;
+  try {
+    globalThis.fetch = async (): Promise<Response> => {
+      callCount += 1;
+      if (callCount === 1) {
+        return new Response("Too Many Requests", { status: 429 });
+      }
+      return makeWikipediaParseResponse();
+    };
+
+    const result = await fetchCanonicalContent(WIKIPEDIA_FETCH_INPUT);
+    assert.equal(result.provenance, "SERVER_VERIFIED");
+    assert.equal(callCount, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("fetchCanonicalContent retries HTTP 500 then succeeds", async () => {
+  const originalFetch = globalThis.fetch;
+  let callCount = 0;
+  try {
+    globalThis.fetch = async (): Promise<Response> => {
+      callCount += 1;
+      if (callCount <= 2) {
+        return new Response("Internal Server Error", { status: 500 });
+      }
+      return makeWikipediaParseResponse();
+    };
+
+    const result = await fetchCanonicalContent(WIKIPEDIA_FETCH_INPUT);
+    assert.equal(result.provenance, "SERVER_VERIFIED");
+    assert.equal(callCount, 3);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("fetchCanonicalContent returns CLIENT_FALLBACK after exhausting all retry attempts", async () => {
+  const originalFetch = globalThis.fetch;
+  let callCount = 0;
+  try {
+    globalThis.fetch = async (): Promise<Response> => {
+      callCount += 1;
+      return new Response("Service Unavailable", { status: 503 });
+    };
+
+    const result = await fetchCanonicalContent(WIKIPEDIA_FETCH_INPUT);
+    assert.equal(result.provenance, "CLIENT_FALLBACK");
+    // 1 initial + 3 retries = 4 total attempts
+    assert.equal(callCount, 4);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("fetchCanonicalContent does not retry on HTTP 404", async () => {
+  const originalFetch = globalThis.fetch;
+  let callCount = 0;
+  try {
+    globalThis.fetch = async (): Promise<Response> => {
+      callCount += 1;
+      return new Response("Not Found", { status: 404 });
+    };
+
+    const result = await fetchCanonicalContent(WIKIPEDIA_FETCH_INPUT);
+    assert.equal(result.provenance, "CLIENT_FALLBACK");
+    assert.equal(callCount, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("fetchCanonicalContent returns SERVER_VERIFIED Wikipedia content and canonical identity from parse payload", async () => {
   const originalFetch = globalThis.fetch;
   try {

@@ -3,6 +3,10 @@ import { test } from "node:test";
 import {
   extractPendingFunctionToolCalls,
   deduplicateFunctionToolCalls,
+  buildRetainCorrectionToolDefinition,
+  isClaimToolCall,
+  SUBMIT_CORRECTION_TOOL_NAME,
+  RETAIN_CORRECTION_TOOL_NAME,
   type PendingFunctionToolCall,
 } from "../../src/lib/investigators/openai-tool-dispatch.js";
 
@@ -71,4 +75,37 @@ test("deduplicateFunctionToolCalls removes duplicate callIds", () => {
 
 test("deduplicateFunctionToolCalls handles empty array", () => {
   assert.deepStrictEqual(deduplicateFunctionToolCalls([]), []);
+});
+
+// --- isClaimToolCall ---
+
+test("isClaimToolCall distinguishes claim tools from research tools", () => {
+  // Claim tools → true (these get routed to the incremental claim pipeline)
+  assert.equal(
+    isClaimToolCall({ callId: "c1", name: SUBMIT_CORRECTION_TOOL_NAME, argumentsJson: "{}" }),
+    true,
+  );
+  assert.equal(
+    isClaimToolCall({ callId: "c2", name: RETAIN_CORRECTION_TOOL_NAME, argumentsJson: "{}" }),
+    true,
+  );
+  // Research tools → false (these get dispatched to executeFunctionToolCall)
+  assert.equal(isClaimToolCall({ callId: "c3", name: "fetch_url", argumentsJson: "{}" }), false);
+  assert.equal(
+    isClaimToolCall({ callId: "c4", name: "web_search_preview", argumentsJson: "{}" }),
+    false,
+  );
+});
+
+// --- buildRetainCorrectionToolDefinition ---
+
+test("buildRetainCorrectionToolDefinition constrains id to exactly the provided claim IDs", () => {
+  const tool = buildRetainCorrectionToolDefinition(["claim-a", "claim-b", "claim-c"]);
+  // The dynamic enum is the key behavior — it constrains the model to only retain existing claims
+  assert.deepStrictEqual(tool.parameters.properties.id.enum, ["claim-a", "claim-b", "claim-c"]);
+});
+
+test("buildRetainCorrectionToolDefinition single-element enum still constrains correctly", () => {
+  const tool = buildRetainCorrectionToolDefinition(["only-claim"]);
+  assert.deepStrictEqual(tool.parameters.properties.id.enum, ["only-claim"]);
 });
