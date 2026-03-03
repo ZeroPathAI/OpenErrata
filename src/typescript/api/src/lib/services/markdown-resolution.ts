@@ -110,9 +110,9 @@ export function extractImagePlaceholdersFromMarkdown(markdown: string): ImagePla
   while ((match = pattern.exec(markdown)) !== null) {
     placeholders.push({
       index: parseInt(match[1] ?? "0", 10),
-      // sourceUrl is not recoverable from markdown alone — the input builder
-      // must match by index, not URL, when working from stored markdown.
-      sourceUrl: "",
+      // sourceUrl is not recoverable from markdown alone; retries must match
+      // placeholders to image occurrences by originalIndex.
+      matchBy: "ORIGINAL_INDEX",
     });
   }
 

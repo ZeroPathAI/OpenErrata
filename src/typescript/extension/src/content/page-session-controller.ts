@@ -28,6 +28,7 @@ import { ContentSyncClient, type ParsedExtensionPageStatus } from "./sync";
 import { mapClaimsToDom } from "./dom-mapper";
 import { extractSubstackPostSlug } from "../lib/substack-url";
 import { ANNOTATION_CLAIM_ID_ATTRIBUTE, ANNOTATION_SELECTOR } from "./annotation-dom";
+import { pageSessionKeyFor } from "./session-key";
 
 const REFRESH_DEBOUNCE_MS = 200;
 const REAPPLY_DEBOUNCE_MS = 300;
@@ -127,10 +128,6 @@ const SYNC_TRACKED_SNAPSHOT_ERROR_POLICIES: readonly SyncTrackedSnapshotErrorPol
     action: "RESET_ONLY",
   },
 ];
-
-function pageKeyFor(content: PlatformContent): string {
-  return [content.platform, content.externalId, content.mediaState, content.contentText].join(":");
-}
 
 function pageLocatorForSessionKey(url: string): string {
   try {
@@ -675,7 +672,7 @@ export class PageSessionController {
     if (content.contentText.length === 0) {
       return {
         kind: "SKIPPED",
-        sessionKey: pageKeyFor(content),
+        sessionKey: pageSessionKeyFor(content),
         platform: content.platform,
         externalId: content.externalId,
         pageUrl: content.url,
@@ -686,7 +683,7 @@ export class PageSessionController {
     if (content.mediaState === "has_video") {
       return {
         kind: "SKIPPED",
-        sessionKey: pageKeyFor(content),
+        sessionKey: pageSessionKeyFor(content),
         platform: content.platform,
         externalId: content.externalId,
         pageUrl: content.url,
@@ -697,7 +694,7 @@ export class PageSessionController {
     if (exceedsWordCountLimit(content.contentText)) {
       return {
         kind: "SKIPPED",
-        sessionKey: pageKeyFor(content),
+        sessionKey: pageSessionKeyFor(content),
         platform: content.platform,
         externalId: content.externalId,
         pageUrl: content.url,
@@ -707,7 +704,7 @@ export class PageSessionController {
 
     return {
       kind: "TRACKED_POST",
-      sessionKey: pageKeyFor(content),
+      sessionKey: pageSessionKeyFor(content),
       platform: content.platform,
       externalId: content.externalId,
       adapter,

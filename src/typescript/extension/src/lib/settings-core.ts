@@ -140,6 +140,10 @@ export function apiHostPermissionFor(apiBaseUrl: string): string {
   return `${parsed.protocol}//${parsed.host}/*`;
 }
 
+export function normalizeConfiguredApiBaseUrl(value: unknown): string {
+  return normalizeApiBaseUrl(value) ?? DEFAULT_EXTENSION_SETTINGS.apiBaseUrl;
+}
+
 export function apiEndpointUrl(apiBaseUrl: string, endpointPath: string): string {
   const trimmedEndpointPath = endpointPath.replace(/^\/+/, "");
   const baseWithTrailingSlash = apiBaseUrl.endsWith("/") ? apiBaseUrl : `${apiBaseUrl}/`;

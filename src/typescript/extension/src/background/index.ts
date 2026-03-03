@@ -1,15 +1,9 @@
 import {
-  EXTENSION_MESSAGE_PROTOCOL_VERSION,
-  POLL_INTERVAL_MS,
   extensionMessageSchema,
   extensionRuntimeErrorResponseSchema,
-  getInvestigationInputSchema,
   investigationStatusOutputSchema,
-  isNonNullObject,
-  trimToOptionalNonEmpty,
   type ExtensionPageStatus,
   type ExtensionPostStatus,
-  type GetInvestigationOutput,
   type InvestigateNowOutput,
   type InvestigationStatusOutput,
   type RegisterObservedVersionOutput,
@@ -19,14 +13,14 @@ import {
 import browser, { type Runtime } from "webextension-polyfill";
 import {
   ApiClientError,
-  init,
-  registerObservedVersion,
-  recordViewAndGetStatus,
-  getInvestigation,
-  investigateNow,
   getCurrentApiBaseUrl,
+  getInvestigation,
   hasUserOpenAiKey,
+  init,
+  investigateNow,
   isAutoInvestigateEnabled,
+  recordViewAndGetStatus,
+  registerObservedVersion,
 } from "./api-client.js";
 import {
   cachePostStatus,
@@ -38,8 +32,7 @@ import {
   syncToolbarBadgesForOpenTabs,
 } from "./cache.js";
 import { toViewPostInput } from "../lib/view-post-input.js";
-import { createPostStatusFromInvestigation, apiErrorToPostStatus } from "./post-status.js";
-import { BackgroundInvestigationState, type InvestigationPoller } from "./investigation-state.js";
+import { createPostStatusFromInvestigation } from "./post-status.js";
 import {
   snapshotFromInvestigateNowResult,
   toInvestigationStatusForCaching,
@@ -47,23 +40,42 @@ import {
 import { decidePageContentSnapshot } from "./page-content-decision.js";
 import { decidePageContentPostCacheAction } from "./page-content-action.js";
 import { unsupportedProtocolVersionResponse } from "../lib/protocol-version.js";
-import {
-  addDomContentLoadedListener,
-  addHistoryStateUpdatedListener,
-  executeTabFunction,
-  injectTabAssets,
-} from "./browser-compat.js";
-import { EXTENSION_VERSION } from "../lib/extension-version.js";
+import { addDomContentLoadedListener, addHistoryStateUpdatedListener } from "./browser-compat.js";
 import { describeError } from "../lib/describe-error.js";
-import { isSubstackPostPath } from "../lib/substack-url.js";
 import { wikipediaExternalIdFromPageId } from "../lib/wikipedia-url.js";
-import { UPGRADE_REQUIRED_STORAGE_KEY } from "../lib/runtime-error.js";
-import { DEFAULT_EXTENSION_SETTINGS, normalizeApiBaseUrl } from "../lib/settings-core.js";
 import {
-  getUpgradeRequiredState,
-  setUpgradeRequiredState,
-  shouldIgnoreMetadataLessUpgradeRequiredRefresh,
-} from "./upgrade-required-state.js";
+  clearUpgradeRequiredState,
+  clearUpgradeRequiredStateBestEffort,
+  isUpgradeRequiredError,
+  markUpgradeRequiredFromError,
+  restoreUpgradeRequiredState,
+} from "./upgrade-required-runtime.js";
+import { normalizeConfiguredApiBaseUrl } from "../lib/settings-core.js";
+import { getUpgradeRequiredState } from "./upgrade-required-state.js";
+import {
+  clearInjectedCustomSubstackTab,
+  ensureSubstackInjectionForOpenTabs,
+  maybeInjectCustomDomainSubstack,
+  maybeInjectKnownDomainContentScript,
+} from "./content-script-injection.js";
+import {
+  cacheApiErrorStatus,
+  clearTabSession,
+  isInvestigatingCheckStatus,
+  isStaleTabSession,
+  maybeResumePollingFromCachedStatus,
+  noteTabSession,
+  parsePollRecoveryAlarmTabId,
+  restoreInvestigationPollingState,
+  retireTabSession,
+  startInvestigationPolling,
+  stopInvestigationPolling,
+} from "./investigation-polling.js";
+import {
+  isBackgroundMessageType,
+  toInvestigationStatusSnapshot,
+  type BackgroundMessageType,
+} from "./message-dispatch.js";
 
 // Initialize API client on worker start, then restore persisted upgrade state.
 void init()
@@ -93,159 +105,10 @@ type ParsedInvestigateNowPayload = Extract<
 type ParsedBackgroundMessage = Extract<
   ParsedExtensionMessage,
   {
-    type:
-      | "PAGE_CONTENT"
-      | "PAGE_SKIPPED"
-      | "PAGE_RESET"
-      | "GET_STATUS"
-      | "INVESTIGATE_NOW"
-      | "GET_CACHED";
+    type: BackgroundMessageType;
   }
 >;
 type ExtensionRuntimeErrorResponse = ReturnType<typeof extensionRuntimeErrorResponseSchema.parse>;
-
-const KNOWN_DECLARATIVE_DOMAINS = [
-  "substack.com",
-  "lesswrong.com",
-  "x.com",
-  "twitter.com",
-  "wikipedia.org",
-];
-
-const injectedCustomSubstackTabs = new Map<number, string>();
-
-interface StoredUpgradeRequiredState {
-  message: string;
-  detectedForVersion: string;
-  apiBaseUrl: string;
-}
-
-function isUpgradeRequiredError(error: unknown): error is ApiClientError {
-  return error instanceof ApiClientError && error.errorCode === "UPGRADE_REQUIRED";
-}
-
-function isTerminalCompatibilityError(error: unknown): error is ApiClientError {
-  return (
-    error instanceof ApiClientError &&
-    (error.errorCode === "UPGRADE_REQUIRED" || error.errorCode === "MALFORMED_EXTENSION_VERSION")
-  );
-}
-
-function parseStoredUpgradeRequiredState(value: unknown): StoredUpgradeRequiredState | null {
-  if (!isNonNullObject(value)) {
-    return null;
-  }
-
-  const message =
-    typeof value["message"] === "string" ? trimToOptionalNonEmpty(value["message"]) : undefined;
-  const detectedForVersion =
-    typeof value["detectedForVersion"] === "string"
-      ? trimToOptionalNonEmpty(value["detectedForVersion"])
-      : undefined;
-  const apiBaseUrl =
-    typeof value["apiBaseUrl"] === "string"
-      ? trimToOptionalNonEmpty(value["apiBaseUrl"])
-      : undefined;
-  if (message === undefined || detectedForVersion === undefined || apiBaseUrl === undefined) {
-    return null;
-  }
-
-  return {
-    message,
-    detectedForVersion,
-    apiBaseUrl,
-  };
-}
-
-function upgradeRequiredMessageFromApiError(error: ApiClientError): string {
-  const minimumVersion = error.minimumSupportedExtensionVersion;
-  if (minimumVersion !== undefined) {
-    return `Update required: this API server now requires OpenErrata extension version ${minimumVersion} or newer.`;
-  }
-  return "Update required: this OpenErrata extension version is no longer supported by the API server.";
-}
-
-async function clearUpgradeRequiredState(): Promise<void> {
-  if (!getUpgradeRequiredState().active) {
-    return;
-  }
-
-  setUpgradeRequiredState({ active: false });
-  await browser.storage.local.remove(UPGRADE_REQUIRED_STORAGE_KEY);
-  await syncToolbarBadgesForOpenTabs();
-}
-
-async function clearUpgradeRequiredStateBestEffort(operation: string): Promise<void> {
-  try {
-    await clearUpgradeRequiredState();
-  } catch (error) {
-    console.warn(`Failed to clear upgrade-required state during ${operation}:`, error);
-  }
-}
-
-async function markUpgradeRequiredFromError(error: unknown): Promise<void> {
-  if (!isUpgradeRequiredError(error)) {
-    return;
-  }
-
-  const upgradeRequiredState = getUpgradeRequiredState();
-  const apiBaseUrl = getCurrentApiBaseUrl();
-  if (
-    shouldIgnoreMetadataLessUpgradeRequiredRefresh({
-      state: upgradeRequiredState,
-      apiBaseUrl,
-      minimumSupportedExtensionVersion: error.minimumSupportedExtensionVersion,
-    })
-  ) {
-    return;
-  }
-
-  const message = upgradeRequiredMessageFromApiError(error);
-  if (
-    upgradeRequiredState.active &&
-    upgradeRequiredState.message === message &&
-    upgradeRequiredState.apiBaseUrl === apiBaseUrl
-  ) {
-    return;
-  }
-
-  setUpgradeRequiredState({ active: true, message, apiBaseUrl });
-  await browser.storage.local.set({
-    [UPGRADE_REQUIRED_STORAGE_KEY]: {
-      message,
-      detectedForVersion: EXTENSION_VERSION,
-      apiBaseUrl,
-    } satisfies StoredUpgradeRequiredState,
-  });
-  await syncToolbarBadgesForOpenTabs();
-}
-
-async function restoreUpgradeRequiredState(): Promise<void> {
-  const storedRecord = await browser.storage.local.get(UPGRADE_REQUIRED_STORAGE_KEY);
-  const storedState = parseStoredUpgradeRequiredState(storedRecord[UPGRADE_REQUIRED_STORAGE_KEY]);
-  const configuredApiBaseUrl = getCurrentApiBaseUrl();
-  const storedApiBaseUrl = storedState?.apiBaseUrl;
-  if (
-    storedState?.detectedForVersion !== EXTENSION_VERSION ||
-    storedApiBaseUrl !== configuredApiBaseUrl
-  ) {
-    setUpgradeRequiredState({ active: false });
-    await browser.storage.local.remove(UPGRADE_REQUIRED_STORAGE_KEY);
-    await syncToolbarBadgesForOpenTabs();
-    return;
-  }
-
-  setUpgradeRequiredState({
-    active: true,
-    message: storedState.message,
-    apiBaseUrl: storedState.apiBaseUrl,
-  });
-  await syncToolbarBadgesForOpenTabs();
-}
-
-function normalizeConfiguredApiBaseUrl(value: unknown): string {
-  return normalizeApiBaseUrl(value) ?? DEFAULT_EXTENSION_SETTINGS.apiBaseUrl;
-}
 
 function describeSchemaError(error: { message: string }): string {
   return `Invalid extension message payload: ${error.message}`;
@@ -272,254 +135,7 @@ function toRuntimeErrorResponse(error: unknown): ExtensionRuntimeErrorResponse {
 }
 
 function isBackgroundMessage(message: ParsedExtensionMessage): message is ParsedBackgroundMessage {
-  return (
-    message.type === "PAGE_CONTENT" ||
-    message.type === "PAGE_SKIPPED" ||
-    message.type === "PAGE_RESET" ||
-    message.type === "GET_STATUS" ||
-    message.type === "INVESTIGATE_NOW" ||
-    message.type === "GET_CACHED"
-  );
-}
-
-function isKnownDeclarativeDomain(hostname: string): boolean {
-  const normalizedHostname = hostname.toLowerCase();
-  return KNOWN_DECLARATIVE_DOMAINS.some(
-    (domain) => normalizedHostname === domain || normalizedHostname.endsWith(`.${domain}`),
-  );
-}
-
-function hasCandidateSubstackPath(url: URL): boolean {
-  return isSubstackPostPath(url.pathname);
-}
-
-async function detectSubstackDomFingerprint(tabId: number): Promise<boolean> {
-  const probeResult = await executeTabFunction(tabId, () => {
-    const hasSubstackFingerprint =
-      document.querySelector(
-        [
-          'link[href*="substackcdn.com"]',
-          'script[src*="substackcdn.com"]',
-          'img[src*="substackcdn.com"]',
-          'meta[property="og:url"][content*=".substack.com"]',
-          'meta[name="twitter:image"][content*="post_preview/"]',
-        ].join(","),
-      ) !== null;
-    return {
-      pathname: window.location.pathname,
-      hasSubstackFingerprint,
-    };
-  });
-
-  if (!isNonNullObject(probeResult)) {
-    return false;
-  }
-  const { pathname, hasSubstackFingerprint } = probeResult;
-  if (typeof pathname !== "string" || typeof hasSubstackFingerprint !== "boolean") {
-    return false;
-  }
-  return isSubstackPostPath(pathname) && hasSubstackFingerprint;
-}
-
-async function injectContentScriptIntoTab(tabId: number): Promise<void> {
-  await injectTabAssets({
-    tabId,
-    scriptFile: "content/main.js",
-    cssFile: "content/annotations.css",
-  });
-}
-
-async function hasContentScriptListener(tabId: number): Promise<boolean> {
-  try {
-    await browser.tabs.sendMessage(tabId, {
-      v: EXTENSION_MESSAGE_PROTOCOL_VERSION,
-      type: "GET_ANNOTATION_VISIBILITY",
-    });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function maybeInjectKnownDomainContentScript(tabId: number, tabUrl: string): Promise<void> {
-  let parsedUrl: URL;
-  try {
-    parsedUrl = new URL(tabUrl);
-  } catch {
-    return;
-  }
-
-  if (!isKnownDeclarativeDomain(parsedUrl.hostname)) {
-    return;
-  }
-
-  if (await hasContentScriptListener(tabId)) {
-    return;
-  }
-
-  try {
-    await injectContentScriptIntoTab(tabId);
-  } catch (error) {
-    console.error("known-domain content script injection failed:", error);
-  }
-}
-
-async function maybeInjectCustomDomainSubstack(tabId: number, tabUrl: string): Promise<void> {
-  let parsedUrl: URL;
-  try {
-    parsedUrl = new URL(tabUrl);
-  } catch {
-    return;
-  }
-
-  if (isKnownDeclarativeDomain(parsedUrl.hostname)) {
-    return;
-  }
-  if (!hasCandidateSubstackPath(parsedUrl)) {
-    return;
-  }
-  if (injectedCustomSubstackTabs.get(tabId) === tabUrl) {
-    return;
-  }
-
-  try {
-    const isSubstackPage = await detectSubstackDomFingerprint(tabId);
-    if (!isSubstackPage) {
-      return;
-    }
-
-    await injectContentScriptIntoTab(tabId);
-    injectedCustomSubstackTabs.set(tabId, tabUrl);
-  } catch (error) {
-    console.error("custom-domain substack injection failed:", error);
-  }
-}
-
-async function ensureSubstackInjectionForOpenTabs(): Promise<void> {
-  const tabs = await browser.tabs.query({});
-  await Promise.all(
-    tabs.map(async (tab) => {
-      if (tab.id === undefined || tab.url === undefined || tab.url.length === 0) return;
-      await maybeInjectKnownDomainContentScript(tab.id, tab.url);
-      await maybeInjectCustomDomainSubstack(tab.id, tab.url);
-    }),
-  );
-}
-
-const backgroundInvestigationState = new BackgroundInvestigationState();
-const INVESTIGATION_POLL_ALARM_PREFIX = "investigation-poll:";
-// Chrome enforces a minimum repeating alarm interval; keep this as a wake-up
-// recovery signal and retain in-memory 5s polling while the worker is alive.
-const INVESTIGATION_POLL_RECOVERY_ALARM_PERIOD_MINUTES = 0.5;
-
-function noteTabSession(tabId: number, tabSessionId: number): void {
-  backgroundInvestigationState.noteTabSession(tabId, tabSessionId);
-}
-
-function retireTabSession(tabId: number, tabSessionId: number): void {
-  backgroundInvestigationState.retireTabSession(tabId, tabSessionId);
-}
-
-function isStaleTabSession(tabId: number, tabSessionId: number): boolean {
-  return backgroundInvestigationState.isStaleTabSession(tabId, tabSessionId);
-}
-
-async function cacheApiErrorStatus(input: {
-  error: unknown;
-  tabId: number;
-  tabSessionId: number;
-  platform: ViewPostInput["platform"];
-  externalId: string;
-  pageUrl: string;
-  investigationId?: string;
-  skipIfStale?: boolean;
-  noteSession?: boolean;
-  stopPolling?: boolean;
-}): Promise<void> {
-  if (input.skipIfStale === true && isStaleTabSession(input.tabId, input.tabSessionId)) {
-    return;
-  }
-  if (input.noteSession === true) {
-    noteTabSession(input.tabId, input.tabSessionId);
-  }
-  if (input.stopPolling === true) {
-    stopInvestigationPolling(input.tabId);
-  }
-
-  const statusInput: Parameters<typeof apiErrorToPostStatus>[0] = {
-    error: input.error,
-    tabSessionId: input.tabSessionId,
-    platform: input.platform,
-    externalId: input.externalId,
-    pageUrl: input.pageUrl,
-  };
-  if (input.investigationId !== undefined) {
-    statusInput.investigationId = input.investigationId;
-  }
-
-  await cachePostStatus(input.tabId, apiErrorToPostStatus(statusInput));
-}
-
-function pollRecoveryAlarmName(tabId: number): string {
-  return `${INVESTIGATION_POLL_ALARM_PREFIX}${tabId.toString()}`;
-}
-
-function parsePollRecoveryAlarmTabId(alarmName: string): number | null {
-  if (!alarmName.startsWith(INVESTIGATION_POLL_ALARM_PREFIX)) {
-    return null;
-  }
-  const rawTabId = alarmName.slice(INVESTIGATION_POLL_ALARM_PREFIX.length);
-  if (!/^\d+$/.test(rawTabId)) {
-    return null;
-  }
-  const tabId = Number.parseInt(rawTabId, 10);
-  if (!Number.isSafeInteger(tabId) || tabId < 0) {
-    return null;
-  }
-  return tabId;
-}
-
-function schedulePollRecoveryAlarm(tabId: number): void {
-  void browser.alarms
-    .create(pollRecoveryAlarmName(tabId), {
-      periodInMinutes: INVESTIGATION_POLL_RECOVERY_ALARM_PERIOD_MINUTES,
-    })
-    .catch((error: unknown) => {
-      console.error("Failed to schedule investigation poll recovery alarm:", error);
-    });
-}
-
-function clearPollRecoveryAlarm(tabId: number): void {
-  void browser.alarms.clear(pollRecoveryAlarmName(tabId)).catch((error: unknown) => {
-    console.error("Failed to clear investigation poll recovery alarm:", error);
-  });
-}
-
-function stopInvestigationPolling(tabId: number): void {
-  clearPollRecoveryAlarm(tabId);
-
-  const existing = backgroundInvestigationState.getPoller(tabId);
-  if (!existing) return;
-
-  if (existing.timer !== null) {
-    clearInterval(existing.timer);
-  }
-  backgroundInvestigationState.clearPoller(tabId);
-}
-
-function isInvestigatingCheckStatus(status: InvestigateNowOutput["status"]): boolean {
-  return status === "PENDING" || status === "PROCESSING";
-}
-
-function isInvestigatingSnapshot(
-  snapshot: Pick<InvestigationStatusOutput, "investigationState">,
-): boolean {
-  return snapshot.investigationState === "INVESTIGATING";
-}
-
-function toInvestigationStatusSnapshot(output: GetInvestigationOutput): InvestigationStatusOutput {
-  const { checkedAt: _checkedAt, ...snapshot } = output;
-  return snapshot;
+  return isBackgroundMessageType(message.type);
 }
 
 function viewPostExternalId(request: ViewPostInput): string {
@@ -530,185 +146,6 @@ function viewPostExternalId(request: ViewPostInput): string {
     );
   }
   return request.externalId;
-}
-
-async function startInvestigationPolling(input: {
-  tabId: number;
-  tabSessionId: number;
-  platform: ViewPostInput["platform"];
-  externalId: string;
-  investigationId: string;
-}): Promise<void> {
-  stopInvestigationPolling(input.tabId);
-
-  const poller: InvestigationPoller = {
-    tabSessionId: input.tabSessionId,
-    investigationId: input.investigationId,
-    inFlight: false,
-    timer: null,
-  };
-  backgroundInvestigationState.setPoller(input.tabId, poller);
-  schedulePollRecoveryAlarm(input.tabId);
-
-  const tick = async () => {
-    const activePoller = backgroundInvestigationState.getPoller(input.tabId);
-    if (
-      activePoller?.tabSessionId !== input.tabSessionId ||
-      activePoller.investigationId !== input.investigationId
-    ) {
-      return;
-    }
-    if (activePoller.inFlight) return;
-
-    activePoller.inFlight = true;
-    let existingStatus: ExtensionPostStatus | null = null;
-    try {
-      const existing = await getActivePostStatus(input.tabId);
-      if (
-        existing?.tabSessionId !== input.tabSessionId ||
-        existing.platform !== input.platform ||
-        existing.externalId !== input.externalId
-      ) {
-        stopInvestigationPolling(input.tabId);
-        return;
-      }
-      existingStatus = existing;
-
-      const latest = await getInvestigation(
-        getInvestigationInputSchema.parse({
-          investigationId: input.investigationId,
-        }),
-      );
-      await clearUpgradeRequiredStateBestEffort("investigation polling");
-      const latestSnapshot = toInvestigationStatusSnapshot(latest);
-      await cachePostStatus(
-        input.tabId,
-        createPostStatusFromInvestigation({
-          tabSessionId: input.tabSessionId,
-          platform: input.platform,
-          externalId: input.externalId,
-          pageUrl: existing.pageUrl,
-          investigationId: input.investigationId,
-          ...latestSnapshot,
-        }),
-        { setActive: false },
-      );
-
-      if (!isInvestigatingSnapshot(latestSnapshot)) {
-        stopInvestigationPolling(input.tabId);
-      }
-    } catch (error: unknown) {
-      if (isTerminalCompatibilityError(error)) {
-        if (isUpgradeRequiredError(error)) {
-          await markUpgradeRequiredFromError(error);
-        }
-
-        if (existingStatus !== null) {
-          await cacheApiErrorStatus({
-            error,
-            tabId: input.tabId,
-            tabSessionId: input.tabSessionId,
-            platform: input.platform,
-            externalId: input.externalId,
-            pageUrl: existingStatus.pageUrl,
-            investigationId: input.investigationId,
-            stopPolling: true,
-          });
-        } else {
-          stopInvestigationPolling(input.tabId);
-        }
-        return;
-      }
-      console.error("investigation polling failed:", error);
-    } finally {
-      const current = backgroundInvestigationState.getPoller(input.tabId);
-      if (current) {
-        current.inFlight = false;
-      }
-    }
-  };
-
-  await tick();
-  const current = backgroundInvestigationState.getPoller(input.tabId);
-  if (!current || current !== poller) {
-    return;
-  }
-  const timer = setInterval(() => {
-    void tick();
-  }, POLL_INTERVAL_MS);
-  poller.timer = timer;
-}
-
-async function maybeResumePollingFromCachedStatus(
-  tabId: number,
-  status: ExtensionPageStatus | null,
-): Promise<void> {
-  if (status?.kind !== "POST") {
-    stopInvestigationPolling(tabId);
-    return;
-  }
-  if (status.investigationState !== "INVESTIGATING" || status.investigationId === undefined) {
-    stopInvestigationPolling(tabId);
-    return;
-  }
-
-  const activePoller = backgroundInvestigationState.getPoller(tabId);
-  if (
-    activePoller?.tabSessionId === status.tabSessionId &&
-    activePoller.investigationId === status.investigationId
-  ) {
-    return;
-  }
-
-  await startInvestigationPolling({
-    tabId,
-    tabSessionId: status.tabSessionId,
-    platform: status.platform,
-    externalId: status.externalId,
-    investigationId: status.investigationId,
-  });
-}
-
-async function resumeInvestigationPollingForOpenTabs(): Promise<void> {
-  const tabs = await browser.tabs.query({});
-  await Promise.all(
-    tabs.map(async (tab) => {
-      if (tab.id === undefined) return;
-      try {
-        const status = await getActiveStatus(tab.id);
-        await maybeResumePollingFromCachedStatus(tab.id, status);
-      } catch (error) {
-        console.error("Failed to resume investigation polling for tab:", error);
-      }
-    }),
-  );
-}
-
-async function clearAllPollRecoveryAlarms(): Promise<void> {
-  const alarms = await browser.alarms.getAll();
-  const clearTasks = alarms.flatMap((alarm) => {
-    if (parsePollRecoveryAlarmTabId(alarm.name) === null) {
-      return [];
-    }
-    return [browser.alarms.clear(alarm.name)];
-  });
-  await Promise.all(clearTasks);
-}
-
-let restoreInvestigationPollingPromise: Promise<void> | null = null;
-
-async function restoreInvestigationPollingState(): Promise<void> {
-  restoreInvestigationPollingPromise ??= (async () => {
-    for (const tabId of backgroundInvestigationState.pollerTabIds()) {
-      stopInvestigationPolling(tabId);
-    }
-    await clearAllPollRecoveryAlarms();
-    await resumeInvestigationPollingForOpenTabs();
-  })().finally(() => {
-    restoreInvestigationPollingPromise = null;
-  });
-
-  await restoreInvestigationPollingPromise;
 }
 
 async function cacheInvestigateNowResult(input: {
@@ -1014,8 +451,7 @@ async function handleGetStatus(
   const result = await getInvestigation(request);
   await clearUpgradeRequiredStateBestEffort("GET_STATUS");
 
-  const { checkedAt: _checkedAt, ...response } = result;
-  const parsedResponse = parseInvestigationStatusSnapshot(response);
+  const parsedResponse = parseInvestigationStatusSnapshot(toInvestigationStatusSnapshot(result));
 
   if (sender.tab?.id !== undefined) {
     const existing = await getActivePostStatus(sender.tab.id);
@@ -1196,16 +632,16 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 });
 
 browser.tabs.onRemoved.addListener((tabId) => {
-  injectedCustomSubstackTabs.delete(tabId);
-  backgroundInvestigationState.clearTabSession(tabId);
+  clearInjectedCustomSubstackTab(tabId);
+  clearTabSession(tabId);
   stopInvestigationPolling(tabId);
   clearCache(tabId);
 });
 
 browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (changeInfo.status !== "loading") return;
-  injectedCustomSubstackTabs.delete(tabId);
-  backgroundInvestigationState.clearTabSession(tabId);
+  clearInjectedCustomSubstackTab(tabId);
+  clearTabSession(tabId);
   stopInvestigationPolling(tabId);
   void clearActiveStatus(tabId).catch((error: unknown) => {
     console.error("failed to clear active status on tab loading:", error);

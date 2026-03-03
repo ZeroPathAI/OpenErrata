@@ -50,10 +50,16 @@ export type InvestigatorImageOccurrence =
       resolution: "missing" | "omitted";
     };
 
-export interface ImagePlaceholder {
-  index: number;
-  sourceUrl: string;
-}
+export type ImagePlaceholder =
+  | {
+      index: number;
+      matchBy: "SOURCE_URL";
+      sourceUrl: string;
+    }
+  | {
+      index: number;
+      matchBy: "ORIGINAL_INDEX";
+    };
 
 interface InvestigatorInputBase {
   contentText: string;

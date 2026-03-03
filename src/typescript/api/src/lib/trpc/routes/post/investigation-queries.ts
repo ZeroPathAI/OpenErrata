@@ -436,6 +436,34 @@ export async function maybeRecordCorroboration(
 // Investigation queueing with update metadata
 // ---------------------------------------------------------------------------
 
+function buildEnsureQueuedInputWithoutPending<TPrisma>(input: {
+  prisma: TPrisma;
+  promptId: string;
+  postVersion: ResolvedPostVersion;
+  sourceInvestigation: LatestServerVerifiedCompleteInvestigation;
+}): Omit<EnsureQueuedInput<TPrisma>, "onPendingRun"> {
+  const baseInput: Omit<EnsureQueuedInput<TPrisma>, "onPendingRun"> = {
+    prisma: input.prisma,
+    postVersionId: input.postVersion.id,
+    promptId: input.promptId,
+    rejectOverWordLimitOnCreate: true,
+    allowRequeueFailed: true,
+  };
+
+  if (input.sourceInvestigation === null) {
+    return baseInput;
+  }
+
+  return {
+    ...baseInput,
+    parentInvestigationId: input.sourceInvestigation.id,
+    contentDiff: buildLineDiff(
+      input.sourceInvestigation.postVersion.contentBlob.contentText,
+      input.postVersion.contentBlob.contentText,
+    ),
+  };
+}
+
 export async function ensureInvestigationsWithUpdateMetadata(
   input: EnsureWithDefaultInput,
 ): Promise<EnsureInvestigationResult>;
@@ -462,51 +490,27 @@ export async function ensureInvestigationsWithUpdateMetadata<TPrisma>(
     | EnsureWithCustomInput<TPrisma>,
 ): Promise<EnsureInvestigationResult> {
   if (input.ensureQueued !== undefined) {
-    const baseInput = {
-      prisma: input.prisma,
-      postVersionId: input.postVersion.id,
-      promptId: input.promptId,
-      rejectOverWordLimitOnCreate: true as const,
-      allowRequeueFailed: true as const,
+    const queuedInput: EnsureQueuedInput<TPrisma> = {
+      ...buildEnsureQueuedInputWithoutPending<TPrisma>({
+        prisma: input.prisma,
+        promptId: input.promptId,
+        postVersion: input.postVersion,
+        sourceInvestigation: input.sourceInvestigation,
+      }),
       ...(input.onPendingRun === undefined ? {} : { onPendingRun: input.onPendingRun }),
     };
-
-    const queuedInput =
-      input.sourceInvestigation === null
-        ? baseInput
-        : {
-            ...baseInput,
-            parentInvestigationId: input.sourceInvestigation.id,
-            contentDiff: buildLineDiff(
-              input.sourceInvestigation.postVersion.contentBlob.contentText,
-              input.postVersion.contentBlob.contentText,
-            ),
-          };
-
     return input.ensureQueued(queuedInput);
   }
 
-  const baseInput = {
-    prisma: input.prisma,
-    postVersionId: input.postVersion.id,
-    promptId: input.promptId,
-    rejectOverWordLimitOnCreate: true as const,
-    allowRequeueFailed: true as const,
+  const queuedInput: Parameters<typeof ensureInvestigationQueued>[0] = {
+    ...buildEnsureQueuedInputWithoutPending<PrismaClient>({
+      prisma: input.prisma,
+      promptId: input.promptId,
+      postVersion: input.postVersion,
+      sourceInvestigation: input.sourceInvestigation,
+    }),
     ...(input.onPendingRun === undefined ? {} : { onPendingRun: input.onPendingRun }),
   };
-
-  const queuedInput =
-    input.sourceInvestigation === null
-      ? baseInput
-      : {
-          ...baseInput,
-          parentInvestigationId: input.sourceInvestigation.id,
-          contentDiff: buildLineDiff(
-            input.sourceInvestigation.postVersion.contentBlob.contentText,
-            input.postVersion.contentBlob.contentText,
-          ),
-        };
-
   const ensured = await ensureInvestigationQueued(queuedInput);
   return {
     investigation: {

@@ -49,12 +49,11 @@ test("extractImagePlaceholdersFromMarkdown handles duplicate indices", () => {
   assert.equal(result[1]?.index, 0);
 });
 
-test("extractImagePlaceholdersFromMarkdown sets sourceUrl to empty string", () => {
-  // sourceUrl is not recoverable from markdown; the input builder must
-  // match by index, not URL.
+test("extractImagePlaceholdersFromMarkdown marks placeholders for index matching", () => {
+  // sourceUrl is not recoverable from markdown; retries match by original index.
   const result = extractImagePlaceholdersFromMarkdown("[IMAGE:3]");
   assert.equal(result.length, 1);
-  assert.equal(result[0]?.sourceUrl, "");
+  assert.equal(result[0]?.matchBy, "ORIGINAL_INDEX");
 });
 
 test("extractImagePlaceholdersFromMarkdown ignores bracket patterns that are not image placeholders", () => {

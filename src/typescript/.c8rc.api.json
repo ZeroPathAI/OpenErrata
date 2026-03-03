@@ -42,8 +42,8 @@
     "src/lib/generated/**"
   ],
   "check-coverage": true,
-  "lines": 65,
-  "branches": 80,
-  "functions": 70,
-  "statements": 65
+  "lines": 66,
+  "branches": 82,
+  "functions": 74,
+  "statements": 66
 }

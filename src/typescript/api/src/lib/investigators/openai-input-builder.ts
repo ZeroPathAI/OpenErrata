@@ -167,17 +167,15 @@ function buildInputUsingTextOffsets(input: {
 /**
  * Find the best matching resolved image occurrence for a placeholder.
  *
- * Primary match: by sourceUrl (first-execution path where placeholders have real URLs).
- * Fallback match: by originalIndex (retry path where placeholders have sourceUrl="" since
- * URLs can't be recovered from stored markdown — matching by position in the image list).
+ * SOURCE_URL placeholders (first execution path) match by source URL.
+ * ORIGINAL_INDEX placeholders (retry path) match by original index.
  */
 function findResolvedOccurrence(
   placeholder: ImagePlaceholder,
   imageOccurrences: InvestigatorImageOccurrence[],
   consumedUrls: Set<string>,
 ): InvestigatorImageOccurrence | undefined {
-  // Primary: match by sourceUrl when placeholder has a real URL
-  if (placeholder.sourceUrl.length > 0) {
+  if (placeholder.matchBy === "SOURCE_URL") {
     for (const occurrence of imageOccurrences) {
       if (
         occurrence.sourceUrl === placeholder.sourceUrl &&
@@ -189,7 +187,6 @@ function findResolvedOccurrence(
     return undefined;
   }
 
-  // Fallback: match by index (retry path)
   return imageOccurrences.find((o) => o.originalIndex === placeholder.index);
 }
 
@@ -197,8 +194,9 @@ function findResolvedOccurrence(
  * Build multimodal input by splitting content at [IMAGE:N] placeholders
  * and inserting resolved image data URIs at each position.
  *
- * Matching: each placeholder's sourceUrl (from imagePlaceholders) is looked up
- * in the resolved imageOccurrences by sourceUrl.
+ * Matching:
+ * - SOURCE_URL placeholders are matched by source URL.
+ * - ORIGINAL_INDEX placeholders are matched by original index.
  */
 export function buildInitialInput(
   userPrompt: string,
@@ -292,7 +290,7 @@ export function buildInitialInput(
     }
 
     // Check if a resolved occurrence for this URL was already consumed (duplicate)
-    if (placeholder.sourceUrl.length > 0 && consumedUrls.has(placeholder.sourceUrl)) {
+    if (placeholder.matchBy === "SOURCE_URL" && consumedUrls.has(placeholder.sourceUrl)) {
       appendTextInputPart(contentParts, "[Same image as earlier appears here.]");
       continue;
     }

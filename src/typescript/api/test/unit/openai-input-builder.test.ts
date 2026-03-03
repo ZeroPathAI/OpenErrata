@@ -59,10 +59,10 @@ test("buildInitialInput interleaves images at [IMAGE:N] placeholders with duplic
   const userPrompt = `prefix section\n${contentString}\nsuffix section`;
 
   const imagePlaceholders: ImagePlaceholder[] = [
-    { index: 0, sourceUrl: "https://example.com/a.png" },
-    { index: 1, sourceUrl: "https://example.com/a.png" }, // duplicate URL
-    { index: 2, sourceUrl: "https://example.com/c.png" },
-    { index: 3, sourceUrl: "https://example.com/d.png" },
+    { index: 0, matchBy: "SOURCE_URL", sourceUrl: "https://example.com/a.png" },
+    { index: 1, matchBy: "SOURCE_URL", sourceUrl: "https://example.com/a.png" }, // duplicate URL
+    { index: 2, matchBy: "SOURCE_URL", sourceUrl: "https://example.com/c.png" },
+    { index: 3, matchBy: "SOURCE_URL", sourceUrl: "https://example.com/d.png" },
   ];
 
   const imageOccurrences: InvestigatorImageOccurrence[] = [
@@ -184,16 +184,16 @@ test("buildInitialInput yields equivalent multimodal payload on retry placeholde
   const userPrompt = `prefix section\n${contentString}\nsuffix section`;
 
   const firstAttemptPlaceholders: ImagePlaceholder[] = [
-    { index: 0, sourceUrl: "https://example.com/a.png" },
-    { index: 1, sourceUrl: "https://example.com/b.png" },
-    { index: 2, sourceUrl: "https://example.com/c.png" },
+    { index: 0, matchBy: "SOURCE_URL", sourceUrl: "https://example.com/a.png" },
+    { index: 1, matchBy: "SOURCE_URL", sourceUrl: "https://example.com/b.png" },
+    { index: 2, matchBy: "SOURCE_URL", sourceUrl: "https://example.com/c.png" },
   ];
 
   // Retry path placeholders reconstructed from markdown have no recoverable URL.
   const retryPlaceholders: ImagePlaceholder[] = [
-    { index: 0, sourceUrl: "" },
-    { index: 1, sourceUrl: "" },
-    { index: 2, sourceUrl: "" },
+    { index: 0, matchBy: "ORIGINAL_INDEX" },
+    { index: 1, matchBy: "ORIGINAL_INDEX" },
+    { index: 2, matchBy: "ORIGINAL_INDEX" },
   ];
 
   const imageOccurrences: InvestigatorImageOccurrence[] = [

@@ -9,3 +9,4 @@ export * from "./constants.js";
 export * from "./trpc-paths.js";
 export * from "./extension-version.js";
 export * from "./type-guards.js";
+export * from "./version-identity.js";

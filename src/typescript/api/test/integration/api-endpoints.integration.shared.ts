@@ -7,6 +7,8 @@ import {
   hashContent,
   isNonNullObject,
   normalizeContent,
+  serializeVersionHashSeed,
+  serializeVersionIdentityImageOccurrences,
   WORD_COUNT_LIMIT,
   type Platform,
 } from "@openerrata/shared";
@@ -17,6 +19,10 @@ import {
   randomInt,
   sleep,
 } from "../helpers/fuzz-utils.js";
+import {
+  buildFailedAttemptAudit,
+  buildSucceededAttemptAudit,
+} from "./api-endpoints.integration.attempt-audit.js";
 import { INTEGRATION_LESSWRONG_FIXTURE_KEYS, readLesswrongFixture } from "./lesswrong-fixtures.js";
 
 process.env["NODE_ENV"] = "test";
@@ -669,11 +675,11 @@ function sha256(input: string): string {
   return createHash("sha256").update(input).digest("hex");
 }
 
-const EMPTY_IMAGE_OCCURRENCES_HASH = sha256(JSON.stringify([]));
+const EMPTY_IMAGE_OCCURRENCES_HASH = sha256(serializeVersionIdentityImageOccurrences([]));
 let emptyImageOccurrenceSetPromise: Promise<{ id: string }> | null = null;
 
 function versionHashFromContentHash(contentHash: string): string {
-  return sha256(`${contentHash}\n${EMPTY_IMAGE_OCCURRENCES_HASH}`);
+  return sha256(serializeVersionHashSeed(contentHash, EMPTY_IMAGE_OCCURRENCES_HASH));
 }
 
 function isPrismaUniqueConstraintError(error: unknown): boolean {
@@ -1204,20 +1210,35 @@ async function seedCorroborationCredits(investigationId: string, count: number):
   }
 }
 
-function buildXViewInput(input: { externalId: string; observedContentText: string }) {
+function buildXViewInput(input: {
+  externalId: string;
+  observedContentText: string;
+  observedImageUrls?: string[];
+  observedImageOccurrences?: {
+    originalIndex: number;
+    normalizedTextOffset: number;
+    sourceUrl: string;
+    captionText?: string;
+  }[];
+}) {
   const externalId = withIntegrationPrefix(input.externalId);
   const observedContentText = input.observedContentText;
+  const observedImageUrls = input.observedImageUrls ?? [];
 
   return {
     platform: "X" as const,
     externalId,
     url: `https://x.com/openerrata/status/${externalId}`,
     observedContentText,
+    ...(observedImageUrls.length === 0 ? {} : { observedImageUrls }),
+    ...(input.observedImageOccurrences === undefined
+      ? {}
+      : { observedImageOccurrences: input.observedImageOccurrences }),
     metadata: {
       authorHandle: withIntegrationPrefix("author"),
       authorDisplayName: "Integration Author",
       text: observedContentText,
-      mediaUrls: [],
+      mediaUrls: observedImageUrls,
     },
   };
 }
@@ -1372,53 +1393,6 @@ async function runConcurrentInvestigateNowScenario(input: {
   return {
     results,
     investigationId: firstResult.investigationId,
-  };
-}
-
-function buildSucceededAttemptAudit(label: string) {
-  const now = new Date().toISOString();
-  return {
-    startedAt: now,
-    completedAt: now,
-    requestModel: `test-model-${label}`,
-    requestInstructions: `instructions-${label}`,
-    requestInput: `input-${label}`,
-    requestReasoningEffort: null,
-    requestReasoningSummary: null,
-    requestedTools: [],
-    response: {
-      responseId: `response-${label}`,
-      responseStatus: "completed",
-      responseModelVersion: "test-model-version",
-      responseOutputText: '{"claims":[]}',
-      outputItems: [],
-      outputTextParts: [],
-      outputTextAnnotations: [],
-      reasoningSummaries: [],
-      toolCalls: [],
-      usage: null,
-    },
-    error: null,
-  };
-}
-
-function buildFailedAttemptAudit(label: string) {
-  const now = new Date().toISOString();
-  return {
-    startedAt: now,
-    completedAt: now,
-    requestModel: `test-model-${label}`,
-    requestInstructions: `instructions-${label}`,
-    requestInput: `input-${label}`,
-    requestReasoningEffort: null,
-    requestReasoningSummary: null,
-    requestedTools: [],
-    response: null,
-    error: {
-      errorName: "TransientTestFailure",
-      errorMessage: `transient-error-${label}`,
-      statusCode: null,
-    },
   };
 }
 

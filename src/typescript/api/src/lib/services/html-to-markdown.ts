@@ -56,9 +56,13 @@ function htmlToMarkdownWithImages(html: string): HtmlToMarkdownResult {
   service.addRule("imagePlaceholder", {
     filter: "img",
     replacement: (_content, node) => {
-      const src = node.getAttribute("src") ?? "";
+      const src = node.getAttribute("src")?.trim() ?? "";
       const index = placeholders.length;
-      placeholders.push({ index, sourceUrl: src });
+      if (src.length > 0) {
+        placeholders.push({ index, matchBy: "SOURCE_URL", sourceUrl: src });
+      } else {
+        placeholders.push({ index, matchBy: "ORIGINAL_INDEX" });
+      }
       return ` [IMAGE:${index}] `;
     },
   });

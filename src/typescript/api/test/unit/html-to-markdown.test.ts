@@ -128,7 +128,11 @@ test("replaces img elements with [IMAGE:N] placeholders", () => {
   assert.ok(markdown.includes("Before image."));
   assert.ok(markdown.includes("After image."));
   assert.equal(imagePlaceholders.length, 1);
-  assert.equal(imagePlaceholders[0]?.sourceUrl, "test.jpg");
+  assert.deepEqual(imagePlaceholders[0], {
+    index: 0,
+    matchBy: "SOURCE_URL",
+    sourceUrl: "test.jpg",
+  });
 });
 
 test("strips anchor wrapper when link contains only an image", () => {
@@ -149,7 +153,11 @@ test("strips anchor wrapper when link contains only an image", () => {
     "placeholder should not be wrapped in link syntax",
   );
   assert.equal(imagePlaceholders.length, 1);
-  assert.equal(imagePlaceholders[0]?.sourceUrl, "https://cdn.example.com/thumb.jpg");
+  assert.deepEqual(imagePlaceholders[0], {
+    index: 0,
+    matchBy: "SOURCE_URL",
+    sourceUrl: "https://cdn.example.com/thumb.jpg",
+  });
 });
 
 test("strips anchor wrapper for image-in-div structure (Substack CDN pattern)", () => {
@@ -337,12 +345,21 @@ test("multiple images produce sequential 0-based [IMAGE:N] placeholders with mat
     (typeof imagePlaceholders)[0],
     (typeof imagePlaceholders)[0],
   ];
-  assert.equal(ph0.index, 0);
-  assert.equal(ph0.sourceUrl, "https://cdn.example.com/photo1.jpg");
-  assert.equal(ph1.index, 1);
-  assert.equal(ph1.sourceUrl, "https://cdn.example.com/chart2.png");
-  assert.equal(ph2.index, 2);
-  assert.equal(ph2.sourceUrl, "https://cdn.example.com/diagram3.svg");
+  assert.deepEqual(ph0, {
+    index: 0,
+    matchBy: "SOURCE_URL",
+    sourceUrl: "https://cdn.example.com/photo1.jpg",
+  });
+  assert.deepEqual(ph1, {
+    index: 1,
+    matchBy: "SOURCE_URL",
+    sourceUrl: "https://cdn.example.com/chart2.png",
+  });
+  assert.deepEqual(ph2, {
+    index: 2,
+    matchBy: "SOURCE_URL",
+    sourceUrl: "https://cdn.example.com/diagram3.svg",
+  });
 
   // Placeholders must appear in document order between surrounding text
   const idx0 = markdown.indexOf("[IMAGE:0]");

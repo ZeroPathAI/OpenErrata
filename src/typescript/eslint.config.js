@@ -265,6 +265,22 @@ export default [
     },
   },
   {
+    // Maintainability guardrails for production TypeScript code.
+    files: ["api/src/**/*.ts", "extension/src/**/*.ts", "shared/src/**/*.ts", "pulumi/**/*.ts"],
+    rules: {
+      "max-lines": ["error", { max: 900, skipBlankLines: true, skipComments: true }],
+      complexity: ["error", 55],
+    },
+  },
+  {
+    // Integration tests can be larger, but still bounded.
+    files: ["api/test/**/*.ts", "extension/test/**/*.ts", "shared/test/**/*.ts"],
+    rules: {
+      "max-lines": ["error", { max: 1400, skipBlankLines: true, skipComments: true }],
+      complexity: ["error", 70],
+    },
+  },
+  {
     files: ["extension/src/**/*.{js,ts,svelte}"],
     languageOptions: {
       globals: {
