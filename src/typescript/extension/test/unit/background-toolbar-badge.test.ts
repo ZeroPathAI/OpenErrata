@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { ExtensionPostStatus, InvestigationClaim } from "@openerrata/shared";
+import type {
+  ExtensionPostStatus,
+  InvestigationClaim,
+  InvestigationClaimPayload,
+} from "@openerrata/shared";
 
 type ToolbarBadgeModule = typeof import("../../src/background/toolbar-badge");
 
@@ -18,9 +22,29 @@ const toolbarActionState: ActionCallLog = {
   setTitle: [],
 };
 
+function makeClaimPayload(index: number): InvestigationClaimPayload {
+  return {
+    text: `Claim ${index.toString()}`,
+    context: "Context",
+    summary: "Summary",
+    reasoning: "Reasoning",
+    sources: [
+      {
+        url: "https://example.com",
+        title: "Example Source",
+        snippet: "Snippet",
+      },
+    ],
+  };
+}
+
 function createPostStatus(
   state: "NOT_INVESTIGATED" | "INVESTIGATING" | "FAILED" | "INVESTIGATED",
-  options: { claimCount?: number } = {},
+  options: {
+    claimCount?: number;
+    pendingClaimCount?: number;
+    confirmedClaimCount?: number;
+  } = {},
 ): ExtensionPostStatus {
   const sessionId = 1 as ExtensionPostStatus["tabSessionId"];
 
@@ -46,13 +70,20 @@ function createPostStatus(
   }
 
   if (state === "INVESTIGATING") {
+    const pendingClaims = Array.from({ length: options.pendingClaimCount ?? 0 }, (_value, index) =>
+      makeClaimPayload(index),
+    );
+    const confirmedClaims = Array.from(
+      { length: options.confirmedClaimCount ?? 0 },
+      (_value, index) => makeClaimPayload(index + (options.pendingClaimCount ?? 0)),
+    );
     const status: ExtensionPostStatus = {
       ...base,
       investigationState: "INVESTIGATING",
       status: "PENDING",
       provenance: "SERVER_VERIFIED",
-      pendingClaims: [],
-      confirmedClaims: [],
+      pendingClaims,
+      confirmedClaims,
       priorInvestigationResult: null,
     };
     return status;
@@ -70,17 +101,7 @@ function createPostStatus(
   const claims = Array.from({ length: options.claimCount ?? 0 }, (_value, index) => {
     const claim: InvestigationClaim = {
       id: claimId(`claim-${index.toString()}`),
-      text: `Claim ${index.toString()}`,
-      context: "Context",
-      summary: "Summary",
-      reasoning: "Reasoning",
-      sources: [
-        {
-          url: "https://example.com",
-          title: "Example Source",
-          snippet: "Snippet",
-        },
-      ],
+      ...makeClaimPayload(index),
     };
     return claim;
   });
@@ -367,6 +388,47 @@ test("upgrade-required state overrides badge and title until cleared", async () 
       tabId: 30,
       title: "OpenErrata",
     });
+  } finally {
+    intervals.restore();
+  }
+});
+
+test("updateToolbarBadge shows claim count in amber when INVESTIGATING has claims", async () => {
+  const calls = installChromeActionMock();
+  const intervals = installIntervalMocks();
+
+  try {
+    const { updateToolbarBadge } = await importToolbarBadgeModule();
+
+    // INVESTIGATING with 2 pending + 1 confirmed = 3 total claims
+    updateToolbarBadge(
+      40,
+      createPostStatus("INVESTIGATING", { pendingClaimCount: 2, confirmedClaimCount: 1 }),
+    );
+    await flushAsyncQueue();
+
+    assert.deepEqual(calls.setBadgeText[0], { tabId: 40, text: "3" });
+    const colorCall = requireSetBadgeColorCall(calls.setBadgeBackgroundColor[0]);
+    assert.equal(colorCall.color, "#f59e0b", "in-progress claims should use amber badge color");
+  } finally {
+    intervals.restore();
+  }
+});
+
+test("updateToolbarBadge shows ellipsis when INVESTIGATING has no claims", async () => {
+  const calls = installChromeActionMock();
+  const intervals = installIntervalMocks();
+
+  try {
+    const { updateToolbarBadge } = await importToolbarBadgeModule();
+
+    // INVESTIGATING with 0 claims — should show "…" in blue (existing behavior)
+    updateToolbarBadge(41, createPostStatus("INVESTIGATING"));
+    await flushAsyncQueue();
+
+    assert.deepEqual(calls.setBadgeText[0], { tabId: 41, text: "…" });
+    const colorCall = requireSetBadgeColorCall(calls.setBadgeBackgroundColor[0]);
+    assert.equal(colorCall.color, "#3b82f6", "no-claims investigating should use blue badge color");
   } finally {
     intervals.restore();
   }

@@ -169,6 +169,13 @@ function toToolbarBadgeState(
   }
 
   if (status.investigationState === "INVESTIGATING") {
+    const inProgressClaimCount = status.pendingClaims.length + status.confirmedClaims.length;
+    if (inProgressClaimCount > 0) {
+      return {
+        text: inProgressClaimCount.toString(),
+        color: "#f59e0b",
+      };
+    }
     return {
       text: "…",
       color: "#3b82f6",

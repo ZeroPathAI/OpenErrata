@@ -39,15 +39,30 @@ const VIDEO_SELECTOR = [
   ".mw-tmh-play",
 ].join(",");
 const INLINE_WIKIPEDIA_CONFIG_SCRIPT_HINTS = ["RLCONF", "mw.config.set"] as const;
-type InlineMwConfigCacheEntry =
-  | {
-      found: false;
-    }
-  | {
-      found: true;
-      value: unknown;
-    };
-const inlineMwConfigCache = new WeakMap<Document, Map<string, InlineMwConfigCacheEntry>>();
+
+// ── MediaWiki config reading ──────────────────────────────────────────────
+//
+// Wikipedia pages embed article metadata (page ID, revision ID, timestamps)
+// in inline <script> tags via mw.config.set / RLCONF. In the main world,
+// these are accessible via `window.mw.config.get(key)`, but content scripts
+// run in an isolated world where page globals are not directly readable.
+//
+// To avoid scanning all <script> tags once per key (5 keys × ~10 scripts),
+// readMwConfig() collects every needed value in a single pass through the
+// DOM. The result is a plain object scoped to the extract() call — no
+// module-level state that could go stale across SPA navigations.
+
+/** The set of MediaWiki config keys that extract() needs. */
+const MW_CONFIG_KEYS = [
+  "wgNamespaceNumber",
+  "wgArticleId",
+  "wgRevisionId",
+  "wgRevisionTimestamp",
+  "wgPageName",
+] as const;
+
+type MwConfigKey = (typeof MW_CONFIG_KEYS)[number];
+type MwConfig = Record<MwConfigKey, unknown>;
 
 type MediaWikiWindow = Window & {
   mw?: {
@@ -70,20 +85,14 @@ function decodeJsonStringLiteral(value: string): string | null {
   }
 }
 
-function parseMwConfigValueFromScriptText(
-  scriptText: string,
-  key: string,
-): InlineMwConfigCacheEntry {
+function parseMwConfigValueFromScriptText(scriptText: string, key: string): unknown {
   const escapedKey = escapeRegExp(key);
 
   const numberMatch = new RegExp(`"${escapedKey}"\\s*:\\s*(-?\\d+)`).exec(scriptText);
   if (numberMatch?.[1] !== undefined) {
     const numericValue = Number(numberMatch[1]);
     if (Number.isInteger(numericValue)) {
-      return {
-        found: true,
-        value: numericValue,
-      };
+      return numericValue;
     }
   }
 
@@ -93,78 +102,85 @@ function parseMwConfigValueFromScriptText(
   if (stringMatch?.[1] !== undefined) {
     const decoded = decodeJsonStringLiteral(stringMatch[1]);
     if (decoded !== null) {
-      return {
-        found: true,
-        value: decoded,
-      };
+      return decoded;
     }
   }
 
   const booleanMatch = new RegExp(`"${escapedKey}"\\s*:\\s*(true|false|!0|!1)`).exec(scriptText);
   if (booleanMatch?.[1] !== undefined) {
-    return {
-      found: true,
-      value: booleanMatch[1] === "true" || booleanMatch[1] === "!0",
-    };
+    return booleanMatch[1] === "true" || booleanMatch[1] === "!0";
   }
 
   if (new RegExp(`"${escapedKey}"\\s*:\\s*null`).test(scriptText)) {
-    return {
-      found: true,
-      value: null,
-    };
+    return null;
   }
 
-  return {
-    found: false,
-  };
+  return undefined;
 }
 
-function readMwConfigValueFromInlineScripts(document: Document, key: string): unknown {
-  let cacheByKey = inlineMwConfigCache.get(document);
-  if (cacheByKey === undefined) {
-    cacheByKey = new Map<string, InlineMwConfigCacheEntry>();
-    inlineMwConfigCache.set(document, cacheByKey);
+/**
+ * Read all needed MediaWiki config values in a single pass. Tries
+ * `window.mw.config.get()` first (main-world access), then falls back to
+ * regex parsing of inline `<script>` tags.
+ *
+ * Returns a plain object scoped to this call — no module-level cache.
+ */
+function readMwConfig(document: Document): MwConfig {
+  const config: MwConfig = {
+    wgNamespaceNumber: undefined,
+    wgArticleId: undefined,
+    wgRevisionId: undefined,
+    wgRevisionTimestamp: undefined,
+    wgPageName: undefined,
+  };
+
+  // Try the runtime mw.config API first (works when page globals are
+  // accessible, e.g. in the main world or JSDOM tests with globalSetup).
+  const defaultView = document.defaultView as MediaWikiWindow | null;
+  const mwConfigGet = defaultView?.mw?.config?.get;
+  if (mwConfigGet !== undefined) {
+    let allFound = true;
+    for (const key of MW_CONFIG_KEYS) {
+      const value = mwConfigGet(key);
+      if (value !== undefined) {
+        config[key] = value;
+      } else {
+        allFound = false;
+      }
+    }
+    if (allFound) {
+      return config;
+    }
   }
 
-  const cachedEntry = cacheByKey.get(key);
-  if (cachedEntry !== undefined) {
-    return cachedEntry.found ? cachedEntry.value : undefined;
-  }
+  // Fall back to inline script parsing for keys not found via mw.config.
+  // Collect the keys still missing so we can stop early once all are found.
+  const missing = new Set<MwConfigKey>(MW_CONFIG_KEYS.filter((key) => config[key] === undefined));
 
   for (const script of document.querySelectorAll<HTMLScriptElement>("script:not([src])")) {
+    if (missing.size === 0) break;
+
     const scriptText = script.text;
-    if (!scriptText.includes(`"${key}"`)) {
-      continue;
-    }
     if (!INLINE_WIKIPEDIA_CONFIG_SCRIPT_HINTS.some((hint) => scriptText.includes(hint))) {
       continue;
     }
 
-    const entry = parseMwConfigValueFromScriptText(scriptText, key);
-    if (entry.found) {
-      cacheByKey.set(key, entry);
-      return entry.value;
+    for (const key of missing) {
+      if (!scriptText.includes(`"${key}"`)) {
+        continue;
+      }
+      const value = parseMwConfigValueFromScriptText(scriptText, key);
+      if (value !== undefined) {
+        config[key] = value;
+        missing.delete(key);
+      }
     }
   }
 
-  cacheByKey.set(key, {
-    found: false,
-  });
-  return undefined;
+  return config;
 }
 
-function readMwConfigValue(document: Document, key: string): unknown {
-  const defaultView = document.defaultView as MediaWikiWindow | null;
-  const fromMwRuntime = defaultView?.mw?.config?.get?.(key);
-  if (fromMwRuntime !== undefined) {
-    return fromMwRuntime;
-  }
-
-  // Content scripts run in an isolated world, so page globals like `window.mw`
-  // are not guaranteed to be directly readable. Fall back to inline config.
-  return readMwConfigValueFromInlineScripts(document, key);
-}
+// ── DOM helpers ───────────────────────────────────────────────────────────
 
 function toIdString(value: unknown): string | null {
   if (typeof value === "number" && Number.isInteger(value) && value >= 0) {
@@ -297,13 +313,15 @@ function displayTitleFromDocument(document: Document): string | undefined {
   return headingText.length > 0 ? headingText : undefined;
 }
 
-function metadataTitleFromConfig(document: Document): string | null {
-  const pageName = readMwConfigValue(document, "wgPageName");
+function metadataTitleFromMwConfig(mwConfig: MwConfig): string | null {
+  const pageName = mwConfig.wgPageName;
   if (typeof pageName !== "string") {
     return null;
   }
   return normalizeWikipediaTitleToken(pageName);
 }
+
+// ── Adapter ───────────────────────────────────────────────────────────────
 
 export const wikipediaAdapter: PlatformAdapter = {
   platformKey: "WIKIPEDIA",
@@ -326,7 +344,10 @@ export const wikipediaAdapter: PlatformAdapter = {
       };
     }
 
-    const namespaceNumber = readMwConfigValue(document, "wgNamespaceNumber");
+    // Read all MediaWiki config values in one pass — no module-level cache.
+    const mwConfig = readMwConfig(document);
+
+    const namespaceNumber = mwConfig.wgNamespaceNumber;
     if (typeof namespaceNumber === "number" && namespaceNumber !== 0) {
       return {
         kind: "not_ready",
@@ -354,8 +375,8 @@ export const wikipediaAdapter: PlatformAdapter = {
       };
     }
 
-    const pageId = toIdString(readMwConfigValue(document, "wgArticleId"));
-    const revisionId = toIdString(readMwConfigValue(document, "wgRevisionId"));
+    const pageId = toIdString(mwConfig.wgArticleId);
+    const revisionId = toIdString(mwConfig.wgRevisionId);
     if (pageId === null || pageId.length === 0 || revisionId === null || revisionId.length === 0) {
       return {
         kind: "not_ready",
@@ -363,7 +384,7 @@ export const wikipediaAdapter: PlatformAdapter = {
       };
     }
 
-    const metadataTitle = identity.title ?? metadataTitleFromConfig(document);
+    const metadataTitle = identity.title ?? metadataTitleFromMwConfig(mwConfig);
     if (metadataTitle === null || metadataTitle.length === 0) {
       return {
         kind: "not_ready",
@@ -375,7 +396,7 @@ export const wikipediaAdapter: PlatformAdapter = {
     const hasVideo = prunedRoot.querySelector(VIDEO_SELECTOR) !== null;
     const mediaState = hasVideo ? "has_video" : imageUrls.length > 0 ? "has_images" : "text_only";
 
-    const lastModifiedAt = toIsoDate(readMwConfigValue(document, "wgRevisionTimestamp"));
+    const lastModifiedAt = toIsoDate(mwConfig.wgRevisionTimestamp);
     const displayTitle = displayTitleFromDocument(document);
 
     return {

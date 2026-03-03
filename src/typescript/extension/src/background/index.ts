@@ -751,24 +751,18 @@ async function maybeAutoInvestigate(input: {
   request: ViewPostInput;
   registeredVersion: RegisterObservedVersionOutput;
   existingStatus: ExtensionPostStatus | null;
-  // The NOT_INVESTIGATED status to write if we decide not to run. Callers omit
-  // the upfront cachePostStatus write so that the popup never flashes
-  // NOT_INVESTIGATED before INVESTIGATING is set by the auto-investigate path.
-  deferredNotInvestigatedStatus: ExtensionPostStatus;
 }): Promise<void> {
   const requestExternalId = viewPostExternalId(input.request);
 
+  // The caller already wrote NOT_INVESTIGATED to cache, so bail-out paths
+  // here do not need to write anything — the cache already has a valid status.
   if (!hasUserOpenAiKey() || !isAutoInvestigateEnabled()) {
-    await cachePostStatus(input.tabId, input.deferredNotInvestigatedStatus);
     return;
   }
   if (input.existingStatus?.investigationState === "INVESTIGATING") {
-    await cachePostStatus(input.tabId, input.deferredNotInvestigatedStatus);
     return;
   }
   if (isStaleTabSession(input.tabId, input.tabSessionId)) {
-    // Session already retired — no cache write needed; the newer session's
-    // PAGE_CONTENT handler will write the correct status.
     return;
   }
 
@@ -951,18 +945,17 @@ async function handlePageContent(
       await cachePostStatus(tabId, nextStatus);
       await maybeResumePollingFromCachedStatus(tabId, nextStatus);
     } else if (postCacheAction === "AUTO_INVESTIGATE") {
-      // Defer the NOT_INVESTIGATED cache write into maybeAutoInvestigate so the
-      // popup never briefly renders the "Investigate Now" button before the
-      // auto-investigate HTTP round-trip completes and overwrites it with
-      // INVESTIGATING.  maybeAutoInvestigate writes NOT_INVESTIGATED only when
-      // it decides not to run (no key, disabled, stale session).
+      // Write the NOT_INVESTIGATED status immediately so the popup never shows
+      // "Checking This Page" while waiting for the auto-investigate round-trip.
+      // maybeAutoInvestigate will overwrite with INVESTIGATING once the API
+      // call succeeds.
+      await cachePostStatus(tabId, nextStatus);
       void maybeAutoInvestigate({
         tabId,
         tabSessionId: payload.tabSessionId,
         request,
         registeredVersion,
         existingStatus: existingForSession,
-        deferredNotInvestigatedStatus: nextStatus,
       }).catch((error: unknown) => {
         console.error("auto investigate failed:", error);
       });

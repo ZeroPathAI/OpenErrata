@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { JSDOM } from "jsdom";
+import { JSDOM } from "jsdom";
 import { wikipediaAdapter } from "../../src/content/adapters/wikipedia.js";
 import { assertNotReady, assertReady, withWindow } from "../helpers/adapter-harness.js";
 
@@ -504,4 +504,98 @@ test("Wikipedia adapter excludes noscript tracking pixel when last section is no
     ready.content.imageUrls.every((url) => !url.includes("CentralAutoLogin")),
     "CentralAutoLogin URL must not appear in imageUrls",
   );
+});
+
+// ── Stateless extraction across SPA navigations ──────────────────────────
+// Wikipedia uses pushState for internal navigation, keeping the same Document
+// object. The adapter must be stateless (no module-level cache) so that each
+// extract() call reads the current inline scripts, not stale values from a
+// previous article.
+
+function makeWikipediaHtml(config: {
+  wgArticleId: number;
+  wgRevisionId: number;
+  wgPageName: string;
+}): string {
+  return `<!doctype html>
+    <html>
+      <head>
+        <script>
+          RLCONF={"wgNamespaceNumber":0,"wgPageName":"${config.wgPageName}","wgArticleId":${config.wgArticleId.toString()},"wgRevisionId":${config.wgRevisionId.toString()},"wgRevisionTimestamp":"20260115010203"};
+        </script>
+      </head>
+      <body>
+        <h1 id="firstHeading">${config.wgPageName.replace(/_/g, " ")}</h1>
+        <div id="mw-content-text">
+          <div class="mw-parser-output">
+            <p>Article content for ${config.wgPageName}.</p>
+          </div>
+        </div>
+      </body>
+    </html>`;
+}
+
+test("Wikipedia adapter reads fresh config on each extract() call (stateless across SPA navigations)", () => {
+  // Use JSDOM directly so we can mutate the same Document's URL via
+  // dom.reconfigure() to simulate pushState navigation.
+  const articleAUrl = "https://en.wikipedia.org/wiki/Climate_change";
+  const articleBUrl = "https://en.wikipedia.org/wiki/Ocean_acidification";
+
+  const dom = new JSDOM(
+    makeWikipediaHtml({ wgArticleId: 12345, wgRevisionId: 11111, wgPageName: "Climate_change" }),
+    { url: articleAUrl },
+  );
+
+  const scope = globalThis as Record<string, unknown>;
+  const savedWindow = scope["window"];
+  const savedDocument = scope["document"];
+  const savedDocumentCtor = scope["Document"];
+  const savedElementCtor = scope["Element"];
+  const savedNodeCtor = scope["Node"];
+  const savedNodeFilterCtor = scope["NodeFilter"];
+
+  scope["window"] = dom.window;
+  scope["document"] = dom.window.document;
+  scope["Document"] = dom.window.Document;
+  scope["Element"] = dom.window.Element;
+  scope["Node"] = dom.window.Node;
+  scope["NodeFilter"] = dom.window.NodeFilter;
+
+  try {
+    // Extract article A — should read pageId 12345
+    const resultA = wikipediaAdapter.extract(dom.window.document);
+    const readyA = assertReady(resultA);
+    assert.equal(readyA.content.platform, "WIKIPEDIA");
+    assert.equal(readyA.content.metadata.pageId, "12345");
+
+    // Simulate SPA navigation: change URL and replace inline script content
+    dom.reconfigure({ url: articleBUrl });
+    const script = dom.window.document.querySelector("script:not([src])");
+    assert.ok(script, "inline script must exist");
+    script.textContent = `RLCONF={"wgNamespaceNumber":0,"wgPageName":"Ocean_acidification","wgArticleId":67890,"wgRevisionId":22222,"wgRevisionTimestamp":"20260215010203"};`;
+
+    // Also update the heading and body for adapter identity extraction
+    const heading = dom.window.document.querySelector("#firstHeading");
+    if (heading) heading.textContent = "Ocean acidification";
+    const paragraph = dom.window.document.querySelector(".mw-parser-output p");
+    if (paragraph) paragraph.textContent = "Article content for Ocean_acidification.";
+
+    // Extract article B — must read pageId 67890, NOT stale 12345
+    const resultB = wikipediaAdapter.extract(dom.window.document);
+    const readyB = assertReady(resultB);
+    assert.equal(readyB.content.platform, "WIKIPEDIA");
+    assert.equal(
+      readyB.content.metadata.pageId,
+      "67890",
+      "each extract() call must read current inline scripts, not stale values",
+    );
+    assert.equal(readyB.content.metadata.title, "Ocean_acidification");
+  } finally {
+    scope["window"] = savedWindow;
+    scope["document"] = savedDocument;
+    scope["Document"] = savedDocumentCtor;
+    scope["Element"] = savedElementCtor;
+    scope["Node"] = savedNodeCtor;
+    scope["NodeFilter"] = savedNodeFilterCtor;
+  }
 });
