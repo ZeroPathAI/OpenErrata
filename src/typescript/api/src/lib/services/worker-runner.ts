@@ -3,10 +3,10 @@ import { getEnv } from "$lib/config/env.js";
 import { normalizePgConnectionStringForNode } from "$lib/db/connection-string.js";
 import { orchestrateInvestigation } from "./orchestrator.js";
 
-function isInvestigatePayload(payload: unknown): payload is { runId: string } {
+function isInvestigatePayload(payload: unknown): payload is { investigationId: string } {
   if (typeof payload !== "object" || payload === null) return false;
-  if (!("runId" in payload)) return false;
-  return typeof payload.runId === "string" && payload.runId.length > 0;
+  if (!("investigationId" in payload)) return false;
+  return typeof payload.investigationId === "string" && payload.investigationId.length > 0;
 }
 
 export async function startWorker(): Promise<void> {
@@ -21,11 +21,7 @@ export async function startWorker(): Promise<void> {
           throw new Error("Invalid investigate payload");
         }
 
-        const attemptNumber = helpers.job.attempts;
-        const isLastAttempt = attemptNumber >= helpers.job.max_attempts;
-        await orchestrateInvestigation(payload.runId, helpers.logger, {
-          isLastAttempt,
-          attemptNumber,
+        await orchestrateInvestigation(payload.investigationId, helpers.logger, {
           workerIdentity: `worker-job-${helpers.job.id}`,
         });
       },

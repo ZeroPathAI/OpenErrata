@@ -1,19 +1,34 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { persistCompletedInvestigation } from "../../src/lib/services/orchestrator.js";
+import {
+  markInvestigationFailedInTx,
+  releaseLeaseToRetryInTx,
+} from "../../src/lib/services/attempt-audit.js";
 import type { Prisma } from "../../src/lib/generated/prisma/client";
 import type { InvestigatorAttemptAudit } from "../../src/lib/investigators/interface.js";
 
 /**
- * Invariant under test:
+ * Invariants under test:
  *
- * `persistCompletedInvestigation` uses a guard-first pattern: it atomically
- * transitions the investigation from PROCESSING → COMPLETE via updateMany.
- * If updateMany matches 0 rows (investigation already terminal or leased by
- * another worker), the function returns false WITHOUT writing claims or audit.
+ * All three terminal/reclaim transaction helpers share the same two-step
+ * guard-first pattern:
  *
- * There is no database uniqueness constraint on (investigationId, claim.text),
- * so if the guard is removed or bypassed, duplicate claims silently accumulate.
+ * Step 1 — Lease guard: delete the InvestigationLease row matching the
+ *   worker's identity. If deleteMany returns 0 (lease already gone — another
+ *   worker reclaimed it, or the investigation reached a terminal state), the
+ *   function returns false WITHOUT making any further writes.
+ *
+ * Step 2 — Status invariant: assert that after deleting the lease, the
+ *   investigation is still PROCESSING. If not, throw — the lease-existence ↔
+ *   PROCESSING structural invariant has been violated. The throw rolls back
+ *   the transaction, restoring the lease row, and surfaces the bug loudly.
+ *
+ * Why these invariants matter:
+ * - Without step 1, two workers could both complete the same investigation,
+ *   producing duplicate Claim rows (no DB uniqueness constraint on claim text).
+ * - Without step 2, a lease could be deleted while the investigation is in an
+ *   inconsistent non-PROCESSING state, silently corrupting the lifecycle.
  */
 
 function makeMinimalAttemptAudit(): InvestigatorAttemptAudit {
@@ -55,14 +70,18 @@ function makeClaim() {
 test("persistCompletedInvestigation returns false and writes nothing when guard fails", async () => {
   let claimCreateCalled = false;
   let attemptUpsertCalled = false;
-  let runUpdateCalled = false;
 
-  // Mock transaction client where updateMany returns 0 rows (guard fails).
-  // All other methods throw if called — the test fails if any write leaks
-  // past the guard.
+  // Mock transaction client where investigationLease.deleteMany returns 0 rows
+  // (guard fails). All other methods throw if called — the test fails if any
+  // write leaks past the guard.
   const mockTx = {
+    investigationLease: {
+      deleteMany: async () => ({ count: 0 }),
+    },
     investigation: {
-      updateMany: async () => ({ count: 0 }),
+      updateMany: async () => {
+        throw new Error("Investigation updateMany leaked past guard");
+      },
     },
     investigationAttempt: {
       upsert: async () => {
@@ -76,17 +95,11 @@ test("persistCompletedInvestigation returns false and writes nothing when guard 
         throw new Error("Claim write leaked past guard");
       },
     },
-    investigationRun: {
-      update: async () => {
-        runUpdateCalled = true;
-        throw new Error("Run update leaked past guard");
-      },
-    },
   } as unknown as Prisma.TransactionClient;
 
   const result = await persistCompletedInvestigation(mockTx, {
     investigationId: "inv-test-123",
-    runId: "run-test-456",
+    workerIdentity: "worker-test-456",
     claims: [makeClaim(), makeClaim()],
     attemptNumber: 1,
     attemptAudit: makeMinimalAttemptAudit(),
@@ -96,28 +109,31 @@ test("persistCompletedInvestigation returns false and writes nothing when guard 
   assert.equal(result, false, "Should return false when guard matches 0 rows");
   assert.equal(claimCreateCalled, false, "claim.create must not be called when guard fails");
   assert.equal(attemptUpsertCalled, false, "attemptAudit must not be written when guard fails");
-  assert.equal(runUpdateCalled, false, "investigationRun must not be updated when guard fails");
 });
 
 test("persistCompletedInvestigation proceeds to claim writes when guard succeeds", async () => {
-  // When the guard matches (count=1), the function must proceed to write
-  // claims. We verify this by checking that persistAttemptAudit is called
-  // (which happens immediately after the guard, before claim writes).
-  // Full claim-write verification is covered by integration tests with a
-  // real database.
-  let persistAttemptAuditReached = false;
+  // When the guard matches (count=1), the function must proceed to update
+  // investigation status via updateMany. We verify this by checking that
+  // investigation.updateMany is called (which happens immediately after the
+  // lease guard). Full claim-write verification is covered by integration tests.
+  let investigationUpdateManyReached = false;
 
   const mockTx = {
-    investigation: {
-      updateMany: async () => ({ count: 1 }),
+    investigationLease: {
+      deleteMany: async () => ({ count: 1 }),
     },
-    // persistAttemptAudit calls upsert first — intercept it to prove
-    // execution continued past the guard.
+    investigation: {
+      updateMany: async () => {
+        investigationUpdateManyReached = true;
+        // Return count=1 to indicate the status transition succeeded, then
+        // throw on the next call to short-circuit the deeply-mocked path.
+        return { count: 1 };
+      },
+    },
+    // persistAttemptAudit calls upsert first — intercept it to stop execution
+    // after verifying the guard passed and updateMany was called.
     investigationAttempt: {
       upsert: async () => {
-        persistAttemptAuditReached = true;
-        // Throw to short-circuit the rest of the deeply-mocked path.
-        // The key assertion is that we GOT HERE at all.
         throw new Error("Mock: stopping after guard verification");
       },
     },
@@ -126,7 +142,7 @@ test("persistCompletedInvestigation proceeds to claim writes when guard succeeds
   await assert.rejects(
     persistCompletedInvestigation(mockTx, {
       investigationId: "inv-test-123",
-      runId: "run-test-456",
+      workerIdentity: "worker-test-456",
       claims: [makeClaim()],
       attemptNumber: 1,
       attemptAudit: makeMinimalAttemptAudit(),
@@ -136,8 +152,84 @@ test("persistCompletedInvestigation proceeds to claim writes when guard succeeds
   );
 
   assert.equal(
-    persistAttemptAuditReached,
+    investigationUpdateManyReached,
     true,
-    "When guard succeeds (count=1), execution must proceed past the guard to persistAttemptAudit",
+    "When guard succeeds (count=1), execution must proceed past the guard to investigation.updateMany",
+  );
+});
+
+// ── Step-2 invariant: lease deleted but investigation not PROCESSING ──────────
+//
+// All three tx helpers throw (rolling back the lease deletion) when their
+// lease guard succeeds but the subsequent status updateMany matches 0 rows.
+// This surfaces broken lease-lifecycle code loudly instead of silently
+// leaving the DB in a PROCESSING-with-no-lease zombie state.
+
+test("persistCompletedInvestigation throws invariant error when lease deleted but status is not PROCESSING", async () => {
+  const mockTx = {
+    investigationLease: {
+      deleteMany: async () => ({ count: 1 }), // lease found and deleted
+    },
+    investigation: {
+      updateMany: async () => ({ count: 0 }), // but status was not PROCESSING
+    },
+  } as unknown as Prisma.TransactionClient;
+
+  await assert.rejects(
+    persistCompletedInvestigation(mockTx, {
+      investigationId: "inv-test-123",
+      workerIdentity: "worker-test-456",
+      claims: [],
+      attemptNumber: 1,
+      attemptAudit: makeMinimalAttemptAudit(),
+      modelVersion: null,
+    }),
+    /Invariant violation.*inv-test-123/,
+    "Must throw invariant error when lease exists but investigation is not PROCESSING",
+  );
+});
+
+test("markInvestigationFailedInTx throws invariant error when lease deleted but status is not PROCESSING", async () => {
+  const mockTx = {
+    investigationLease: {
+      deleteMany: async () => ({ count: 1 }),
+    },
+    investigation: {
+      updateMany: async () => ({ count: 0 }),
+    },
+  } as unknown as Prisma.TransactionClient;
+
+  await assert.rejects(
+    markInvestigationFailedInTx(mockTx, {
+      investigationId: "inv-test-789",
+      workerIdentity: "worker-test-abc",
+      attemptNumber: 1,
+      attemptAudit: null,
+    }),
+    /Invariant violation.*inv-test-789/,
+    "Must throw invariant error when lease exists but investigation is not PROCESSING",
+  );
+});
+
+test("releaseLeaseToRetryInTx throws invariant error when lease deleted but status is not PROCESSING", async () => {
+  const mockTx = {
+    investigationLease: {
+      deleteMany: async () => ({ count: 1 }),
+    },
+    investigation: {
+      updateMany: async () => ({ count: 0 }),
+    },
+  } as unknown as Prisma.TransactionClient;
+
+  await assert.rejects(
+    releaseLeaseToRetryInTx(mockTx, {
+      investigationId: "inv-test-def",
+      workerIdentity: "worker-test-ghi",
+      attemptNumber: 2,
+      attemptAudit: null,
+      retryAfter: new Date(Date.now() + 20_000),
+    }),
+    /Invariant violation.*inv-test-def/,
+    "Must throw invariant error when lease exists but investigation is not PROCESSING",
   );
 });

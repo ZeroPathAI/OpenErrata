@@ -306,12 +306,12 @@ void test("post.investigateNow creates update lineage metadata for edited server
   assert.equal(storedInvestigation.parentInvestigationId, sourceInvestigation.id);
   assert.notEqual(storedInvestigation.contentDiff, null);
 
-  const runCount = await prisma.investigationRun.count({
-    where: {
-      investigationId: result.investigationId,
-    },
+  const queuedInvestigation = await prisma.investigation.findUnique({
+    where: { id: result.investigationId },
+    select: { queuedAt: true },
   });
-  assert.equal(runCount, 1);
+  assert.ok(queuedInvestigation);
+  assert.notEqual(queuedInvestigation.queuedAt, null);
 });
 
 void test("post.investigateNow creates update lineage metadata using latest complete SERVER_VERIFIED source when canonical provenance is CLIENT_FALLBACK", async () => {
@@ -380,10 +380,12 @@ void test("post.investigateNow creates update lineage metadata using latest comp
   assert.equal(storedInvestigation.parentInvestigationId, sourceInvestigation.id);
   assert.notEqual(storedInvestigation.contentDiff, null);
 
-  const runCount = await prisma.investigationRun.count({
-    where: { investigationId: result.investigationId },
+  const queuedInvestigation2 = await prisma.investigation.findUnique({
+    where: { id: result.investigationId },
+    select: { queuedAt: true },
   });
-  assert.equal(runCount, 1);
+  assert.ok(queuedInvestigation2);
+  assert.notEqual(queuedInvestigation2.queuedAt, null);
 });
 
 void test("post.investigateNow deduplicates concurrent callers to one pending investigation run", async () => {
@@ -433,14 +435,12 @@ void test("post.investigateNow deduplicates concurrent callers to one pending in
   assert.equal(storedInvestigation.id, concurrentResult.investigationId);
   assert.equal(storedInvestigation.status, "PENDING");
 
-  const storedRuns = await prisma.investigationRun.findMany({
-    where: { investigationId: storedInvestigation.id },
-    select: { id: true, queuedAt: true },
+  const storedInvestigationDetails = await prisma.investigation.findUnique({
+    where: { id: storedInvestigation.id },
+    select: { queuedAt: true },
   });
-  assert.equal(storedRuns.length, 1);
-  const storedRun = storedRuns[0];
-  assert.ok(storedRun);
-  assert.notEqual(storedRun.queuedAt, null);
+  assert.ok(storedInvestigationDetails);
+  assert.notEqual(storedInvestigationDetails.queuedAt, null);
 });
 
 void test("post.investigateNow deduplicates concurrent edited-content requests to one pending update investigation", async () => {
@@ -527,12 +527,12 @@ void test("post.investigateNow deduplicates concurrent edited-content requests t
   assert.equal(storedUpdateInvestigation.status, "PENDING");
   assert.equal(storedUpdateInvestigation.parentInvestigationId, sourceInvestigation.id);
 
-  const updateRunCount = await prisma.investigationRun.count({
-    where: {
-      investigationId: updateInvestigationId,
-    },
+  const storedUpdateDetails = await prisma.investigation.findUnique({
+    where: { id: updateInvestigationId },
+    select: { queuedAt: true },
   });
-  assert.equal(updateRunCount, 1);
+  assert.ok(storedUpdateDetails);
+  assert.notEqual(storedUpdateDetails.queuedAt, null);
 });
 
 void test("post.investigateNow deduplicates concurrent user-key callers to one attached key source", async () => {
@@ -554,16 +554,10 @@ void test("post.investigateNow deduplicates concurrent user-key callers to one a
     callers,
   });
 
-  const run = await prisma.investigationRun.findUnique({
-    where: { investigationId: concurrentResult.investigationId },
-    select: { id: true },
-  });
-  assert.ok(run);
-
   const keySources = await prisma.investigationOpenAiKeySource.findMany({
-    where: { runId: run.id },
+    where: { investigationId: concurrentResult.investigationId },
     select: {
-      runId: true,
+      investigationId: true,
       keyId: true,
       expiresAt: true,
     },
@@ -643,52 +637,44 @@ void test("post.investigateNow randomized concurrency fuzz preserves dedupe inva
       `stored investigation status mismatch (${roundTag})`,
     );
 
-    const storedRuns = await prisma.investigationRun.findMany({
-      where: { investigationId },
-      select: {
-        id: true,
-        queuedAt: true,
-        leaseOwner: true,
-        leaseExpiresAt: true,
-      },
-    });
-
     if (fuzzRound.scenario === "COMPLETE") {
-      assert.equal(
-        storedRuns.length,
-        0,
-        `complete scenarios should not create runs via investigateNow path (${roundTag})`,
-      );
       continue;
     }
 
-    assert.equal(storedRuns.length, 1, `there should be exactly one run row (${roundTag})`);
-    const run = storedRuns[0];
-    assert.ok(run, `missing run record (${roundTag})`);
+    const storedDetails = await prisma.investigation.findUnique({
+      where: { id: investigationId },
+      select: { queuedAt: true },
+    });
+    assert.ok(storedDetails, `missing investigation details (${roundTag})`);
 
     if (expectedStoredStatus === "PENDING") {
       assert.notEqual(
-        run.queuedAt,
+        storedDetails.queuedAt,
         null,
         `pending investigations must have queuedAt (${roundTag})`,
       );
     }
 
     if (expectedStoredStatus === "PROCESSING") {
+      const storedLease = await prisma.investigationLease.findUnique({
+        where: { investigationId },
+        select: { leaseOwner: true, leaseExpiresAt: true },
+      });
+      assert.ok(storedLease, `active processing investigations must have lease row (${roundTag})`);
       assert.notEqual(
-        run.leaseOwner,
+        storedLease.leaseOwner,
         null,
         `active processing investigations must retain lease ownership (${roundTag})`,
       );
       assert.notEqual(
-        run.leaseExpiresAt,
+        storedLease.leaseExpiresAt,
         null,
         `active processing investigations must retain lease expiry (${roundTag})`,
       );
     }
 
     const keySourceCount = await prisma.investigationOpenAiKeySource.count({
-      where: { runId: run.id },
+      where: { investigationId },
     });
     if (expectedStoredStatus === "PENDING" && fuzzRound.hasUserKeyCaller) {
       assert.equal(

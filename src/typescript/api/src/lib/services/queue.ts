@@ -9,16 +9,17 @@ const manager = createQueueManager(() =>
   }),
 );
 
-export async function enqueueInvestigationRun(runId: string): Promise<void> {
+export async function enqueueInvestigation(
+  investigationId: string,
+  options?: { runAt?: Date },
+): Promise<void> {
   const utils = await manager.acquire();
-  await utils.addJob(
-    "investigate",
-    { runId },
-    {
-      maxAttempts: 4, // 1 initial + 3 retries
-      jobKey: `investigate-run:${runId}`,
-    },
-  );
+  const spec = {
+    maxAttempts: 1,
+    jobKey: `investigate:${investigationId}`,
+    ...(options?.runAt !== undefined && { runAt: options.runAt }),
+  };
+  await utils.addJob("investigate", { investigationId }, spec);
 }
 
 export async function closeQueueUtils(): Promise<void> {

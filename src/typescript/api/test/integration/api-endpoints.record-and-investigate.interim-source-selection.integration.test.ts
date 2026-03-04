@@ -171,6 +171,12 @@ void test("post.recordViewAndGetStatus returns interim old claims from latest co
 
   const currentCanonicalText = lesswrongHtmlToNormalizedText(currentHtml);
   const currentCanonicalHash = await hashContent(currentCanonicalText);
+  // recordViewAndGetStatus must NOT create or queue an investigation for the
+  // current content version. We verify both:
+  //   (a) no Investigation row exists for this version's content hash, and
+  //   (b) no InvestigationLease row exists (which would indicate a worker
+  //       had started processing a queued investigation).
+  // Note: (b) is implied by (a) via FK, but the explicit check documents intent.
   const currentVersionInvestigations = await prisma.investigation.findMany({
     where: {
       postVersion: {
@@ -182,21 +188,28 @@ void test("post.recordViewAndGetStatus returns interim old claims from latest co
     },
     select: { id: true },
   });
-  assert.equal(currentVersionInvestigations.length, 0);
+  assert.equal(
+    currentVersionInvestigations.length,
+    0,
+    "recordViewAndGetStatus must not create investigations for the current version",
+  );
 
-  const currentVersionRunCount = await prisma.investigationRun.count({
+  const currentVersionLeases = await prisma.investigationLease.findMany({
     where: {
       investigation: {
         postVersion: {
           postId: post.id,
-          contentBlob: {
-            contentHash: currentCanonicalHash,
-          },
+          contentBlob: { contentHash: currentCanonicalHash },
         },
       },
     },
+    select: { investigationId: true },
   });
-  assert.equal(currentVersionRunCount, 0);
+  assert.equal(
+    currentVersionLeases.length,
+    0,
+    "recordViewAndGetStatus must not queue (lease) investigations for the current version",
+  );
 });
 
 void test("post.recordViewAndGetStatus does not reuse CLIENT_FALLBACK investigations as interim update claims", async () => {

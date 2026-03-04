@@ -1,10 +1,5 @@
 import { isUniqueConstraintError } from "$lib/db/errors.js";
-import {
-  Prisma,
-  type Investigation,
-  type InvestigationRun,
-  type PrismaClient,
-} from "$lib/generated/prisma/client";
+import type { Investigation, Prisma, PrismaClient } from "$lib/generated/prisma/client";
 import {
   DEFAULT_INVESTIGATION_MODEL,
   DEFAULT_INVESTIGATION_PROVIDER,
@@ -12,22 +7,8 @@ import {
 } from "@openerrata/shared";
 import { resolveMarkdownForInvestigation } from "./markdown-resolution.js";
 import type { HtmlSnapshots } from "./prompt-context.js";
-import { enqueueInvestigationRun } from "./queue.js";
-import {
-  isRecoverableProcessingRunState,
-  recoveredProcessingRunData,
-  runTimingForInvestigationStatus,
-} from "./investigation-state.js";
+import { enqueueInvestigation } from "./queue.js";
 import { randomUUID } from "node:crypto";
-
-/**
- * Value to assign to `progressClaims` in every Investigation status transition.
- * Setting it to DbNull clears transient progress state and prevents stale
- * progressClaims from being visible after the investigation leaves PROCESSING.
- *
- * Usage: `data: { status: "...", progressClaims: CLEARED_PROGRESS_CLAIMS }`
- */
-export const CLEARED_PROGRESS_CLAIMS = Prisma.DbNull;
 
 export class InvestigationWordLimitError extends Error {
   readonly limit: number;
@@ -220,6 +201,7 @@ async function createInvestigation(
   },
 ): Promise<Investigation> {
   const investigationId = randomUUID();
+  const now = new Date();
   return prisma.$transaction(async (tx) => {
     await tx.investigationInput.create({
       data: {
@@ -247,119 +229,78 @@ async function createInvestigation(
         promptId: input.promptId,
         provider: DEFAULT_INVESTIGATION_PROVIDER,
         model: DEFAULT_INVESTIGATION_MODEL,
+        queuedAt: now,
       },
     });
   });
 }
 
-async function findInvestigationRun(
+/**
+ * Recover a stale PROCESSING investigation whose lease has expired.
+ * Deletes the expired InvestigationLease row and transitions
+ * PROCESSING → PENDING.
+ */
+async function tryRecoverExpiredProcessingInvestigation(
   prisma: PrismaClient,
   investigationId: string,
-): Promise<InvestigationRun | null> {
-  return prisma.investigationRun.findUnique({
-    where: { investigationId },
-  });
-}
-
-async function createInvestigationRun(
-  prisma: PrismaClient,
-  input: {
-    investigationId: string;
-    investigationStatus: Investigation["status"];
-  },
-): Promise<InvestigationRun> {
-  const now = new Date();
-  const timing = runTimingForInvestigationStatus(input.investigationStatus, now);
-  return prisma.investigationRun.create({
-    data: {
-      investigationId: input.investigationId,
-      queuedAt: timing.queuedAt,
-      startedAt: timing.startedAt,
-      heartbeatAt: timing.heartbeatAt,
-    },
-  });
-}
-
-async function tryRecoverExpiredProcessingRun(
-  prisma: PrismaClient,
-  input: {
-    investigationId: string;
-    runId: string;
-  },
-): Promise<{ investigation: Investigation; run: InvestigationRun } | null> {
+): Promise<Investigation | null> {
   const now = new Date();
 
   return prisma.$transaction(async (tx) => {
-    const recoveredRun = await tx.investigationRun.updateMany({
-      where: {
-        id: input.runId,
-        investigation: { is: { status: "PROCESSING" } },
-        OR: [
-          {
-            leaseOwner: { not: null },
-            OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lte: now } }],
-          },
-          {
-            leaseOwner: null,
-            OR: [{ recoverAfterAt: null }, { recoverAfterAt: { lte: now } }],
-          },
-        ],
-      },
-      data: recoveredProcessingRunData(now),
+    // Try to delete an expired lease row.
+    const deleted = await tx.investigationLease.deleteMany({
+      where: { investigationId, leaseExpiresAt: { lte: now } },
     });
 
-    if (recoveredRun.count === 0) return null;
+    if (deleted.count === 0) {
+      // No expired lease was deleted. Check whether a non-expired lease exists.
+      const activeLease = await tx.investigationLease.findUnique({
+        where: { investigationId },
+        select: { investigationId: true },
+      });
+      if (activeLease) return null; // Active lease, can't recover
 
-    await tx.investigation.updateMany({
-      where: {
-        id: input.investigationId,
-        status: "PROCESSING",
-      },
-      data: { status: "PENDING", progressClaims: CLEARED_PROGRESS_CLAIMS },
-    });
+      const investigationStatus = await tx.investigation.findUnique({
+        where: { id: investigationId },
+        select: { status: true },
+      });
+      if (!investigationStatus) return null;
+      if (investigationStatus.status !== "PROCESSING") {
+        // Another concurrent caller likely recovered/transitioned this row
+        // between our candidate selection and recovery attempt.
+        return null;
+      }
 
-    const run = await tx.investigationRun.findUnique({
-      where: { id: input.runId },
-    });
-    const investigation = await tx.investigation.findUnique({
-      where: { id: input.investigationId },
-    });
-
-    if (!run || !investigation) {
+      // PROCESSING with no lease row at all is an invariant violation:
+      // the InvestigationLease row's existence IS the PROCESSING state.
+      // The migration cleans these up, so hitting this in production
+      // indicates a bug in lease lifecycle management.
       throw new Error(
-        `Missing investigation/run during stale-run recovery (investigationId=${input.investigationId}, runId=${input.runId})`,
+        `Invariant violation: PROCESSING investigation ${investigationId} has no InvestigationLease row. ` +
+          `This state should not be reachable — lease row existence is required for PROCESSING status.`,
       );
     }
 
-    return { investigation, run };
-  });
-}
+    // Expired lease deleted — transition PROCESSING → PENDING
+    const recovered = await tx.investigation.updateMany({
+      where: { id: investigationId, status: "PROCESSING" },
+      data: { status: "PENDING", queuedAt: now },
+    });
 
-async function ensureInvestigationRunRecord(
-  prisma: PrismaClient,
-  investigation: Investigation,
-): Promise<{
-  run: InvestigationRun;
-  created: boolean;
-}> {
-  let run = await findInvestigationRun(prisma, investigation.id);
-  let created = false;
+    if (recovered.count === 0) return null;
 
-  if (!run) {
-    try {
-      run = await createInvestigationRun(prisma, {
-        investigationId: investigation.id,
-        investigationStatus: investigation.status,
-      });
-      created = true;
-    } catch (error) {
-      if (!isUniqueConstraintError(error)) throw error;
-      run = await findInvestigationRun(prisma, investigation.id);
-      if (!run) throw error;
+    const investigation = await tx.investigation.findUnique({
+      where: { id: investigationId },
+    });
+
+    if (!investigation) {
+      throw new Error(
+        `Missing investigation during stale-run recovery (investigationId=${investigationId})`,
+      );
     }
-  }
 
-  return { run, created };
+    return investigation;
+  });
 }
 
 interface EnsureInvestigationInput {
@@ -371,10 +312,9 @@ interface EnsureInvestigationInput {
   rejectOverWordLimitOnCreate?: boolean;
   allowRequeueFailed?: boolean;
   enqueue?: boolean;
-  onPendingRun?: (input: {
+  onPendingInvestigation?: (input: {
     prisma: PrismaClient;
     investigation: Investigation;
-    run: InvestigationRun;
   }) => Promise<void>;
 }
 
@@ -419,15 +359,25 @@ async function ensureInvestigationRecord(input: EnsureInvestigationInput): Promi
   }
 
   if (allowRequeueFailed && investigation.status === "FAILED") {
-    investigation = await input.prisma.investigation.update({
-      where: { id: investigation.id },
-      data: {
-        parentInvestigationId: input.parentInvestigationId ?? null,
-        contentDiff: input.contentDiff ?? null,
-        status: "PENDING",
-        checkedAt: null,
-        progressClaims: CLEARED_PROGRESS_CLAIMS,
-      },
+    const failedInvestigation = investigation; // capture narrow type for async callback
+    investigation = await input.prisma.$transaction(async (tx) => {
+      // Defensive cleanup for any leftover lease row from prior failures.
+      await tx.investigationLease.deleteMany({
+        where: { investigationId: failedInvestigation.id },
+      });
+
+      return tx.investigation.update({
+        where: { id: failedInvestigation.id },
+        data: {
+          parentInvestigationId: input.parentInvestigationId ?? null,
+          contentDiff: input.contentDiff ?? null,
+          status: "PENDING",
+          checkedAt: null,
+          queuedAt: new Date(),
+          attemptCount: 0,
+          retryAfter: null,
+        },
+      });
     });
   }
 
@@ -436,43 +386,35 @@ async function ensureInvestigationRecord(input: EnsureInvestigationInput): Promi
 
 export async function ensureInvestigationQueued(input: EnsureInvestigationInput): Promise<{
   investigation: Investigation;
-  run: InvestigationRun;
   created: boolean;
-  runCreated: boolean;
   enqueued: boolean;
 }> {
   const { investigation: initialInvestigation, created } = await ensureInvestigationRecord(input);
-  const { run: initialRun, created: runCreated } = await ensureInvestigationRunRecord(
-    input.prisma,
-    initialInvestigation,
-  );
   let investigation = initialInvestigation;
-  let run = initialRun;
 
-  if (investigation.status === "PROCESSING" && isRecoverableProcessingRunState(run)) {
-    const recovered = await tryRecoverExpiredProcessingRun(input.prisma, {
-      investigationId: investigation.id,
-      runId: run.id,
-    });
+  // Recover stale PROCESSING investigations with expired leases
+  if (investigation.status === "PROCESSING") {
+    const recovered = await tryRecoverExpiredProcessingInvestigation(
+      input.prisma,
+      investigation.id,
+    );
     if (recovered) {
-      investigation = recovered.investigation;
-      run = recovered.run;
+      investigation = recovered;
     }
   }
 
   const shouldEnqueue = input.enqueue ?? true;
   let enqueued = false;
   if (shouldEnqueue && investigation.status === "PENDING") {
-    if (input.onPendingRun) {
-      await input.onPendingRun({
+    if (input.onPendingInvestigation) {
+      await input.onPendingInvestigation({
         prisma: input.prisma,
         investigation,
-        run,
       });
     }
-    await enqueueInvestigationRun(run.id);
+    await enqueueInvestigation(investigation.id);
     enqueued = true;
   }
 
-  return { investigation, run, created, runCreated, enqueued };
+  return { investigation, created, enqueued };
 }

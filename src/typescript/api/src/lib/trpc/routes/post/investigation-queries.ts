@@ -25,6 +25,7 @@ import type { ResolvedPostVersion } from "./content-storage.js";
 
 const investigationWithClaimsInclude = {
   input: true,
+  lease: true,
   postVersion: {
     select: {
       contentBlob: {
@@ -153,14 +154,11 @@ interface EnsureQueuedInput<TPrisma> {
   contentDiff?: string;
   rejectOverWordLimitOnCreate: true;
   allowRequeueFailed: true;
-  onPendingRun?: (input: {
+  onPendingInvestigation?: (input: {
     prisma: TPrisma;
     investigation: {
       id: string;
       status: EnsuredInvestigationStatus;
-    };
-    run: {
-      id: string;
     };
   }) => Promise<void>;
 }
@@ -174,7 +172,9 @@ interface EnsureWithDefaultInput {
   promptId: string;
   postVersion: ResolvedPostVersion;
   sourceInvestigation: LatestServerVerifiedCompleteInvestigation;
-  onPendingRun?: Parameters<typeof ensureInvestigationQueued>[0]["onPendingRun"];
+  onPendingInvestigation?: Parameters<
+    typeof ensureInvestigationQueued
+  >[0]["onPendingInvestigation"];
   ensureQueued?: undefined;
 }
 
@@ -183,7 +183,7 @@ interface EnsureWithCustomInput<TPrisma> {
   promptId: string;
   postVersion: ResolvedPostVersion;
   sourceInvestigation: LatestServerVerifiedCompleteInvestigation;
-  onPendingRun?: EnsureQueuedInput<TPrisma>["onPendingRun"];
+  onPendingInvestigation?: EnsureQueuedInput<TPrisma>["onPendingInvestigation"];
   ensureQueued: EnsureQueued<TPrisma>;
 }
 
@@ -441,8 +441,8 @@ function buildEnsureQueuedInputWithoutPending<TPrisma>(input: {
   promptId: string;
   postVersion: ResolvedPostVersion;
   sourceInvestigation: LatestServerVerifiedCompleteInvestigation;
-}): Omit<EnsureQueuedInput<TPrisma>, "onPendingRun"> {
-  const baseInput: Omit<EnsureQueuedInput<TPrisma>, "onPendingRun"> = {
+}): Omit<EnsureQueuedInput<TPrisma>, "onPendingInvestigation"> {
+  const baseInput: Omit<EnsureQueuedInput<TPrisma>, "onPendingInvestigation"> = {
     prisma: input.prisma,
     postVersionId: input.postVersion.id,
     promptId: input.promptId,
@@ -473,7 +473,7 @@ export async function ensureInvestigationsWithUpdateMetadata<TPrisma>(input: {
   promptId: string;
   postVersion: ResolvedPostVersion;
   sourceInvestigation: LatestServerVerifiedCompleteInvestigation;
-  onPendingRun?: EnsureQueuedInput<TPrisma>["onPendingRun"];
+  onPendingInvestigation?: EnsureQueuedInput<TPrisma>["onPendingInvestigation"];
   ensureQueued: EnsureQueued<TPrisma>;
 }): Promise<EnsureInvestigationResult>;
 
@@ -484,7 +484,9 @@ export async function ensureInvestigationsWithUpdateMetadata<TPrisma>(
         promptId: string;
         postVersion: ResolvedPostVersion;
         sourceInvestigation: LatestServerVerifiedCompleteInvestigation;
-        onPendingRun?: Parameters<typeof ensureInvestigationQueued>[0]["onPendingRun"];
+        onPendingInvestigation?: Parameters<
+          typeof ensureInvestigationQueued
+        >[0]["onPendingInvestigation"];
         ensureQueued?: undefined;
       }
     | EnsureWithCustomInput<TPrisma>,
@@ -497,7 +499,9 @@ export async function ensureInvestigationsWithUpdateMetadata<TPrisma>(
         postVersion: input.postVersion,
         sourceInvestigation: input.sourceInvestigation,
       }),
-      ...(input.onPendingRun === undefined ? {} : { onPendingRun: input.onPendingRun }),
+      ...(input.onPendingInvestigation === undefined
+        ? {}
+        : { onPendingInvestigation: input.onPendingInvestigation }),
     };
     return input.ensureQueued(queuedInput);
   }
@@ -509,7 +513,9 @@ export async function ensureInvestigationsWithUpdateMetadata<TPrisma>(
       postVersion: input.postVersion,
       sourceInvestigation: input.sourceInvestigation,
     }),
-    ...(input.onPendingRun === undefined ? {} : { onPendingRun: input.onPendingRun }),
+    ...(input.onPendingInvestigation === undefined
+      ? {}
+      : { onPendingInvestigation: input.onPendingInvestigation }),
   };
   const ensured = await ensureInvestigationQueued(queuedInput);
   return {

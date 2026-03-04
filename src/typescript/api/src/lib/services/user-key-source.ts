@@ -64,12 +64,16 @@ function decryptOpenAiKey(input: {
   return decrypted.toString("utf8");
 }
 
-type AttachOpenAiKeySourceResult = "ATTACHED" | "ALREADY_ATTACHED" | "NOT_PENDING" | "MISSING_RUN";
+type AttachOpenAiKeySourceResult =
+  | "ATTACHED"
+  | "ALREADY_ATTACHED"
+  | "NOT_PENDING"
+  | "MISSING_INVESTIGATION";
 
-export async function attachOpenAiKeySourceIfPendingRun(
+export async function attachOpenAiKeySourceIfPending(
   prisma: PrismaClient,
   input: {
-    runId: string;
+    investigationId: string;
     openAiApiKey: string;
   },
 ): Promise<AttachOpenAiKeySourceResult> {
@@ -78,25 +82,22 @@ export async function attachOpenAiKeySourceIfPendingRun(
 
   try {
     return await prisma.$transaction(async (tx) => {
-      const run = await tx.investigationRun.findUnique({
-        where: { id: input.runId },
-        select: {
-          id: true,
-          investigation: { select: { status: true } },
-        },
+      const investigation = await tx.investigation.findUnique({
+        where: { id: input.investigationId },
+        select: { id: true, status: true },
       });
-      if (!run) return "MISSING_RUN";
-      if (run.investigation.status !== "PENDING") return "NOT_PENDING";
+      if (!investigation) return "MISSING_INVESTIGATION";
+      if (investigation.status !== "PENDING") return "NOT_PENDING";
 
       const existing = await tx.investigationOpenAiKeySource.findUnique({
-        where: { runId: input.runId },
-        select: { runId: true },
+        where: { investigationId: input.investigationId },
+        select: { investigationId: true },
       });
       if (existing) return "ALREADY_ATTACHED";
 
       await tx.investigationOpenAiKeySource.create({
         data: {
-          runId: input.runId,
+          investigationId: input.investigationId,
           ciphertext: encrypted.ciphertext,
           iv: encrypted.iv,
           authTag: encrypted.authTag,
@@ -112,30 +113,30 @@ export async function attachOpenAiKeySourceIfPendingRun(
   }
 }
 
-type InvestigationRunKeyResolution =
+type InvestigationKeyResolution =
   | { type: "SERVER_KEY" }
   | { type: "USER_OPENAI_KEY"; apiKey: string };
 
 export class ExpiredOpenAiKeySourceError extends Error {
-  constructor(runId: string) {
-    super(`Investigation run ${runId} user-provided OpenAI key expired before worker start`);
+  constructor(investigationId: string) {
+    super(`Investigation ${investigationId} user-provided OpenAI key expired before worker start`);
     this.name = "ExpiredOpenAiKeySourceError";
   }
 }
 
 export class InvalidOpenAiKeySourceError extends Error {
-  constructor(runId: string, reason: string) {
-    super(`Investigation run ${runId} user-provided OpenAI key invalid: ${reason}`);
+  constructor(investigationId: string, reason: string) {
+    super(`Investigation ${investigationId} user-provided OpenAI key invalid: ${reason}`);
     this.name = "InvalidOpenAiKeySourceError";
   }
 }
 
-export async function resolveInvestigationRunKey(
+export async function resolveInvestigationKey(
   prisma: PrismaClient,
-  runId: string,
-): Promise<InvestigationRunKeyResolution> {
+  investigationId: string,
+): Promise<InvestigationKeyResolution> {
   const keySource = await prisma.investigationOpenAiKeySource.findUnique({
-    where: { runId },
+    where: { investigationId },
     select: {
       keyId: true,
       ciphertext: true,
@@ -147,7 +148,7 @@ export async function resolveInvestigationRunKey(
   if (!keySource) return { type: "SERVER_KEY" };
 
   if (keySource.expiresAt.getTime() <= Date.now()) {
-    throw new ExpiredOpenAiKeySourceError(runId);
+    throw new ExpiredOpenAiKeySourceError(investigationId);
   }
 
   try {
@@ -158,15 +159,15 @@ export async function resolveInvestigationRunKey(
     return { type: "USER_OPENAI_KEY", apiKey };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    throw new InvalidOpenAiKeySourceError(runId, reason);
+    throw new InvalidOpenAiKeySourceError(investigationId, reason);
   }
 }
 
 export async function consumeOpenAiKeySource(
   tx: Prisma.TransactionClient,
-  runId: string,
+  investigationId: string,
 ): Promise<void> {
   await tx.investigationOpenAiKeySource.deleteMany({
-    where: { runId },
+    where: { investigationId },
   });
 }

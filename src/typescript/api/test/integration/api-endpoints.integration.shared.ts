@@ -625,21 +625,21 @@ async function assertIntegrationDatabaseInvariants(): Promise<void> {
     `invariant failed: only COMPLETE investigations may have claims: ${JSON.stringify(claimsOnNonCompleteInvestigations)}`,
   );
 
-  const processingInvestigationsWithoutRun = await prisma.$queryRaw<{ investigationId: string }[]>`
+  const processingWithoutLease = await prisma.$queryRaw<{ investigationId: string }[]>`
     SELECT i."id" AS "investigationId"
     FROM "Investigation" i
     JOIN "PostVersion" pv ON pv."id" = i."postVersionId"
     JOIN "Post" p ON p."id" = pv."postId"
-    LEFT JOIN "InvestigationRun" r ON r."investigationId" = i."id"
+    LEFT JOIN "InvestigationLease" il ON il."investigationId" = i."id"
     WHERE p."externalId" LIKE ${integrationExternalIdPrefix}
       AND i."status" = 'PROCESSING'
-      AND r."id" IS NULL
+      AND il."investigationId" IS NULL
     LIMIT 10
   `;
   assert.equal(
-    processingInvestigationsWithoutRun.length,
+    processingWithoutLease.length,
     0,
-    `invariant failed: PROCESSING investigations must have runs: ${JSON.stringify(processingInvestigationsWithoutRun)}`,
+    `invariant failed: PROCESSING investigations must have InvestigationLease row: ${JSON.stringify(processingWithoutLease)}`,
   );
 
   const orphanSources = await prisma.$queryRaw<{ sourceId: string; claimId: string }[]>`
@@ -1105,6 +1105,8 @@ async function seedInvestigation(input: {
   checkedAt?: Date;
   parentInvestigationId?: string;
   contentDiff?: string;
+  leaseOwner?: string | null;
+  leaseExpiresAt?: Date | null;
 }): Promise<{ id: string }> {
   const prompt = await seedPrompt(input.promptLabel);
   const checkedAt = input.status === "COMPLETE" ? (input.checkedAt ?? new Date()) : null;
@@ -1126,7 +1128,7 @@ async function seedInvestigation(input: {
       },
     });
 
-    return tx.investigation.create({
+    const created = await tx.investigation.create({
       data: {
         id: investigationId,
         inputId: investigationId,
@@ -1141,34 +1143,47 @@ async function seedInvestigation(input: {
       },
       select: { id: true },
     });
+
+    if (input.status === "PROCESSING") {
+      const now = new Date();
+      await tx.investigationLease.create({
+        data: {
+          investigationId,
+          leaseOwner: input.leaseOwner ?? "seed-worker",
+          leaseExpiresAt: input.leaseExpiresAt ?? new Date(Date.now() + 60_000),
+          startedAt: now,
+          heartbeatAt: now,
+        },
+      });
+    }
+
+    return created;
   });
 
   return { id: investigation.id };
 }
 
-async function seedInvestigationRun(input: {
+/**
+ * Update the lease timing fields on an existing InvestigationLease row.
+ * The lease row must already exist (created by seedInvestigation when
+ * status=PROCESSING). Uses update (not upsert) to enforce this invariant.
+ */
+async function seedInvestigationWithLeaseFields(input: {
   investigationId: string;
-  leaseOwner?: string | null;
-  leaseExpiresAt?: Date | null;
-  recoverAfterAt?: Date | null;
-  queuedAt?: Date | null;
-  startedAt?: Date | null;
-  heartbeatAt?: Date | null;
-}): Promise<{ id: string }> {
-  const run = await prisma.investigationRun.create({
+  leaseOwner: string;
+  leaseExpiresAt: Date;
+  startedAt: Date;
+  heartbeatAt: Date;
+}): Promise<void> {
+  await prisma.investigationLease.update({
+    where: { investigationId: input.investigationId },
     data: {
-      investigationId: input.investigationId,
-      leaseOwner: input.leaseOwner ?? null,
-      leaseExpiresAt: input.leaseExpiresAt ?? null,
-      recoverAfterAt: input.recoverAfterAt ?? null,
-      queuedAt: input.queuedAt ?? null,
-      startedAt: input.startedAt ?? null,
-      heartbeatAt: input.heartbeatAt ?? null,
+      leaseOwner: input.leaseOwner,
+      leaseExpiresAt: input.leaseExpiresAt,
+      startedAt: input.startedAt,
+      heartbeatAt: input.heartbeatAt,
     },
-    select: { id: true },
   });
-
-  return { id: run.id };
 }
 
 async function seedClaimWithSource(
@@ -1454,7 +1469,7 @@ export {
   seedInstanceApiKey,
   seedInvestigation,
   seedInvestigationForXViewInput,
-  seedInvestigationRun,
+  seedInvestigationWithLeaseFields,
   seedPendingInvestigation,
   seedPost,
   seedPostForXViewInput,

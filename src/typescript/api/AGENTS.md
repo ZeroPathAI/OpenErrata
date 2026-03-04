@@ -54,9 +54,10 @@ tRPC handler → `postRouter` or `publicRouter` → Prisma → PostgreSQL.
 3. Orchestrator (`src/lib/services/orchestrator.ts`) claims a run lease, calls
    the investigator, stores claims + sources, marks COMPLETE or FAILED.
    Delegates to focused sub-modules:
-   - `services/run-lease.ts` — Atomic lease claim/release and heartbeat renewal.
-     Runs keep `PROCESSING` status throughout; lease expiry is the worker
-     exclusivity mechanism (not a status reset to `PENDING`).
+   - `services/investigation-lease.ts` — Atomic lease claim/release and heartbeat
+     renewal via the `InvestigationLease` table. The row's existence represents
+     a PROCESSING investigation with a lease holder; lease expiry is the worker
+     exclusivity mechanism.
    - `services/prompt-context.ts` — Extracts post metadata (platform, URL,
      author, image occurrences, video flag) from the Prisma query result.
    - `services/attempt-audit.ts` — Persists `InvestigationAttempt` records and
@@ -87,11 +88,13 @@ tRPC handler → `postRouter` or `publicRouter` → Prisma → PostgreSQL.
 
 ### Failure Classification (spec §3.7)
 
-- **TRANSIENT**: Provider 5xx, 429, network timeouts → graphile-worker retries
-  with backoff. Investigation stays `PROCESSING`; the run lease is released so
-  the next worker attempt can claim it. Status is **not** reset to `PENDING`
-  (doing so would allow the selector/investigateNow to re-enqueue a duplicate
-  graphile-worker job via jobKey replacement).
+- **TRANSIENT**: Provider 5xx, 429, network timeouts → delete lease, reclaim
+  investigation to `PENDING`, and explicitly re-enqueue with exponential backoff
+  (`10s × 2^(attempt-1)`). `Investigation.attemptCount` tracks retries; after
+  `MAX_INVESTIGATION_ATTEMPTS` (4) the investigation is marked FAILED.
+  The per-investigation `jobKey` (`investigate:${investigationId}`) ensures
+  concurrent enqueue calls from the re-enqueue, selector, or investigateNow
+  all resolve to exactly one graphile-worker job.
 - **NON_RETRYABLE**: Zod validation failure, content-policy refusal, auth errors
   → mark FAILED immediately, don't rethrow.
 - **FAILED is terminal** for a given `postVersionId`. No automatic

@@ -16,10 +16,6 @@ export async function runSelector(): Promise<number> {
       postVersionId: string;
       investigationId: string | null;
       investigationStatus: "PENDING" | "PROCESSING" | "COMPLETE" | "FAILED" | null;
-      runId: string | null;
-      leaseOwner: string | null;
-      leaseExpiresAt: Date | null;
-      recoverAfterAt: Date | null;
     }[]
   >`
     WITH latest_versions AS (
@@ -34,11 +30,7 @@ export async function runSelector(): Promise<number> {
     SELECT
       lv."postVersionId",
       i."id" AS "investigationId",
-      i."status" AS "investigationStatus",
-      r."id" AS "runId",
-      r."leaseOwner",
-      r."leaseExpiresAt",
-      r."recoverAfterAt"
+      i."status" AS "investigationStatus"
     FROM latest_versions lv
     JOIN "Post" p
       ON p."id" = lv."postId"
@@ -46,25 +38,15 @@ export async function runSelector(): Promise<number> {
       ON cb."id" = lv."contentBlobId"
     LEFT JOIN "Investigation" i
       ON i."postVersionId" = lv."postVersionId"
-    LEFT JOIN "InvestigationRun" r
-      ON r."investigationId" = i."id"
+    LEFT JOIN "InvestigationLease" il
+      ON il."investigationId" = i."id"
     WHERE cb."wordCount" <= ${WORD_COUNT_LIMIT}
       AND (
       i."id" IS NULL
-      OR i."status" = 'PENDING'
+      OR (i."status" = 'PENDING' AND (i."retryAfter" IS NULL OR i."retryAfter" <= NOW()))
       OR (
         i."status" = 'PROCESSING'
-        AND (
-          r."id" IS NULL
-          OR (
-            r."leaseOwner" IS NOT NULL
-            AND (r."leaseExpiresAt" IS NULL OR r."leaseExpiresAt" <= NOW())
-          )
-          OR (
-            r."leaseOwner" IS NULL
-            AND (r."recoverAfterAt" IS NULL OR r."recoverAfterAt" <= NOW())
-          )
-        )
+        AND (il."investigationId" IS NULL OR il."leaseExpiresAt" <= NOW())
       )
     )
     ORDER BY p."uniqueViewScore" DESC

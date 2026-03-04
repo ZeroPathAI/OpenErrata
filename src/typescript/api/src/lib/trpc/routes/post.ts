@@ -44,7 +44,7 @@ function parseProvenance(input: {
 }
 import { InvestigationWordLimitError } from "$lib/services/investigation-lifecycle.js";
 import { maybeIncrementUniqueViewScore } from "$lib/services/view-credit.js";
-import { attachOpenAiKeySourceIfPendingRun } from "$lib/services/user-key-source.js";
+import { attachOpenAiKeySourceIfPending } from "$lib/services/user-key-source.js";
 import { validateOpenAiApiKeyForSettings } from "$lib/services/openai-key-validation.js";
 import { registerObservedVersion, findPostVersionById } from "./post/content-storage.js";
 import {
@@ -245,7 +245,7 @@ export const postRouter = router({
           };
         case "PENDING":
         case "PROCESSING": {
-          const progress = parseProgressClaims(investigation.progressClaims);
+          const progress = parseProgressClaims(investigation.lease?.progressClaims ?? null);
           return {
             investigationState: "INVESTIGATING" as const,
             status: investigation.status,
@@ -326,10 +326,10 @@ export const postRouter = router({
           postVersion,
           promptId: prompt.id,
           sourceInvestigation,
-          onPendingRun: async ({ prisma, run }) => {
+          onPendingInvestigation: async ({ prisma, investigation: pendingInvestigation }) => {
             if (ctx.userOpenAiApiKey === null) return;
-            await attachOpenAiKeySourceIfPendingRun(prisma, {
-              runId: run.id,
+            await attachOpenAiKeySourceIfPending(prisma, {
+              investigationId: pendingInvestigation.id,
               openAiApiKey: ctx.userOpenAiApiKey,
             });
           },

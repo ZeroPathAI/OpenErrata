@@ -207,7 +207,7 @@ test("ensureInvestigationsWithUpdateMetadata forwards create and update payloads
     contentDiff?: string;
     rejectOverWordLimitOnCreate: true;
     allowRequeueFailed: true;
-    onPendingRun?: unknown;
+    onPendingInvestigation?: unknown;
   }[] = [];
   const ensureQueued = async (input: (typeof ensureQueuedCalls)[number]) => {
     ensureQueuedCalls.push(input);
@@ -215,14 +215,14 @@ test("ensureInvestigationsWithUpdateMetadata forwards create and update payloads
   };
   const postVersion = buildResolvedPostVersion("new line\ntail");
   const prismaToken = { name: "prisma-token" };
-  const onPendingRun = async () => {};
+  const onPendingInvestigation = async () => {};
 
   await ensureInvestigationsWithUpdateMetadata({
     prisma: prismaToken,
     promptId: "prompt-id",
     postVersion,
     sourceInvestigation: null,
-    onPendingRun,
+    onPendingInvestigation,
     ensureQueued,
   });
 
@@ -232,7 +232,7 @@ test("ensureInvestigationsWithUpdateMetadata forwards create and update payloads
     promptId: "prompt-id",
     rejectOverWordLimitOnCreate: true,
     allowRequeueFailed: true,
-    onPendingRun,
+    onPendingInvestigation,
   });
 
   await ensureInvestigationsWithUpdateMetadata({

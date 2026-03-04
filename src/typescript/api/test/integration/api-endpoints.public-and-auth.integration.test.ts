@@ -47,7 +47,7 @@ import {
   seedInstanceApiKey,
   seedInvestigation,
   seedInvestigationForXViewInput,
-  seedInvestigationRun,
+  seedInvestigationWithLeaseFields,
   seedPendingInvestigation,
   seedPost,
   seedPostForXViewInput,
@@ -110,7 +110,7 @@ void [
   seedInstanceApiKey,
   seedInvestigation,
   seedInvestigationForXViewInput,
-  seedInvestigationRun,
+  seedInvestigationWithLeaseFields,
   seedPendingInvestigation,
   seedPost,
   seedPostForXViewInput,
@@ -197,14 +197,8 @@ void test("post.investigateNow attaches first user key source while investigatio
   assert.equal(firstResult.investigationId, seeded.investigationId);
   assert.equal(firstResult.status, "PENDING");
 
-  const run = await prisma.investigationRun.findUnique({
-    where: { investigationId: seeded.investigationId },
-    select: { id: true },
-  });
-  assert.ok(run);
-
   const storedAfterFirst = await prisma.investigationOpenAiKeySource.findUnique({
-    where: { runId: run.id },
+    where: { investigationId: seeded.investigationId },
     select: {
       ciphertext: true,
       iv: true,
@@ -220,7 +214,7 @@ void test("post.investigateNow attaches first user key source while investigatio
   assert.equal(secondResult.status, "PENDING");
 
   const storedAfterSecond = await prisma.investigationOpenAiKeySource.findUnique({
-    where: { runId: run.id },
+    where: { investigationId: seeded.investigationId },
     select: {
       ciphertext: true,
       iv: true,
@@ -244,7 +238,7 @@ void test("post.investigateNow recovers stale PROCESSING investigations to PENDI
     status: "PROCESSING",
     provenance: "CLIENT_FALLBACK",
   });
-  await seedInvestigationRun({
+  await seedInvestigationWithLeaseFields({
     investigationId: seeded.investigationId,
     leaseOwner: "worker-stale",
     leaseExpiresAt: new Date(Date.now() - 5 * 60_000),
@@ -257,72 +251,22 @@ void test("post.investigateNow recovers stale PROCESSING investigations to PENDI
   assert.equal(result.investigationId, seeded.investigationId);
   assert.equal(result.status, "PENDING");
 
-  const storedInvestigation = await prisma.investigation.findUnique({
+  const stored = await prisma.investigation.findUnique({
     where: { id: seeded.investigationId },
-    select: { status: true },
-  });
-  assert.ok(storedInvestigation);
-  assert.equal(storedInvestigation.status, "PENDING");
-
-  const storedRun = await prisma.investigationRun.findUnique({
-    where: { investigationId: seeded.investigationId },
     select: {
-      leaseOwner: true,
-      leaseExpiresAt: true,
+      status: true,
       queuedAt: true,
     },
   });
-  assert.ok(storedRun);
-  assert.equal(storedRun.leaseOwner, null);
-  assert.equal(storedRun.leaseExpiresAt, null);
-  assert.notEqual(storedRun.queuedAt, null);
-});
+  assert.ok(stored);
+  assert.equal(stored.status, "PENDING");
+  assert.notEqual(stored.queuedAt, null);
 
-void test("post.investigateNow does not recover PROCESSING runs during transient retry recovery window", async () => {
-  const caller = createCaller({ isAuthenticated: true });
-  const input = buildXViewInput({
-    externalId: "investigate-now-keeps-processing-recovery-window-1",
-    observedContentText: "Transient retry windows should not be externally recovered.",
-  });
-  const seeded = await seedInvestigationForXViewInput({
-    viewInput: input,
-    status: "PROCESSING",
-    provenance: "CLIENT_FALLBACK",
-  });
-  const recoverAfterAt = new Date(Date.now() + 5 * 60_000);
-  await seedInvestigationRun({
-    investigationId: seeded.investigationId,
-    leaseOwner: null,
-    leaseExpiresAt: null,
-    recoverAfterAt,
-    startedAt: new Date(Date.now() - 60_000),
-    heartbeatAt: new Date(),
-  });
-
-  const result = await caller.post.investigateNow(input);
-
-  assert.equal(result.investigationId, seeded.investigationId);
-  assert.equal(result.status, "PROCESSING");
-
-  const storedInvestigation = await prisma.investigation.findUnique({
-    where: { id: seeded.investigationId },
-    select: { status: true },
-  });
-  assert.ok(storedInvestigation);
-  assert.equal(storedInvestigation.status, "PROCESSING");
-
-  const storedRun = await prisma.investigationRun.findUnique({
+  // Lease row should be deleted after recovery
+  const storedLease = await prisma.investigationLease.findUnique({
     where: { investigationId: seeded.investigationId },
-    select: {
-      leaseOwner: true,
-      leaseExpiresAt: true,
-      recoverAfterAt: true,
-    },
   });
-  assert.ok(storedRun);
-  assert.equal(storedRun.leaseOwner, null);
-  assert.equal(storedRun.leaseExpiresAt, null);
-  assert.equal(storedRun.recoverAfterAt?.getTime(), recoverAfterAt.getTime());
+  assert.equal(storedLease, null);
 });
 
 void test("post.investigateNow leaves active PROCESSING investigations unchanged", async () => {
@@ -337,7 +281,7 @@ void test("post.investigateNow leaves active PROCESSING investigations unchanged
     provenance: "CLIENT_FALLBACK",
   });
   const leaseExpiresAt = new Date(Date.now() + 10 * 60_000);
-  await seedInvestigationRun({
+  await seedInvestigationWithLeaseFields({
     investigationId: seeded.investigationId,
     leaseOwner: "worker-active",
     leaseExpiresAt,
@@ -350,23 +294,20 @@ void test("post.investigateNow leaves active PROCESSING investigations unchanged
   assert.equal(result.investigationId, seeded.investigationId);
   assert.equal(result.status, "PROCESSING");
 
-  const storedInvestigation = await prisma.investigation.findUnique({
+  const stored = await prisma.investigation.findUnique({
     where: { id: seeded.investigationId },
     select: { status: true },
   });
-  assert.ok(storedInvestigation);
-  assert.equal(storedInvestigation.status, "PROCESSING");
+  assert.ok(stored);
+  assert.equal(stored.status, "PROCESSING");
 
-  const storedRun = await prisma.investigationRun.findUnique({
+  const storedLease = await prisma.investigationLease.findUnique({
     where: { investigationId: seeded.investigationId },
-    select: {
-      leaseOwner: true,
-      leaseExpiresAt: true,
-    },
+    select: { leaseOwner: true, leaseExpiresAt: true },
   });
-  assert.ok(storedRun);
-  assert.equal(storedRun.leaseOwner, "worker-active");
-  assert.equal(storedRun.leaseExpiresAt?.getTime(), leaseExpiresAt.getTime());
+  assert.ok(storedLease);
+  assert.equal(storedLease.leaseOwner, "worker-active");
+  assert.equal(storedLease.leaseExpiresAt.getTime(), leaseExpiresAt.getTime());
 });
 
 void test("selector recovers stale PROCESSING investigations using shared lifecycle rules", async () => {
@@ -387,7 +328,7 @@ void test("selector recovers stale PROCESSING investigations using shared lifecy
     contentText: post.contentText,
     provenance: "CLIENT_FALLBACK",
   });
-  await seedInvestigationRun({
+  await seedInvestigationWithLeaseFields({
     investigationId: processingInvestigation.id,
     leaseOwner: "worker-stale",
     leaseExpiresAt: new Date(Date.now() - 5 * 60_000),
@@ -398,25 +339,22 @@ void test("selector recovers stale PROCESSING investigations using shared lifecy
   const enqueued = await runSelector();
   assert.ok(enqueued >= 1);
 
-  const storedInvestigation = await prisma.investigation.findUnique({
+  const stored = await prisma.investigation.findUnique({
     where: { id: processingInvestigation.id },
-    select: { status: true },
-  });
-  assert.ok(storedInvestigation);
-  assert.equal(storedInvestigation.status, "PENDING");
-
-  const storedRun = await prisma.investigationRun.findUnique({
-    where: { investigationId: processingInvestigation.id },
     select: {
-      leaseOwner: true,
-      leaseExpiresAt: true,
+      status: true,
       queuedAt: true,
     },
   });
-  assert.ok(storedRun);
-  assert.equal(storedRun.leaseOwner, null);
-  assert.equal(storedRun.leaseExpiresAt, null);
-  assert.notEqual(storedRun.queuedAt, null);
+  assert.ok(stored);
+  assert.equal(stored.status, "PENDING");
+  assert.notEqual(stored.queuedAt, null);
+
+  // Lease row should be deleted after recovery
+  const storedLease = await prisma.investigationLease.findUnique({
+    where: { investigationId: processingInvestigation.id },
+  });
+  assert.equal(storedLease, null);
 });
 
 void test("post.investigateNow rejects unauthenticated callers", async () => {

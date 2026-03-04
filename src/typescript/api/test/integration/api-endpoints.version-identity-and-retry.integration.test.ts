@@ -120,13 +120,6 @@ void test("orchestrateInvestigation retries with identical multimodal snapshot i
   );
   assert.equal(queued.status, "PENDING");
 
-  const run = await prisma.investigationRun.findFirst({
-    where: { investigationId: queued.investigationId },
-    orderBy: { createdAt: "asc" },
-    select: { id: true },
-  });
-  assert.ok(run);
-
   const capturedInputs: InvestigatorInput[] = [];
   let invocation = 0;
 
@@ -154,24 +147,18 @@ void test("orchestrateInvestigation retries with identical multimodal snapshot i
   };
 
   try {
-    await assert.rejects(() =>
-      orchestrateInvestigation(
-        run.id,
-        { info() {}, warn() {}, error() {} },
-        {
-          isLastAttempt: false,
-          attemptNumber: 1,
-          workerIdentity: withIntegrationPrefix("worker-retry-snapshot-first"),
-        },
-      ),
+    await orchestrateInvestigation(
+      queued.investigationId,
+      { info() {}, warn() {}, error() {} },
+      {
+        workerIdentity: withIntegrationPrefix("worker-retry-snapshot-first"),
+      },
     );
 
     await orchestrateInvestigation(
-      run.id,
+      queued.investigationId,
       { info() {}, warn() {}, error() {} },
       {
-        isLastAttempt: true,
-        attemptNumber: 2,
         workerIdentity: withIntegrationPrefix("worker-retry-snapshot-second"),
       },
     );

@@ -4,7 +4,7 @@ import {
   createCaller,
   randomInt,
   seedInvestigationForXViewInput,
-  seedInvestigationRun,
+  seedInvestigationWithLeaseFields,
   sleep,
   withIntegrationPrefix,
 } from "../api-endpoints.integration.shared.js";
@@ -192,7 +192,7 @@ async function seedExistingInvestigationForScenario(input: {
   const now = Date.now();
 
   if (input.scenario === "PROCESSING_STALE") {
-    await seedInvestigationRun({
+    await seedInvestigationWithLeaseFields({
       investigationId: seeded.investigationId,
       leaseOwner: withIntegrationPrefix(`stale-worker-${input.round.toString()}`),
       leaseExpiresAt: new Date(now - 10 * 60_000),
@@ -202,7 +202,7 @@ async function seedExistingInvestigationForScenario(input: {
   }
 
   if (input.scenario === "PROCESSING_ACTIVE") {
-    await seedInvestigationRun({
+    await seedInvestigationWithLeaseFields({
       investigationId: seeded.investigationId,
       leaseOwner: withIntegrationPrefix(`active-worker-${input.round.toString()}`),
       leaseExpiresAt: new Date(now + 10 * 60_000),

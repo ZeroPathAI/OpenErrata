@@ -47,7 +47,7 @@ import {
   seedInstanceApiKey,
   seedInvestigation,
   seedInvestigationForXViewInput,
-  seedInvestigationRun,
+  seedInvestigationWithLeaseFields,
   seedPendingInvestigation,
   seedPost,
   seedPostForXViewInput,
@@ -110,7 +110,7 @@ void [
   seedInstanceApiKey,
   seedInvestigation,
   seedInvestigationForXViewInput,
-  seedInvestigationRun,
+  seedInvestigationWithLeaseFields,
   seedPendingInvestigation,
   seedPost,
   seedPostForXViewInput,
@@ -132,6 +132,7 @@ void test("orchestrateInvestigation skips work when lease is held by another wor
     url: "https://x.com/openerrata/status/orchestrator-lease-held-1",
     contentText: "Active leases should short-circuit duplicate workers.",
   });
+  const leaseExpiresAt = new Date(Date.now() + 10 * 60_000);
   const investigation = await seedInvestigation({
     postId: post.id,
     contentHash: post.contentHash,
@@ -139,14 +140,8 @@ void test("orchestrateInvestigation skips work when lease is held by another wor
     provenance: "CLIENT_FALLBACK",
     status: "PROCESSING",
     promptLabel: "orchestrator-lease-held",
-  });
-  const leaseExpiresAt = new Date(Date.now() + 10 * 60_000);
-  const run = await seedInvestigationRun({
-    investigationId: investigation.id,
     leaseOwner: withIntegrationPrefix("lease-holder"),
     leaseExpiresAt,
-    startedAt: new Date(Date.now() - 5_000),
-    heartbeatAt: new Date(),
   });
 
   let investigateCalled = false;
@@ -167,11 +162,9 @@ void test("orchestrateInvestigation skips work when lease is held by another wor
 
   try {
     await orchestrateInvestigation(
-      run.id,
+      investigation.id,
       { info() {}, warn() {}, error() {} },
       {
-        isLastAttempt: false,
-        attemptNumber: 1,
         workerIdentity: withIntegrationPrefix("contending-worker"),
       },
     );
@@ -223,9 +216,6 @@ void test("orchestrateInvestigation passes update context to investigator for up
     parentInvestigationId: parentInvestigation.id,
     contentDiff,
   });
-  const run = await seedInvestigationRun({
-    investigationId: updateInvestigation.id,
-  });
 
   let sawExpectedUpdateContext = false;
   const originalInvestigateDescriptor = Object.getOwnPropertyDescriptor(
@@ -263,11 +253,9 @@ void test("orchestrateInvestigation passes update context to investigator for up
 
   try {
     await orchestrateInvestigation(
-      run.id,
+      updateInvestigation.id,
       { info() {}, warn() {}, error() {} },
       {
-        isLastAttempt: false,
-        attemptNumber: 1,
         workerIdentity: withIntegrationPrefix("worker-update-context"),
       },
     );
@@ -303,9 +291,6 @@ void test("orchestrateInvestigation does not persist late progress updates after
     provenance: "CLIENT_FALLBACK",
     status: "PENDING",
     promptLabel: "orchestrator-late-progress",
-  });
-  const run = await seedInvestigationRun({
-    investigationId: investigation.id,
   });
 
   let resolveLateCallbackFired: () => void = () => {};
@@ -365,11 +350,9 @@ void test("orchestrateInvestigation does not persist late progress updates after
 
   try {
     await orchestrateInvestigation(
-      run.id,
+      investigation.id,
       { info() {}, warn() {}, error() {} },
       {
-        isLastAttempt: false,
-        attemptNumber: 1,
         workerIdentity: withIntegrationPrefix("worker-late-progress"),
       },
     );
@@ -386,11 +369,16 @@ void test("orchestrateInvestigation does not persist late progress updates after
 
   const storedInvestigation = await prisma.investigation.findUnique({
     where: { id: investigation.id },
-    select: { status: true, progressClaims: true },
+    select: { status: true },
   });
   assert.ok(storedInvestigation);
   assert.equal(storedInvestigation.status, "COMPLETE");
-  assert.equal(storedInvestigation.progressClaims, null);
+
+  // After completion, the lease row (which holds progressClaims) is deleted.
+  const storedLease = await prisma.investigationLease.findUnique({
+    where: { investigationId: investigation.id },
+  });
+  assert.equal(storedLease, null);
 });
 
 void test("orchestrateInvestigation ignores stale transient failure after another worker completes", async () => {
@@ -407,9 +395,6 @@ void test("orchestrateInvestigation ignores stale transient failure after anothe
     provenance: "CLIENT_FALLBACK",
     status: "PENDING",
     promptLabel: "orchestrator-race-guard",
-  });
-  const run = await seedInvestigationRun({
-    investigationId: investigation.id,
   });
 
   let callCount = 0;
@@ -452,32 +437,27 @@ void test("orchestrateInvestigation ignores stale transient failure after anothe
 
   try {
     const firstWorker = orchestrateInvestigation(
-      run.id,
+      investigation.id,
       { info() {}, warn() {}, error() {} },
       {
-        isLastAttempt: false,
-        attemptNumber: 1,
         workerIdentity: withIntegrationPrefix("worker-a"),
       },
     );
     await firstWorkerStarted;
 
-    // Simulate a duplicate-job window where another worker can claim while the
-    // first worker is still in flight.
-    await prisma.investigationRun.update({
-      where: { id: run.id },
+    // Simulate a duplicate-job window by expiring the lease so another worker
+    // can claim it while the first worker is still in flight.
+    await prisma.investigationLease.update({
+      where: { investigationId: investigation.id },
       data: {
-        leaseOwner: null,
-        leaseExpiresAt: null,
+        leaseExpiresAt: new Date(Date.now() - 60_000),
       },
     });
 
     await orchestrateInvestigation(
-      run.id,
+      investigation.id,
       { info() {}, warn() {}, error() {} },
       {
-        isLastAttempt: false,
-        attemptNumber: 1,
         workerIdentity: withIntegrationPrefix("worker-b"),
       },
     );
@@ -508,8 +488,120 @@ void test("orchestrateInvestigation ignores stale transient failure after anothe
   assert.equal(attempts.length, 1);
   const firstAttempt = attempts[0];
   assert.ok(firstAttempt);
-  assert.equal(firstAttempt.attemptNumber, 1);
+  // The completing worker is the stale-lease reclaimer, so it records attempt #2.
+  assert.equal(firstAttempt.attemptNumber, 2);
   assert.equal(firstAttempt.outcome, "SUCCEEDED");
+});
+
+void test("orchestrateInvestigation marks exhausted stale PROCESSING investigations FAILED and clears lease row", async () => {
+  const post = await seedPost({
+    platform: "X",
+    externalId: withIntegrationPrefix("orchestrator-exhausted-stale-processing-1"),
+    url: "https://x.com/openerrata/status/orchestrator-exhausted-stale-processing-1",
+    contentText: "Exhausted investigations should transition to FAILED cleanly.",
+  });
+  const investigation = await seedInvestigation({
+    postId: post.id,
+    contentHash: post.contentHash,
+    contentText: post.contentText,
+    provenance: "CLIENT_FALLBACK",
+    status: "PROCESSING",
+    promptLabel: "orchestrator-exhausted-stale-processing",
+    leaseOwner: withIntegrationPrefix("stale-owner"),
+    leaseExpiresAt: new Date(Date.now() - 60_000),
+  });
+
+  // 4 = MAX_INVESTIGATION_ATTEMPTS in investigation-lease.ts.
+  await prisma.investigation.update({
+    where: { id: investigation.id },
+    data: { attemptCount: 4 },
+  });
+
+  await orchestrateInvestigation(
+    investigation.id,
+    { info() {}, warn() {}, error() {} },
+    {
+      workerIdentity: withIntegrationPrefix("worker-exhausted-stale"),
+    },
+  );
+
+  const stored = await prisma.investigation.findUnique({
+    where: { id: investigation.id },
+    select: {
+      status: true,
+      lease: { select: { investigationId: true } },
+    },
+  });
+  assert.ok(stored);
+  assert.equal(stored.status, "FAILED");
+  assert.equal(stored.lease, null);
+});
+
+void test("ensureInvestigationQueued requeueing FAILED resets retry counters and clears stale lease row", async () => {
+  const post = await seedPost({
+    platform: "X",
+    externalId: withIntegrationPrefix("ensure-queued-requeue-failed-reset-1"),
+    url: "https://x.com/openerrata/status/ensure-queued-requeue-failed-reset-1",
+    contentText: "Failed investigations should become runnable when requeued.",
+  });
+  const investigation = await seedInvestigation({
+    postId: post.id,
+    contentHash: post.contentHash,
+    contentText: post.contentText,
+    provenance: "CLIENT_FALLBACK",
+    status: "FAILED",
+    promptLabel: "ensure-queued-requeue-failed-reset",
+  });
+  const prompt = await seedPrompt("ensure-queued-requeue-failed-reset-prompt");
+
+  await prisma.investigation.update({
+    where: { id: investigation.id },
+    data: {
+      attemptCount: 4, // MAX_INVESTIGATION_ATTEMPTS
+      retryAfter: new Date(Date.now() + 10 * 60_000),
+    },
+  });
+  await prisma.investigationLease.create({
+    data: {
+      investigationId: investigation.id,
+      leaseOwner: withIntegrationPrefix("stale-failed-lease"),
+      leaseExpiresAt: new Date(Date.now() - 5 * 60_000),
+      startedAt: new Date(Date.now() - 10 * 60_000),
+      heartbeatAt: new Date(Date.now() - 5 * 60_000),
+    },
+  });
+
+  const storedBefore = await prisma.investigation.findUnique({
+    where: { id: investigation.id },
+    select: { postVersionId: true },
+  });
+  assert.ok(storedBefore);
+
+  const result = await ensureInvestigationQueued({
+    prisma,
+    postVersionId: storedBefore.postVersionId,
+    promptId: prompt.id,
+    allowRequeueFailed: true,
+    enqueue: false,
+  });
+
+  assert.equal(result.investigation.id, investigation.id);
+  assert.equal(result.investigation.status, "PENDING");
+
+  const storedAfter = await prisma.investigation.findUnique({
+    where: { id: investigation.id },
+    select: {
+      status: true,
+      attemptCount: true,
+      retryAfter: true,
+      lease: { select: { investigationId: true } },
+    },
+  });
+  assert.ok(storedAfter);
+  assert.equal(storedAfter.status, "PENDING");
+  assert.equal(storedAfter.attemptCount, 0);
+  assert.equal(storedAfter.retryAfter, null);
+  assert.equal(storedAfter.lease, null);
 });
 
 void test("investigateNow persists InvestigationInput snapshot at queue time", async () => {
@@ -554,14 +646,11 @@ void test("ensureInvestigationQueued randomized state model preserves lifecycle 
   const random = createDeterministicRandom(0x94ab73d1);
   const rounds = 18;
   const seedCases = [
-    { name: "new", status: null, runKind: "NONE" },
-    { name: "failed-no-run", status: "FAILED", runKind: "NONE" },
-    { name: "failed-with-run", status: "FAILED", runKind: "INERT" },
-    { name: "pending-no-run", status: "PENDING", runKind: "NONE" },
-    { name: "pending-with-run", status: "PENDING", runKind: "INERT" },
-    { name: "processing-no-run", status: "PROCESSING", runKind: "NONE" },
-    { name: "processing-stale-run", status: "PROCESSING", runKind: "STALE" },
-    { name: "processing-active-run", status: "PROCESSING", runKind: "ACTIVE" },
+    { name: "new", status: null },
+    { name: "failed", status: "FAILED" },
+    { name: "pending", status: "PENDING" },
+    { name: "processing-stale", status: "PROCESSING", leaseKind: "STALE" },
+    { name: "processing-active", status: "PROCESSING", leaseKind: "ACTIVE" },
   ] as const;
 
   for (let round = 0; round < rounds; round += 1) {
@@ -570,7 +659,7 @@ void test("ensureInvestigationQueued randomized state model preserves lifecycle 
     assert.ok(seedCase, `seed case index out of bounds: ${seedCaseIndex.toString()}`);
     const allowRequeueFailed = randomChance(random, 0.5);
     const enqueue = randomChance(random, 0.7);
-    const includeOnPendingRun = randomChance(random, 0.6);
+    const includeOnPendingInvestigation = randomChance(random, 0.6);
     const canonicalProvenance = randomChance(random, 0.5) ? "SERVER_VERIFIED" : "CLIENT_FALLBACK";
     const roundTag = [
       `round=${round.toString()}`,
@@ -589,13 +678,21 @@ void test("ensureInvestigationQueued randomized state model preserves lifecycle 
     const prompt = await seedPrompt(`ensure-queued-fuzz-${round.toString()}`);
 
     let seededInvestigationId: string | null = null;
-    let seededRunId: string | null = null;
     let seededExistingProvenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK" | null = null;
     let seededActiveLeaseOwner: string | null = null;
     let seededActiveLeaseExpiresAt: Date | null = null;
 
     if (seedCase.status !== null) {
       seededExistingProvenance = randomChance(random, 0.5) ? "SERVER_VERIFIED" : "CLIENT_FALLBACK";
+      const leaseKind = "leaseKind" in seedCase ? seedCase.leaseKind : null;
+
+      const activeLeaseOwner =
+        leaseKind === "ACTIVE" ? withIntegrationPrefix(`active-worker-${round.toString()}`) : null;
+      const activeLeaseExpiresAt =
+        leaseKind === "ACTIVE" ? new Date(Date.now() + 10 * 60_000) : null;
+      seededActiveLeaseOwner = activeLeaseOwner;
+      seededActiveLeaseExpiresAt = activeLeaseExpiresAt;
+
       const investigation = await seedInvestigation({
         postId: post.id,
         contentHash: post.contentHash,
@@ -603,42 +700,26 @@ void test("ensureInvestigationQueued randomized state model preserves lifecycle 
         provenance: seededExistingProvenance,
         status: seedCase.status,
         promptLabel: `ensure-queued-existing-${round.toString()}`,
+        ...(leaseKind === "ACTIVE" && activeLeaseOwner !== null && activeLeaseExpiresAt !== null
+          ? {
+              leaseOwner: activeLeaseOwner,
+              leaseExpiresAt: activeLeaseExpiresAt,
+            }
+          : leaseKind === "STALE"
+            ? {
+                leaseOwner: withIntegrationPrefix(`stale-worker-${round.toString()}`),
+                leaseExpiresAt: new Date(Date.now() - 5 * 60_000),
+              }
+            : {}),
       });
       seededInvestigationId = investigation.id;
-
-      if (seedCase.runKind !== "NONE") {
-        if (seedCase.runKind === "ACTIVE") {
-          seededActiveLeaseOwner = withIntegrationPrefix(`active-worker-${round.toString()}`);
-          seededActiveLeaseExpiresAt = new Date(Date.now() + 10 * 60_000);
-          const run = await seedInvestigationRun({
-            investigationId: investigation.id,
-            leaseOwner: seededActiveLeaseOwner,
-            leaseExpiresAt: seededActiveLeaseExpiresAt,
-            startedAt: new Date(Date.now() - 2 * 60_000),
-            heartbeatAt: new Date(),
-          });
-          seededRunId = run.id;
-        } else if (seedCase.runKind === "STALE") {
-          const run = await seedInvestigationRun({
-            investigationId: investigation.id,
-            leaseOwner: withIntegrationPrefix(`stale-worker-${round.toString()}`),
-            leaseExpiresAt: new Date(Date.now() - 5 * 60_000),
-            startedAt: new Date(Date.now() - 15 * 60_000),
-            heartbeatAt: new Date(Date.now() - 5 * 60_000),
-          });
-          seededRunId = run.id;
-        } else {
-          const run = await seedInvestigationRun({
-            investigationId: investigation.id,
-          });
-          seededRunId = run.id;
-        }
-      }
+      // The lease row (including leaseOwner, leaseExpiresAt) is fully created
+      // by seedInvestigation above. No follow-up seedInvestigationWithLeaseFields
+      // call is needed here — startedAt/heartbeatAt are not asserted in this test.
     }
 
-    let onPendingRunCalls = 0;
+    let onPendingInvestigationCalls = 0;
     let onPendingInvestigationId: string | null = null;
-    let onPendingRunId: string | null = null;
     const canonicalPostVersion = await ensurePostVersionForSeed({
       postId: post.id,
       contentHash: post.contentHash,
@@ -651,12 +732,11 @@ void test("ensureInvestigationQueued randomized state model preserves lifecycle 
       promptId: prompt.id,
       allowRequeueFailed,
       enqueue,
-      ...(includeOnPendingRun
+      ...(includeOnPendingInvestigation
         ? {
-            onPendingRun: async ({ investigation, run }) => {
-              onPendingRunCalls += 1;
+            onPendingInvestigation: async ({ investigation }) => {
+              onPendingInvestigationCalls += 1;
               onPendingInvestigationId = investigation.id;
-              onPendingRunId = run.id;
             },
           }
         : {}),
@@ -669,18 +749,15 @@ void test("ensureInvestigationQueued randomized state model preserves lifecycle 
       : seedCase.status === "FAILED" && allowRequeueFailed
         ? "PENDING"
         : seedCase.status;
-    const runExistedBeforeCall = seedCase.status !== null && seedCase.runKind !== "NONE";
-    const expectedRunCreated = !runExistedBeforeCall;
+    const leaseKind = "leaseKind" in seedCase ? seedCase.leaseKind : null;
     const expectedRecoveredFromStaleProcessing =
-      statusAfterRecord === "PROCESSING" &&
-      (seedCase.runKind === "STALE" || seedCase.runKind === "NONE");
+      statusAfterRecord === "PROCESSING" && leaseKind === "STALE";
     const expectedFinalStatus = expectedRecoveredFromStaleProcessing
       ? "PENDING"
       : statusAfterRecord;
     const expectedEnqueued = enqueue && expectedFinalStatus === "PENDING";
 
     assert.equal(result.created, expectedCreated, `created mismatch (${roundTag})`);
-    assert.equal(result.runCreated, expectedRunCreated, `runCreated mismatch (${roundTag})`);
     assert.equal(result.enqueued, expectedEnqueued, `enqueued mismatch (${roundTag})`);
     assert.equal(
       result.investigation.status,
@@ -694,23 +771,20 @@ void test("ensureInvestigationQueued randomized state model preserves lifecycle 
         `existing investigation identity mismatch (${roundTag})`,
       );
     }
-    if (seededRunId !== null) {
-      assert.equal(result.run.id, seededRunId, `existing run identity mismatch (${roundTag})`);
-    }
 
-    const expectedOnPendingRunCalls = includeOnPendingRun && expectedEnqueued ? 1 : 0;
+    const expectedOnPendingInvestigationCalls =
+      includeOnPendingInvestigation && expectedEnqueued ? 1 : 0;
     assert.equal(
-      onPendingRunCalls,
-      expectedOnPendingRunCalls,
-      `onPendingRun invocation mismatch (${roundTag})`,
+      onPendingInvestigationCalls,
+      expectedOnPendingInvestigationCalls,
+      `onPendingInvestigation invocation mismatch (${roundTag})`,
     );
-    if (expectedOnPendingRunCalls === 1) {
+    if (expectedOnPendingInvestigationCalls === 1) {
       assert.equal(
         onPendingInvestigationId,
         result.investigation.id,
-        `onPendingRun investigation mismatch (${roundTag})`,
+        `onPendingInvestigation investigation mismatch (${roundTag})`,
       );
-      assert.equal(onPendingRunId, result.run.id, `onPendingRun run mismatch (${roundTag})`);
     }
 
     const storedInvestigations = await prisma.investigation.findMany({
@@ -722,6 +796,7 @@ void test("ensureInvestigationQueued randomized state model preserves lifecycle 
       select: {
         id: true,
         status: true,
+        queuedAt: true,
         postVersion: {
           select: {
             serverVerifiedAt: true,
@@ -766,63 +841,44 @@ void test("ensureInvestigationQueued randomized state model preserves lifecycle 
       );
     }
 
-    const storedRuns = await prisma.investigationRun.findMany({
-      where: { investigationId: result.investigation.id },
-      select: {
-        id: true,
-        queuedAt: true,
-        leaseOwner: true,
-        leaseExpiresAt: true,
-        heartbeatAt: true,
-      },
-    });
-    assert.equal(storedRuns.length, 1, `exactly one run row expected (${roundTag})`);
-    const storedRun = storedRuns[0];
-    assert.ok(storedRun, `missing run row (${roundTag})`);
-    assert.equal(storedRun.id, result.run.id, `stored run id mismatch (${roundTag})`);
+    // queuedAt is now always non-null (@default(now())), so just verify it's set
+    assert.notEqual(
+      storedInvestigation.queuedAt,
+      null,
+      `queuedAt should always be populated (${roundTag})`,
+    );
 
-    const expectQueuedAtNotNull =
-      expectedRecoveredFromStaleProcessing ||
-      (expectedRunCreated && statusAfterRecord === "PENDING");
-    if (expectQueuedAtNotNull) {
-      assert.notEqual(storedRun.queuedAt, null, `queuedAt should be populated (${roundTag})`);
-    } else {
-      assert.equal(storedRun.queuedAt, null, `queuedAt should remain null (${roundTag})`);
-    }
+    // Check lease state via InvestigationLease table
+    const storedLease = await prisma.investigationLease.findUnique({
+      where: { investigationId: storedInvestigation.id },
+      select: { leaseOwner: true, leaseExpiresAt: true },
+    });
 
     if (expectedRecoveredFromStaleProcessing) {
       assert.equal(
-        storedRun.leaseOwner,
+        storedLease,
         null,
-        `recovered stale runs should clear lease owner (${roundTag})`,
-      );
-      assert.equal(
-        storedRun.leaseExpiresAt,
-        null,
-        `recovered stale runs should clear lease expiry (${roundTag})`,
-      );
-      assert.equal(
-        storedRun.heartbeatAt,
-        null,
-        `recovered stale runs should clear heartbeat (${roundTag})`,
+        `recovered stale investigations should have no lease row (${roundTag})`,
       );
     }
 
     if (statusAfterRecord === "PROCESSING" && !expectedRecoveredFromStaleProcessing) {
       assert.equal(
-        seedCase.runKind,
+        leaseKind,
         "ACTIVE",
-        `non-recovered processing cases must come from active run seeds (${roundTag})`,
+        `non-recovered processing cases must come from active lease seeds (${roundTag})`,
       );
+      assert.ok(storedLease, `active processing investigation should have lease row (${roundTag})`);
       assert.equal(
-        storedRun.leaseOwner,
+        storedLease.leaseOwner,
         seededActiveLeaseOwner,
-        `active processing run should keep lease owner (${roundTag})`,
+        `active processing investigation should keep lease owner (${roundTag})`,
       );
+      assert.ok(seededActiveLeaseExpiresAt, `active lease should have seeded expiry (${roundTag})`);
       assert.equal(
-        storedRun.leaseExpiresAt?.getTime(),
-        seededActiveLeaseExpiresAt?.getTime(),
-        `active processing run should keep lease expiry (${roundTag})`,
+        storedLease.leaseExpiresAt.getTime(),
+        seededActiveLeaseExpiresAt.getTime(),
+        `active processing investigation should keep lease expiry (${roundTag})`,
       );
     }
   }

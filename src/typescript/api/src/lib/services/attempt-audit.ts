@@ -6,8 +6,6 @@ import {
 import { toDate, toOptionalDate } from "$lib/date.js";
 import type { Prisma } from "$lib/generated/prisma/client";
 import { consumeOpenAiKeySource } from "./user-key-source.js";
-import { nextRecoveryAfter } from "./run-lease.js";
-import { CLEARED_PROGRESS_CLAIMS } from "./investigation-lifecycle.js";
 
 export async function persistAttemptAudit(
   tx: Prisma.TransactionClient,
@@ -207,88 +205,130 @@ export async function persistAttemptAudit(
   }
 }
 
-export async function persistFailedAttemptAndMarkInvestigationFailed(input: {
-  runId: string;
-  investigationId: string;
-  attemptNumber: number;
-  attemptAudit: InvestigatorAttemptAudit | null;
-}): Promise<boolean> {
-  return getPrisma().$transaction(async (tx) => {
-    // Guard: only mark FAILED if still PROCESSING. Another worker may have
-    // already moved this investigation to COMPLETE or FAILED.
-    const transitioned = await tx.investigation.updateMany({
-      where: { id: input.investigationId, status: "PROCESSING" },
-      data: { status: "FAILED", progressClaims: CLEARED_PROGRESS_CLAIMS },
-    });
-
-    if (transitioned.count === 0) {
-      return false;
-    }
-
-    if (input.attemptAudit) {
-      await persistAttemptAudit(tx, {
-        investigationId: input.investigationId,
-        attemptNumber: input.attemptNumber,
-        attemptAudit: input.attemptAudit,
-      });
-    }
-
-    await tx.investigationRun.update({
-      where: { id: input.runId },
-      data: {
-        leaseOwner: null,
-        leaseExpiresAt: null,
-        recoverAfterAt: null,
-        heartbeatAt: new Date(),
-      },
-    });
-
-    await consumeOpenAiKeySource(tx, input.runId);
-    return true;
+/**
+ * Inner transaction body for marking an investigation FAILED.
+ * Exported for unit-testability — callers outside this module should use
+ * `persistFailedAttemptAndMarkInvestigationFailed` instead.
+ */
+export async function markInvestigationFailedInTx(
+  tx: Prisma.TransactionClient,
+  input: {
+    investigationId: string;
+    workerIdentity: string;
+    attemptNumber: number;
+    attemptAudit: InvestigatorAttemptAudit | null;
+  },
+): Promise<boolean> {
+  // Guard: delete the lease row matching our workerIdentity. If it doesn't
+  // exist (another worker reclaimed or investigation already terminal),
+  // we bail out without modifying Investigation status.
+  const released = await tx.investigationLease.deleteMany({
+    where: {
+      investigationId: input.investigationId,
+      leaseOwner: input.workerIdentity,
+    },
   });
+
+  if (released.count === 0) {
+    return false;
+  }
+
+  const transitioned = await tx.investigation.updateMany({
+    where: { id: input.investigationId, status: "PROCESSING" },
+    data: { status: "FAILED" },
+  });
+
+  if (transitioned.count === 0) {
+    throw new Error(
+      `Invariant violation: lease existed for investigation ${input.investigationId} but status was not PROCESSING`,
+    );
+  }
+
+  if (input.attemptAudit) {
+    await persistAttemptAudit(tx, {
+      investigationId: input.investigationId,
+      attemptNumber: input.attemptNumber,
+      attemptAudit: input.attemptAudit,
+    });
+  }
+
+  await consumeOpenAiKeySource(tx, input.investigationId);
+  return true;
 }
 
-export async function persistFailedAttemptAndReleaseLease(input: {
-  runId: string;
+export async function persistFailedAttemptAndMarkInvestigationFailed(input: {
   investigationId: string;
+  workerIdentity: string;
   attemptNumber: number;
   attemptAudit: InvestigatorAttemptAudit | null;
 }): Promise<boolean> {
-  return getPrisma().$transaction(async (tx) => {
-    // Guard: only persist transient failure audit if the investigation is still
-    // PROCESSING. This UPDATE also takes a row lock so terminal transitions
-    // serialize cleanly with stale workers.
-    const active = await tx.investigation.updateMany({
-      where: { id: input.investigationId, status: "PROCESSING" },
-      data: { status: "PROCESSING", progressClaims: CLEARED_PROGRESS_CLAIMS },
-    });
-    if (active.count === 0) {
-      return false;
-    }
+  return getPrisma().$transaction((tx) => markInvestigationFailedInTx(tx, input));
+}
 
-    if (input.attemptAudit) {
-      await persistAttemptAudit(tx, {
-        investigationId: input.investigationId,
-        attemptNumber: input.attemptNumber,
-        attemptAudit: input.attemptAudit,
-      });
-    }
-
-    // Keep investigation PROCESSING — don't reset to PENDING.
-    // Resetting to PENDING opened a window where the selector or
-    // investigateNow could re-enqueue, creating duplicate graphile-worker
-    // jobs via the jobKey replacement behavior.
-    //
-    // Release the lease for graphile-worker retry and set a recovery window:
-    // selector/investigateNow should not recover this run until recoverAfterAt.
-    await tx.investigationRun.update({
-      where: { id: input.runId },
-      data: {
-        leaseOwner: null,
-        leaseExpiresAt: null,
-        recoverAfterAt: nextRecoveryAfter(),
-      },
-    });
-    return true;
+/**
+ * Inner transaction body for releasing the lease and reclaiming PROCESSING → PENDING.
+ * Exported for unit-testability — callers outside this module should use
+ * `persistFailedAttemptAndReleaseLease` instead.
+ */
+export async function releaseLeaseToRetryInTx(
+  tx: Prisma.TransactionClient,
+  input: {
+    investigationId: string;
+    workerIdentity: string;
+    attemptNumber: number;
+    attemptAudit: InvestigatorAttemptAudit | null;
+    retryAfter: Date;
+  },
+): Promise<boolean> {
+  // Guard: delete the lease row matching our workerIdentity.
+  const released = await tx.investigationLease.deleteMany({
+    where: {
+      investigationId: input.investigationId,
+      leaseOwner: input.workerIdentity,
+    },
   });
+
+  if (released.count === 0) {
+    return false;
+  }
+
+  const transitioned = await tx.investigation.updateMany({
+    where: { id: input.investigationId, status: "PROCESSING" },
+    data: { status: "PENDING", queuedAt: new Date(), retryAfter: input.retryAfter },
+  });
+
+  if (transitioned.count === 0) {
+    throw new Error(
+      `Invariant violation: lease existed for investigation ${input.investigationId} but status was not PROCESSING`,
+    );
+  }
+
+  if (input.attemptAudit) {
+    await persistAttemptAudit(tx, {
+      investigationId: input.investigationId,
+      attemptNumber: input.attemptNumber,
+      attemptAudit: input.attemptAudit,
+    });
+  }
+
+  return true;
+}
+
+/**
+ * Atomic reclaim: PROCESSING → PENDING with lease deleted.
+ *
+ * The caller must explicitly re-enqueue via `enqueueInvestigation(investigationId)`
+ * after this returns true. The per-investigation jobKey
+ * (`investigate:${investigationId}`) ensures that concurrent enqueue calls from
+ * the re-enqueue, the selector, or investigateNow all resolve to exactly one
+ * graphile-worker job via replacement semantics.
+ */
+export async function persistFailedAttemptAndReleaseLease(input: {
+  investigationId: string;
+  workerIdentity: string;
+  attemptNumber: number;
+  attemptAudit: InvestigatorAttemptAudit | null;
+  retryAfter: Date;
+}): Promise<boolean> {
+  return getPrisma().$transaction((tx) => releaseLeaseToRetryInTx(tx, input));
 }

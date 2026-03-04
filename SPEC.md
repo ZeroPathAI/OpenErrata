@@ -980,12 +980,16 @@ model Investigation {
   model                 InvestigationModel
   modelVersion          String?                // Provider-reported model revision/version when available
   checkedAt             DateTime?              // Null until completion
-  // Transient progress state during active PROCESSING. Contains
-  // { pending: ClaimPayload[], confirmed: ClaimPayload[] } while the
-  // orchestrator is running. Nullified on every lifecycle transition
-  // (COMPLETE, FAILED, lease release, stale-run recovery, requeue).
-  progressClaims        Json?
-  run                   InvestigationRun?
+  queuedAt              DateTime               @default(now())
+  // Monotonically increasing attempt counter. Incremented atomically when a
+  // worker claims the lease. Gives each retry a distinct attemptNumber for
+  // the InvestigationAttempt audit trail.
+  attemptCount          Int                    @default(0)
+  // INV-LEASE: The InvestigationLease row exists iff the investigation is
+  // PROCESSING and has an active lease holder. Structurally prevents
+  // leaseOwner/leaseExpiresAt without PROCESSING, and vice versa.
+  lease                 InvestigationLease?
+  openAiKeySource       InvestigationOpenAiKeySource?
   attempts              InvestigationAttempt[]
   updates               Investigation[]        @relation("InvestigationUpdateLineage")
   claims                Claim[]
@@ -1010,34 +1014,35 @@ model InvestigationInput {
   createdAt               DateTime           @default(now())
 }
 
-model InvestigationRun {
-  id              String                        @id @default(cuid())
-  investigationId String                        @unique
-  investigation   Investigation                 @relation(fields: [investigationId], references: [id], onDelete: Cascade)
-  leaseOwner      String?                       // Worker identity holding the run
-  leaseExpiresAt  DateTime?                     // When the worker's lease expires
-  recoverAfterAt  DateTime?                     // Grace period before another worker can recover
-  queuedAt        DateTime?
-  startedAt       DateTime?
-  heartbeatAt     DateTime?
-  openAiKeySource InvestigationOpenAiKeySource?
-  createdAt       DateTime                      @default(now())
-  updatedAt       DateTime                      @updatedAt
+// INV-LEASE: The existence of an InvestigationLease row means "this
+// investigation is PROCESSING and has an active lease holder". All fields
+// are NOT NULL — structurally prevents partial lease states. The row is
+// deleted on every terminal transition (COMPLETE, FAILED) and on lease
+// release (transient failure → PENDING), so progressClaims is automatically
+// cleaned up without needing sentinel values.
+model InvestigationLease {
+  investigationId String        @id
+  investigation   Investigation @relation(fields: [investigationId], references: [id], onDelete: Cascade)
+  leaseOwner      String
+  leaseExpiresAt  DateTime
+  startedAt       DateTime
+  heartbeatAt     DateTime
+  progressClaims  Json?         // { pending: ClaimPayload[], confirmed: ClaimPayload[] }
+  createdAt       DateTime      @default(now())
 
   @@index([leaseExpiresAt])
-  @@index([recoverAfterAt])
 }
 
 model InvestigationOpenAiKeySource {
-  runId      String           @id
-  run        InvestigationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
-  ciphertext String                        // AES-256-GCM encrypted user API key
-  iv         String
-  authTag    String
-  keyId      String                        // Identifies the encryption key version
-  expiresAt  DateTime                      // Short-lived lease; worker must start before expiry
-  createdAt  DateTime         @default(now())
-  updatedAt  DateTime         @updatedAt
+  investigationId String        @id
+  investigation   Investigation @relation(fields: [investigationId], references: [id], onDelete: Cascade)
+  ciphertext      String                     // AES-256-GCM encrypted user API key
+  iv              String
+  authTag         String
+  keyId           String                     // Identifies the encryption key version
+  expiresAt       DateTime                   // Short-lived lease; worker must start before expiry
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
 
   @@index([expiresAt])
 }
@@ -1597,21 +1602,18 @@ WITH latest_versions AS (
 SELECT
   lv."postVersionId",
   i."id" AS "investigationId",
-  i."status" AS "investigationStatus",
-  r."id" AS "runId",
-  r."leaseOwner",
-  r."leaseExpiresAt",
-  r."recoverAfterAt"
+  i."status" AS "investigationStatus"
 FROM latest_versions lv
 JOIN "Post" p ON p."id" = lv."postId"
 JOIN "ContentBlob" cb ON cb."id" = lv."contentBlobId"
 LEFT JOIN "Investigation" i ON i."postVersionId" = lv."postVersionId"
-LEFT JOIN "InvestigationRun" r ON r."investigationId" = i."id"
+LEFT JOIN "InvestigationLease" il ON il."investigationId" = i."id"
 WHERE cb."wordCount" <= 10000
   AND (
     i."id" IS NULL                          -- no investigation yet
-    OR i."status" = 'PENDING'               -- pending (may need run)
-    OR (i."status" = 'PROCESSING' AND ...)  -- stuck processing (lease/recovery expired)
+    OR i."status" = 'PENDING'               -- pending, ready for enqueueing
+    OR (i."status" = 'PROCESSING'           -- stuck processing (lease expired or missing)
+        AND (il."investigationId" IS NULL OR il."leaseExpiresAt" <= NOW()))
   )
 ORDER BY p."uniqueViewScore" DESC
 LIMIT :budget;
@@ -1622,21 +1624,32 @@ which handles idempotent creation of the `Investigation` row and job enqueueing.
 
 ## 3.7 Job Queue
 
-Postgres-backed (graphile-worker or `FOR UPDATE SKIP LOCKED`). No Redis.
+Postgres-backed (graphile-worker). No Redis.
 Used by selector work and all `investigateNow` requests.
-User-key requests attach an encrypted short-lived lease for worker-side credential handoff.
+User-key requests attach an encrypted short-lived key source on the Investigation
+for worker-side credential handoff.
+
+Each graphile-worker job is enqueued with `maxAttempts: 1` and a per-investigation
+`jobKey` (`investigate:${investigationId}`). Retry control is managed by the
+application, not graphile-worker: transient failures reclaim the investigation to
+PENDING and explicitly re-enqueue with a backoff delay.
 
 ```
 Investigation selected (by selector or any investigateNow request)
   → Upsert investigation for postVersionId (idempotent: one investigation per content version)
   → If already exists: reuse existing investigation row and do not enqueue duplicate work
-  → Worker picks up job → UPDATE status = PROCESSING
+  → Worker picks up job → claim lease (PENDING → PROCESSING, atomically increment attemptCount)
   → Worker calls Investigator.investigate()
-  → On success: UPDATE status = COMPLETE
+  → On success: delete lease, UPDATE status = COMPLETE
   → On failure: classify and retry or fail permanently
 
+Retry model:
+  - Investigation.attemptCount tracks retries (incremented at lease claim).
+  - MAX_INVESTIGATION_ATTEMPTS = 4. When exhausted, the investigation is marked FAILED.
+  - Transient retries use exponential backoff: delay = 10s × 2^(attempt - 1).
+
 Failure classes:
-  TRANSIENT (retry up to 3x with exponential backoff):
+  TRANSIENT (reclaim to PENDING, re-enqueue with backoff, up to MAX_INVESTIGATION_ATTEMPTS):
     - Provider 5xx errors, rate limits (429), network timeouts
   NON_RETRYABLE (mark FAILED immediately):
     - Structured output fails Zod validation (likely prompt/schema issue, not transient)
@@ -1645,8 +1658,9 @@ Failure classes:
   PARTIAL (mark FAILED, log partial output for debugging):
     - Provider returns truncated or incomplete tool-call trace
 
-If a user-key lease is missing/expired when the worker starts, the run fails and
-requires an explicit user re-request.
+If a user-key source is missing/expired when the worker starts, the investigation
+fails and requires an explicit user re-request. Key sources are consumed (deleted)
+on every terminal transition (COMPLETE, FAILED).
 
 `FAILED` is terminal for a given `postVersionId` in v1. Re-running that exact content
 version requires an explicit operator/admin action (e.g., reset status or delete/recreate row),
@@ -1985,11 +1999,11 @@ openerrata/
 │       │   │   │   ├── services/
 │       │   │   │   │   ├── orchestrator.ts            # Main investigation orchestrator
 │       │   │   │   │   ├── orchestrator-errors.ts     # Error classification
-│       │   │   │   │   ├── run-lease.ts               # Atomic lease claim/release + heartbeat
+│       │   │   │   │   ├── investigation-lease.ts      # Atomic lease claim/release + heartbeat
 │       │   │   │   │   ├── prompt-context.ts          # Post metadata extraction for prompts
 │       │   │   │   │   ├── attempt-audit.ts           # Audit record persistence
 │       │   │   │   │   ├── markdown-resolution.ts     # Trust-policy-based markdown resolution
-│       │   │   │   │   ├── investigation-lifecycle.ts # Status transitions + progressClaims
+│       │   │   │   │   ├── investigation-lifecycle.ts # Status transitions + lease recovery
 │       │   │   │   │   ├── selector.ts                # Investigation selection cron
 │       │   │   │   │   ├── queue.ts                   # graphile-worker integration
 │       │   │   │   │   ├── queue-lifecycle.ts

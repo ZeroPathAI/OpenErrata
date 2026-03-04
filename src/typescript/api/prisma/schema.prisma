@@ -305,12 +305,20 @@ model Investigation {
   // INV-INV-CHECKED-AT-CONSISTENCY: checkedAt is set iff status = COMPLETE.
   // Enforced by CHECK constraint "Investigation_checked_at_consistency_check".
   checkedAt             DateTime?
-  // Transient progress state during active PROCESSING. Contains
-  // { pending: ClaimPayload[], confirmed: ClaimPayload[] } while the
-  // orchestrator is running. Nullified on every lifecycle transition
-  // (COMPLETE, FAILED, lease release, stale-run recovery, requeue).
-  progressClaims        Json?
-  run                   InvestigationRun?
+  queuedAt              DateTime               @default(now())
+  // Monotonically increasing attempt counter. Incremented atomically when a
+  // worker claims the lease. Gives each retry a distinct attemptNumber for
+  // the InvestigationAttempt audit trail.
+  attemptCount          Int                    @default(0)
+  // Set on transient-failure reclaim with exponential backoff. The selector
+  // skips PENDING investigations where retryAfter > now, preventing immediate
+  // re-enqueue from defeating the backoff delay. Cleared on lease claim.
+  retryAfter            DateTime?
+  // INV-LEASE: The InvestigationLease row exists iff the investigation is
+  // PROCESSING and has an active lease holder. Structurally prevents
+  // leaseOwner/leaseExpiresAt without PROCESSING, and vice versa.
+  lease                 InvestigationLease?
+  openAiKeySource       InvestigationOpenAiKeySource?
   attempts              InvestigationAttempt[]
   updates               Investigation[]        @relation("InvestigationUpdateLineage")
   claims                Claim[]
@@ -321,6 +329,25 @@ model Investigation {
 
   @@unique([postVersionId])
   @@index([status])
+}
+
+// INV-LEASE: The existence of an InvestigationLease row means "this
+// investigation is PROCESSING and has an active lease holder". All fields
+// are NOT NULL — structurally prevents partial lease states. The row is
+// deleted on every terminal transition (COMPLETE, FAILED) and on lease
+// release (transient failure → PENDING), so progressClaims is automatically
+// cleaned up without needing CLEARED_PROGRESS_CLAIMS sentinel values.
+model InvestigationLease {
+  investigationId String        @id
+  investigation   Investigation @relation(fields: [investigationId], references: [id], onDelete: Cascade)
+  leaseOwner      String
+  leaseExpiresAt  DateTime
+  startedAt       DateTime
+  heartbeatAt     DateTime
+  progressClaims  Json?
+  createdAt       DateTime      @default(now())
+
+  @@index([leaseExpiresAt])
 }
 
 model InvestigationInput {
@@ -335,34 +362,16 @@ model InvestigationInput {
   createdAt               DateTime @default(now())
 }
 
-model InvestigationRun {
-  id              String                        @id @default(cuid())
-  investigationId String                        @unique
-  investigation   Investigation                 @relation(fields: [investigationId], references: [id], onDelete: Cascade)
-  leaseOwner      String?
-  leaseExpiresAt  DateTime?
-  recoverAfterAt  DateTime?
-  queuedAt        DateTime?
-  startedAt       DateTime?
-  heartbeatAt     DateTime?
-  openAiKeySource InvestigationOpenAiKeySource?
-  createdAt       DateTime                      @default(now())
-  updatedAt       DateTime                      @updatedAt
-
-  @@index([leaseExpiresAt])
-  @@index([recoverAfterAt])
-}
-
 model InvestigationOpenAiKeySource {
-  runId      String           @id
-  run        InvestigationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
-  ciphertext String
-  iv         String
-  authTag    String
-  keyId      String
-  expiresAt  DateTime
-  createdAt  DateTime         @default(now())
-  updatedAt  DateTime         @updatedAt
+  investigationId String        @id
+  investigation   Investigation @relation(fields: [investigationId], references: [id], onDelete: Cascade)
+  ciphertext      String
+  iv              String
+  authTag         String
+  keyId           String
+  expiresAt       DateTime
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
 
   @@index([expiresAt])
 }
