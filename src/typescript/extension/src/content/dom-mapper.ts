@@ -1,4 +1,9 @@
-import { normalizeContent, type InvestigationClaim } from "@openerrata/shared";
+import {
+  normalizeContent,
+  TYPOGRAPHIC_CHAR_MAP,
+  ZERO_WIDTH_CHAR_REGEX,
+  type InvestigationClaim,
+} from "@openerrata/shared";
 
 // ── Public types ──────────────────────────────────────────────────────────
 
@@ -22,16 +27,29 @@ interface CodePointWithRawIndex {
   rawIndex: number;
 }
 
-// ── Main mapper (spec §2.8 – three-tier matching) ─────────────────────────
+/**
+ * Maximum haystack length for the O(n²) fuzzy Levenshtein sliding-window
+ * search. When the full normalized text exceeds this limit, fuzzy search
+ * is scoped to a local window around the claim's context position rather
+ * than searching the entire article. This prevents catastrophic main-thread
+ * blocking on large articles (e.g. Wikipedia pages exceeding 100K characters)
+ * while still providing fuzzy matching for every claim that has context.
+ */
+const FUZZY_HAYSTACK_LIMIT = 15_000;
+
+// ── Main mapper (spec §2.8 – tiered matching) ────────────────────────────
 
 /**
- * Map each claim to a DOM `Range` inside `root` using a three-tier strategy:
+ * Map each claim to a DOM `Range` inside `root` using a tiered strategy:
  *
- * 1. **Exact substring** — unique occurrence in `root.textContent`.
+ * 1. **Exact unique substring** — single occurrence in `root.textContent`.
  * 2. **Context-scoped** — locate `claim.context`, then find `claim.text`
  *    within that context span.
- * 3. **Fuzzy (Levenshtein)** — sliding-window search for the best
- *    approximate match.
+ * 3. **First occurrence** — when the text exists but isn't unique and
+ *    context disambiguation failed, use the first occurrence rather than
+ *    the expensive fuzzy search.
+ * 4. **Fuzzy (Levenshtein)** — sliding-window search for the best
+ *    approximate match. On large pages, scoped to a context-local window.
  */
 export function mapClaimsToDom(
   claims: InvestigationClaim[],
@@ -40,8 +58,16 @@ export function mapClaimsToDom(
 ): DomAnnotation[] {
   const allowFuzzy = options.allowFuzzy ?? true;
   const fullText = root.textContent;
+  const t0 = performance.now();
   const fullTextIndex = buildNormalizedTextIndex(fullText);
   const normalizedFullText = fullTextIndex.normalized;
+  const indexMs = performance.now() - t0;
+  if (indexMs > 50) {
+    console.warn(
+      `[openerrata] buildNormalizedTextIndex took ${indexMs.toFixed(1)}ms ` +
+        `(${fullText.length} raw chars → ${normalizedFullText.length} normalized chars)`,
+    );
+  }
 
   return claims.map((claim) => {
     const normalizedClaimText = normalizeContent(claim.text);
@@ -50,7 +76,7 @@ export function mapClaimsToDom(
       return { claim, range: null, matched: false };
     }
 
-    // ── Tier 1: exact substring ──────────────────────────────────────────
+    // ── Tier 1: exact unique substring ───────────────────────────────────
     const exactOffset = findUniqueExactMatch(normalizedFullText, normalizedClaimText);
     if (exactOffset !== null) {
       const mappedSpan = mapNormalizedSpanToRaw(
@@ -83,18 +109,52 @@ export function mapClaimsToDom(
       }
     }
 
-    // ── Tier 3: fuzzy fallback (Levenshtein sliding window) ──────────────
+    // ── Tier 3: first occurrence fallback ────────────────────────────────
+    // When claim text exists in the page but tier 1 rejected it (non-unique)
+    // and context disambiguation failed, use the first occurrence. This is
+    // O(n) and avoids the catastrophic O(n²) fuzzy search that would
+    // otherwise freeze the main thread on large articles.
+    const firstIdx = normalizedFullText.indexOf(normalizedClaimText);
+    if (firstIdx !== -1) {
+      const mappedSpan = mapNormalizedSpanToRaw(
+        fullTextIndex,
+        firstIdx,
+        normalizedClaimText.length,
+      );
+      if (mappedSpan) {
+        const range = createRangeFromTextOffset(root, mappedSpan.offset, mappedSpan.length);
+        if (range) return { claim, range, matched: true };
+      }
+    }
+
+    // ── Tier 4: fuzzy (Levenshtein sliding window) ───────────────────────
+    // On short pages, search the full text. On long pages, scope the search
+    // to a window around the context position to keep the O(n²) work bounded.
     if (allowFuzzy) {
-      const fuzzyResult = fuzzyFind(normalizedFullText, normalizedClaimText);
-      if (fuzzyResult) {
-        const mappedSpan = mapNormalizedSpanToRaw(
-          fullTextIndex,
-          fuzzyResult.offset,
-          fuzzyResult.length,
-        );
-        if (mappedSpan) {
-          const range = createRangeFromTextOffset(root, mappedSpan.offset, mappedSpan.length);
-          if (range) return { claim, range, matched: true };
+      const fuzzyWindow = selectFuzzyWindow(
+        normalizedFullText,
+        normalizedContext,
+        normalizedClaimText.length,
+      );
+      if (fuzzyWindow) {
+        const fuzzyT0 = performance.now();
+        const fuzzyResult = fuzzyFind(fuzzyWindow.text, normalizedClaimText);
+        const fuzzyMs = performance.now() - fuzzyT0;
+        if (fuzzyMs > 50) {
+          console.warn(
+            `[openerrata] fuzzy search for claim "${claim.id}" took ${fuzzyMs.toFixed(1)}ms`,
+          );
+        }
+        if (fuzzyResult) {
+          const mappedSpan = mapNormalizedSpanToRaw(
+            fullTextIndex,
+            fuzzyWindow.offset + fuzzyResult.offset,
+            fuzzyResult.length,
+          );
+          if (mappedSpan) {
+            const range = createRangeFromTextOffset(root, mappedSpan.offset, mappedSpan.length);
+            if (range) return { claim, range, matched: true };
+          }
         }
       }
     }
@@ -106,7 +166,42 @@ export function mapClaimsToDom(
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
-const ZERO_WIDTH_CHAR_REGEX = /[\u200B-\u200D\uFEFF]/u;
+/**
+ * Choose the haystack region for the fuzzy search. On short pages the full
+ * text is returned. On long pages, a window of at most `FUZZY_HAYSTACK_LIMIT`
+ * characters centered on the context location is returned so that the O(n²)
+ * Levenshtein work stays bounded. Returns null when the haystack is too long
+ * and no context is available to scope the window.
+ */
+function selectFuzzyWindow(
+  fullText: string,
+  normalizedContext: string,
+  needleLength: number,
+): { text: string; offset: number } | null {
+  if (fullText.length <= FUZZY_HAYSTACK_LIMIT) {
+    return { text: fullText, offset: 0 };
+  }
+
+  // For long pages, we need context to narrow the search region.
+  if (normalizedContext.length === 0) return null;
+
+  const contextIdx = fullText.indexOf(normalizedContext);
+  if (contextIdx === -1) return null;
+
+  // Center the window on the midpoint of the context span.
+  const contextMid = contextIdx + Math.floor(normalizedContext.length / 2);
+  const halfWindow = Math.floor(FUZZY_HAYSTACK_LIMIT / 2);
+  const windowStart = Math.max(0, contextMid - halfWindow);
+  const windowEnd = Math.min(fullText.length, windowStart + FUZZY_HAYSTACK_LIMIT);
+
+  // Ensure the window is at least large enough for the needle.
+  if (windowEnd - windowStart < needleLength) return null;
+
+  return {
+    text: fullText.substring(windowStart, windowEnd),
+    offset: windowStart,
+  };
+}
 
 function appendNormalizedSegment(
   rawCodePoints: CodePointWithRawIndex[],
@@ -160,15 +255,24 @@ function appendNormalizedSegment(
       mappedRawIndex = fallbackCodePoint.rawIndex;
     }
 
-    for (let codeUnitIndex = 0; codeUnitIndex < codePoint.length; codeUnitIndex += 1) {
+    // Apply typographic replacements (e.g. curly quotes → straight) so that
+    // the index-tracked normalized text matches normalizeContent() output.
+    const replaced = TYPOGRAPHIC_CHAR_MAP.get(codePoint) ?? codePoint;
+    for (let codeUnitIndex = 0; codeUnitIndex < replaced.length; codeUnitIndex += 1) {
       // Index by UTF-16 code unit so normalizedToRaw aligns with string offsets.
-      normalizedChars.push(codePoint.charAt(codeUnitIndex));
+      normalizedChars.push(replaced.charAt(codeUnitIndex));
       normalizedToRaw.push(mappedRawIndex);
     }
   }
 }
 
-function buildNormalizedTextIndex(rawText: string): NormalizedTextIndex {
+/**
+ * Exported for parity testing against `normalizeContent`. The invariant
+ * `buildNormalizedTextIndex(text).normalized === normalizeContent(text)` must
+ * hold for all inputs — any violation means the index-tracked normalizer has
+ * drifted from the shared normalizer and claim matching will silently break.
+ */
+export function buildNormalizedTextIndex(rawText: string): NormalizedTextIndex {
   const normalizedChars: string[] = [];
   const normalizedToRaw: number[] = [];
   let pendingWhitespaceStart: number | null = null;
@@ -184,6 +288,15 @@ function buildNormalizedTextIndex(rawText: string): NormalizedTextIndex {
     if (codePoint === undefined) break;
     const char = String.fromCodePoint(codePoint);
     const codeUnitLength = char.length;
+
+    // Strip zero-width characters before anything else. U+200B–U+200D and
+    // U+FEFF are not matched by \s, so without this guard they look like
+    // non-whitespace, cause pending whitespace to be emitted, and then
+    // get stripped in appendNormalizedSegment — leaving a spurious space.
+    if (ZERO_WIDTH_CHAR_REGEX.test(char)) {
+      rawIndex += codeUnitLength;
+      continue;
+    }
 
     if (/\s/u.test(char)) {
       flushSegment();

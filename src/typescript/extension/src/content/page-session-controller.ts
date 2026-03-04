@@ -58,7 +58,22 @@ type PageSessionState =
       sessionKey: string;
       platform: Platform;
       externalId: string;
-      observedText: string;
+      /**
+       * Normalized text of the **live content root** at the time the session
+       * was established (or first observed by the mutation handler). Used to
+       * detect meaningful content changes.
+       *
+       * This must come from the unpruned DOM (via
+       * `normalizeContent(root.textContent)`) rather than the adapter's
+       * extracted `contentText`, because adapters may prune sections
+       * (e.g. Wikipedia's References), making the pruned text permanently
+       * unequal to the live DOM and causing a continuous refresh loop.
+       *
+       * `null` means the content root was not available when the session was
+       * established. The mutation handler will lazily capture the root text
+       * on its first observation rather than triggering a spurious refresh.
+       */
+      observedRootText: string | null;
       adapter: PlatformAdapter;
       request: ViewPostInput;
     };
@@ -164,6 +179,19 @@ function inferIdentityForSkippedPage(
   } catch {
     return null;
   }
+}
+
+/**
+ * Read the normalized text of the live (unpruned) content root. Used by both
+ * session initialization and the mutation observer so that both compare
+ * against the same text pipeline — a single code path prevents the kind of
+ * divergence where one reads pruned adapter text and the other reads live DOM
+ * text, which caused a continuous refresh loop (see Bug 2 in the freeze fix).
+ */
+function normalizedRootText(adapter: PlatformAdapter): string | null {
+  const root = adapter.getContentRoot(document);
+  if (!root) return null;
+  return normalizeContent(root.textContent);
 }
 
 function wordCount(text: string): number {
@@ -784,7 +812,7 @@ export class PageSessionController {
       sessionKey: snapshot.sessionKey,
       platform: snapshot.platform,
       externalId: snapshot.externalId,
-      observedText: snapshot.content.contentText,
+      observedRootText: normalizedRootText(snapshot.adapter),
       adapter: snapshot.adapter,
       request: snapshot.request,
     };
@@ -864,14 +892,19 @@ export class PageSessionController {
       return;
     }
 
-    const root = this.#state.adapter.getContentRoot(document);
-    if (!root) {
-      this.#scheduleRefreshFromMutation();
+    const currentRootText = normalizedRootText(this.#state.adapter);
+    if (currentRootText === null) {
+      // Content root not in the DOM (yet or anymore) — nothing to compare.
       return;
     }
 
-    const normalizedText = normalizeContent(root.textContent);
-    if (normalizedText !== this.#state.observedText) {
+    if (this.#state.observedRootText === null) {
+      // Root wasn't available at session start; capture it now as baseline.
+      this.#state.observedRootText = currentRootText;
+      return;
+    }
+
+    if (currentRootText !== this.#state.observedRootText) {
       this.#scheduleRefreshFromMutation();
       return;
     }
