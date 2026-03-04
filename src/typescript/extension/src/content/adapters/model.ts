@@ -24,6 +24,21 @@ export interface PlatformAdapter {
   detectPrivateOrGated?(document: Document): boolean;
   extract(document: Document): AdapterExtractionResult;
   getContentRoot(document: Document): Element | null;
+
+  /**
+   * Build a per-root element exclusion filter for claim-to-DOM matching.
+   * The returned predicate identifies elements whose subtrees should be
+   * excluded from both text extraction and annotation rendering, keeping the
+   * DOM mapper's text consistent with the server-side content that claims
+   * were generated against.
+   *
+   * Receives the content root so it can precompute structural exclusions
+   * (e.g. Wikipedia excluded sections like "References" / "External links")
+   * in addition to element-level exclusions (e.g. citation superscripts).
+   *
+   * Returns `undefined` when no filtering is needed (non-Wikipedia adapters).
+   */
+  buildMatchingFilter?(root: Element): ((element: Element) => boolean) | undefined;
 }
 
 export function isLikelyVisible(element: Element): boolean {

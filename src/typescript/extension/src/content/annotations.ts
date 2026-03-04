@@ -46,8 +46,11 @@ export class AnnotationController {
     if (!root) return false;
 
     clearAnnotations();
-    const annotations = mapClaimsToDom(this.#claims, root);
-    renderAnnotations(annotations);
+    const shouldExclude = adapter.buildMatchingFilter?.(root);
+    const annotations = mapClaimsToDom(this.#claims, root, {
+      shouldExcludeElement: shouldExclude,
+    });
+    renderAnnotations(annotations, shouldExclude);
     return true;
   }
 

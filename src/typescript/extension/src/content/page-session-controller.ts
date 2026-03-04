@@ -479,7 +479,10 @@ export class PageSessionController {
       }
 
       // Rendered mark is missing — try exact/context matching before giving up.
-      const [mappedClaim] = mapClaimsToDom([claim], root, { allowFuzzy: false });
+      const [mappedClaim] = mapClaimsToDom([claim], root, {
+        allowFuzzy: false,
+        shouldExcludeElement: this.#state.adapter.buildMatchingFilter?.(root),
+      });
       if (mappedClaim?.matched && mappedClaim.range) {
         queueAnnotationRerender(this.#annotations, this.#state.adapter);
         return focusClaimResponseSchema.parse({
@@ -492,7 +495,10 @@ export class PageSessionController {
       return focusClaimResponseSchema.parse({ ok: false });
     }
 
-    const [mappedClaim] = mapClaimsToDom([claim], root, { allowFuzzy: false });
+    const [mappedClaim] = mapClaimsToDom([claim], root, {
+      allowFuzzy: false,
+      shouldExcludeElement: this.#state.adapter.buildMatchingFilter?.(root),
+    });
     if (!mappedClaim?.matched || !mappedClaim.range) {
       return focusClaimResponseSchema.parse({ ok: false });
     }
@@ -600,6 +606,12 @@ export class PageSessionController {
         return;
       }
       if (this.#state.kind === "TRACKED_POST") {
+        // Update the mutation baseline so that non-session-key-changing DOM
+        // mutations (e.g. ad injections, sidebar updates) don't cause a
+        // continuous refresh loop — the mismatch between the old baseline
+        // and the current root text would otherwise re-trigger on every
+        // future mutation observation.
+        this.#state.observedRootText = normalizedRootText(this.#state.adapter);
         this.#annotations.reapplyIfMissing(this.#state.adapter);
       }
       return;

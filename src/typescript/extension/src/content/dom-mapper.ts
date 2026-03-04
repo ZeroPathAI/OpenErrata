@@ -15,6 +15,13 @@ export interface DomAnnotation {
 
 interface MapClaimsToDomOptions {
   allowFuzzy?: boolean;
+  /**
+   * When provided, elements matching this predicate (and their entire subtrees)
+   * are excluded from both text extraction and Range creation. This keeps DOM
+   * mapper text consistent with server-side content that may strip certain
+   * elements (e.g. Wikipedia citation superscripts).
+   */
+  shouldExcludeElement?: ((element: Element) => boolean) | undefined;
 }
 
 interface NormalizedTextIndex {
@@ -37,19 +44,79 @@ interface CodePointWithRawIndex {
  */
 const FUZZY_HAYSTACK_LIMIT = 15_000;
 
+// ── Filtered DOM traversal ────────────────────────────────────────────────
+
+/**
+ * Create a TreeWalker that visits only Text nodes, optionally skipping
+ * elements (and their entire subtrees) that match `shouldExclude`.
+ *
+ * Both `extractFilteredText` and `createRangeFromTextOffset` need walkers
+ * with identical filtering behavior so that character offsets from text
+ * extraction correspond exactly to the text nodes the Range walker visits.
+ * Centralizing the filter here prevents the two from drifting apart.
+ */
+function createTextWalker(
+  root: Element,
+  shouldExclude?: (element: Element) => boolean,
+): TreeWalker {
+  if (!shouldExclude) {
+    return document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  }
+
+  return document.createTreeWalker(root, NodeFilter.SHOW_ALL, {
+    acceptNode(node: Node): number {
+      if (node instanceof Element && shouldExclude(node)) {
+        return NodeFilter.FILTER_REJECT;
+      }
+      if (node instanceof Text) {
+        return NodeFilter.FILTER_ACCEPT;
+      }
+      return NodeFilter.FILTER_SKIP;
+    },
+  });
+}
+
+/**
+ * Extract text content from `root`, skipping excluded element subtrees.
+ * The resulting string's character offsets align with the text nodes visited
+ * by `createTextWalker(root, shouldExclude)`, which is what
+ * `createRangeFromTextOffset` uses to build Ranges.
+ *
+ * Exported for invariant testing: the filtered text from the live DOM must
+ * match the adapter's extracted `contentText` after normalization.
+ */
+export function extractFilteredText(
+  root: Element,
+  shouldExclude: (element: Element) => boolean,
+): string {
+  const walker = createTextWalker(root, shouldExclude);
+  const parts: string[] = [];
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    if (node instanceof Text && node.data.length > 0) {
+      parts.push(node.data);
+    }
+  }
+  return parts.join("");
+}
+
 // ── Main mapper (spec §2.8 – tiered matching) ────────────────────────────
 
 /**
- * Map each claim to a DOM `Range` inside `root` using a tiered strategy:
+ * Map each claim to a DOM `Range` inside `root` using a tiered strategy
+ * (spec §2.4.1):
  *
- * 1. **Exact unique substring** — single occurrence in `root.textContent`.
+ * 1. **Exact unique substring** — single occurrence in the content text.
  * 2. **Context-scoped** — locate `claim.context`, then find `claim.text`
  *    within that context span.
- * 3. **First occurrence** — when the text exists but isn't unique and
- *    context disambiguation failed, use the first occurrence rather than
- *    the expensive fuzzy search.
- * 4. **Fuzzy (Levenshtein)** — sliding-window search for the best
+ * 3. **Fuzzy (Levenshtein)** — sliding-window search for the best
  *    approximate match. On large pages, scoped to a context-local window.
+ *
+ * When `allowFuzzy` is true (default), a **first occurrence** fallback runs
+ * before the expensive fuzzy search: if the text exists but isn't unique and
+ * context disambiguation failed, the first occurrence is used. This tier is
+ * skipped when `allowFuzzy` is false so that only high-confidence matches
+ * (unique or context-disambiguated) are returned.
  */
 export function mapClaimsToDom(
   claims: InvestigationClaim[],
@@ -57,7 +124,8 @@ export function mapClaimsToDom(
   options: MapClaimsToDomOptions = {},
 ): DomAnnotation[] {
   const allowFuzzy = options.allowFuzzy ?? true;
-  const fullText = root.textContent;
+  const shouldExclude = options.shouldExcludeElement;
+  const fullText = shouldExclude ? extractFilteredText(root, shouldExclude) : root.textContent;
   const t0 = performance.now();
   const fullTextIndex = buildNormalizedTextIndex(fullText);
   const normalizedFullText = fullTextIndex.normalized;
@@ -68,6 +136,10 @@ export function mapClaimsToDom(
         `(${fullText.length} raw chars → ${normalizedFullText.length} normalized chars)`,
     );
   }
+
+  /** Create a Range from a raw-text span, respecting the element exclusion filter. */
+  const createRange = (offset: number, length: number): Range | null =>
+    createRangeFromTextOffset(root, offset, length, shouldExclude);
 
   return claims.map((claim) => {
     const normalizedClaimText = normalizeContent(claim.text);
@@ -85,7 +157,7 @@ export function mapClaimsToDom(
         normalizedClaimText.length,
       );
       if (mappedSpan) {
-        const range = createRangeFromTextOffset(root, mappedSpan.offset, mappedSpan.length);
+        const range = createRange(mappedSpan.offset, mappedSpan.length);
         if (range) return { claim, range, matched: true };
       }
     }
@@ -102,35 +174,39 @@ export function mapClaimsToDom(
             normalizedClaimText.length,
           );
           if (mappedSpan) {
-            const range = createRangeFromTextOffset(root, mappedSpan.offset, mappedSpan.length);
+            const range = createRange(mappedSpan.offset, mappedSpan.length);
             if (range) return { claim, range, matched: true };
           }
         }
       }
     }
 
-    // ── Tier 3: first occurrence fallback ────────────────────────────────
-    // When claim text exists in the page but tier 1 rejected it (non-unique)
-    // and context disambiguation failed, use the first occurrence. This is
-    // O(n) and avoids the catastrophic O(n²) fuzzy search that would
-    // otherwise freeze the main thread on large articles.
-    const firstIdx = normalizedFullText.indexOf(normalizedClaimText);
-    if (firstIdx !== -1) {
-      const mappedSpan = mapNormalizedSpanToRaw(
-        fullTextIndex,
-        firstIdx,
-        normalizedClaimText.length,
-      );
-      if (mappedSpan) {
-        const range = createRangeFromTextOffset(root, mappedSpan.offset, mappedSpan.length);
-        if (range) return { claim, range, matched: true };
-      }
-    }
-
-    // ── Tier 4: fuzzy (Levenshtein sliding window) ───────────────────────
-    // On short pages, search the full text. On long pages, scope the search
-    // to a window around the context position to keep the O(n²) work bounded.
+    // ── Approximate matching (only when allowFuzzy is true) ─────────────
+    // These tiers accept ambiguous or imprecise matches. When allowFuzzy is
+    // false the caller wants only high-confidence (unique or context-
+    // disambiguated) results, so both first-occurrence and Levenshtein are
+    // skipped.
     if (allowFuzzy) {
+      // First occurrence fallback — when claim text exists in the page but
+      // tier 1 rejected it (non-unique) and context disambiguation failed,
+      // use the first occurrence. O(n) and avoids the catastrophic O(n²)
+      // fuzzy search that would otherwise freeze the main thread.
+      const firstIdx = normalizedFullText.indexOf(normalizedClaimText);
+      if (firstIdx !== -1) {
+        const mappedSpan = mapNormalizedSpanToRaw(
+          fullTextIndex,
+          firstIdx,
+          normalizedClaimText.length,
+        );
+        if (mappedSpan) {
+          const range = createRange(mappedSpan.offset, mappedSpan.length);
+          if (range) return { claim, range, matched: true };
+        }
+      }
+
+      // Fuzzy (Levenshtein sliding window) — on short pages, search the
+      // full text. On long pages, scope to a window around the context
+      // position to keep the O(n²) work bounded.
       const fuzzyWindow = selectFuzzyWindow(
         normalizedFullText,
         normalizedContext,
@@ -152,7 +228,7 @@ export function mapClaimsToDom(
             fuzzyResult.length,
           );
           if (mappedSpan) {
-            const range = createRangeFromTextOffset(root, mappedSpan.offset, mappedSpan.length);
+            const range = createRange(mappedSpan.offset, mappedSpan.length);
             if (range) return { claim, range, matched: true };
           }
         }
@@ -353,11 +429,18 @@ function findUniqueExactMatch(haystack: string, needle: string): number | null {
 
 /**
  * Walk the text nodes under `root` and build a DOM `Range` that starts at
- * the given character `offset` (relative to `root.textContent`) and spans
- * `length` characters.
+ * the given character `offset` (relative to the text extracted from `root`)
+ * and spans `length` characters. When `shouldExclude` is provided, excluded
+ * elements and their subtrees are skipped — keeping offsets consistent with
+ * the text returned by `extractFilteredText`.
  */
-function createRangeFromTextOffset(root: Element, offset: number, length: number): Range | null {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+function createRangeFromTextOffset(
+  root: Element,
+  offset: number,
+  length: number,
+  shouldExclude?: (element: Element) => boolean,
+): Range | null {
+  const walker = createTextWalker(root, shouldExclude);
   let charsSeen = 0;
   let startNode: Text | null = null;
   let startOffset = 0;

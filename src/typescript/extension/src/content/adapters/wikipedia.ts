@@ -443,6 +443,48 @@ export const wikipediaAdapter: PlatformAdapter = {
     };
   },
 
+  buildMatchingFilter(root: Element): (element: Element) => boolean {
+    // Precompute the set of direct-child elements within excluded sections
+    // (e.g. "References", "External links"). An excluded section starts at a
+    // heading whose title matches isExcludedWikipediaSectionTitle and extends
+    // to the next sibling heading of equal or higher level — mirroring the
+    // section removal logic in pruneWikipediaContent / removeSectionFromHeading.
+    const excludedSectionElements = new Set<Element>();
+
+    for (const child of root.children) {
+      const descriptor = toNodeDescriptor(child);
+      const level = effectiveHeadingLevel(descriptor);
+      if (level === null) continue;
+
+      const headingText = normalizeHeadingText(child);
+      if (!isExcludedWikipediaSectionTitle(headingText)) continue;
+
+      excludedSectionElements.add(child);
+      let sibling = child.nextElementSibling;
+      while (sibling) {
+        const siblingLevel = effectiveHeadingLevel(toNodeDescriptor(sibling));
+        if (siblingLevel !== null && siblingLevel <= level) break;
+        excludedSectionElements.add(sibling);
+        sibling = sibling.nextElementSibling;
+      }
+    }
+
+    return (element: Element): boolean => {
+      // Element-level exclusion (citations, edit sections, navboxes, etc.)
+      if (
+        shouldExcludeWikipediaElement({
+          tagName: element.tagName,
+          classTokens: Array.from(element.classList),
+        })
+      ) {
+        return true;
+      }
+      // Section-level exclusion — the TreeWalker's FILTER_REJECT skips
+      // subtrees, so checking direct membership is sufficient.
+      return excludedSectionElements.has(element);
+    };
+  },
+
   getContentRoot(document: Document): Element | null {
     return (
       document.querySelector("#mw-content-text .mw-parser-output") ??

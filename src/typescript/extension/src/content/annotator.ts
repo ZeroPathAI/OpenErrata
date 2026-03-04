@@ -33,11 +33,40 @@ function dismissDetailPanel(): void {
 
 /**
  * Render annotations by wrapping matched DOM ranges in highlight marks
- * and attaching tooltip / click behaviour.
+ * and attaching tooltip / click behaviour. When `shouldExcludeElement` is
+ * provided, text nodes inside excluded elements are not wrapped — keeping
+ * annotation marks out of citation superscripts and other server-stripped
+ * content.
  */
-export function renderAnnotations(annotations: DomAnnotation[]): void {
+export function renderAnnotations(
+  annotations: DomAnnotation[],
+  shouldExcludeElement?: (element: Element) => boolean,
+): void {
   for (const annotation of annotations) {
     if (!annotation.matched || !annotation.range) continue;
+
+    if (shouldExcludeElement) {
+      // Single-text-node ranges can't contain excluded elements: the range
+      // was built from filtered text that skips excluded subtrees, so both
+      // endpoints land in non-excluded text nodes. surroundContents is safe
+      // and avoids the TreeWalker path, which can't visit its root node
+      // (a Text node has no descendants for nextNode() to reach).
+      const { startContainer, endContainer } = annotation.range;
+      if (startContainer === endContainer && startContainer instanceof Text) {
+        try {
+          const mark = createMarkElement(annotation.claim);
+          annotation.range.surroundContents(mark);
+          attachInteractions(mark, annotation.claim);
+          continue;
+        } catch {
+          // Fall through to fragment path if surroundContents fails
+        }
+      }
+      // Multi-node ranges may span excluded elements — use fragment-based
+      // rendering so we can skip text nodes inside excluded subtrees.
+      highlightFragments(annotation.range, annotation.claim, shouldExcludeElement);
+      continue;
+    }
 
     try {
       // Try the simple path: surroundContents works when the range is
@@ -376,20 +405,48 @@ function positionTooltip(tip: HTMLDivElement, anchor: HTMLElement): void {
 }
 
 /**
- * Fallback for cross-element ranges: extract the text nodes covered by
- * the range and wrap each individually.
+ * Check whether a node is inside an excluded element by walking up the
+ * DOM tree to `boundary`. Returns true if any ancestor (exclusive of
+ * `boundary`) matches the exclusion predicate.
  */
-function highlightFragments(range: Range, claim: InvestigationClaim): void {
+function isInsideExcludedElement(
+  node: Node,
+  shouldExclude: (element: Element) => boolean,
+  boundary: Node,
+): boolean {
+  let cursor: Node | null = node.parentNode;
+  while (cursor && cursor !== boundary) {
+    if (cursor instanceof Element && shouldExclude(cursor)) return true;
+    cursor = cursor.parentNode;
+  }
+  return false;
+}
+
+/**
+ * Fallback for cross-element ranges: extract the text nodes covered by
+ * the range and wrap each individually. When `shouldExcludeElement` is
+ * provided, text nodes inside excluded elements are skipped so that
+ * annotation marks don't wrap server-stripped content like citation
+ * superscripts.
+ */
+function highlightFragments(
+  range: Range,
+  claim: InvestigationClaim,
+  shouldExcludeElement?: (element: Element) => boolean,
+): void {
   const textNodes: Text[] = [];
-  const walker = document.createTreeWalker(range.commonAncestorContainer, NodeFilter.SHOW_TEXT);
+  const ancestor = range.commonAncestorContainer;
+  const walker = document.createTreeWalker(ancestor, NodeFilter.SHOW_TEXT);
 
   while (walker.nextNode()) {
     const current = walker.currentNode;
     if (!(current instanceof Text)) continue;
     const node = current;
-    if (range.intersectsNode(node)) {
-      textNodes.push(node);
+    if (!range.intersectsNode(node)) continue;
+    if (shouldExcludeElement && isInsideExcludedElement(node, shouldExcludeElement, ancestor)) {
+      continue;
     }
+    textNodes.push(node);
   }
 
   for (const textNode of textNodes) {
