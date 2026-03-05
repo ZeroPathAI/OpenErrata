@@ -258,11 +258,8 @@ jobs:
       - name: Setup TypeScript workspace
         uses: ./.github/actions/setup-typescript-workspace
 
-      - name: Run unit tests with coverage
-        run: pnpm run test:unit:coverage
-
-      - name: Run API integration tests
-        run: pnpm run test:integration:api
+      - name: Run TypeScript quality test suite
+        run: pnpm run test:ci:quality
 
   build:
     needs: [resolve-target, decide-deploy]
