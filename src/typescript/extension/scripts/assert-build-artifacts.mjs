@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import process from "node:process";
 import { URL, fileURLToPath } from "node:url";
 import { Script } from "node:vm";
+import { assertDistBundleSizeBudgets } from "./size-budgets.mjs";
 
 const scriptDir = fileURLToPath(new URL(".", import.meta.url));
 const extensionRoot = resolve(scriptDir, "..");
@@ -113,6 +114,13 @@ if (/from\s*["'](?![./])/.test(backgroundScript)) {
   fail(
     "dist/background/index.js contains bare module imports that Chrome extension workers cannot resolve.",
   );
+}
+
+try {
+  assertDistBundleSizeBudgets(extensionRoot);
+} catch (error) {
+  const message = error instanceof Error ? error.message : String(error);
+  fail(message);
 }
 
 if (errors.length > 0) {

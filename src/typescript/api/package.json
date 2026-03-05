@@ -17,6 +17,7 @@
     "prisma:generate": "svelte-kit sync && prisma generate",
     "prisma:migrate:dev": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",
+    "prisma:migrate:check-drift": "node scripts/check-migration-drift.mjs",
     "typecheck": "svelte-kit sync && tsc --noEmit -p tsconfig.json",
     "test:unit:coverage": "c8 --config ../.c8rc.api.json tsx --test \"test/unit/**/*.test.ts\"",
     "test:merged:coverage": "bash scripts/merged-coverage.sh"

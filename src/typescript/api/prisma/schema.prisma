@@ -328,6 +328,7 @@ model Investigation {
   updatedAt             DateTime               @updatedAt
 
   @@unique([postVersionId])
+  @@index([parentInvestigationId])
   @@index([status])
 }
 

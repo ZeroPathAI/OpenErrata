@@ -6,6 +6,8 @@
     "dev": "vite build --watch --mode development",
     "build": "vite build && pnpm verify:dist",
     "verify:dist": "node ./scripts/assert-build-artifacts.mjs",
+    "verify:dist:size": "node ./scripts/assert-size-budgets.mjs dist",
+    "verify:package:size": "node ./scripts/assert-size-budgets.mjs artifacts",
     "package:artifacts": "node ./scripts/package-artifacts.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json && svelte-check --tsconfig ./tsconfig.json",
     "test:unit": "tsx --test \"test/unit/**/*.test.ts\"",

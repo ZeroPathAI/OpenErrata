@@ -52,8 +52,14 @@ jobs:
       - name: Lint and static checks
         run: pnpm lint:ci
 
+      - name: Check Prisma migration drift
+        run: pnpm run db:check:migration-drift
+
       - name: Run unit tests with coverage
         run: pnpm run test:unit:coverage
+
+      - name: Run Pulumi unit tests
+        run: pnpm run test:unit:pulumi
 
       - name: Run API integration tests
         run: pnpm run test:integration:api
@@ -82,23 +88,11 @@ jobs:
           OPENERRATA_CHROME_CRX_PRIVATE_KEY: ${{ secrets.CHROME_CRX_PRIVATE_KEY }}
         run: pnpm --filter @openerrata/extension package:artifacts
 
-      - name: Enforce bundle size hard limit
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          chrome_zip="$GITHUB_WORKSPACE/openerrata-extension-chrome-${{ steps.version.outputs.version }}.zip"
-          chrome_crx="$GITHUB_WORKSPACE/openerrata-extension-chrome-${{ steps.version.outputs.version }}.crx"
-          firefox_zip="$GITHUB_WORKSPACE/openerrata-extension-firefox-${{ steps.version.outputs.version }}.zip"
-          limit_bytes=5242880
-
-          for artifact in "$chrome_zip" "$chrome_crx" "$firefox_zip"; do
-            bytes="$(stat -c%s "$artifact")"
-            if [ "$bytes" -gt "$limit_bytes" ]; then
-              echo "$(basename "$artifact") exceeds 5 MiB: ${bytes} bytes"
-              exit 1
-            fi
-          done
+      - name: Enforce extension package size budgets
+        env:
+          OPENERRATA_EXTENSION_PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+          OPENERRATA_EXTENSION_PACKAGE_OUT_DIR: ${{ github.workspace }}
+        run: pnpm --filter @openerrata/extension run verify:package:size
 
       - name: Verify Firefox package integrity
         run: |

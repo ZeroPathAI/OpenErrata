@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import process from "node:process";
 import { URL, fileURLToPath } from "node:url";
+import { assertPackagedArtifactSizeBudgets } from "./size-budgets.mjs";
 
 const scriptDir = fileURLToPath(new URL(".", import.meta.url));
 const extensionRoot = resolve(scriptDir, "..");
@@ -177,6 +178,8 @@ try {
 } finally {
   rmSync(tempDir, { recursive: true, force: true });
 }
+
+assertPackagedArtifactSizeBudgets(outputDir, packageVersion);
 
 reportArtifact("Chrome zip", chromeZipPath);
 reportArtifact("Chrome crx", chromeCrxPath);
