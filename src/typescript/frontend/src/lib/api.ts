@@ -36,12 +36,9 @@ export async function graphqlQuery<T>(
   const record = body as Record<string, unknown>;
 
   if ("errors" in body && Array.isArray(record["errors"]) && record["errors"].length > 0) {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- system boundary: GraphQL error array validated above
     const errors = record["errors"] as { message: string }[];
     throw new Error(`GraphQL error: ${errors.map((e) => e.message).join(", ")}`);
   }
 
-  // After runtime structural validation, cast the data field to the caller's expected type.
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- system boundary: GraphQL response validated above
   return record["data"] as T;
 }

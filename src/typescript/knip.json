@@ -37,7 +37,7 @@
       "includeEntryExports": true
     },
     "frontend": {
-      "entry": ["src/routes/**/*.ts", "test/**/*.ts"],
+      "entry": ["src/routes/**/*.ts", "test/**/*.ts", "playwright.*.config.ts"],
       "project": ["src/**/*.{ts,svelte}", "test/**/*.ts", "*.ts", "*.js"],
       "sveltekit": true
     },

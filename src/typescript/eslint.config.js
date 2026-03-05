@@ -134,6 +134,10 @@ const typeAwareTsIgnores = [
   "**/svelte.config.js",
   "extension/playwright.config.ts",
   "test-support/*.ts",
+  // Frontend source files depend on SvelteKit-generated types (.svelte-kit/tsconfig.json,
+  // $types modules) that only exist after `svelte-kit sync`. Exclude from type-aware
+  // linting; svelte-check handles type safety for the frontend package.
+  "frontend/src/**/*.ts",
 ];
 
 const typeAwarePresetConfigs = [
