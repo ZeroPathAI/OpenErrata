@@ -119,6 +119,7 @@ test("createPublicGraphqlSchema uses injected public read-model dependencies", a
   assert.deepEqual(calls.searchInput, {
     query: "moon",
     platform: "X",
+    minClaimCount: undefined,
     limit: 3,
     offset: 2,
   });

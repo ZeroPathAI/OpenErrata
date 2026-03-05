@@ -304,6 +304,10 @@ const typeDefs = /* GraphQL */ `
       """
       platform: Platform
       """
+      Only return investigations with at least this many claims.
+      """
+      minClaimCount: Int
+      """
       Maximum number of results to return (1-100).
       """
       limit: Int = 20
@@ -349,17 +353,26 @@ function toDateTimeInput(value: Date | string | null | undefined): string | unde
 }
 
 interface SearchInvestigationsArgs {
-  query?: string;
-  platform?: Platform;
-  limit?: number;
-  offset?: number;
+  query?: string | null;
+  platform?: Platform | null;
+  minClaimCount?: number | null;
+  limit?: number | null;
+  offset?: number | null;
 }
 
 interface PublicMetricsArgs {
-  platform?: Platform;
-  authorId?: string;
-  windowStart?: Date | string;
-  windowEnd?: Date | string;
+  platform?: Platform | null;
+  authorId?: string | null;
+  windowStart?: Date | string | null;
+  windowEnd?: Date | string | null;
+}
+
+/** Convert GraphQL null values to undefined for Zod optional fields. */
+function nullToUndefined<T>(value: T | null | undefined): T | undefined {
+  if (value === null) {
+    return undefined;
+  }
+  return value;
 }
 
 interface PublicReadModel {
@@ -412,18 +425,19 @@ function createResolvers(publicReadModel: PublicReadModel) {
         ctx: PublicGraphqlContext,
       ) => {
         const input = searchInvestigationsInputSchema.parse({
-          query: args.query,
-          platform: args.platform,
-          limit: args.limit,
-          offset: args.offset,
+          query: nullToUndefined(args.query),
+          platform: nullToUndefined(args.platform),
+          minClaimCount: nullToUndefined(args.minClaimCount),
+          limit: nullToUndefined(args.limit),
+          offset: nullToUndefined(args.offset),
         });
         return publicReadModel.searchPublicInvestigations(ctx.prisma, input);
       },
 
       publicMetrics: async (_root: unknown, args: PublicMetricsArgs, ctx: PublicGraphqlContext) => {
         const input = getMetricsInputSchema.parse({
-          platform: args.platform,
-          authorId: args.authorId,
+          platform: nullToUndefined(args.platform),
+          authorId: nullToUndefined(args.authorId),
           windowStart: toDateTimeInput(args.windowStart),
           windowEnd: toDateTimeInput(args.windowEnd),
         });

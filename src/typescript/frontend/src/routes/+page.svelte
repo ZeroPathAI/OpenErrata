@@ -3,23 +3,6 @@
 </svelte:head>
 
 <div class="page">
-  <nav class="nav">
-    <div class="nav-inner">
-      <a href="/" class="logo">OpenErrata</a>
-      <div class="nav-links">
-        <a href="https://github.com/ZeroPathAI/openerrata" target="_blank" rel="noopener noreferrer"
-          >GitHub</a
-        >
-        <a
-          href="https://chromewebstore.google.com/detail/openerrata/TODO"
-          target="_blank"
-          rel="noopener noreferrer"
-          class="btn btn-primary btn-sm">Install Extension</a
-        >
-      </div>
-    </div>
-  </nav>
-
   <header class="hero">
     <div class="hero-inner">
       <div class="hero-badge">Open Source</div>
@@ -211,52 +194,6 @@
     flex-direction: column;
   }
 
-  /* Nav */
-  .nav {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    z-index: 100;
-    background: rgba(10, 10, 10, 0.8);
-    backdrop-filter: blur(12px);
-    border-bottom: 1px solid var(--color-border);
-  }
-
-  .nav-inner {
-    max-width: var(--max-width);
-    margin: 0 auto;
-    padding: 0.75rem 1.5rem;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-  }
-
-  .logo {
-    font-size: 1.125rem;
-    font-weight: 700;
-    color: var(--color-text);
-    text-decoration: none;
-  }
-
-  .nav-links {
-    display: flex;
-    align-items: center;
-    gap: 1.5rem;
-  }
-
-  .nav-links a {
-    color: var(--color-text-muted);
-    font-size: 0.875rem;
-    font-weight: 500;
-    text-decoration: none;
-  }
-
-  .nav-links a:hover {
-    color: var(--color-text);
-    text-decoration: none;
-  }
-
   /* Buttons */
   .btn {
     display: inline-flex;
@@ -295,14 +232,9 @@
     border-color: var(--color-text-muted);
   }
 
-  .btn-sm {
-    font-size: 0.8125rem;
-    padding: 0.375rem 0.875rem;
-  }
-
   /* Hero */
   .hero {
-    padding: 10rem 1.5rem 5rem;
+    padding: 6rem 1.5rem 5rem;
     text-align: center;
   }
 
@@ -540,12 +472,8 @@
   }
 
   @media (max-width: 640px) {
-    .nav-links a:not(.btn) {
-      display: none;
-    }
-
     .hero {
-      padding: 7rem 1rem 3rem;
+      padding: 3rem 1rem 3rem;
     }
 
     .hero-subtitle {

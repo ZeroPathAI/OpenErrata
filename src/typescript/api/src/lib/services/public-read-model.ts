@@ -88,6 +88,7 @@ interface PublicMetricsInput {
 interface PublicSearchInvestigationsInput {
   query?: string | undefined;
   platform?: Platform | undefined;
+  minClaimCount?: number | undefined;
   limit: number;
   offset: number;
 }
@@ -335,6 +336,9 @@ export async function searchPublicInvestigations(
   const investigations = await prisma.investigation.findMany({
     where: {
       status: "COMPLETE",
+      ...(input.minClaimCount !== undefined && input.minClaimCount > 0
+        ? { claims: { some: {} } }
+        : {}),
       ...(input.platform === undefined && input.query === undefined
         ? {}
         : {
