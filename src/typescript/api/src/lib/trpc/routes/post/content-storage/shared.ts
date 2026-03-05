@@ -1,5 +1,5 @@
 import type { Platform, PlatformMetadataByPlatform } from "@openerrata/shared";
-import type { PrismaClient, Prisma } from "$lib/generated/prisma/client";
+import type { PrismaClient, Prisma } from "$lib/db/prisma-client";
 import { isUniqueConstraintError } from "$lib/db/errors.js";
 
 export type UpsertPostInput = {

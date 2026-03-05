@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { PrismaClient } from "$lib/generated/prisma/client";
+import type { PrismaClient } from "$lib/db/prisma-client";
 
 function normalizeInstanceApiKey(input: string): string {
   return input.trim();

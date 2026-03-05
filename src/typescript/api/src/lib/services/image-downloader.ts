@@ -6,7 +6,7 @@ import {
 } from "@openerrata/shared";
 import { getPrisma } from "$lib/db/client.js";
 import { isUniqueConstraintError } from "$lib/db/errors.js";
-import type { ImageBlob } from "$lib/generated/prisma/client";
+import type { ImageBlob } from "$lib/db/prisma-client";
 import { hasAddressIntersection, resolvePublicHostAddresses } from "$lib/network/host-safety.js";
 import { isRedirectStatus } from "$lib/network/http-status.js";
 import { uploadImage } from "./blob-storage.js";

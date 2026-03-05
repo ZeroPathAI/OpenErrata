@@ -15,7 +15,7 @@ import {
 import { z } from "zod";
 import { ensureInvestigationQueued } from "$lib/services/investigation-lifecycle.js";
 import { isUniqueConstraintError } from "$lib/db/errors.js";
-import type { Prisma, PrismaClient } from "$lib/generated/prisma/client";
+import type { Prisma, PrismaClient } from "$lib/db/prisma-client";
 import { TRPCError } from "@trpc/server";
 import type { ResolvedPostVersion } from "./content-storage.js";
 

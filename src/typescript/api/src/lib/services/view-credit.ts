@@ -1,6 +1,6 @@
 import { getIpRangeCreditCap } from "$lib/config/runtime.js";
 import { isUniqueConstraintError } from "$lib/db/errors.js";
-import type { PrismaClient } from "$lib/generated/prisma/client";
+import type { PrismaClient } from "$lib/db/prisma-client";
 
 function startOfUTCDay(date: Date): Date {
   const dayStart = new Date(date);

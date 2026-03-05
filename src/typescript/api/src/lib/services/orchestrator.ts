@@ -15,7 +15,7 @@ import {
   type InvestigationResult,
   type SupportedImageMimeType,
 } from "@openerrata/shared";
-import type { ImageBlob, Prisma } from "$lib/generated/prisma/client";
+import type { ImageBlob, Prisma } from "$lib/db/prisma-client";
 import { createHash } from "node:crypto";
 
 import { formatErrorForLog, isNonRetryableProviderError } from "./orchestrator-errors.js";

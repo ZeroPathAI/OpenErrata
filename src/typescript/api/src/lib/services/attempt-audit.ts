@@ -4,7 +4,7 @@ import {
   type InvestigatorAttemptAudit,
 } from "$lib/investigators/interface.js";
 import { toDate, toOptionalDate } from "$lib/date.js";
-import type { Prisma } from "$lib/generated/prisma/client";
+import type { Prisma } from "$lib/db/prisma-client";
 import { consumeOpenAiKeySource } from "./user-key-source.js";
 
 export async function persistAttemptAudit(

@@ -1,5 +1,5 @@
 import { getPrisma } from "$lib/db/client";
-import type { Prisma } from "$lib/generated/prisma/client";
+import type { Prisma } from "$lib/db/prisma-client";
 import { investigationContextInclude } from "./prompt-context.js";
 import { formatErrorForLog } from "./orchestrator-errors.js";
 

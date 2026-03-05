@@ -1,6 +1,6 @@
 import { trimToOptionalNonEmpty } from "@openerrata/shared";
 import type { DbClient, UpsertPostInput } from "./shared.js";
-import type { Post } from "$lib/generated/prisma/client";
+import type { Post } from "$lib/db/prisma-client";
 import type { PreparedViewPostInput } from "../wikipedia.js";
 
 async function upsertAuthorAndAttachToPost(

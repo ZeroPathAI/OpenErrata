@@ -6,6 +6,7 @@ build/
 .env
 *.local
 src/typescript/api/src/lib/generated/prisma/
+src/typescript/api/prisma/generated/prisma/
 
 # Build artifacts
 *.tsbuildinfo

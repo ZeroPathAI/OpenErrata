@@ -1,6 +1,6 @@
 import { validateAndSortImageOccurrences, type ViewPostInput } from "@openerrata/shared";
 import { TRPCError } from "@trpc/server";
-import type { ImageOccurrence, ImageOccurrenceSet } from "$lib/generated/prisma/client";
+import type { ImageOccurrence, ImageOccurrenceSet } from "$lib/db/prisma-client";
 import { createOrFindByUniqueConstraint, type DbClient } from "./shared.js";
 import { imageOccurrencesHash } from "./hashing.js";
 

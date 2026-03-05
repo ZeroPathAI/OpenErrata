@@ -5,7 +5,7 @@ import {
   markInvestigationFailedInTx,
   releaseLeaseToRetryInTx,
 } from "../../src/lib/services/attempt-audit.js";
-import type { Prisma } from "../../src/lib/generated/prisma/client";
+import type { Prisma } from "../../src/lib/db/prisma-client";
 import type { InvestigatorAttemptAudit } from "../../src/lib/investigators/interface.js";
 
 /**

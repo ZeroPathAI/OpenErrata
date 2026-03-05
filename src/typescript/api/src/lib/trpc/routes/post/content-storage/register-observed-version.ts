@@ -1,4 +1,4 @@
-import type { PrismaClient } from "$lib/generated/prisma/client";
+import type { PrismaClient } from "$lib/db/prisma-client";
 import type { ViewPostInput } from "@openerrata/shared";
 import { fetchCanonicalContent } from "$lib/services/content-fetcher.js";
 import { resolveCanonicalContentVersion } from "$lib/services/canonical-resolution.js";

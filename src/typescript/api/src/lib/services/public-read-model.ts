@@ -1,4 +1,4 @@
-import { Prisma, type PrismaClient } from "$lib/generated/prisma/client";
+import { Prisma, type PrismaClient } from "$lib/db/prisma-client";
 import { platformSchema, type Platform } from "@openerrata/shared";
 
 interface PublicInvestigationOrigin {

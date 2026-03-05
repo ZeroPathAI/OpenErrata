@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { wordCount } from "$lib/services/investigation-lifecycle.js";
-import type { ContentBlob } from "$lib/generated/prisma/client";
+import type { ContentBlob } from "$lib/db/prisma-client";
 import { createOrFindByUniqueConstraint, type DbClient } from "./shared.js";
 import { sha256 } from "./hashing.js";
 

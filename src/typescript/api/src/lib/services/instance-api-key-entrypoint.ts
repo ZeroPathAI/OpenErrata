@@ -1,7 +1,7 @@
 import { config as loadDotenv } from "dotenv";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { normalizePgConnectionStringForNode } from "$lib/db/connection-string.js";
-import { PrismaClient, type Prisma } from "$lib/generated/prisma/client";
+import { PrismaClient, type Prisma } from "$lib/db/prisma-client";
 import { Pool } from "pg";
 import { hashInstanceApiKey } from "$lib/services/instance-api-key.js";
 

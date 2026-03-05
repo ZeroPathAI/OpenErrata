@@ -2,7 +2,7 @@ import type { ViewPostInput } from "@openerrata/shared";
 import { trimToOptionalNonEmpty } from "@openerrata/shared";
 import { TRPCError } from "@trpc/server";
 import { toOptionalDate } from "$lib/date.js";
-import type { Prisma } from "$lib/generated/prisma/client";
+import type { Prisma } from "$lib/db/prisma-client";
 import type { CanonicalContentVersion } from "$lib/services/canonical-resolution.js";
 import { createOrFindByUniqueConstraint, type DbClient } from "./shared.js";
 import { getOrCreateHtmlBlob } from "./blobs.js";

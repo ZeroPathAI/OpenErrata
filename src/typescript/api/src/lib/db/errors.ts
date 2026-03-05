@@ -1,4 +1,4 @@
-import { Prisma } from "$lib/generated/prisma/client";
+import { Prisma } from "$lib/db/prisma-client";
 
 export function isUniqueConstraintError(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";

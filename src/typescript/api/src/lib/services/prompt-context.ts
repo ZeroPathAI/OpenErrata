@@ -1,5 +1,5 @@
 import type { Platform } from "@openerrata/shared";
-import type { Prisma } from "$lib/generated/prisma/client";
+import type { Prisma } from "$lib/db/prisma-client";
 
 export interface PromptImageOccurrence {
   originalIndex: number;

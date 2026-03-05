@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Prisma } from "../../src/lib/generated/prisma/client.js";
+import { Prisma } from "../../src/lib/db/prisma-client.js";
 import { isRecordNotFoundError, isUniqueConstraintError } from "../../src/lib/db/errors.js";
 
 function createKnownRequestError(code: "P2002" | "P2025") {

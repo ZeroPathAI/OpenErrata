@@ -1,6 +1,6 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { isUniqueConstraintError } from "$lib/db/errors.js";
-import type { Prisma, PrismaClient } from "$lib/generated/prisma/client";
+import type { Prisma, PrismaClient } from "$lib/db/prisma-client";
 import { getDatabaseEncryptionConfig } from "$lib/config/env.js";
 
 const OPENAI_KEY_SOURCE_TTL_MS = 30 * 60 * 1000;

@@ -5,7 +5,7 @@ import type {
   InvestigationProvider as PrismaInvestigationProvider,
   MarkdownSource as PrismaMarkdownSource,
   Platform as PrismaPlatform,
-} from "$lib/generated/prisma/client";
+} from "$lib/db/prisma-client";
 import type {
   CheckStatus as SharedCheckStatus,
   ContentProvenance as SharedContentProvenance,

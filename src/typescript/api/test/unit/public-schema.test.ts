@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { graphql } from "graphql";
 import { MINIMUM_SUPPORTED_EXTENSION_VERSION } from "../../src/lib/config/env.js";
-import type { PrismaClient } from "../../src/lib/generated/prisma/client.js";
+import type { PrismaClient } from "../../src/lib/db/prisma-client.js";
 import { appRouter } from "../../src/lib/trpc/router.js";
 import type { Context } from "../../src/lib/trpc/context.js";
 import { createPublicGraphqlSchema } from "../../src/lib/graphql/public-schema.js";

@@ -1,5 +1,5 @@
 import { isUniqueConstraintError } from "$lib/db/errors.js";
-import type { Investigation, Prisma, PrismaClient } from "$lib/generated/prisma/client";
+import type { Investigation, Prisma, PrismaClient } from "$lib/db/prisma-client";
 import {
   DEFAULT_INVESTIGATION_MODEL,
   DEFAULT_INVESTIGATION_PROVIDER,

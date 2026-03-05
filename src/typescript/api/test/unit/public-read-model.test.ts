@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { PrismaClient } from "../../src/lib/generated/prisma/client.js";
+import type { PrismaClient } from "../../src/lib/db/prisma-client.js";
 import {
   getPublicInvestigationById,
   getPublicMetrics,

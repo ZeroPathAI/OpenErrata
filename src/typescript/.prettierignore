@@ -11,3 +11,4 @@ extension/playwright-report
 pnpm-lock.yaml
 **/prisma/migrations/**
 api/src/lib/generated/**
+**/prisma/generated/**
