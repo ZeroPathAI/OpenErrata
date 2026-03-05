@@ -22,10 +22,14 @@ type ValidationRunner = (
   claim: StageOneClaim,
 ) => Promise<PerClaimValidationResult>;
 
-interface RetainClaimResult {
-  kind: "ok" | "error";
-  errorMessage?: string;
-}
+type RetainClaimResult =
+  | {
+      kind: "ok";
+    }
+  | {
+      kind: "error";
+      errorMessage: string;
+    };
 
 export interface ClaimValidationScheduler {
   getState: () => InvestigationRunState;

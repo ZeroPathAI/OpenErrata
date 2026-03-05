@@ -23,7 +23,7 @@
     "test": "bash -lc 'set -u; pnpm run test:unit & pid_unit=$!; pnpm run test:integration:api & pid_integration=$!; status=0; wait $pid_unit || status=$?; wait $pid_integration || status=$?; exit $status'",
     "test:integration-and-e2e": "bash -lc 'set -u; pnpm run test:integration:api & pid_integration=$!; pnpm run test:e2e:extension & pid_e2e=$!; status=0; wait $pid_integration || status=$?; wait $pid_e2e || status=$?; exit $status'",
     "test:unit:coverage": "pnpm -r --parallel --workspace-concurrency=3 --filter @openerrata/shared --filter @openerrata/extension --filter @openerrata/api test:unit:coverage",
-    "test:ci:quality": "pnpm db:check:migration-drift && pnpm run test:unit:shared:coverage && pnpm run test:unit:extension:coverage && pnpm --filter @openerrata/api run test:merged:coverage && pnpm run test:unit:pulumi",
+    "test:ci:quality": "bash scripts/test-ci-quality.sh",
     "test:coverage": "pnpm run test:unit:coverage",
     "test:ci": "pnpm run test:unit:coverage && pnpm run test:integration-and-e2e:ci",
     "test:integration-and-e2e:ci": "bash -lc 'set -u; pnpm run test:integration:api & pid_integration=$!; pnpm run test:e2e:extension:ci & pid_e2e=$!; status=0; wait $pid_integration || status=$?; wait $pid_e2e || status=$?; exit $status'",

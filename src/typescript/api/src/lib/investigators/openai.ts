@@ -263,10 +263,7 @@ export class OpenAIInvestigator implements Investigator {
         const retained = validationScheduler.retainClaimById(retainId);
         if (retained.kind === "error") {
           outputs.push(
-            buildFunctionCallOutput(
-              call.callId,
-              JSON.stringify({ error: retained.errorMessage ?? "Invalid retain request" }),
-            ),
+            buildFunctionCallOutput(call.callId, JSON.stringify({ error: retained.errorMessage })),
           );
           continue;
         }
