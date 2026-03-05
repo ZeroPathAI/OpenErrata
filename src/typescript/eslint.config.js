@@ -167,6 +167,7 @@ export default [
       "!.env.example",
       "pnpm-lock.yaml",
       "**/prisma/migrations/**",
+      "**/prisma/generated/**",
     ],
   },
   {
