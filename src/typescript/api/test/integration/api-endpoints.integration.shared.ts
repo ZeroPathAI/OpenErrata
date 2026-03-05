@@ -2,7 +2,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { after, afterEach, test } from "node:test";
-import type { RequestEvent } from "@sveltejs/kit";
 import {
   hashContent,
   isNonNullObject,
@@ -12,6 +11,7 @@ import {
   WORD_COUNT_LIMIT,
   type Platform,
 } from "@openerrata/shared";
+import type { RequestEventLike } from "../../src/lib/trpc/context.js";
 import { MINIMUM_SUPPORTED_EXTENSION_VERSION } from "../../src/lib/config/env.js";
 import {
   createDeterministicRandom,
@@ -23,20 +23,10 @@ import {
   buildFailedAttemptAudit,
   buildSucceededAttemptAudit,
 } from "./api-endpoints.integration.attempt-audit.js";
+import { applyIntegrationEnvironmentDefaults } from "./integration-env.js";
 import { INTEGRATION_LESSWRONG_FIXTURE_KEYS, readLesswrongFixture } from "./lesswrong-fixtures.js";
 
-process.env["NODE_ENV"] = "test";
-process.env["DATABASE_URL"] ??= "postgresql://openerrata:openerrata_dev@localhost:5433/openerrata";
-process.env["HMAC_SECRET"] = "test-hmac-secret";
-process.env["BLOB_STORAGE_PROVIDER"] = "aws";
-process.env["BLOB_STORAGE_REGION"] = "us-east-1";
-process.env["BLOB_STORAGE_ENDPOINT"] = "";
-process.env["BLOB_STORAGE_BUCKET"] = "test-openerrata-images";
-process.env["BLOB_STORAGE_ACCESS_KEY_ID"] = "test-blob-access-key";
-process.env["BLOB_STORAGE_SECRET_ACCESS_KEY"] = "test-blob-secret";
-process.env["BLOB_STORAGE_PUBLIC_URL_PREFIX"] = "https://example.test/images";
-process.env["DATABASE_ENCRYPTION_KEY"] = "integration-test-database-encryption-key";
-process.env["OPENAI_API_KEY"] = "sk-test-openai-key";
+applyIntegrationEnvironmentDefaults(process.env);
 
 const INTEGRATION_TEST_RUN_ID = [
   Date.now().toString(36),
@@ -55,8 +45,8 @@ const [
   { getPrisma },
   { createContext },
   { hashInstanceApiKey },
-  { GET: healthGet },
-  { POST: graphqlPost },
+  { buildHealthResponse },
+  { handlePublicGraphqlRequest },
   { closeQueueUtils },
   { ensureInvestigationQueued },
   { runSelector },
@@ -68,8 +58,8 @@ const [
   import("../../src/lib/db/client.js"),
   import("../../src/lib/trpc/context.js"),
   import("../../src/lib/services/instance-api-key.js"),
-  import("../../src/routes/health/+server.js"),
-  import("../../src/routes/graphql/+server.js"),
+  import("../../src/lib/services/health.js"),
+  import("../../src/lib/graphql/handler.js"),
   import("../../src/lib/services/queue.js"),
   import("../../src/lib/services/investigation-lifecycle.js"),
   import("../../src/lib/services/selector.js"),
@@ -142,7 +132,7 @@ function createCaller(options: CallerOptions = {}): AppCaller {
   const userOpenAiApiKey = options.userOpenAiApiKey ?? null;
 
   const caller = appRouter.createCaller({
-    event: null as unknown as RequestEvent,
+    event: createMockRequestEvent(),
     prisma,
     viewerKey: options.viewerKey ?? "integration-viewer",
     ipRangeKey: options.ipRangeKey ?? "integration-ip-range",
@@ -189,23 +179,21 @@ interface GraphqlEnvelope<TData> {
   errors?: GraphqlError[];
 }
 
-type GraphqlRequestEvent = Parameters<typeof graphqlPost>[0];
-
 async function queryPublicGraphql<TData>(
   query: string,
   variables?: Record<string, unknown>,
 ): Promise<TData> {
   const requestBody = JSON.stringify(variables === undefined ? { query } : { query, variables });
 
-  const response = await graphqlPost({
-    request: new Request("http://localhost/graphql", {
+  const response = await handlePublicGraphqlRequest(
+    new Request("http://localhost/graphql", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
       body: requestBody,
     }),
-  } as unknown as GraphqlRequestEvent);
+  );
 
   assert.equal(response instanceof Response, true);
   assert.equal(response.status, 200);
@@ -221,14 +209,14 @@ async function queryPublicGraphql<TData>(
   return data;
 }
 
-function createMockRequestEvent(headers?: HeadersInit): RequestEvent {
+function createMockRequestEvent(headers?: HeadersInit): RequestEventLike {
   return {
     request: new Request("http://localhost/trpc/post.validateSettings", {
       method: "POST",
       ...(headers !== undefined && { headers }),
     }),
     getClientAddress: () => "203.0.113.1",
-  } as unknown as RequestEvent;
+  };
 }
 
 async function seedInstanceApiKey(input: {
@@ -1433,6 +1421,7 @@ export {
   assert,
   assertIntegrationDatabaseInvariants,
   buildFailedAttemptAudit,
+  buildHealthResponse,
   buildLesswrongViewInput,
   buildSucceededAttemptAudit,
   buildXViewInput,
@@ -1445,10 +1434,8 @@ export {
   ensurePostVersionForSeed,
   errorHasOpenErrataCode,
   getPrisma,
-  graphqlPost,
   hashContent,
   hashInstanceApiKey,
-  healthGet,
   isNonNullObject,
   lesswrongHtmlToNormalizedText,
   loadLatestPostVersionByIdentity,

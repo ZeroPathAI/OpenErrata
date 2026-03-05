@@ -1,15 +1,10 @@
 import {
   annotationVisibilityResponseSchema,
   focusClaimResponseSchema,
-  type InvestigationClaim,
   normalizeContent,
   requestInvestigateResponseSchema,
   WORD_COUNT_LIMIT,
-  type ExtensionSkippedReason,
   type Platform,
-  type PlatformContent,
-  type ViewPostInput,
-  type ViewPostOutput,
 } from "@openerrata/shared";
 import type { PlatformAdapter } from "./adapters/index";
 import { getAdapter } from "./adapters/index";
@@ -24,11 +19,37 @@ import {
 import { toViewPostInput } from "../lib/view-post-input";
 import { AnnotationController } from "./annotations";
 import { PageObserver } from "./observer";
-import { ContentSyncClient, type ParsedExtensionPageStatus } from "./sync";
+import { ContentSyncClient } from "./sync";
 import { mapClaimsToDom } from "./dom-mapper";
 import { extractSubstackPostSlug } from "../lib/substack-url";
 import { ANNOTATION_CLAIM_ID_ATTRIBUTE, ANNOTATION_SELECTOR } from "./annotation-dom";
 import { pageSessionKeyFor } from "./session-key";
+import {
+  areClaimsEqual,
+  extractDisplayClaimsFromStatus,
+  extractDisplayClaimsFromViewPost,
+} from "./annotation-lifecycle.js";
+import {
+  createIdleSessionState,
+  createInitialPageSessionState,
+  createSkippedSessionState,
+  createTrackedPostSessionState,
+  isActiveTrackedSession,
+  isCurrentSessionPostStatus,
+  shouldRefreshSkippedSessionOnMutation,
+  type PageSessionState,
+  type PageSnapshot,
+  type TrackedPostSessionState,
+  type TrackedPostSnapshot,
+} from "./session-state.js";
+import {
+  createInitialSyncRetryState,
+  hasPendingRetryForSession,
+  resolveSyncTrackedSnapshotErrorPolicy,
+  scheduleSyncRetry,
+  type SyncRetryState,
+  type SyncTrackedSnapshotErrorPolicy,
+} from "./sync-retry-policy.js";
 
 const REFRESH_DEBOUNCE_MS = 200;
 const REAPPLY_DEBOUNCE_MS = 300;
@@ -36,84 +57,6 @@ const SYNC_RETRY_INITIAL_MS = 1_000;
 const SYNC_RETRY_MAX_MS = 30_000;
 const CLAIM_FOCUS_CLASS = "openerrata-focus-target";
 const CLAIM_FOCUS_DURATION_MS = 1_500;
-
-type PageSessionState =
-  | {
-      kind: "IDLE";
-      tabSessionId: number;
-      sessionKey: null;
-    }
-  | {
-      kind: "SKIPPED";
-      tabSessionId: number;
-      sessionKey: string;
-      platform: Platform;
-      externalId: string;
-      pageUrl: string;
-      reason: ExtensionSkippedReason;
-    }
-  | {
-      kind: "TRACKED_POST";
-      tabSessionId: number;
-      sessionKey: string;
-      platform: Platform;
-      externalId: string;
-      /**
-       * Normalized text of the **live content root** at the time the session
-       * was established (or first observed by the mutation handler). Used to
-       * detect meaningful content changes.
-       *
-       * This must come from the unpruned DOM (via
-       * `normalizeContent(root.textContent)`) rather than the adapter's
-       * extracted `contentText`, because adapters may prune sections
-       * (e.g. Wikipedia's References), making the pruned text permanently
-       * unequal to the live DOM and causing a continuous refresh loop.
-       *
-       * `null` means the content root was not available when the session was
-       * established. The mutation handler will lazily capture the root text
-       * on its first observation rather than triggering a spurious refresh.
-       */
-      observedRootText: string | null;
-      adapter: PlatformAdapter;
-      request: ViewPostInput;
-    };
-
-type TrackedPostSessionState = Extract<PageSessionState, { kind: "TRACKED_POST" }>;
-type TrackedPostSnapshot = Extract<PageSnapshot, { kind: "TRACKED_POST" }>;
-
-type PageSnapshot =
-  | {
-      kind: "NONE";
-      sessionKey: null;
-    }
-  | {
-      kind: "SKIPPED";
-      sessionKey: string;
-      platform: Platform;
-      externalId: string;
-      pageUrl: string;
-      reason: ExtensionSkippedReason;
-    }
-  | {
-      kind: "TRACKED_POST";
-      sessionKey: string;
-      platform: Platform;
-      externalId: string;
-      adapter: PlatformAdapter;
-      content: PlatformContent;
-      request: ViewPostInput;
-    };
-
-type SyncTrackedSnapshotErrorPolicy =
-  | {
-      matches: (error: unknown) => boolean;
-      action: "RESET_AND_SYNC_CACHED_FAILURE";
-      warningMessage: string;
-    }
-  | {
-      matches: (error: unknown) => boolean;
-      action: "RESET_ONLY";
-    };
 
 const SYNC_TRACKED_SNAPSHOT_ERROR_POLICIES: readonly SyncTrackedSnapshotErrorPolicy[] = [
   {
@@ -259,73 +202,8 @@ function queueAnnotationRerender(controller: AnnotationController, adapter: Plat
   }, 0);
 }
 
-function areClaimsEqual(left: InvestigationClaim[], right: InvestigationClaim[]): boolean {
-  if (left.length !== right.length) return false;
-
-  for (const [index, leftClaim] of left.entries()) {
-    const rightClaim = right[index];
-    if (!rightClaim) return false;
-
-    if (
-      leftClaim.id !== rightClaim.id ||
-      leftClaim.text !== rightClaim.text ||
-      leftClaim.summary !== rightClaim.summary ||
-      leftClaim.context !== rightClaim.context ||
-      leftClaim.reasoning !== rightClaim.reasoning ||
-      leftClaim.sources.length !== rightClaim.sources.length
-    ) {
-      return false;
-    }
-
-    for (const [sourceIndex, leftSource] of leftClaim.sources.entries()) {
-      const rightSource = rightClaim.sources[sourceIndex];
-      if (!rightSource) return false;
-      if (
-        leftSource.url !== rightSource.url ||
-        leftSource.title !== rightSource.title ||
-        leftSource.snippet !== rightSource.snippet
-      ) {
-        return false;
-      }
-    }
-  }
-
-  return true;
-}
-
-function extractDisplayClaimsFromViewPost(viewPost: ViewPostOutput): InvestigationClaim[] {
-  if (viewPost.investigationState === "INVESTIGATED") {
-    return viewPost.claims;
-  }
-  if (viewPost.priorInvestigationResult !== null) {
-    return viewPost.priorInvestigationResult.oldClaims;
-  }
-  return [];
-}
-
-function extractDisplayClaimsFromStatus(
-  status: ParsedExtensionPageStatus,
-): InvestigationClaim[] | null {
-  if (status.kind !== "POST") return null;
-  if (status.investigationState === "INVESTIGATED") {
-    return status.claims;
-  }
-  if (
-    (status.investigationState === "INVESTIGATING" ||
-      status.investigationState === "NOT_INVESTIGATED") &&
-    status.priorInvestigationResult !== null
-  ) {
-    return status.priorInvestigationResult.oldClaims;
-  }
-  return null;
-}
-
 export class PageSessionController {
-  #state: PageSessionState = {
-    kind: "IDLE",
-    tabSessionId: 0,
-    sessionKey: null,
-  };
+  #state: PageSessionState = createInitialPageSessionState();
   #tabSessionCounter = 0;
   #lastObservedUrl = window.location.href;
   #refreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -333,8 +211,7 @@ export class PageSessionController {
   #refreshQueued = false;
   #booted = false;
   #cachedStatusUnsubscribe: (() => void) | null = null;
-  #pendingSyncRetrySessionKey: string | null = null;
-  #nextSyncRetryDelayMs = SYNC_RETRY_INITIAL_MS;
+  #syncRetryState: SyncRetryState = createInitialSyncRetryState(SYNC_RETRY_INITIAL_MS);
   readonly #annotations = new AnnotationController();
   readonly #sync = new ContentSyncClient();
   readonly #observer = new PageObserver({
@@ -412,12 +289,7 @@ export class PageSessionController {
   }
 
   #isActiveTrackedSession(state: TrackedPostSessionState): boolean {
-    return (
-      this.#state.kind === "TRACKED_POST" &&
-      this.#state.tabSessionId === state.tabSessionId &&
-      this.#state.platform === state.platform &&
-      this.#state.externalId === state.externalId
-    );
+    return isActiveTrackedSession(this.#state, state);
   }
 
   showAnnotations(): { ok: boolean } {
@@ -523,7 +395,7 @@ export class PageSessionController {
   #hasPendingRetryForActiveSession(): boolean {
     return (
       this.#state.kind === "TRACKED_POST" &&
-      this.#pendingSyncRetrySessionKey === this.#state.sessionKey
+      hasPendingRetryForSession(this.#syncRetryState, this.#state.sessionKey)
     );
   }
 
@@ -535,8 +407,7 @@ export class PageSessionController {
   }
 
   #resetSyncRetryState(): void {
-    this.#pendingSyncRetrySessionKey = null;
-    this.#nextSyncRetryDelayMs = SYNC_RETRY_INITIAL_MS;
+    this.#syncRetryState = createInitialSyncRetryState(SYNC_RETRY_INITIAL_MS);
   }
 
   #syncCachedFailureStatus(): void {
@@ -549,17 +420,17 @@ export class PageSessionController {
   }
 
   #scheduleSyncRetry(sessionKey: string): void {
-    this.#pendingSyncRetrySessionKey = sessionKey;
-    const retryDelayMs = this.#nextSyncRetryDelayMs;
-    this.#nextSyncRetryDelayMs = Math.min(this.#nextSyncRetryDelayMs * 2, SYNC_RETRY_MAX_MS);
-    this.scheduleRefresh(retryDelayMs);
+    const scheduled = scheduleSyncRetry(this.#syncRetryState, sessionKey, SYNC_RETRY_MAX_MS);
+    this.#syncRetryState = scheduled.nextState;
+    this.scheduleRefresh(scheduled.delayMs);
   }
 
   #applySyncTrackedSnapshotErrorPolicy(error: unknown): boolean {
-    const policy = SYNC_TRACKED_SNAPSHOT_ERROR_POLICIES.find((candidate) =>
-      candidate.matches(error),
+    const policy = resolveSyncTrackedSnapshotErrorPolicy(
+      error,
+      SYNC_TRACKED_SNAPSHOT_ERROR_POLICIES,
     );
-    if (policy === undefined) {
+    if (policy === null) {
       return false;
     }
 
@@ -600,7 +471,7 @@ export class PageSessionController {
       if (
         snapshot.kind === "TRACKED_POST" &&
         this.#state.kind === "TRACKED_POST" &&
-        this.#pendingSyncRetrySessionKey === snapshot.sessionKey
+        hasPendingRetryForSession(this.#syncRetryState, snapshot.sessionKey)
       ) {
         await this.#syncTrackedSnapshot(this.#state.tabSessionId, snapshot);
         return;
@@ -783,11 +654,7 @@ export class PageSessionController {
 
     if (snapshot.kind === "NONE") {
       this.#resetSyncRetryState();
-      this.#state = {
-        kind: "IDLE",
-        tabSessionId: this.#tabSessionCounter,
-        sessionKey: null,
-      };
+      this.#state = createIdleSessionState(this.#tabSessionCounter);
       return;
     }
 
@@ -795,15 +662,7 @@ export class PageSessionController {
 
     if (snapshot.kind === "SKIPPED") {
       this.#resetSyncRetryState();
-      this.#state = {
-        kind: "SKIPPED",
-        tabSessionId,
-        sessionKey: snapshot.sessionKey,
-        platform: snapshot.platform,
-        externalId: snapshot.externalId,
-        pageUrl: snapshot.pageUrl,
-        reason: snapshot.reason,
-      };
+      this.#state = createSkippedSessionState(tabSessionId, snapshot);
       this.#sync.sendPageSkipped({
         tabSessionId,
         platform: snapshot.platform,
@@ -814,20 +673,15 @@ export class PageSessionController {
       return;
     }
 
-    if (this.#pendingSyncRetrySessionKey !== snapshot.sessionKey) {
+    if (!hasPendingRetryForSession(this.#syncRetryState, snapshot.sessionKey)) {
       this.#resetSyncRetryState();
     }
 
-    this.#state = {
-      kind: "TRACKED_POST",
+    this.#state = createTrackedPostSessionState(
       tabSessionId,
-      sessionKey: snapshot.sessionKey,
-      platform: snapshot.platform,
-      externalId: snapshot.externalId,
-      observedRootText: normalizedRootText(snapshot.adapter),
-      adapter: snapshot.adapter,
-      request: snapshot.request,
-    };
+      snapshot,
+      normalizedRootText(snapshot.adapter),
+    );
     await this.#syncTrackedSnapshot(tabSessionId, snapshot);
   }
 
@@ -865,17 +719,9 @@ export class PageSessionController {
   }
 
   #isCurrentSessionPostStatus(
-    status: ParsedExtensionPageStatus | null,
-  ): status is Extract<ParsedExtensionPageStatus, { kind: "POST" }> {
-    if (status?.kind !== "POST" || this.#state.kind !== "TRACKED_POST") {
-      return false;
-    }
-
-    return (
-      status.tabSessionId === this.#state.tabSessionId &&
-      status.platform === this.#state.platform &&
-      status.externalId === this.#state.externalId
-    );
+    status: Awaited<ReturnType<ContentSyncClient["getCachedStatus"]>>,
+  ): status is Extract<NonNullable<typeof status>, { kind: "POST" }> {
+    return isCurrentSessionPostStatus(this.#state, status);
   }
 
   #onMutationSettled(): void {
@@ -894,10 +740,10 @@ export class PageSessionController {
 
     if (this.#state.kind === "SKIPPED") {
       if (
-        (this.#state.reason === "unsupported_content" ||
-          this.#state.reason === "no_text" ||
-          this.#state.reason === "private_or_gated") &&
-        getAdapter(currentUrl, document)
+        shouldRefreshSkippedSessionOnMutation(
+          this.#state.reason,
+          getAdapter(currentUrl, document) !== null,
+        )
       ) {
         this.#scheduleRefreshFromMutation();
       }

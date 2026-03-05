@@ -6,7 +6,12 @@
  * which uniquely identifies an article across language editions.
  */
 
-import type { ViewPostInput } from "@openerrata/shared";
+import {
+  normalizeWikipediaTitleToken,
+  parseWikipediaIdentity,
+  wikipediaExternalIdFromPageId,
+  type ViewPostInput,
+} from "@openerrata/shared";
 import { TRPCError } from "@trpc/server";
 
 type WikipediaViewInput = Extract<ViewPostInput, { platform: "WIKIPEDIA" }>;
@@ -23,98 +28,6 @@ export type PreparedWikipediaViewInput = WikipediaViewInput & {
 export type PreparedViewPostInput =
   | Exclude<ViewPostInput, { platform: "WIKIPEDIA" }>
   | PreparedWikipediaViewInput;
-
-const WIKIPEDIA_HOST_REGEX = /^([a-z0-9-]+)(?:\.m)?\.wikipedia\.org$/i;
-const WIKIPEDIA_ARTICLE_PATH_PREFIX = "/wiki/";
-const WIKIPEDIA_INDEX_PATH_REGEX = /^\/w\/index\.php(?:[/?#]|$)/i;
-const WIKIPEDIA_PAGE_ID_REGEX = /^\d+$/;
-
-function safeDecodeURIComponent(value: string): string | null {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return null;
-  }
-}
-
-function normalizeWikipediaTitleToken(rawToken: string): string | null {
-  const normalized = rawToken.replace(/_/g, " ").replace(/\s+/g, " ").trim();
-  if (normalized.length === 0) {
-    return null;
-  }
-
-  return normalized.replace(/ /g, "_");
-}
-
-function normalizeWikipediaPathTitleToken(rawToken: string): string | null {
-  const decoded = safeDecodeURIComponent(rawToken);
-  if (decoded === null) {
-    return null;
-  }
-
-  return normalizeWikipediaTitleToken(decoded);
-}
-
-function rawWikipediaTitleFromPath(pathname: string): string | null {
-  const isArticlePath = pathname.toLowerCase().startsWith(WIKIPEDIA_ARTICLE_PATH_PREFIX);
-  if (!isArticlePath) {
-    return null;
-  }
-
-  const rawTitle = pathname.slice(WIKIPEDIA_ARTICLE_PATH_PREFIX.length);
-  return rawTitle.length > 0 ? rawTitle : null;
-}
-
-function parseWikipediaPageIdToken(rawToken: string | null): string | null {
-  if (rawToken === null) {
-    return null;
-  }
-  const trimmed = rawToken.trim();
-  return WIKIPEDIA_PAGE_ID_REGEX.test(trimmed) ? trimmed : null;
-}
-
-function parseWikipediaIdentityFromUrl(url: string): {
-  language: string;
-  title: string | null;
-  pageId: string | null;
-} | null {
-  let parsedUrl: URL;
-  try {
-    parsedUrl = new URL(url);
-  } catch {
-    return null;
-  }
-
-  const hostMatch = WIKIPEDIA_HOST_REGEX.exec(parsedUrl.hostname);
-  const language = hostMatch?.[1]?.toLowerCase();
-  if (language === undefined || language.length === 0) {
-    return null;
-  }
-
-  const pageId =
-    parseWikipediaPageIdToken(parsedUrl.searchParams.get("curid")) ??
-    parseWikipediaPageIdToken(parsedUrl.searchParams.get("pageid"));
-
-  const rawTitleFromPath = rawWikipediaTitleFromPath(parsedUrl.pathname);
-  const rawTitleFromQuery = WIKIPEDIA_INDEX_PATH_REGEX.test(parsedUrl.pathname)
-    ? parsedUrl.searchParams.get("title")
-    : null;
-  const titleFromPath =
-    rawTitleFromPath === null ? null : normalizeWikipediaPathTitleToken(rawTitleFromPath);
-  const titleFromQuery =
-    rawTitleFromQuery === null ? null : normalizeWikipediaTitleToken(rawTitleFromQuery);
-  const title = titleFromPath ?? titleFromQuery;
-
-  if (title === null && pageId === null) {
-    return null;
-  }
-
-  return {
-    language,
-    title,
-    pageId,
-  };
-}
 
 function canonicalizeWikipediaMetadata(
   metadata: WikipediaViewInput["metadata"],
@@ -139,7 +52,7 @@ function canonicalizeWikipediaMetadata(
 function deriveWikipediaExternalId(
   input: Pick<WikipediaViewInput, "url"> & { metadata: WikipediaViewInput["metadata"] },
 ): string {
-  const urlIdentity = parseWikipediaIdentityFromUrl(input.url);
+  const urlIdentity = parseWikipediaIdentity(input.url);
   if (urlIdentity === null) {
     throw new TRPCError({
       code: "BAD_REQUEST",
@@ -172,7 +85,7 @@ function deriveWikipediaExternalId(
     });
   }
 
-  return `${input.metadata.language}:${input.metadata.pageId}`;
+  return wikipediaExternalIdFromPageId(input.metadata.language, input.metadata.pageId);
 }
 
 /**

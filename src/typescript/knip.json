@@ -37,8 +37,7 @@
       "includeEntryExports": true
     },
     "pulumi": {
-      "project": ["**/*.ts"],
-      "ignoreDependencies": ["tsx"]
+      "project": ["**/*.ts"]
     }
   }
 }

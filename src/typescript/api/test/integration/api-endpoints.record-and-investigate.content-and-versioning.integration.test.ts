@@ -10,6 +10,7 @@ import {
   assert,
   assertIntegrationDatabaseInvariants,
   buildFailedAttemptAudit,
+  buildHealthResponse,
   buildLesswrongViewInput,
   buildSucceededAttemptAudit,
   buildXViewInput,
@@ -22,10 +23,8 @@ import {
   ensurePostVersionForSeed,
   errorHasOpenErrataCode,
   getPrisma,
-  graphqlPost,
   hashContent,
   hashInstanceApiKey,
-  healthGet,
   isNonNullObject,
   lesswrongHtmlToNormalizedText,
   loadLatestPostVersionByIdentity,
@@ -71,6 +70,7 @@ void [
   assert,
   assertIntegrationDatabaseInvariants,
   buildFailedAttemptAudit,
+  buildHealthResponse,
   buildLesswrongViewInput,
   buildSucceededAttemptAudit,
   buildXViewInput,
@@ -83,10 +83,8 @@ void [
   ensurePostVersionForSeed,
   errorHasOpenErrataCode,
   getPrisma,
-  graphqlPost,
   hashContent,
   hashInstanceApiKey,
-  healthGet,
   isNonNullObject,
   lesswrongHtmlToNormalizedText,
   loadLatestPostVersionByIdentity,
@@ -121,8 +119,7 @@ void [
 ];
 
 void test("GET /health returns ok", async () => {
-  const requestEvent = null as unknown as Parameters<typeof healthGet>[0];
-  const response = await healthGet(requestEvent);
+  const response = buildHealthResponse();
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), {
     status: "ok",

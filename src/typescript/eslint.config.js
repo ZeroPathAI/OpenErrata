@@ -390,6 +390,7 @@ export default [
             "extension/test/helpers/*.ts",
             "extension/test/e2e/*.ts",
             "shared/test/unit/*.ts",
+            "pulumi/test/unit/*.ts",
           ],
           defaultProject: "tsconfig.base.json",
           maximumDefaultProjectFileMatchCount_THIS_WILL_SLOW_DOWN_LINTING: 512,

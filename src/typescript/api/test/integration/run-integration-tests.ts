@@ -5,6 +5,9 @@ import process from "node:process";
 import "dotenv/config";
 import { Client } from "pg";
 import { buildIntegrationTestCommand } from "./run-integration-test-command.js";
+import { applyIntegrationEnvironmentDefaults } from "./integration-env.js";
+
+applyIntegrationEnvironmentDefaults(process.env);
 
 function ensureDatabaseUrl(): string {
   const value = process.env["DATABASE_URL"];
@@ -234,20 +237,10 @@ async function main(): Promise<void> {
 
   const adminDatabaseUrl = databaseUrlForAdminConnection(baseDatabaseUrl);
   const isolatedDatabaseUrl = databaseUrlWithDatabaseName(baseDatabaseUrl, testDatabaseName);
-  const childEnv: NodeJS.ProcessEnv = {
-    ...process.env,
-    NODE_ENV: "test",
-    HMAC_SECRET: "test-hmac-secret",
-    BLOB_STORAGE_PROVIDER: "aws",
-    BLOB_STORAGE_REGION: "us-east-1",
-    BLOB_STORAGE_ENDPOINT: "",
-    BLOB_STORAGE_BUCKET: "test-openerrata-images",
-    BLOB_STORAGE_ACCESS_KEY_ID: "test-blob-access-key",
-    BLOB_STORAGE_SECRET_ACCESS_KEY: "test-blob-secret",
-    BLOB_STORAGE_PUBLIC_URL_PREFIX: "https://example.test/images",
-    DATABASE_ENCRYPTION_KEY: "integration-test-database-encryption-key",
-    DATABASE_URL: isolatedDatabaseUrl,
-  };
+  const childEnv = applyIntegrationEnvironmentDefaults(
+    { ...process.env },
+    { databaseUrl: isolatedDatabaseUrl },
+  );
 
   let primaryError: Error | null = null;
   let cleanupError: Error | null = null;

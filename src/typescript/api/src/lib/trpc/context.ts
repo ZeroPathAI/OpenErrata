@@ -1,4 +1,3 @@
-import type { RequestEvent } from "@sveltejs/kit";
 import { getPrisma, type PrismaClient } from "$lib/db/client";
 import { getEnv, MINIMUM_SUPPORTED_EXTENSION_VERSION } from "$lib/config/env.js";
 import { hashContent, trimToOptionalNonEmpty } from "@openerrata/shared";
@@ -7,8 +6,13 @@ import { deriveIpRangePrefix } from "$lib/network/ip.js";
 import { findActiveInstanceApiKeyHash } from "$lib/services/instance-api-key.js";
 import { deriveRequestIdentity } from "$lib/services/request-identity.js";
 
+export interface RequestEventLike {
+  request: Request;
+  getClientAddress: () => string;
+}
+
 export interface Context {
-  event: RequestEvent;
+  event: RequestEventLike;
   prisma: PrismaClient;
   viewerKey: string;
   ipRangeKey: string;
@@ -20,7 +24,7 @@ export interface Context {
   minimumSupportedExtensionVersion: string;
 }
 
-export async function createContext(event: RequestEvent): Promise<Context> {
+export async function createContext(event: RequestEventLike): Promise<Context> {
   const prisma = getPrisma();
   const identity = await deriveRequestIdentity(
     {
@@ -54,7 +58,7 @@ export async function createContext(event: RequestEvent): Promise<Context> {
   };
 }
 
-async function readRequestBody(event: RequestEvent): Promise<string | null> {
+async function readRequestBody(event: RequestEventLike): Promise<string | null> {
   try {
     return await event.request.clone().text();
   } catch {

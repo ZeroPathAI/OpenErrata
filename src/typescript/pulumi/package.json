@@ -4,7 +4,8 @@
   "type": "module",
   "main": "index.ts",
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:unit": "tsx --test \"test/unit/**/*.test.ts\""
   },
   "dependencies": {
     "@pulumi/aws": "^7.20.0",
