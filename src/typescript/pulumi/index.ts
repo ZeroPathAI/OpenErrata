@@ -753,7 +753,7 @@ if (dns.provider === "cloudflare" && frontendEnabled && frontendIngress.mode ===
           )
           .apply((status) => resolveCloudflareRecordSpec(undefined, status));
 
-  new cloudflare.DnsRecord("frontend-cloudflare-dns", {
+  new cloudflare.DnsRecord("frontend-dns", {
     zoneId: dns.zoneId,
     name: frontendIngress.host,
     type: frontendRecordSpec.apply((spec) => spec.type),
