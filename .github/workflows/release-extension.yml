@@ -52,17 +52,8 @@ jobs:
       - name: Lint and static checks
         run: pnpm lint:ci
 
-      - name: Check Prisma migration drift
-        run: pnpm run db:check:migration-drift
-
-      - name: Run unit tests with coverage
-        run: pnpm run test:unit:coverage
-
-      - name: Run Pulumi unit tests
-        run: pnpm run test:unit:pulumi
-
-      - name: Run API integration tests
-        run: pnpm run test:integration:api
+      - name: Run TypeScript quality test suite
+        run: pnpm run test:ci:quality
 
       - name: Build extension
         run: pnpm --filter @openerrata/extension build
