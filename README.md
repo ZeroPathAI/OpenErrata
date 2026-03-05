@@ -21,7 +21,7 @@ inspectable by users.
    has the "auto-investigate posts" setting checked, or the service pre-selects
    it using a very-likely-to-be-read heuristic.
 3. **The LLM investigates.** The full post text (plus images) are sent to
-   GPT-5.2, which uses native web search and browsing tools to verify claims.
+   GPT-5.4-thinking, which uses native web search and browsing tools to verify claims.
    Only demonstrably incorrect claims are flagged — disputed, ambiguous, or
    unverifiable claims are left alone.
 4. **Incorrect claims are highlighted.** For all extension users, every
