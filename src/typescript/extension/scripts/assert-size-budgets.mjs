@@ -1,10 +1,7 @@
 import { resolve } from "node:path";
 import process from "node:process";
 import { URL, fileURLToPath } from "node:url";
-import {
-  assertDistBundleSizeBudgets,
-  assertPackagedArtifactSizeBudgets,
-} from "./size-budgets.mjs";
+import { assertDistBundleSizeBudgets, assertPackagedArtifactSizeBudgets } from "./size-budgets.mjs";
 
 const scriptDir = fileURLToPath(new URL(".", import.meta.url));
 const extensionRoot = resolve(scriptDir, "..");

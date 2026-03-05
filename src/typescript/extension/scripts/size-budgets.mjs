@@ -137,9 +137,5 @@ export function assertDistBundleSizeBudgets(extensionRoot) {
 }
 
 export function assertPackagedArtifactSizeBudgets(outputDirectory, packageVersion) {
-  assertSizeBudgets(
-    outputDirectory,
-    packageArtifactBudgets(packageVersion),
-    "Packaged artifact",
-  );
+  assertSizeBudgets(outputDirectory, packageArtifactBudgets(packageVersion), "Packaged artifact");
 }
