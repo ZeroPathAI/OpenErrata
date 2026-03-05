@@ -2,6 +2,7 @@ packages:
   - shared
   - api
   - extension
+  - frontend
   - pulumi
 onlyBuiltDependencies:
   - "@prisma/client"

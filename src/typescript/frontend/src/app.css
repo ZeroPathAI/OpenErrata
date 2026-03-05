@@ -1,0 +1,48 @@
+:root {
+  --color-bg: #0a0a0a;
+  --color-surface: #141414;
+  --color-surface-hover: #1a1a1a;
+  --color-border: #262626;
+  --color-text: #fafafa;
+  --color-text-muted: #a1a1aa;
+  --color-accent: #22c55e;
+  --color-accent-muted: #16a34a;
+  --color-error: #ef4444;
+  --color-warning: #f59e0b;
+  --max-width: 1120px;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  font-family:
+    "Inter",
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    Roboto,
+    sans-serif;
+  color: var(--color-text);
+  background: var(--color-bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  min-height: 100vh;
+}
+
+a {
+  color: var(--color-accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}

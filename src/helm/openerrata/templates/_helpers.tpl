@@ -35,6 +35,14 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 {{- end -}}
 
+{{- define "openerrata.frontendImage" -}}
+{{- if .Values.frontend.image.digest -}}
+{{ printf "%s@%s" .Values.frontend.image.repository .Values.frontend.image.digest }}
+{{- else -}}
+{{ printf "%s:%s" .Values.frontend.image.repository .Values.frontend.image.tag }}
+{{- end -}}
+{{- end -}}
+
 {{- define "openerrata.secretName" -}}
 {{- if .Values.secrets.existingSecretName -}}
 {{- .Values.secrets.existingSecretName -}}

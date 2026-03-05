@@ -5,6 +5,7 @@
   "scripts": {
     "dev:api": "pnpm --filter @openerrata/api dev",
     "dev:ext": "pnpm --filter @openerrata/extension dev",
+    "dev:frontend": "pnpm --filter @openerrata/frontend dev",
     "prepare": "cd ../.. && husky .husky",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

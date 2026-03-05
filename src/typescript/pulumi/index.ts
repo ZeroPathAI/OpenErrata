@@ -14,6 +14,7 @@ import {
 
 const config = new pulumi.Config();
 const defaultImageRepository = "ghcr.io/zeropathai/openerrata-api";
+const defaultFrontendImageRepository = "ghcr.io/zeropathai/openerrata-frontend";
 const defaultBlobStorageAccessKeyId = "openerrata";
 const chartName = "openerrata";
 const releaseName = config.get("releaseName") ?? chartName;
@@ -57,6 +58,23 @@ interface DatabaseConfig {
   databaseUrl: pulumi.Input<string>;
   endpoint: pulumi.Input<string>;
 }
+
+interface FrontendImageConfig {
+  repository: string;
+  tag: string;
+  digest: string | undefined;
+}
+
+type FrontendIngressConfig =
+  | {
+      mode: "disabled";
+    }
+  | {
+      mode: "enabled";
+      host: string;
+      className: string;
+      path: string;
+    };
 
 type ApiIngressConfig =
   | {
@@ -545,9 +563,60 @@ function resolveSecretWithRandom(
   }).result;
 }
 
+function resolveFrontendImageConfig(input: pulumi.Config): FrontendImageConfig {
+  const configuredRepository =
+    getNonEmptyConfig(input, "frontendImageRepository") ?? defaultFrontendImageRepository;
+  const configuredTag = getNonEmptyConfig(input, "frontendImageTag") ?? "latest";
+  const configuredDigest = getNonEmptyConfig(input, "frontendImageDigest");
+
+  const ciRepository = getNonEmptyEnv("CI_FRONTEND_IMAGE_REPOSITORY");
+  const ciTag = getNonEmptyEnv("CI_FRONTEND_IMAGE_TAG");
+  const ciDigest = getNonEmptyEnv("CI_FRONTEND_IMAGE_DIGEST");
+
+  const resolvedRepository = ciRepository ?? configuredRepository;
+  if (/[A-Z]/.test(resolvedRepository)) {
+    throw new Error(
+      `frontendImageRepository must be lowercase for OCI compatibility, got: ${resolvedRepository}`,
+    );
+  }
+
+  return {
+    repository: resolvedRepository,
+    tag: ciTag ?? configuredTag,
+    digest: ciDigest ?? configuredDigest,
+  };
+}
+
+function resolveFrontendIngress(input: pulumi.Config): FrontendIngressConfig {
+  const configuredHost = getNonEmptyConfig(input, "frontendHostname");
+  const configuredEnabled = input.getBoolean("frontendIngressEnabled");
+
+  if (configuredHost === undefined) {
+    if (configuredEnabled === true) {
+      throw new Error("frontendIngressEnabled=true requires frontendHostname to be configured.");
+    }
+    return { mode: "disabled" };
+  }
+
+  const ingressEnabled = configuredEnabled ?? true;
+  if (!ingressEnabled) {
+    return { mode: "disabled" };
+  }
+
+  return {
+    mode: "enabled",
+    host: configuredHost,
+    className: getNonEmptyConfig(input, "frontendIngressClassName") ?? "nginx",
+    path: getNonEmptyConfig(input, "frontendIngressPath") ?? "/",
+  };
+}
+
 const image = resolveImageConfig(config);
 const blobStorage = resolveBlobStorage(config);
 const database = resolveDatabase(config);
+const frontendEnabled = config.getBoolean("frontendEnabled") ?? false;
+const frontendImage = resolveFrontendImageConfig(config);
+const frontendIngress = resolveFrontendIngress(config);
 const apiIngress = resolveApiIngress(config);
 const dns = resolveDns(config);
 const configuredOpenaiApiKey = config.getSecret("openaiApiKey") ?? pulumi.secret("");
@@ -603,6 +672,33 @@ const chart = new k8s.helm.v3.Chart(
       selector: {
         budget: config.get("selectorBudget") ?? "100",
       },
+      ...(frontendEnabled
+        ? {
+            frontend: {
+              enabled: true,
+              replicaCount: config.getNumber("frontendReplicas") ?? 1,
+              image: {
+                repository: frontendImage.repository,
+                tag: frontendImage.tag,
+                digest: frontendImage.digest ?? "",
+              },
+              ...(frontendIngress.mode === "enabled"
+                ? {
+                    ingress: {
+                      enabled: true,
+                      className: frontendIngress.className,
+                      host: frontendIngress.host,
+                      path: frontendIngress.path,
+                    },
+                  }
+                : {
+                    ingress: {
+                      enabled: false,
+                    },
+                  }),
+            },
+          }
+        : {}),
       ...(apiIngress.mode === "enabled"
         ? {
             ingress: {
@@ -640,6 +736,30 @@ const chart = new k8s.helm.v3.Chart(
   { dependsOn: [namespace] },
 );
 
+if (dns.provider === "cloudflare" && frontendEnabled && frontendIngress.mode === "enabled") {
+  const frontendRecordSpec: pulumi.Output<{ type: "A" | "CNAME"; content: string }> =
+    dns.targetOverride !== undefined
+      ? pulumi.output(resolveCloudflareRecordSpec(dns.targetOverride, undefined))
+      : chart
+          .getResourceProperty(
+            "networking.k8s.io/v1/Ingress",
+            namespaceName,
+            `${fullname}-frontend`,
+            "status",
+          )
+          .apply((status) => resolveCloudflareRecordSpec(undefined, status));
+
+  new cloudflare.DnsRecord("frontend-cloudflare-dns", {
+    zoneId: dns.zoneId,
+    name: frontendIngress.host,
+    type: frontendRecordSpec.apply((spec) => spec.type),
+    content: frontendRecordSpec.apply((spec) => spec.content),
+    proxied: dns.proxied,
+    ttl: dns.proxied ? 1 : 300,
+    comment: `Managed by Pulumi (${pulumi.getProject()}/${pulumi.getStack()})`,
+  });
+}
+
 if (dns.provider === "cloudflare" && apiIngress.mode === "enabled") {
   const cloudflareRecordSpec: pulumi.Output<{ type: "A" | "CNAME"; content: string }> =
     dns.targetOverride !== undefined
@@ -664,6 +784,11 @@ if (dns.provider === "cloudflare" && apiIngress.mode === "enabled") {
   });
 }
 
+export const frontendServiceName = frontendEnabled
+  ? pulumi.output(`${fullname}-frontend`)
+  : pulumi.output("");
+export const frontendHostname =
+  frontendEnabled && frontendIngress.mode === "enabled" ? frontendIngress.host : "";
 export const apiServiceName = pulumi.output(`${fullname}-api`);
 export const kubernetesNamespace = namespaceName;
 export const apiHostname = apiIngress.mode === "enabled" ? apiIngress.host : "";

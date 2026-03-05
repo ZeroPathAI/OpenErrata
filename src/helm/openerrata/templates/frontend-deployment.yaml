@@ -1,0 +1,43 @@
+{{- if .Values.frontend.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "openerrata.fullname" . }}-frontend
+  labels:
+    {{- include "openerrata.labels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+spec:
+  replicas: {{ .Values.frontend.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "openerrata.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: frontend
+  template:
+    metadata:
+      labels:
+        {{- include "openerrata.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: frontend
+    spec:
+      serviceAccountName: {{ include "openerrata.serviceAccountName" (dict "root" . "component" "frontend") }}
+      automountServiceAccountToken: false
+      containers:
+        - name: frontend
+          image: {{ include "openerrata.frontendImage" . | quote }}
+          imagePullPolicy: {{ .Values.frontend.image.pullPolicy }}
+          command: ["node", "build/index.js"]
+          ports:
+            - containerPort: 3000
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 3
+            periodSeconds: 10
+{{- end }}

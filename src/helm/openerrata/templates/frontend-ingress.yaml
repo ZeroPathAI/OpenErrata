@@ -1,0 +1,38 @@
+{{- if and .Values.frontend.enabled .Values.frontend.ingress.enabled .Values.frontend.ingress.host }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "openerrata.fullname" . }}-frontend
+  labels:
+    {{- include "openerrata.labels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+  annotations:
+    pulumi.com/skipAwait: "true"
+    {{- if .Values.frontend.ingress.className }}
+    kubernetes.io/ingress.class: {{ .Values.frontend.ingress.className | quote }}
+    {{- end }}
+    {{- with .Values.frontend.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- if .Values.frontend.ingress.className }}
+  ingressClassName: {{ .Values.frontend.ingress.className | quote }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.frontend.ingress.host | quote }}
+      http:
+        paths:
+          - path: {{ .Values.frontend.ingress.path | quote }}
+            pathType: {{ .Values.frontend.ingress.pathType }}
+            backend:
+              service:
+                name: {{ include "openerrata.fullname" . }}-frontend
+                port:
+                  number: {{ .Values.frontend.service.port }}
+  {{- if and .Values.frontend.ingress.tls.enabled .Values.frontend.ingress.tls.secretName }}
+  tls:
+    - hosts:
+        - {{ .Values.frontend.ingress.host | quote }}
+      secretName: {{ .Values.frontend.ingress.tls.secretName | quote }}
+  {{- end }}
+{{- end }}

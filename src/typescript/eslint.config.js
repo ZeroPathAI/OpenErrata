@@ -226,7 +226,12 @@ export default [
     },
   },
   {
-    files: ["api/**/*.{js,ts}", "shared/**/*.{js,ts}", "pulumi/**/*.{js,ts}"],
+    files: [
+      "api/**/*.{js,ts}",
+      "shared/**/*.{js,ts}",
+      "pulumi/**/*.{js,ts}",
+      "frontend/**/*.{js,ts}",
+    ],
     languageOptions: {
       globals: {
         ...globals.node,
@@ -267,7 +272,13 @@ export default [
   },
   {
     // Maintainability guardrails for production TypeScript code.
-    files: ["api/src/**/*.ts", "extension/src/**/*.ts", "shared/src/**/*.ts", "pulumi/**/*.ts"],
+    files: [
+      "api/src/**/*.ts",
+      "extension/src/**/*.ts",
+      "shared/src/**/*.ts",
+      "pulumi/**/*.ts",
+      "frontend/src/**/*.ts",
+    ],
     rules: {
       "max-lines": ["error", { max: 900, skipBlankLines: true, skipComments: true }],
       complexity: ["error", 55],
@@ -275,10 +286,23 @@ export default [
   },
   {
     // Integration tests can be larger, but still bounded.
-    files: ["api/test/**/*.ts", "extension/test/**/*.ts", "shared/test/**/*.ts"],
+    files: [
+      "api/test/**/*.ts",
+      "extension/test/**/*.ts",
+      "shared/test/**/*.ts",
+      "frontend/test/**/*.ts",
+    ],
     rules: {
       "max-lines": ["error", { max: 1400, skipBlankLines: true, skipComments: true }],
       complexity: ["error", 70],
+    },
+  },
+  {
+    // The frontend is a standalone site — hash anchors and external links don't
+    // need SvelteKit's resolveRoute(). Disable the navigation rule project-wide.
+    files: ["frontend/src/**/*.svelte"],
+    rules: {
+      "svelte/no-navigation-without-resolve": "off",
     },
   },
   {

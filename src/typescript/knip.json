@@ -36,6 +36,11 @@
       "project": ["src/**/*.ts", "test/**/*.ts"],
       "includeEntryExports": true
     },
+    "frontend": {
+      "entry": ["src/routes/**/*.ts"],
+      "project": ["src/**/*.{ts,svelte}", "*.ts", "*.js"],
+      "sveltekit": true
+    },
     "pulumi": {
       "project": ["**/*.ts"]
     }
