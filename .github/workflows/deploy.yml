@@ -791,15 +791,11 @@ jobs:
         id: frontend-url
         shell: bash
         env:
-          STACK: ${{ needs.resolve-target.outputs.deploy_environment }}
           PULUMI_FRONTEND_HOSTNAME: ${{ vars.PULUMI_FRONTEND_HOSTNAME }}
         run: |
           set -euo pipefail
 
           hostname="${PULUMI_FRONTEND_HOSTNAME:-}"
-          if [ -z "$hostname" ] && [ "$STACK" = "staging" ]; then
-            hostname="staging.branch.openerrata.com"
-          fi
 
           if [ -z "$hostname" ]; then
             echo "No frontend hostname configured; skipping post-deploy smoke tests."
