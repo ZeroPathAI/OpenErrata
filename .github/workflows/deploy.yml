@@ -52,24 +52,44 @@ jobs:
 
           echo "deploy_environment=$DEPLOY_ENV" >> "$GITHUB_OUTPUT"
 
-  detect-changes:
+  decide-deploy:
     needs: resolve-target
-    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
       actions: read
     outputs:
-      deployable: ${{ steps.filter.outputs.deployable }}
+      should_deploy: ${{ steps.decide.outputs.should_deploy || steps.finalize.outputs.should_deploy }}
     steps:
+      - name: Decide whether to deploy
+        id: decide
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          # Workflow dispatches always deploy.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Deploy requested via workflow dispatch."
+            echo "should_deploy=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # For push events, detect whether any deployable files changed
+          # since the last successful deploy.
+          echo "Detecting deployable changes since last successful deploy..."
+
       - name: Checkout
+        if: steps.decide.outputs.should_deploy != 'true'
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Find last successfully deployed commit
         id: last_deploy
+        if: steps.decide.outputs.should_deploy != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -122,6 +142,7 @@ jobs:
 
       - name: Detect deployable path changes since last deploy
         id: filter
+        if: steps.decide.outputs.should_deploy != 'true'
         uses: dorny/paths-filter@v3
         with:
           base: ${{ steps.last_deploy.outputs.sha }}
@@ -140,35 +161,19 @@ jobs:
               - '.github/workflows/deploy.yml'
               - '.github/actions/**'
 
-  decide-deploy:
-    needs: [resolve-target, detect-changes]
-    if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      should_deploy: ${{ steps.decide.outputs.should_deploy }}
-    steps:
-      - name: Decide whether to deploy
-        id: decide
+      - name: Finalize deploy decision
+        if: steps.decide.outputs.should_deploy != 'true'
+        id: finalize
         shell: bash
         run: |
           set -euo pipefail
-
-          should_deploy=false
-
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            should_deploy=true
-          elif [ "${{ needs.detect-changes.outputs.deployable }}" = "true" ]; then
-            should_deploy=true
-          fi
-
-          if [ "$should_deploy" = "true" ]; then
-            echo "Deploy requested; deploying."
+          if [ "${{ steps.filter.outputs.deployable }}" = "true" ]; then
+            echo "Deployable files changed since last successful deploy."
+            echo "should_deploy=true" >> "$GITHUB_OUTPUT"
           else
             echo "No deployable files changed since last successful deploy; skipping."
+            echo "should_deploy=false" >> "$GITHUB_OUTPUT"
           fi
-
-          echo "should_deploy=$should_deploy" >> "$GITHUB_OUTPUT"
 
   # Quality gate: six parallel jobs.
 
