@@ -9,7 +9,6 @@ interface RefreshMode {
 }
 
 function readInputFixtureKeys(): RefreshMode[] {
-  // eslint-disable-next-line @typescript-eslint/dot-notation
   const raw = (process.env["WIKIPEDIA_FIXTURE_KEYS"] ?? "").trim();
   const fromEnv =
     raw.length === 0

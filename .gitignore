@@ -12,6 +12,8 @@ src/typescript/api/prisma/generated/prisma/
 **/coverage/
 src/typescript/extension/test-results/
 src/typescript/extension/playwright-report/
+src/typescript/frontend/test-results/
+src/typescript/frontend/playwright-report/
 
 # IDE
 .idea/

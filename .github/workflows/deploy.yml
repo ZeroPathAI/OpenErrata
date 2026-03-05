@@ -130,11 +130,13 @@ jobs:
               - 'src/helm/openerrata/**'
               - 'src/typescript/api/**'
               - 'src/typescript/shared/**'
+              - 'src/typescript/frontend/**'
               - 'src/typescript/pulumi/**'
               - 'src/typescript/package.json'
               - 'src/typescript/pnpm-lock.yaml'
               - 'src/typescript/pnpm-workspace.yaml'
               - 'src/typescript/api/Dockerfile'
+              - 'src/typescript/frontend/Dockerfile'
               - '.github/workflows/deploy.yml'
               - '.github/actions/**'
 
@@ -292,6 +294,17 @@ jobs:
           path: ${{ runner.temp }}/extension-dist.tgz
           retention-days: 1
 
+      - name: Archive frontend build artifact
+        shell: bash
+        run: tar -C frontend -czf "$RUNNER_TEMP/frontend-build.tgz" build
+
+      - name: Upload frontend build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-build-${{ github.sha }}
+          path: ${{ runner.temp }}/frontend-build.tgz
+          retention-days: 1
+
   e2e:
     needs: [resolve-target, decide-deploy, build]
     if: needs.decide-deploy.outputs.should_deploy == 'true'
@@ -322,6 +335,37 @@ jobs:
 
       - name: Run extension e2e tests
         run: pnpm run test:e2e:extension:ci
+
+  frontend-e2e:
+    needs: [resolve-target, decide-deploy, build]
+    if: needs.decide-deploy.outputs.should_deploy == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: src/typescript
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup TypeScript workspace
+        uses: ./.github/actions/setup-typescript-workspace
+        with:
+          generate-prisma: "false"
+          install-playwright-chromium: "true"
+
+      - name: Download frontend build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-build-${{ github.sha }}
+          path: ${{ runner.temp }}
+
+      - name: Restore frontend build artifact
+        shell: bash
+        run: tar -C frontend -xzf "$RUNNER_TEMP/frontend-build.tgz"
+
+      - name: Run frontend e2e smoke tests
+        run: pnpm run test:e2e:frontend:ci
 
   # Docker image build runs in parallel with quality gate jobs.
   # The deploy job gates on both build-image AND all quality gate jobs,
@@ -384,7 +428,7 @@ jobs:
           sbom: true
 
   deploy:
-    needs: [resolve-target, decide-deploy, helm-lint, typecheck, lint, test, build, e2e, build-image]
+    needs: [resolve-target, decide-deploy, helm-lint, typecheck, lint, test, build, e2e, frontend-e2e, build-image]
     if: needs.decide-deploy.outputs.should_deploy == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -724,3 +768,49 @@ jobs:
           SOURCE_IMAGE="${{ needs.build-image.outputs.image_repository }}@${{ needs.build-image.outputs.image_digest }}"
           TARGET_IMAGE="${{ needs.build-image.outputs.image_repository }}:${{ needs.build-image.outputs.latest_tag }}"
           docker buildx imagetools create --tag "$TARGET_IMAGE" "$SOURCE_IMAGE"
+
+  post-deploy-smoke:
+    needs: [resolve-target, decide-deploy, deploy]
+    if: needs.decide-deploy.outputs.should_deploy == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: src/typescript
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup TypeScript workspace
+        uses: ./.github/actions/setup-typescript-workspace
+        with:
+          generate-prisma: "false"
+          install-playwright-chromium: "true"
+
+      - name: Resolve frontend URL
+        id: frontend-url
+        shell: bash
+        env:
+          STACK: ${{ needs.resolve-target.outputs.deploy_environment }}
+          PULUMI_FRONTEND_HOSTNAME: ${{ vars.PULUMI_FRONTEND_HOSTNAME }}
+        run: |
+          set -euo pipefail
+
+          hostname="${PULUMI_FRONTEND_HOSTNAME:-}"
+          if [ -z "$hostname" ] && [ "$STACK" = "staging" ]; then
+            hostname="staging.branch.openerrata.com"
+          fi
+
+          if [ -z "$hostname" ]; then
+            echo "No frontend hostname configured; skipping post-deploy smoke tests."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "frontend_url=https://${hostname}" >> "$GITHUB_OUTPUT"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run post-deploy smoke tests
+        if: steps.frontend-url.outputs.skip != 'true'
+        env:
+          FRONTEND_BASE_URL: ${{ steps.frontend-url.outputs.frontend_url }}
+        run: pnpm run test:e2e:frontend:post-deploy

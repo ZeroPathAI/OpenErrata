@@ -184,6 +184,17 @@ jobs:
           path: ${{ runner.temp }}/extension-dist.tgz
           retention-days: 1
 
+      - name: Archive frontend build artifact
+        shell: bash
+        run: tar -C frontend -czf "$RUNNER_TEMP/frontend-build.tgz" build
+
+      - name: Upload frontend build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-build-${{ github.sha }}
+          path: ${{ runner.temp }}/frontend-build.tgz
+          retention-days: 1
+
       - name: Summarize extension bundle sizes
         shell: bash
         run: |
@@ -249,6 +260,39 @@ jobs:
       - name: Run extension e2e tests
         run: pnpm run test:e2e:extension:ci
 
+  frontend-e2e:
+    needs: [should-run, build]
+    if: >-
+      needs.should-run.outputs.skip_all != 'true' &&
+      needs.should-run.outputs.has_relevant_changes == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: src/typescript
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup TypeScript workspace
+        uses: ./.github/actions/setup-typescript-workspace
+        with:
+          generate-prisma: "false"
+          install-playwright-chromium: "true"
+
+      - name: Download frontend build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-build-${{ github.sha }}
+          path: ${{ runner.temp }}
+
+      - name: Restore frontend build artifact
+        shell: bash
+        run: tar -C frontend -xzf "$RUNNER_TEMP/frontend-build.tgz"
+
+      - name: Run frontend e2e smoke tests
+        run: pnpm run test:e2e:frontend:ci
+
   no-relevant-changes:
     needs: [should-run]
     if: >-
@@ -261,7 +305,7 @@ jobs:
         run: echo "No relevant files changed; skipping TypeScript checks."
 
   pr-ok:
-    needs: [should-run, helm-lint, typecheck, lint, test, build, e2e, no-relevant-changes]
+    needs: [should-run, helm-lint, typecheck, lint, test, build, e2e, frontend-e2e, no-relevant-changes]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -282,9 +326,11 @@ jobs:
           TEST="${{ needs.test.result }}"
           BUILD="${{ needs.build.result }}"
           E2E="${{ needs.e2e.result }}"
+          FRONTEND_E2E="${{ needs.frontend-e2e.result }}"
 
           if [ "$HELM_LINT" = "success" ] && [ "$TYPECHECK" = "success" ] && [ "$LINT" = "success" ] && \
-             [ "$TEST" = "success" ] && [ "$BUILD" = "success" ] && [ "$E2E" = "success" ]; then
+             [ "$TEST" = "success" ] && [ "$BUILD" = "success" ] && [ "$E2E" = "success" ] && \
+             [ "$FRONTEND_E2E" = "success" ]; then
             echo "All quality gate jobs passed."
             exit 0
           fi
@@ -301,4 +347,5 @@ jobs:
           echo "  test: $TEST"
           echo "  build: $BUILD"
           echo "  e2e: $E2E"
+          echo "  frontend-e2e: $FRONTEND_E2E"
           exit 1

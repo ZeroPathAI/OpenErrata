@@ -7,7 +7,10 @@
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-    "test:unit": "echo 'No tests yet'"
+    "test:unit": "tsx --test \"test/unit/**/*.test.ts\"",
+    "test:e2e": "pnpm build && pnpm exec playwright test -c playwright.config.ts",
+    "test:e2e:ci": "pnpm exec playwright test -c playwright.config.ts",
+    "test:e2e:post-deploy": "pnpm exec playwright test -c playwright.post-deploy.config.ts"
   },
   "dependencies": {
     "@sveltejs/adapter-node": "^5.5.3",
@@ -15,8 +18,10 @@
     "svelte": "^5.53.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.56.1",
     "@sveltejs/vite-plugin-svelte": "^6.2.4",
     "svelte-check": "^4.2.1",
+    "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "vite": "^7.3.1"
   }

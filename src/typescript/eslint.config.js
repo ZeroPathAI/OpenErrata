@@ -415,6 +415,10 @@ export default [
             "extension/test/e2e/*.ts",
             "shared/test/unit/*.ts",
             "pulumi/test/unit/*.ts",
+            "frontend/test/unit/*.ts",
+            "frontend/test/e2e/*.ts",
+            "frontend/playwright.config.ts",
+            "frontend/playwright.*.config.ts",
           ],
           defaultProject: "tsconfig.base.json",
           maximumDefaultProjectFileMatchCount_THIS_WILL_SLOW_DOWN_LINTING: 512,
@@ -469,6 +473,9 @@ export default [
       "@typescript-eslint/no-unsafe-type-assertion": "off",
       "@typescript-eslint/no-unsafe-enum-comparison": "off",
       "@typescript-eslint/unbound-method": "off",
+      // Tests use bracket notation for env vars and non-null assertions for mock access.
+      "@typescript-eslint/dot-notation": "off",
+      "@typescript-eslint/no-non-null-assertion": "off",
     },
   },
   {

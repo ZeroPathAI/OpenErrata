@@ -53,6 +53,8 @@ runs:
 
         if [ "${{ inputs.playwright-with-deps }}" = "true" ]; then
           pnpm --filter @openerrata/extension exec playwright install --with-deps chromium
+          pnpm --filter @openerrata/frontend exec playwright install --with-deps chromium
         else
           pnpm --filter @openerrata/extension exec playwright install chromium
+          pnpm --filter @openerrata/frontend exec playwright install chromium
         fi

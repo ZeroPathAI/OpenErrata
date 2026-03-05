@@ -37,8 +37,8 @@
       "includeEntryExports": true
     },
     "frontend": {
-      "entry": ["src/routes/**/*.ts"],
-      "project": ["src/**/*.{ts,svelte}", "*.ts", "*.js"],
+      "entry": ["src/routes/**/*.ts", "test/**/*.ts"],
+      "project": ["src/**/*.{ts,svelte}", "test/**/*.ts", "*.ts", "*.js"],
       "sveltekit": true
     },
     "pulumi": {
