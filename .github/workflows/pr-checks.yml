@@ -148,11 +148,11 @@ jobs:
       - name: Setup TypeScript workspace
         uses: ./.github/actions/setup-typescript-workspace
 
-      - name: Run unit tests with coverage
-        run: pnpm run test:unit:coverage
+      - name: Run shared + extension unit tests with coverage
+        run: pnpm run test:unit:shared:coverage && pnpm run test:unit:extension:coverage
 
-      - name: Run API integration tests
-        run: pnpm run test:integration:api
+      - name: Run API unit + integration tests with merged coverage
+        run: pnpm --filter @openerrata/api run test:merged:coverage
 
   build:
     needs: [should-run]

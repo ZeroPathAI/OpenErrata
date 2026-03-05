@@ -311,6 +311,64 @@ export default [
     },
   },
   {
+    // shared must not import from downstream packages — dependency flows one way.
+    files: ["shared/src/**/*.{js,ts}"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "@openerrata/api",
+              message: "shared must not import from @openerrata/api — dependency flows one way.",
+            },
+            {
+              name: "@openerrata/extension",
+              message:
+                "shared must not import from @openerrata/extension — dependency flows one way.",
+            },
+          ],
+          patterns: [
+            {
+              group: ["@openerrata/api/*"],
+              message: "shared must not import from @openerrata/api — dependency flows one way.",
+            },
+            {
+              group: ["@openerrata/extension/*"],
+              message:
+                "shared must not import from @openerrata/extension — dependency flows one way.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    // api must not import from extension — they are peer consumers of shared.
+    files: ["api/src/**/*.{js,ts}"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "@openerrata/extension",
+              message:
+                "Do not import from @openerrata/extension in API code. Depend on @openerrata/shared contracts only.",
+            },
+          ],
+          patterns: [
+            {
+              group: ["@openerrata/extension/*"],
+              message:
+                "Do not import from @openerrata/extension in API code. Depend on @openerrata/shared contracts only.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     files: ["extension/scripts/**/*.{js,mjs,cjs,ts}"],
     languageOptions: {
       globals: {

@@ -4,6 +4,7 @@ import { readFile, readdir } from "node:fs/promises";
 import process from "node:process";
 import "dotenv/config";
 import { Client } from "pg";
+import { buildIntegrationTestCommand } from "./run-integration-test-command.js";
 
 function ensureDatabaseUrl(): string {
   const value = process.env["DATABASE_URL"];
@@ -255,11 +256,8 @@ async function main(): Promise<void> {
     templateDatabaseName,
   });
   try {
-    const testArgs = ["run", "test:integration:raw"];
-    if (forwardedArgs.length > 0) {
-      testArgs.push("--", ...forwardedArgs);
-    }
-    await runCommand("pnpm", testArgs, childEnv);
+    const testCommand = buildIntegrationTestCommand(forwardedArgs);
+    await runCommand(testCommand.command, testCommand.args, childEnv);
   } catch (error) {
     primaryError = toError(error);
   } finally {

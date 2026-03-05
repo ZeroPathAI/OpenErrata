@@ -1,36 +1,7 @@
 {
   "all": true,
   "src": ["src"],
-  "include": [
-    "src/lib/config/env.ts",
-    "src/lib/db/connection-string.ts",
-    "src/lib/db/errors.ts",
-    "src/lib/graphql/public-schema.ts",
-    "src/lib/investigators/**",
-    "src/lib/network/host-safety.ts",
-    "src/lib/network/http-status.ts",
-    "src/lib/network/ip.ts",
-    "src/lib/openai/errors.ts",
-    "src/lib/services/canonical-resolution.ts",
-    "src/lib/services/content-fetcher.ts",
-    "src/lib/services/hmac.ts",
-    "src/lib/services/investigation-state.ts",
-    "src/lib/services/openai-key-validation-core.ts",
-    "src/lib/services/attempt-audit.ts",
-    "src/lib/services/html-to-markdown.ts",
-    "src/lib/services/markdown-resolution.ts",
-    "src/lib/services/orchestrator.ts",
-    "src/lib/services/orchestrator-errors.ts",
-    "src/lib/services/prompt-context.ts",
-    "src/lib/services/run-lease.ts",
-    "src/lib/services/wikipedia-content-filter.ts",
-    "src/lib/services/public-read-model.ts",
-    "src/lib/services/queue-lifecycle.ts",
-    "src/lib/services/request-identity.ts",
-    "src/lib/trpc/routes/post.ts",
-    "src/lib/trpc/routes/post/**",
-    "src/routes/+server.ts"
-  ],
+  "include": ["src/lib/**", "src/routes/**"],
   "exclude": [
     "**/*.test.ts",
     "**/test/**",
@@ -42,8 +13,8 @@
     "src/lib/generated/**"
   ],
   "check-coverage": true,
-  "lines": 66,
-  "branches": 82,
-  "functions": 74,
-  "statements": 66
+  "lines": 80,
+  "branches": 80,
+  "functions": 85,
+  "statements": 80
 }
