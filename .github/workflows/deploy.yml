@@ -383,6 +383,10 @@ jobs:
       image_tag: ${{ steps.meta.outputs.image_tag }}
       latest_tag: ${{ steps.meta.outputs.latest_tag }}
       image_digest: ${{ steps.build.outputs.digest }}
+      frontend_image_repository: ${{ steps.meta.outputs.frontend_image_repository }}
+      frontend_image_tag: ${{ steps.meta.outputs.image_tag }}
+      frontend_latest_tag: ${{ steps.meta.outputs.latest_tag }}
+      frontend_image_digest: ${{ steps.build-frontend.outputs.digest }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -403,13 +407,13 @@ jobs:
         run: |
           set -euo pipefail
           OWNER="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
-          REPOSITORY="ghcr.io/${OWNER}/openerrata-api"
           DEPLOY_ENV="${{ needs.resolve-target.outputs.deploy_environment }}"
           SHORT_SHA="$(echo '${{ github.sha }}' | cut -c1-12)"
           IMAGE_TAG="${DEPLOY_ENV}-${SHORT_SHA}"
           LATEST_TAG="${DEPLOY_ENV}-latest"
 
-          echo "image_repository=$REPOSITORY" >> "$GITHUB_OUTPUT"
+          echo "image_repository=ghcr.io/${OWNER}/openerrata-api" >> "$GITHUB_OUTPUT"
+          echo "frontend_image_repository=ghcr.io/${OWNER}/openerrata-frontend" >> "$GITHUB_OUTPUT"
           echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
           echo "latest_tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
 
@@ -423,6 +427,20 @@ jobs:
           tags: |
             ${{ steps.meta.outputs.image_repository }}:${{ steps.meta.outputs.image_tag }}
           cache-from: type=registry,ref=${{ steps.meta.outputs.image_repository }}:${{ steps.meta.outputs.latest_tag }}
+          cache-to: type=inline
+          provenance: true
+          sbom: true
+
+      - name: Build and push frontend image
+        id: build-frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: src/typescript
+          file: src/typescript/frontend/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.frontend_image_repository }}:${{ steps.meta.outputs.image_tag }}
+          cache-from: type=registry,ref=${{ steps.meta.outputs.frontend_image_repository }}:${{ steps.meta.outputs.latest_tag }}
           cache-to: type=inline
           provenance: true
           sbom: true
@@ -501,6 +519,10 @@ jobs:
           CI_IMAGE_REPOSITORY: ${{ needs.build-image.outputs.image_repository }}
           CI_IMAGE_TAG: ${{ needs.build-image.outputs.image_tag }}
           CI_IMAGE_DIGEST: ${{ needs.build-image.outputs.image_digest }}
+          CI_FRONTEND_IMAGE_REPOSITORY: ${{ needs.build-image.outputs.frontend_image_repository }}
+          CI_FRONTEND_IMAGE_TAG: ${{ needs.build-image.outputs.frontend_image_tag }}
+          CI_FRONTEND_IMAGE_DIGEST: ${{ needs.build-image.outputs.frontend_image_digest }}
+          PULUMI_FRONTEND_HOSTNAME: ${{ vars.PULUMI_FRONTEND_HOSTNAME }}
         run: |
           set -euo pipefail
 
@@ -529,6 +551,31 @@ jobs:
           else
             pulumi config rm apiHostname --stack "$STACK" >/dev/null 2>&1 || true
             pulumi config set ingressEnabled "false" --stack "$STACK"
+          fi
+
+          frontend_hostname="${PULUMI_FRONTEND_HOSTNAME:-}"
+          if [ -z "$frontend_hostname" ] && [ "$STACK" = "staging" ]; then
+            frontend_hostname="staging.branch.openerrata.com"
+          fi
+
+          if [ -n "$frontend_hostname" ]; then
+            pulumi config set frontendEnabled "true" --stack "$STACK"
+            pulumi config set frontendHostname "$frontend_hostname" --stack "$STACK"
+            pulumi config set frontendIngressEnabled "true" --stack "$STACK"
+          else
+            pulumi config set frontendEnabled "false" --stack "$STACK"
+            pulumi config rm frontendHostname --stack "$STACK" >/dev/null 2>&1 || true
+            pulumi config rm frontendIngressEnabled --stack "$STACK" >/dev/null 2>&1 || true
+          fi
+
+          if [ -n "${CI_FRONTEND_IMAGE_REPOSITORY:-}" ]; then
+            pulumi config set frontendImageRepository "$CI_FRONTEND_IMAGE_REPOSITORY" --stack "$STACK"
+          fi
+          if [ -n "${CI_FRONTEND_IMAGE_TAG:-}" ]; then
+            pulumi config set frontendImageTag "$CI_FRONTEND_IMAGE_TAG" --stack "$STACK"
+          fi
+          if [ -n "${CI_FRONTEND_IMAGE_DIGEST:-}" ]; then
+            pulumi config set frontendImageDigest "$CI_FRONTEND_IMAGE_DIGEST" --stack "$STACK"
           fi
 
           if [ -n "${PULUMI_INGRESS_CLASS_NAME:-}" ]; then
@@ -761,12 +808,20 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Promote deployed image to latest tag
+      - name: Promote deployed API image to latest tag
         shell: bash
         run: |
           set -euo pipefail
           SOURCE_IMAGE="${{ needs.build-image.outputs.image_repository }}@${{ needs.build-image.outputs.image_digest }}"
           TARGET_IMAGE="${{ needs.build-image.outputs.image_repository }}:${{ needs.build-image.outputs.latest_tag }}"
+          docker buildx imagetools create --tag "$TARGET_IMAGE" "$SOURCE_IMAGE"
+
+      - name: Promote deployed frontend image to latest tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_IMAGE="${{ needs.build-image.outputs.frontend_image_repository }}@${{ needs.build-image.outputs.frontend_image_digest }}"
+          TARGET_IMAGE="${{ needs.build-image.outputs.frontend_image_repository }}:${{ needs.build-image.outputs.frontend_latest_tag }}"
           docker buildx imagetools create --tag "$TARGET_IMAGE" "$SOURCE_IMAGE"
 
   post-deploy-smoke:
@@ -791,11 +846,15 @@ jobs:
         id: frontend-url
         shell: bash
         env:
+          STACK: ${{ needs.resolve-target.outputs.deploy_environment }}
           PULUMI_FRONTEND_HOSTNAME: ${{ vars.PULUMI_FRONTEND_HOSTNAME }}
         run: |
           set -euo pipefail
 
           hostname="${PULUMI_FRONTEND_HOSTNAME:-}"
+          if [ -z "$hostname" ] && [ "$STACK" = "staging" ]; then
+            hostname="staging.branch.openerrata.com"
+          fi
 
           if [ -z "$hostname" ]; then
             echo "No frontend hostname configured; skipping post-deploy smoke tests."

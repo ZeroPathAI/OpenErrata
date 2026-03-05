@@ -677,6 +677,10 @@ const chart = new k8s.helm.v3.Chart(
             frontend: {
               enabled: true,
               replicaCount: config.getNumber("frontendReplicas") ?? 1,
+              apiBaseUrl:
+                apiIngress.mode === "enabled"
+                  ? `https://${apiIngress.host}`
+                  : `http://${fullname}-api.${namespaceName}.svc.cluster.local:3000`,
               image: {
                 repository: frontendImage.repository,
                 tag: frontendImage.tag,

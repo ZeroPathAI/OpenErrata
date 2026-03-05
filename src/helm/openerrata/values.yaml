@@ -18,6 +18,9 @@ migration:
 frontend:
   enabled: false
   replicaCount: 1
+  # Required when frontend.enabled=true: the backend API origin used for SSR
+  # GraphQL requests (e.g. "https://api.openerrata.com" or a cluster-internal URL).
+  apiBaseUrl: ""
   image:
     repository: ghcr.io/zeropathAI/openerrata-frontend
     tag: latest

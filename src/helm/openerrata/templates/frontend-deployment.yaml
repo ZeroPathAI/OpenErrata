@@ -25,6 +25,9 @@ spec:
           image: {{ include "openerrata.frontendImage" . | quote }}
           imagePullPolicy: {{ .Values.frontend.image.pullPolicy }}
           command: ["node", "build/index.js"]
+          env:
+            - name: API_BASE_URL
+              value: {{ required "frontend.apiBaseUrl is required when frontend is enabled" .Values.frontend.apiBaseUrl | quote }}
           ports:
             - containerPort: 3000
               protocol: TCP
