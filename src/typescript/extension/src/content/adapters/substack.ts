@@ -3,6 +3,7 @@ import { ANNOTATION_SELECTOR } from "../annotation-dom";
 import type { AdapterExtractionResult, PlatformAdapter } from "./model";
 import {
   extractContentWithImageOccurrencesFromRoot,
+  hasVideoContent,
   readFirstMetaDateAsIso,
   readFirstTimeDateAsIso,
   readPublishedDateFromJsonLd,
@@ -456,7 +457,7 @@ export const substackAdapter: PlatformAdapter = {
     const authorSubstackHandle = extractAuthorHandle(document);
 
     const imageUrls = extractedContent.imageUrls;
-    const hasVideo = root.querySelector("video, iframe") !== null;
+    const hasVideo = hasVideoContent(root);
     const mediaState = hasVideo ? "has_video" : imageUrls.length > 0 ? "has_images" : "text_only";
 
     return {

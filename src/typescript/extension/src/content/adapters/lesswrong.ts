@@ -3,6 +3,7 @@ import { isLikelyVisible, type AdapterExtractionResult, type PlatformAdapter } f
 import {
   cloneElement,
   extractContentWithImageOccurrencesFromRoot,
+  hasVideoContent,
   readFirstMetaDateAsIso,
   readFirstTimeDateAsIso,
   readPublishedDateFromJsonLd,
@@ -338,7 +339,7 @@ export const lesswrongAdapter: PlatformAdapter = {
     const publishedAt = extractPublishedAt(document, postScope);
 
     const imageUrls = extractedContent.imageUrls;
-    const hasVideoMedia = canonicalRoot.querySelector("video, iframe") !== null;
+    const hasVideoMedia = hasVideoContent(canonicalRoot);
     const mediaState = hasVideoMedia
       ? "has_video"
       : imageUrls.length > 0

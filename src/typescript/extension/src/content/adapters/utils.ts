@@ -169,6 +169,38 @@ function isDocumentRoot(root: ParentNode): root is Document {
   return "createTreeWalker" in root && "defaultView" in root;
 }
 
+/**
+ * Iframe src patterns that embed video or audio content. Generic iframes
+ * (e.g. Manifold Market prediction widgets, tweet embeds) are interactive
+ * content, not video, and should not cause a post to be skipped.
+ */
+const VIDEO_IFRAME_SRC_PATTERNS = [
+  /youtube\.com\//i,
+  /youtu\.be\//i,
+  /vimeo\.com\//i,
+  /dailymotion\.com\//i,
+  /twitch\.tv\//i,
+  /wistia\.com\//i,
+  /loom\.com\//i,
+  /spotify\.com\/embed\/episode/i,
+  /player\.simplecast\.com\//i,
+] as const;
+
+function isVideoIframe(iframe: Element): boolean {
+  const src = iframe.getAttribute("src") ?? "";
+  return VIDEO_IFRAME_SRC_PATTERNS.some((pattern) => pattern.test(src));
+}
+
+/**
+ * Detect whether a content root contains actual video/audio media.
+ * Returns true for `<video>` elements or iframes embedding known video
+ * platforms. Returns false for generic iframes (widgets, embeds, etc.).
+ */
+export function hasVideoContent(root: ParentNode): boolean {
+  if (root.querySelector("video") !== null) return true;
+  return Array.from(root.querySelectorAll("iframe")).some(isVideoIframe);
+}
+
 function hasOwnerDocument(
   root: ParentNode,
 ): root is ParentNode & { ownerDocument: Document | null } {
