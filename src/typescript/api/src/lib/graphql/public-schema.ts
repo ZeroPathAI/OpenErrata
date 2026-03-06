@@ -163,6 +163,17 @@ const typeDefs = /* GraphQL */ `
   }
 
   """
+  Abbreviated claim data for listings.
+  """
+  type ClaimSummary {
+    id: ID!
+    """
+    One- or two-sentence factual correction summarizing why the claim is incorrect.
+    """
+    summary: String!
+  }
+
+  """
   Summary of an investigation for a specific content version of a post.
   Used in the postInvestigations listing where full claim details are not needed.
   """
@@ -188,6 +199,10 @@ const typeDefs = /* GraphQL */ `
     Number of incorrect claims flagged in this investigation.
     """
     claimCount: Int!
+    """
+    Abbreviated summaries of each flagged claim, for display in listings.
+    """
+    claimSummaries: [ClaimSummary!]!
   }
 
   """
@@ -203,17 +218,6 @@ const typeDefs = /* GraphQL */ `
     Completed investigations for this post, one per content version.
     """
     investigations: [PostInvestigationSummary!]!
-  }
-
-  """
-  Abbreviated claim data for search result listings.
-  """
-  type ClaimSummary {
-    id: ID!
-    """
-    One- or two-sentence factual correction summarizing why the claim is incorrect.
-    """
-    summary: String!
   }
 
   """
@@ -259,6 +263,10 @@ const typeDefs = /* GraphQL */ `
 
   type SearchInvestigationsResult {
     investigations: [SearchInvestigationSummary!]!
+    """
+    True if there are more results beyond this page. Use offset + limit to fetch the next page.
+    """
+    hasMore: Boolean!
   }
 
   """

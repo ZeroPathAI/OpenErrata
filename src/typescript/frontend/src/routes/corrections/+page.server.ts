@@ -17,6 +17,7 @@ const SEARCH_INVESTIGATIONS_QUERY = `
           summary
         }
       }
+      hasMore
     }
   }
 `;
@@ -40,6 +41,7 @@ export interface InvestigationSummary {
 interface SearchInvestigationsData {
   searchInvestigations: {
     investigations: InvestigationSummary[];
+    hasMore: boolean;
   };
 }
 
@@ -73,6 +75,7 @@ export const load: PageServerLoad = async ({ url }) => {
   const searchQuery = emptyQuery ? undefined : query.trim();
 
   let investigations: InvestigationSummary[] = [];
+  let hasMore = false;
   let error: string | undefined;
 
   try {
@@ -88,6 +91,7 @@ export const load: PageServerLoad = async ({ url }) => {
       variables,
     );
     investigations = data.searchInvestigations.investigations;
+    hasMore = data.searchInvestigations.hasMore;
   } catch (e: unknown) {
     error = e instanceof Error ? e.message : "Failed to load corrections";
     console.error("Failed to fetch corrections:", e);
@@ -95,10 +99,10 @@ export const load: PageServerLoad = async ({ url }) => {
 
   return {
     investigations,
+    hasMore,
     error,
     query: searchQuery,
     platform,
     page,
-    pageSize: PAGE_SIZE,
   };
 };

@@ -97,6 +97,13 @@ export const publicGetInvestigationOutputSchema = z
   .strict()
   .nullable();
 
+const claimSummarySchema = z
+  .object({
+    id: z.string().min(1),
+    summary: z.string().min(1),
+  })
+  .strict();
+
 export const publicGetPostInvestigationsOutputSchema = z
   .object({
     post: publicPostSchema.nullable(),
@@ -108,6 +115,7 @@ export const publicGetPostInvestigationsOutputSchema = z
           corroborationCount: z.number().int().nonnegative(),
           checkedAt: z.iso.datetime(),
           claimCount: z.number().int().nonnegative(),
+          claimSummaries: z.array(claimSummarySchema),
           origin: publicInvestigationOriginSchema,
         })
         .strict(),
@@ -128,10 +136,12 @@ export const publicSearchInvestigationsOutputSchema = z
           url: z.url(),
           corroborationCount: z.number().int().nonnegative(),
           claimCount: z.number().int().nonnegative(),
+          claimSummaries: z.array(claimSummarySchema),
           origin: publicInvestigationOriginSchema,
         })
         .strict(),
     ),
+    hasMore: z.boolean(),
   })
   .strict();
 

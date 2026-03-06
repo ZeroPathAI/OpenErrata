@@ -51,6 +51,7 @@ type PublicPostInvestigationSummary = PublicTrustSignals & {
   contentHash: string;
   checkedAt: Date;
   claimCount: number;
+  claimSummaries: PublicClaimSummary[];
 };
 
 interface PublicPostInvestigationsResult {
@@ -76,6 +77,7 @@ type PublicSearchInvestigationSummary = PublicTrustSignals & {
 
 interface PublicSearchInvestigationsResult {
   investigations: PublicSearchInvestigationSummary[];
+  hasMore: boolean;
 }
 
 interface PublicMetricsResult {
@@ -301,6 +303,12 @@ export async function getPublicPostInvestigations(
         },
       },
       input: true,
+      claims: {
+        select: {
+          id: true,
+          summary: true,
+        },
+      },
       _count: {
         select: {
           claims: true,
@@ -330,6 +338,10 @@ export async function getPublicPostInvestigations(
         corroborationCount: investigation._count.corroborationCredits,
         checkedAt: lifecycle.checkedAt,
         claimCount: investigation._count.claims,
+        claimSummaries: investigation.claims.map((claim) => ({
+          id: claim.id,
+          summary: claim.summary,
+        })),
       };
     }),
   };
@@ -379,7 +391,7 @@ export async function searchPublicInvestigations(
       { id: "desc" },
     ],
     skip: input.offset,
-    take: input.limit,
+    take: input.limit + 1,
     include: {
       postVersion: {
         select: {
@@ -414,8 +426,11 @@ export async function searchPublicInvestigations(
     },
   });
 
+  const hasMore = investigations.length > input.limit;
+  const page = hasMore ? investigations.slice(0, input.limit) : investigations;
+
   return {
-    investigations: investigations.map((investigation) => {
+    investigations: page.map((investigation) => {
       const lifecycle = parsePublicLifecycle({
         investigationId: investigation.id,
         provenance: investigation.input.provenance,
@@ -438,6 +453,7 @@ export async function searchPublicInvestigations(
         })),
       };
     }),
+    hasMore,
   };
 }
 

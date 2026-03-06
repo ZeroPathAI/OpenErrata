@@ -68,6 +68,7 @@ export const publicRouter = router({
           corroborationCount: investigation.corroborationCount,
           checkedAt: investigation.checkedAt.toISOString(),
           claimCount: investigation.claimCount,
+          claimSummaries: investigation.claimSummaries,
           origin: toOriginOutput(investigation.origin),
         })),
       };
@@ -89,8 +90,10 @@ export const publicRouter = router({
           url: investigation.url,
           corroborationCount: investigation.corroborationCount,
           claimCount: investigation.claimCount,
+          claimSummaries: investigation.claimSummaries,
           origin: toOriginOutput(investigation.origin),
         })),
+        hasMore: result.hasMore,
       };
     }),
 

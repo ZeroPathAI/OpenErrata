@@ -51,7 +51,7 @@ test("createPublicGraphqlSchema uses injected public read-model dependencies", a
     },
     searchPublicInvestigations: async (_prisma, input) => {
       calls.searchInput = input;
-      return { investigations: [] };
+      return { investigations: [], hasMore: false };
     },
     getPublicMetrics: async (_prisma, input) => {
       calls.metricsInput = input;

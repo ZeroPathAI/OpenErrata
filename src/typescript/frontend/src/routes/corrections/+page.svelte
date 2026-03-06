@@ -137,7 +137,7 @@
             </a>
           {/if}
           <span class="page-info">Page {data.page}</span>
-          {#if data.investigations.length === data.pageSize}
+          {#if data.hasMore}
             <a
               href="/corrections?{new URLSearchParams({
                 ...(data.query ? { q: data.query } : {}),
