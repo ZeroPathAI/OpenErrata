@@ -55,10 +55,6 @@
   <main class="content">
     <div class="content-inner">
       <h1>Latest Corrections</h1>
-      <p class="subtitle">
-        Browse completed fact-check investigations. Each correction identifies empirically incorrect
-        or unambiguously misleading claims in online posts.
-      </p>
 
       <form class="search-bar" method="get" action="/corrections">
         <div class="search-inputs">
