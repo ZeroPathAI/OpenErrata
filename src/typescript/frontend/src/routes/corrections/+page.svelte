@@ -41,6 +41,10 @@
     }
     return withoutProtocol.substring(0, maxLength) + "...";
   }
+
+  function correctionCountLabel(count: number): string {
+    return count === 1 ? "Correction" : `${count} corrections`;
+  }
 </script>
 
 <svelte:head>
@@ -111,7 +115,7 @@
               {/if}
               <div class="card-footer">
                 <span class="claim-count" class:has-claims={investigation.claimCount > 0}>
-                  {investigation.claimCount} correction{investigation.claimCount !== 1 ? "s" : ""}
+                  {correctionCountLabel(investigation.claimCount)}
                 </span>
                 <span class="view-arrow">&rarr;</span>
               </div>

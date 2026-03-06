@@ -36,6 +36,20 @@
     }
     return withoutProtocol.substring(0, maxLength) + "...";
   }
+
+  function correctionsFoundLabel(count: number): string {
+    return count === 1 ? "Correction found" : `${count} corrections found`;
+  }
+
+  function correctionsMetaDescription(count: number, platformLabel: string): string {
+    return count === 1
+      ? `OpenErrata found a correction for this ${platformLabel} post.`
+      : `OpenErrata found ${count} corrections for this ${platformLabel} post.`;
+  }
+
+  function platformLabelFor(platform: PublicInvestigationResult["post"]["platform"]): string {
+    return platformLabels[platform] ?? platform;
+  }
 </script>
 
 <svelte:head>
@@ -43,9 +57,10 @@
     <title>Corrections for {truncateUrl(result.post.url, 40)} - OpenErrata</title>
     <meta
       name="description"
-      content="OpenErrata found {result.claims.length} correction{result.claims.length !== 1
-        ? 's'
-        : ''} for this {platformLabels[result.post.platform]} post."
+      content={correctionsMetaDescription(
+        result.claims.length,
+        platformLabelFor(result.post.platform),
+      )}
     />
   {:else}
     <title>Investigation Not Found - OpenErrata</title>
@@ -72,7 +87,7 @@
         <div class="investigation-header">
           <div class="header-meta">
             <span class="platform-badge platform-{result.post.platform.toLowerCase()}">
-              {platformLabels[result.post.platform]}
+              {platformLabelFor(result.post.platform)}
             </span>
             <span class="date">
               {formatDate(result.investigation.checkedAt)} at {formatTime(
@@ -98,7 +113,7 @@
             {#if result.claims.length === 0}
               No corrections found. This post passed fact-checking with no issues.
             {:else}
-              {result.claims.length} correction{result.claims.length !== 1 ? "s" : ""} found
+              {correctionsFoundLabel(result.claims.length)}
             {/if}
           </p>
         </div>
