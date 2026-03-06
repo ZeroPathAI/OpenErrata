@@ -206,6 +206,17 @@ const typeDefs = /* GraphQL */ `
   }
 
   """
+  Abbreviated claim data for search result listings.
+  """
+  type ClaimSummary {
+    id: ID!
+    """
+    One- or two-sentence factual correction summarizing why the claim is incorrect.
+    """
+    summary: String!
+  }
+
+  """
   Summary of an investigation returned by search, including post identification
   fields so results can be displayed without a separate post lookup.
   """
@@ -240,6 +251,10 @@ const typeDefs = /* GraphQL */ `
     Number of incorrect claims flagged in this investigation.
     """
     claimCount: Int!
+    """
+    Abbreviated summaries of each flagged claim, for display in search listings.
+    """
+    claimSummaries: [ClaimSummary!]!
   }
 
   type SearchInvestigationsResult {

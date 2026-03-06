@@ -58,6 +58,11 @@ interface PublicPostInvestigationsResult {
   investigations: PublicPostInvestigationSummary[];
 }
 
+interface PublicClaimSummary {
+  id: string;
+  summary: string;
+}
+
 type PublicSearchInvestigationSummary = PublicTrustSignals & {
   id: string;
   contentHash: string;
@@ -66,6 +71,7 @@ type PublicSearchInvestigationSummary = PublicTrustSignals & {
   externalId: string;
   url: string;
   claimCount: number;
+  claimSummaries: PublicClaimSummary[];
 };
 
 interface PublicSearchInvestigationsResult {
@@ -393,6 +399,12 @@ export async function searchPublicInvestigations(
         },
       },
       input: true,
+      claims: {
+        select: {
+          id: true,
+          summary: true,
+        },
+      },
       _count: {
         select: {
           claims: true,
@@ -420,6 +432,10 @@ export async function searchPublicInvestigations(
         origin: lifecycle.origin,
         corroborationCount: investigation._count.corroborationCredits,
         claimCount: investigation._count.claims,
+        claimSummaries: investigation.claims.map((claim) => ({
+          id: claim.id,
+          summary: claim.summary,
+        })),
       };
     }),
   };
