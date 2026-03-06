@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { PageData } from "./$types";
   import type { PublicInvestigationResult } from "./+page.server";
+  import { renderClaimReasoningHtml } from "$lib/claim-markdown";
 
   const { data }: { data: PageData } = $props();
 
@@ -120,7 +121,8 @@
 
                   <details class="claim-details">
                     <summary>Full reasoning</summary>
-                    <div class="reasoning">{claim.reasoning}</div>
+                    <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+                    <div class="reasoning">{@html renderClaimReasoningHtml(claim.reasoning)}</div>
                   </details>
 
                   {#if claim.sources.length > 0}
@@ -364,7 +366,78 @@
     margin-top: 0.5rem;
     padding-left: 0.75rem;
     border-left: 2px solid var(--color-border);
-    white-space: pre-wrap;
+  }
+
+  .reasoning :global(p) {
+    margin: 0 0 0.875rem;
+  }
+
+  .reasoning :global(p:last-child) {
+    margin-bottom: 0;
+  }
+
+  .reasoning :global(h1),
+  .reasoning :global(h2),
+  .reasoning :global(h3),
+  .reasoning :global(h4) {
+    color: var(--color-text);
+    font-weight: 600;
+    line-height: 1.4;
+    margin: 1rem 0 0.5rem;
+  }
+
+  .reasoning :global(h1) {
+    font-size: 1.1rem;
+  }
+
+  .reasoning :global(h2) {
+    font-size: 1rem;
+  }
+
+  .reasoning :global(h3),
+  .reasoning :global(h4) {
+    font-size: 0.9375rem;
+  }
+
+  .reasoning :global(ul),
+  .reasoning :global(ol) {
+    margin: 0.5rem 0 0.875rem 1.25rem;
+    padding: 0;
+  }
+
+  .reasoning :global(li) {
+    margin-bottom: 0.375rem;
+  }
+
+  .reasoning :global(a) {
+    color: var(--color-accent);
+  }
+
+  .reasoning :global(a:hover) {
+    text-decoration: underline;
+  }
+
+  .reasoning :global(code) {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 0.8125rem;
+    padding: 0.125rem 0.25rem;
+    border-radius: 4px;
+    background: var(--color-bg);
+    color: var(--color-text);
+  }
+
+  .reasoning :global(pre) {
+    overflow-x: auto;
+    padding: 0.75rem;
+    border-radius: 8px;
+    background: var(--color-bg);
+    border: 1px solid var(--color-border);
+    margin: 0.75rem 0;
+  }
+
+  .reasoning :global(pre code) {
+    background: transparent;
+    padding: 0;
   }
 
   /* Sources */
