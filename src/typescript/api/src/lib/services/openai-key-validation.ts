@@ -18,7 +18,7 @@ async function validateOpenAiApiKeyReachability(openAiApiKey: string): Promise<v
       {
         model: getEnv().OPENAI_MODEL_ID,
         input: "Reply with the single word pong.",
-        max_output_tokens: 1,
+        max_output_tokens: 16,
       },
       { signal: abortController.signal },
     );

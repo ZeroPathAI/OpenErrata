@@ -39,7 +39,7 @@ async function assertOpenAiCredentials(component: StartupComponent): Promise<voi
     await client.responses.create({
       model: getEnv().OPENAI_MODEL_ID,
       input: "Reply with the single word pong.",
-      max_output_tokens: 1,
+      max_output_tokens: 16,
     });
   } catch (error) {
     throw new Error(`[startup:${component}] OpenAI credential check failed`, { cause: error });
