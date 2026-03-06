@@ -80,6 +80,10 @@ interface PublicSearchInvestigationsResult {
   hasMore: boolean;
 }
 
+interface SearchInvestigationPageRow {
+  id: string;
+}
+
 interface PublicMetricsResult {
   totalInvestigatedPosts: number;
   investigatedPostsWithFlags: number;
@@ -103,6 +107,10 @@ interface PublicSearchInvestigationsInput {
 
 function parsePlatform(value: string): Platform {
   return platformSchema.parse(value);
+}
+
+function escapeLikePattern(query: string): string {
+  return query.replace(/[\\%_]/g, (char) => `\\${char}`);
 }
 
 export class PublicReadModelInvariantError extends Error {
@@ -188,6 +196,36 @@ function publicMetricsConditions(input: PublicMetricsInput): Prisma.Sql[] {
   }
 
   return conditions;
+}
+
+async function loadSearchInvestigationPageRows(
+  prisma: PrismaClient,
+  input: PublicSearchInvestigationsInput,
+): Promise<SearchInvestigationPageRow[]> {
+  const platformFilter =
+    input.platform === undefined ? Prisma.empty : Prisma.sql`AND p."platform" = ${input.platform}`;
+  const textFilter =
+    input.query === undefined
+      ? Prisma.empty
+      : Prisma.sql`AND cb."contentText" ILIKE ${`%${escapeLikePattern(input.query)}%`} ESCAPE '\\'`;
+
+  const minimumClaimCount = input.minClaimCount ?? 0;
+
+  return prisma.$queryRaw<SearchInvestigationPageRow[]>`
+    SELECT i."id"
+    FROM "Investigation" i
+    JOIN "PostVersion" pv ON pv."id" = i."postVersionId"
+    JOIN "Post" p ON p."id" = pv."postId"
+    JOIN "ContentBlob" cb ON cb."id" = pv."contentBlobId"
+    LEFT JOIN "Claim" c ON c."investigationId" = i."id"
+    WHERE i."status" = 'COMPLETE'
+      ${platformFilter}
+      ${textFilter}
+    GROUP BY i."id", i."checkedAt"
+    HAVING COUNT(c."id") >= ${minimumClaimCount}
+    ORDER BY i."checkedAt" DESC NULLS LAST, i."id" DESC
+    LIMIT ${input.limit + 1} OFFSET ${input.offset}
+  `;
 }
 
 export async function getPublicInvestigationById(
@@ -304,6 +342,9 @@ export async function getPublicPostInvestigations(
       },
       input: true,
       claims: {
+        orderBy: {
+          id: "asc",
+        },
         select: {
           id: true,
           summary: true,
@@ -351,47 +392,23 @@ export async function searchPublicInvestigations(
   prisma: PrismaClient,
   input: PublicSearchInvestigationsInput,
 ): Promise<PublicSearchInvestigationsResult> {
+  const pageRows = await loadSearchInvestigationPageRows(prisma, input);
+  const hasMore = pageRows.length > input.limit;
+  const pageIds = pageRows.slice(0, input.limit).map((row) => row.id);
+
+  if (pageIds.length === 0) {
+    return {
+      investigations: [],
+      hasMore,
+    };
+  }
+
   const investigations = await prisma.investigation.findMany({
     where: {
-      status: "COMPLETE",
-      ...(input.minClaimCount !== undefined && input.minClaimCount > 0
-        ? { claims: { some: {} } }
-        : {}),
-      ...(input.platform === undefined && input.query === undefined
-        ? {}
-        : {
-            postVersion: {
-              ...(input.platform === undefined
-                ? {}
-                : {
-                    post: {
-                      platform: input.platform,
-                    },
-                  }),
-              ...(input.query === undefined
-                ? {}
-                : {
-                    contentBlob: {
-                      contentText: {
-                        contains: input.query,
-                        mode: "insensitive",
-                      },
-                    },
-                  }),
-            },
-          }),
-    },
-    orderBy: [
-      {
-        checkedAt: {
-          sort: "desc",
-          nulls: "last",
-        },
+      id: {
+        in: pageIds,
       },
-      { id: "desc" },
-    ],
-    skip: input.offset,
-    take: input.limit + 1,
+    },
     include: {
       postVersion: {
         select: {
@@ -412,6 +429,9 @@ export async function searchPublicInvestigations(
       },
       input: true,
       claims: {
+        orderBy: {
+          id: "asc",
+        },
         select: {
           id: true,
           summary: true,
@@ -426,11 +446,19 @@ export async function searchPublicInvestigations(
     },
   });
 
-  const hasMore = investigations.length > input.limit;
-  const page = hasMore ? investigations.slice(0, input.limit) : investigations;
+  const investigationsById = new Map(
+    investigations.map((investigation) => [investigation.id, investigation]),
+  );
 
   return {
-    investigations: page.map((investigation) => {
+    investigations: pageIds.map((investigationId) => {
+      const investigation = investigationsById.get(investigationId);
+      if (investigation === undefined) {
+        invariantViolation(
+          `searchPublicInvestigations loaded page id ${investigationId} but could not hydrate it`,
+        );
+      }
+
       const lifecycle = parsePublicLifecycle({
         investigationId: investigation.id,
         provenance: investigation.input.provenance,

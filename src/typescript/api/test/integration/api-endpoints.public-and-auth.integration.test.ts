@@ -782,6 +782,21 @@ void test("public.searchInvestigations filters by query/platform and includes fa
   });
   await seedClaimWithSource(moonInvestigation.id, 1);
 
+  const multiClaimMoonPost = await seedPost({
+    platform: "LESSWRONG",
+    externalId: "public-search-moon-2",
+    url: "https://www.lesswrong.com/posts/public-search-moon-2",
+    contentText: `${moonMarker} gamma`,
+  });
+  const multiClaimMoonInvestigation = await seedCompleteInvestigation({
+    postId: multiClaimMoonPost.id,
+    contentHash: multiClaimMoonPost.contentHash,
+    contentText: multiClaimMoonPost.contentText,
+    provenance: "SERVER_VERIFIED",
+  });
+  await seedClaimWithSource(multiClaimMoonInvestigation.id, 2);
+  await seedClaimWithSource(multiClaimMoonInvestigation.id, 3);
+
   const xPost = await seedPost({
     platform: "X",
     externalId: "public-search-x-1",
@@ -816,10 +831,23 @@ void test("public.searchInvestigations filters by query/platform and includes fa
 
   const queryIds = new Set<string>(queryResult.investigations.map((item) => item.id));
   assert.equal(queryIds.has(moonInvestigation.id), true);
+  assert.equal(queryIds.has(multiClaimMoonInvestigation.id), true);
   assert.equal(queryIds.has(fallbackMoonInvestigation.id), true);
   assert.equal(
     queryResult.investigations.every((item) => item.platform === "LESSWRONG"),
     true,
+  );
+
+  const minClaimCountResult = await caller.public.searchInvestigations({
+    query: moonMarker,
+    minClaimCount: 2,
+    limit: 20,
+    offset: 0,
+  });
+
+  assert.deepEqual(
+    minClaimCountResult.investigations.map((item) => item.id),
+    [multiClaimMoonInvestigation.id],
   );
 
   const platformResult = await caller.public.searchInvestigations({
@@ -866,7 +894,46 @@ void test("public.searchInvestigations filters by query/platform and includes fa
     graphqlResult.searchInvestigations.investigations.map((item) => item.id),
   );
   assert.equal(graphqlIds.has(moonInvestigation.id), true);
+  assert.equal(graphqlIds.has(multiClaimMoonInvestigation.id), true);
   assert.equal(graphqlIds.has(fallbackMoonInvestigation.id), true);
+
+  const minClaimCountGraphqlResult = await queryPublicGraphql<{
+    searchInvestigations: {
+      investigations: {
+        id: string;
+      }[];
+    };
+  }>(
+    `
+      query SearchInvestigationsWithMinClaimCount(
+        $query: String!
+        $minClaimCount: Int!
+        $limit: Int!
+        $offset: Int!
+      ) {
+        searchInvestigations(
+          query: $query
+          minClaimCount: $minClaimCount
+          limit: $limit
+          offset: $offset
+        ) {
+          investigations {
+            id
+          }
+        }
+      }
+    `,
+    {
+      query: moonMarker,
+      minClaimCount: 2,
+      limit: 20,
+      offset: 0,
+    },
+  );
+  assert.deepEqual(
+    minClaimCountGraphqlResult.searchInvestigations.investigations.map((item) => item.id),
+    [multiClaimMoonInvestigation.id],
+  );
 });
 
 void test("public.getMetrics counts all complete investigations and honors filters", async () => {

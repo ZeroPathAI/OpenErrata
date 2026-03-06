@@ -14,6 +14,9 @@
 
 import { test, expect } from "@playwright/test";
 
+const EXPECTED_EXTENSION_URL =
+  "https://chromewebstore.google.com/detail/openerrata/iflopmpcoifkihfimncdjkokibdfkkbd";
+
 test.describe("Landing page", () => {
   test("renders hero and key sections", async ({ page }) => {
     await page.goto("/");
@@ -48,6 +51,14 @@ test.describe("Landing page", () => {
     await expect(nav.getByText("Corrections")).toBeVisible();
     await expect(nav.getByText("GitHub")).toBeVisible();
     await expect(nav.getByText("Install Extension")).toBeVisible();
+    await expect(nav.getByRole("link", { name: "Install Extension" })).toHaveAttribute(
+      "href",
+      EXPECTED_EXTENSION_URL,
+    );
+    await expect(page.getByRole("link", { name: "Install for Chrome" })).toHaveAttribute(
+      "href",
+      EXPECTED_EXTENSION_URL,
+    );
   });
 });
 
@@ -74,6 +85,10 @@ test.describe("Corrections page", () => {
     await expect(nav.getByText("OpenErrata")).toBeVisible();
     await expect(nav.getByText("Corrections")).toBeVisible();
     await expect(nav.getByText("Install Extension")).toBeVisible();
+    await expect(nav.getByRole("link", { name: "Install Extension" })).toHaveAttribute(
+      "href",
+      EXPECTED_EXTENSION_URL,
+    );
   });
 });
 

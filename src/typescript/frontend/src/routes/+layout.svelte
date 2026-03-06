@@ -1,5 +1,6 @@
 <script>
   import "../app.css";
+  import { CHROME_WEB_STORE_URL } from "$lib/extension-install-url";
   const { children } = $props();
 </script>
 
@@ -21,7 +22,7 @@
         >GitHub</a
       >
       <a
-        href="https://chromewebstore.google.com/detail/openerrata/TODO"
+        href={CHROME_WEB_STORE_URL}
         target="_blank"
         rel="noopener noreferrer"
         class="btn btn-primary btn-sm">Install Extension</a

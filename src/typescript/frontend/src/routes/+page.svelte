@@ -1,3 +1,7 @@
+<script>
+  import { CHROME_WEB_STORE_URL } from "$lib/extension-install-url";
+</script>
+
 <svelte:head>
   <title>OpenErrata - AI-Powered Fact-Checking for the Web</title>
 </svelte:head>
@@ -13,7 +17,7 @@
       </p>
       <div class="hero-actions">
         <a
-          href="https://chromewebstore.google.com/detail/openerrata/TODO"
+          href={CHROME_WEB_STORE_URL}
           target="_blank"
           rel="noopener noreferrer"
           class="btn btn-primary">Install for Chrome</a
