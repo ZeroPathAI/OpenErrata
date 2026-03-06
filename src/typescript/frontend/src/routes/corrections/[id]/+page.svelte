@@ -37,10 +37,6 @@
     return withoutProtocol.substring(0, maxLength) + "...";
   }
 
-  function correctionsFoundLabel(count: number): string {
-    return count === 1 ? "Correction found" : `${count} corrections found`;
-  }
-
   function correctionsMetaDescription(count: number, platformLabel: string): string {
     return count === 1
       ? `OpenErrata found a correction for this ${platformLabel} post.`
@@ -109,13 +105,6 @@
               </svg>
             </a>
           </h1>
-          <p class="correction-summary">
-            {#if result.claims.length === 0}
-              No corrections found. This post passed fact-checking with no issues.
-            {:else}
-              {correctionsFoundLabel(result.claims.length)}
-            {/if}
-          </p>
         </div>
 
         {#if result.claims.length > 0}
@@ -278,11 +267,6 @@
     width: 0.875rem;
     height: 0.875rem;
     flex-shrink: 0;
-  }
-
-  .correction-summary {
-    font-size: 1rem;
-    color: var(--color-text-muted);
   }
 
   /* Claims */
