@@ -12,19 +12,18 @@ const SEARCH_INVESTIGATIONS_QUERY = `
         externalId
         url
         claimCount
-        corroborationCount
-        origin {
-          provenance
-          serverVerifiedAt
+        claimSummaries {
+          id
+          summary
         }
       }
     }
   }
 `;
 
-interface InvestigationOrigin {
-  provenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK";
-  serverVerifiedAt: string | null;
+export interface ClaimSummary {
+  id: string;
+  summary: string;
 }
 
 export interface InvestigationSummary {
@@ -35,8 +34,7 @@ export interface InvestigationSummary {
   externalId: string;
   url: string;
   claimCount: number;
-  corroborationCount: number;
-  origin: InvestigationOrigin;
+  claimSummaries: ClaimSummary[];
 }
 
 interface SearchInvestigationsData {

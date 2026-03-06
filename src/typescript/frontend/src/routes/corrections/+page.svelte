@@ -96,12 +96,7 @@
       {:else}
         <div class="results">
           {#each data.investigations as investigation (investigation.id)}
-            <a
-              href={investigation.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              class="investigation-card"
-            >
+            <a href="/corrections/{investigation.id}" class="investigation-card">
               <div class="card-header">
                 <span class="platform-badge platform-{investigation.platform.toLowerCase()}">
                   {platformLabels[investigation.platform]}
@@ -111,18 +106,18 @@
                 </span>
               </div>
               <div class="card-url">{truncateUrl(investigation.url)}</div>
+              {#if investigation.claimSummaries.length > 0}
+                <ul class="claim-summaries">
+                  {#each investigation.claimSummaries as claim (claim.id)}
+                    <li>{claim.summary}</li>
+                  {/each}
+                </ul>
+              {/if}
               <div class="card-footer">
                 <span class="claim-count" class:has-claims={investigation.claimCount > 0}>
                   {investigation.claimCount} correction{investigation.claimCount !== 1 ? "s" : ""}
                 </span>
-                {#if investigation.origin.provenance === "SERVER_VERIFIED"}
-                  <span
-                    class="verified-badge"
-                    title="Content independently verified by OpenErrata server"
-                  >
-                    Verified
-                  </span>
-                {/if}
+                <span class="view-arrow">&rarr;</span>
               </div>
             </a>
           {/each}
@@ -312,19 +307,23 @@
     display: block;
     background: var(--color-surface);
     border: 1px solid var(--color-border);
+    border-left: 3px solid var(--color-error);
     border-radius: 12px;
     padding: 1rem 1.25rem;
     text-decoration: none;
     color: var(--color-text);
     transition:
       border-color 0.15s,
-      background 0.15s;
+      background 0.15s,
+      transform 0.1s;
   }
 
   .investigation-card:hover {
     border-color: var(--color-text-muted);
+    border-left-color: var(--color-error);
     background: var(--color-surface-hover);
     text-decoration: none;
+    transform: translateX(2px);
   }
 
   .card-header {
@@ -355,10 +354,38 @@
     word-break: break-all;
   }
 
+  .claim-summaries {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+    margin-bottom: 0.75rem;
+  }
+
+  .claim-summaries li {
+    font-size: 0.8125rem;
+    line-height: 1.5;
+    color: var(--color-text-muted);
+    padding-left: 0.75rem;
+    border-left: 2px solid var(--color-error);
+  }
+
   .card-footer {
     display: flex;
     align-items: center;
     gap: 0.75rem;
+  }
+
+  .view-arrow {
+    margin-left: auto;
+    font-size: 1rem;
+    color: var(--color-text-muted);
+    transition: transform 0.15s;
+  }
+
+  .investigation-card:hover .view-arrow {
+    transform: translateX(4px);
+    color: var(--color-text);
   }
 
   .claim-count {
@@ -369,17 +396,6 @@
   .claim-count.has-claims {
     color: var(--color-error);
     font-weight: 600;
-  }
-
-  .verified-badge {
-    font-size: 0.6875rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--color-accent);
-    border: 1px solid var(--color-accent);
-    border-radius: 4px;
-    padding: 0.0625rem 0.375rem;
   }
 
   /* Error state */
