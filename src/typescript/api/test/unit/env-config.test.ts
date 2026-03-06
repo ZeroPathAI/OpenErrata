@@ -23,6 +23,7 @@ test("accepts aws blob storage configuration with an explicit region", () => {
   assert.equal(environment.BLOB_STORAGE_REGION, "us-west-2");
   assert.equal(environment.BLOB_STORAGE_ENDPOINT, undefined);
   assert.equal(environment.WORKER_CONCURRENCY, 250);
+  assert.equal(environment.OPENAI_MODEL_ID, "gpt-5.4");
 });
 
 test("accepts a custom worker concurrency", () => {

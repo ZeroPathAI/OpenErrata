@@ -57,6 +57,21 @@ test("validateOpenAiApiKeyForSettingsWithReachability maps known OpenAI status c
     openaiApiKeyMessage:
       "OpenAI authenticated this key, but access is restricted for validation checks.",
   });
+
+  const modelNotFoundResult = await validateOpenAiApiKeyForSettingsWithReachability(
+    "sk-model-test-key-abcdefghijklmnopqrstuvwxyz",
+    async () => {
+      const error = new Error("The requested model 'gpt-5.4-thinking' does not exist.") as Error & {
+        status: number;
+      };
+      error.status = 400;
+      throw error;
+    },
+  );
+  assert.deepEqual(modelNotFoundResult, {
+    openaiApiKeyStatus: "error",
+    openaiApiKeyMessage: "The requested model 'gpt-5.4-thinking' does not exist.",
+  });
 });
 
 test("validateOpenAiApiKeyForSettingsWithReachability handles timeout and generic failures", async () => {

@@ -42,7 +42,7 @@ const baseEnvironmentSchema = z.object({
       "DATABASE_URL must use postgres:// or postgresql://",
     ),
   OPENAI_API_KEY: z.string().trim().min(1).optional(),
-  OPENAI_MODEL_ID: z.string().trim().min(1).default("gpt-5.4-thinking"),
+  OPENAI_MODEL_ID: z.string().trim().min(1).default("gpt-5.4"),
   OPENAI_MAX_RESPONSE_TOOL_ROUNDS: positiveIntegerFromEnv.default(150),
   WORKER_CONCURRENCY: positiveIntegerFromEnv.default(250),
   HMAC_SECRET: z.string().trim().min(1, "HMAC_SECRET is required"),

@@ -47,14 +47,21 @@ export async function validateOpenAiApiKeyForSettingsWithReachability(
     }
 
     const statusOutcome = classifyOpenAiKeyValidationStatus(readOpenAiStatusCode(error));
-    if (statusOutcome) {
+    if (statusOutcome && statusOutcome.openaiApiKeyStatus !== "error") {
       return statusOutcome;
+    }
+
+    const specificMessage = readErrorMessage(error);
+    if (specificMessage !== null) {
+      return {
+        openaiApiKeyStatus: "error",
+        openaiApiKeyMessage: specificMessage,
+      };
     }
 
     return {
       openaiApiKeyStatus: "error",
       openaiApiKeyMessage:
-        readErrorMessage(error) ??
         "Could not validate this key with OpenAI. Check outbound network access and retry.",
     };
   }

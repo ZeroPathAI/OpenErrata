@@ -1,5 +1,6 @@
 import { OPENAI_KEY_VALIDATION_TIMEOUT_MS } from "@openerrata/shared";
 import OpenAI from "openai";
+import { getEnv } from "$lib/config/env.js";
 import {
   validateOpenAiApiKeyForSettingsWithReachability,
   type OpenAiKeyValidationStatusOutcome,
@@ -13,7 +14,14 @@ async function validateOpenAiApiKeyReachability(openAiApiKey: string): Promise<v
   }, OPENAI_KEY_VALIDATION_TIMEOUT_MS);
 
   try {
-    await client.models.list({ signal: abortController.signal });
+    await client.responses.create(
+      {
+        model: getEnv().OPENAI_MODEL_ID,
+        input: "Reply with the single word pong.",
+        max_output_tokens: 1,
+      },
+      { signal: abortController.signal },
+    );
   } finally {
     clearTimeout(timeoutId);
   }

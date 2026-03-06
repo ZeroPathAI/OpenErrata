@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import { getPrisma } from "$lib/db/client";
-import { requireOpenAiApiKey } from "./env.js";
+import { getEnv, requireOpenAiApiKey } from "./env.js";
 
 type StartupComponent = "api" | "worker" | "selector";
 
@@ -36,7 +36,11 @@ async function assertDatabaseCredentials(component: StartupComponent): Promise<v
 async function assertOpenAiCredentials(component: StartupComponent): Promise<void> {
   try {
     const client = new OpenAI({ apiKey: requireOpenAiApiKey() });
-    await client.models.list();
+    await client.responses.create({
+      model: getEnv().OPENAI_MODEL_ID,
+      input: "Reply with the single word pong.",
+      max_output_tokens: 1,
+    });
   } catch (error) {
     throw new Error(`[startup:${component}] OpenAI credential check failed`, { cause: error });
   }
