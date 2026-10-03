@@ -1,25 +1,29 @@
-import { normalizeContent } from "@openerrata/shared";
+import { isNonNullObject, lesswrongExternalIdSchema, normalizeContent } from "@openerrata/shared";
+import { pageLocatorFor, type PageLocator } from "../../lib/page-locator";
 import { isLikelyVisible, type AdapterExtractionResult, type PlatformAdapter } from "./model";
 import {
-  cloneElement,
-  extractContentWithImageOccurrencesFromRoot,
+  extractContent,
   hasVideoContent,
   readFirstMetaDateAsIso,
   readFirstTimeDateAsIso,
+  readJsonLdBlocks,
   readPublishedDateFromJsonLd,
+  serializeContentHtml,
 } from "./utils";
 
-const POST_URL_REGEX =
-  /(?:www\.)?lesswrong\.com\/posts\/([A-Za-z0-9]+)(?:\/([^/?#]*))?(?:[/?#]|$)/i;
-
 const CONTENT_SELECTOR = ".PostsPage-postContent";
+// LessWrong linkposts prepend a client-rendered callout block that is not
+// present in GraphQL `contents.html` (the API's canonical source).
+const LINK_POST_CALLOUT_CLASS = "LinkPostMessage-root";
 const POST_AUTHOR_LINK_SELECTORS = [
   '.PostsAuthors-authorName a[href*="/users/"]',
   '.LWPostsPageHeader-authorInfo a[href*="/users/"]',
   '.PostsAuthors-root a[href*="/users/"]',
 ] as const;
-const TAG_SELECTOR = 'a[href*="/tag/"]';
-const JSON_LD_SELECTOR = 'script[type="application/ld+json"]';
+// Tag chips link to the tag's wiki page (`/w/<slug>` since LessWrong's 2025
+// wiki merge; `/tag/<slug>` before). Scoped to the chip so in-body wiki links
+// are not mistaken for tags.
+const TAG_SELECTOR = '.FooterTag-root a[href^="/w/"], .FooterTag-root a[href*="/tag/"]';
 const META_DATE_SELECTORS = [
   'meta[property="article:published_time"]',
   'meta[name="article:published_time"]',
@@ -64,70 +68,34 @@ function findPostAuthorLink(scope: ParentNode): HTMLAnchorElement | null {
   return null;
 }
 
-function toCanonicalVersioningHtml(canonicalRoot: Element): string {
-  const clone = cloneElement(canonicalRoot);
-  removeLinkPostCallouts(clone);
+type LesswrongLocator = Extract<PageLocator, { platform: "LESSWRONG" }>;
 
-  return clone.innerHTML;
+function lesswrongLocator(url: string): LesswrongLocator | null {
+  const locator = pageLocatorFor("LESSWRONG", url);
+  return locator?.platform === "LESSWRONG" ? locator : null;
 }
 
-function removeLinkPostCallouts(root: Element): void {
-  // LessWrong linkposts prepend a client-rendered callout block that is not
-  // present in GraphQL `contents.html`, so include only canonical post HTML.
-  root.querySelectorAll(".LinkPostMessage-root").forEach((node) => {
-    node.remove();
+function isLinkPostCallout(element: Element): boolean {
+  return element.classList.contains(LINK_POST_CALLOUT_CLASS);
+}
+
+/** Post IDs a JSON-LD block names as its primary entity (`url` fields of post pages). */
+function jsonLdPrimaryPostIds(block: unknown): string[] {
+  const candidates: unknown[] = Array.isArray(block) ? block : [block];
+  return candidates.flatMap((candidate) => {
+    if (!isNonNullObject(candidate)) return [];
+    const url = candidate["url"];
+    if (typeof url !== "string") return [];
+    const locator = lesswrongLocator(url);
+    return locator === null ? [] : [locator.postId];
   });
-}
-
-function extractPostIdFromUrl(url: string): string | null {
-  const match = POST_URL_REGEX.exec(url);
-  return match?.[1] ?? null;
-}
-
-function isUnknownArray(value: unknown): value is unknown[] {
-  return Array.isArray(value);
-}
-
-function isUnknownRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function scriptPrimaryPostId(script: HTMLScriptElement): string | null {
-  const text = script.textContent;
-  if (text.length === 0) return null;
-
-  try {
-    const parsed = JSON.parse(text) as unknown;
-    const candidates = isUnknownArray(parsed) ? parsed : [parsed];
-    for (const candidate of candidates) {
-      if (!isUnknownRecord(candidate)) continue;
-      const maybeUrl = candidate["url"];
-      if (typeof maybeUrl !== "string") continue;
-      const postId = extractPostIdFromUrl(maybeUrl);
-      if (postId !== null && postId.length > 0) {
-        return postId;
-      }
-    }
-  } catch {
-    return null;
-  }
-
-  return null;
 }
 
 function bodyPrimaryPostIds(contentRoot: Element): string[] {
   const postBody = contentRoot.closest("#postBody");
   if (!postBody) return [];
 
-  const ids = new Set<string>();
-  for (const script of postBody.querySelectorAll<HTMLScriptElement>(JSON_LD_SELECTOR)) {
-    const postId = scriptPrimaryPostId(script);
-    if (postId !== null && postId.length > 0) {
-      ids.add(postId);
-    }
-  }
-
-  return Array.from(ids);
+  return Array.from(new Set(readJsonLdBlocks(postBody).flatMap(jsonLdPrimaryPostIds)));
 }
 
 function bodyMatchesPostId(contentRoot: Element, externalId: string): boolean {
@@ -166,34 +134,21 @@ function pickContentRoot(document: Document, externalId: string): RootSelectionR
     };
   }
 
-  const isJsdom =
-    document.defaultView?.navigator.userAgent.toLowerCase().includes("jsdom") === true;
-
   const withCanonicalRoot = roots.filter((root) => findCanonicalRootWithin(root) !== null);
   const canonicalCandidates = withCanonicalRoot.length > 0 ? withCanonicalRoot : roots;
 
   const identityMatches = canonicalCandidates.filter((root) => bodyMatchesPostId(root, externalId));
   const visibleIdentityMatches = identityMatches.filter((root) => isLikelyVisible(root));
 
-  if (visibleIdentityMatches.length === 1) {
-    const selectedRoot = visibleIdentityMatches[0];
-    if (!selectedRoot) {
-      throw new Error("Expected one visible identity-matching LessWrong root");
-    }
+  const [onlyVisibleMatch] = visibleIdentityMatches;
+  if (visibleIdentityMatches.length === 1 && onlyVisibleMatch !== undefined) {
     return {
       kind: "ready",
-      root: selectedRoot,
+      root: onlyVisibleMatch,
     };
   }
 
-  if (visibleIdentityMatches.length > 1) {
-    return {
-      kind: "not_ready",
-      reason: "ambiguous_dom",
-    };
-  }
-
-  if (identityMatches.length > 1) {
+  if (visibleIdentityMatches.length > 1 || identityMatches.length > 1) {
     return {
       kind: "not_ready",
       reason: "ambiguous_dom",
@@ -201,10 +156,7 @@ function pickContentRoot(document: Document, externalId: string): RootSelectionR
   }
 
   if (identityMatches.length === 1) {
-    const selectedRoot = identityMatches[0];
-    if (!selectedRoot) {
-      throw new Error("Expected one identity-matching LessWrong root");
-    }
+    // The post's body is in the DOM but not rendered yet.
     return {
       kind: "not_ready",
       reason: "hydrating",
@@ -218,41 +170,8 @@ function pickContentRoot(document: Document, externalId: string): RootSelectionR
     };
   }
 
-  if (!isJsdom) {
-    // Wait for LessWrong's JSON-LD post identity before extracting so we
-    // never hash transitional DOM from a different post during SPA switches.
-    return {
-      kind: "not_ready",
-      reason: "hydrating",
-    };
-  }
-
-  const visibleCandidates = canonicalCandidates.filter((root) => isLikelyVisible(root));
-  if (visibleCandidates.length === 1) {
-    const selectedRoot = visibleCandidates[0];
-    if (!selectedRoot) {
-      throw new Error("Expected one visible LessWrong candidate root");
-    }
-    return {
-      kind: "ready",
-      root: selectedRoot,
-    };
-  }
-
-  if (visibleCandidates.length > 1 || canonicalCandidates.length > 1) {
-    return {
-      kind: "not_ready",
-      reason: "ambiguous_dom",
-    };
-  }
-
-  const selectedRoot = canonicalCandidates[0];
-  if (!selectedRoot) {
-    return {
-      kind: "not_ready",
-      reason: "hydrating",
-    };
-  }
+  // Wait for LessWrong's JSON-LD post identity before extracting so we never
+  // hash transitional DOM from a different post during SPA switches.
   return {
     kind: "not_ready",
     reason: "hydrating",
@@ -281,48 +200,55 @@ function nonReadyFromRootSelection(input: {
   };
 }
 
+function contentExclusionFilter(): (element: Element) => boolean {
+  return isLinkPostCallout;
+}
+
+/** The canonical post body (`#postContent`) of the post the URL names, once it is unambiguous. */
+function canonicalContentRoot(document: Document, externalId: string): RootSelectionResult {
+  const rootSelection = pickContentRoot(document, externalId);
+  if (rootSelection.kind !== "ready") {
+    return rootSelection;
+  }
+  const canonicalRoot = findCanonicalRootWithin(rootSelection.root);
+  return canonicalRoot === null
+    ? { kind: "not_ready", reason: "hydrating" }
+    : { kind: "ready", root: canonicalRoot };
+}
+
 export const lesswrongAdapter: PlatformAdapter = {
   platformKey: "LESSWRONG",
-  contentRootSelector: CONTENT_SELECTOR,
 
   matches(url: string): boolean {
-    return POST_URL_REGEX.test(url);
+    return lesswrongLocator(url) !== null;
+  },
+
+  pageLocator(url: string): PageLocator | null {
+    return lesswrongLocator(url);
   },
 
   extract(document: Document): AdapterExtractionResult {
     const url = window.location.href;
-    const match = POST_URL_REGEX.exec(url);
-    const externalId = match?.[1];
-    if (externalId === undefined || externalId.length === 0) {
+    const locator = lesswrongLocator(url);
+    if (locator === null) {
       return {
         kind: "not_ready",
         reason: "missing_identity",
       };
     }
+    const externalId = locator.postId;
 
-    const rootSelection = pickContentRoot(document, externalId);
+    const rootSelection = canonicalContentRoot(document, externalId);
     if (rootSelection.kind !== "ready") {
-      return nonReadyFromRootSelection({
-        rootSelection,
-      });
+      return nonReadyFromRootSelection({ rootSelection });
     }
-
-    const canonicalRoot = findCanonicalRootWithin(rootSelection.root);
-    if (!canonicalRoot) {
-      return {
-        kind: "not_ready",
-        reason: "hydrating",
-      };
-    }
-    const canonicalVersioningHtml = toCanonicalVersioningHtml(canonicalRoot);
-    const canonicalExtractionRoot = cloneElement(canonicalRoot);
-    removeLinkPostCallouts(canonicalExtractionRoot);
-    const extractedContent = extractContentWithImageOccurrencesFromRoot(
-      canonicalExtractionRoot,
-      url,
-    );
-    const contentText = extractedContent.contentText;
-    const postScope = rootSelection.root.closest("#postBody") ?? document;
+    const canonicalRoot = rootSelection.root;
+    const extractedContent = extractContent(canonicalRoot, {
+      exclude: contentExclusionFilter(),
+      imageSelector: "img[src]",
+      baseUrl: url,
+    });
+    const postScope = canonicalRoot.closest("#postBody") ?? document;
     const title = pickTitle(postScope, document.title);
 
     const authorLink = findPostAuthorLink(postScope);
@@ -330,24 +256,21 @@ export const lesswrongAdapter: PlatformAdapter = {
     const authorName = normalizedAuthorName.length > 0 ? normalizedAuthorName : null;
     const authorSlug = parseAuthorSlug(authorLink?.getAttribute("href") ?? null);
 
-    const tags = Array.from(postScope.querySelectorAll(TAG_SELECTOR))
-      .map((el) => normalizeContent(el.textContent))
-      .filter(Boolean);
-    const slugToken = match?.[2];
-    const normalizedSlug = slugToken === undefined ? "" : normalizeContent(slugToken);
+    // The header and the footer both render the tag list.
+    const tags = Array.from(
+      new Set(
+        Array.from(postScope.querySelectorAll(TAG_SELECTOR))
+          .map((el) => normalizeContent(el.textContent))
+          .filter(Boolean),
+      ),
+    );
+    const normalizedSlug = locator.slug === null ? "" : normalizeContent(locator.slug);
     const slug = normalizedSlug.length > 0 ? normalizedSlug : externalId;
     const publishedAt = extractPublishedAt(document, postScope);
 
-    const imageUrls = extractedContent.imageUrls;
-    const hasVideoMedia = hasVideoContent(canonicalRoot);
-    const mediaState = hasVideoMedia
-      ? "has_video"
-      : imageUrls.length > 0
-        ? "has_images"
-        : "text_only";
     const metadata = {
       slug,
-      htmlContent: canonicalVersioningHtml,
+      htmlContent: serializeContentHtml(canonicalRoot, contentExclusionFilter),
       authorSlug,
       tags,
       ...(title === null ? {} : { title }),
@@ -359,11 +282,10 @@ export const lesswrongAdapter: PlatformAdapter = {
       kind: "ready",
       content: {
         platform: "LESSWRONG",
-        externalId,
+        externalId: lesswrongExternalIdSchema.parse(externalId),
         url,
-        contentText,
-        mediaState,
-        imageUrls,
+        contentText: extractedContent.contentText,
+        hasVideo: hasVideoContent(canonicalRoot),
         imageOccurrences: extractedContent.imageOccurrences,
         metadata,
       },
@@ -371,17 +293,13 @@ export const lesswrongAdapter: PlatformAdapter = {
   },
 
   getContentRoot(document: Document): Element | null {
-    const url = window.location.href;
-    const externalId = extractPostIdFromUrl(url);
-    if (externalId === null || externalId.length === 0) {
+    const locator = lesswrongLocator(window.location.href);
+    if (locator === null) {
       return null;
     }
-
-    const rootSelection = pickContentRoot(document, externalId);
-    if (rootSelection.kind !== "ready") {
-      return null;
-    }
-
-    return findCanonicalRootWithin(rootSelection.root);
+    const rootSelection = canonicalContentRoot(document, locator.postId);
+    return rootSelection.kind === "ready" ? rootSelection.root : null;
   },
+
+  contentExclusionFilter,
 };

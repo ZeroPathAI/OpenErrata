@@ -1,6 +1,6 @@
-import type { ExtensionPostStatus } from "@openerrata/shared";
+import type { ExtensionPageStatus, ExtensionPostStatus } from "@openerrata/shared";
 import browser from "webextension-polyfill";
-import { getUpgradeRequiredState, type UpgradeRequiredState } from "./upgrade-required-state.js";
+import { getUpgradeRequiredState, type UpgradeRequiredState } from "./upgrade-required.js";
 
 interface ToolbarBadgeState {
   text: string;
@@ -81,10 +81,11 @@ function stopIconAnimation(tabId: number): void {
  * - INVESTIGATED + claims:  "N" red     — N claims found
  * - INVESTIGATED + 0 claims: "✓" green  — clean, no claims
  * - FAILED / API_ERROR:     "!" red     — investigation failed or API error
- * - NOT_INVESTIGATED / null: ""         — no badge
+ * - NOT_INVESTIGATED / SKIPPED / none: "" — no badge
  * - UPGRADE_REQUIRED (global): "!" red  — extension version is below server minimum
  */
-export function updateToolbarBadge(tabId: number, status: ExtensionPostStatus | null): void {
+export function updateToolbarBadge(tabId: number, pageStatus: ExtensionPageStatus | null): void {
+  const status = pageStatus?.kind === "POST" ? pageStatus : null;
   const previousUpdate = badgeUpdateQueues.get(tabId) ?? Promise.resolve();
   const nextUpdate = previousUpdate
     .catch(() => {
@@ -93,8 +94,9 @@ export function updateToolbarBadge(tabId: number, status: ExtensionPostStatus | 
     .then(async () => {
       // Icon animation is best-effort — it must never prevent the badge from
       // being set, so errors are caught independently.
-      const upgradeState = getUpgradeRequiredState();
-      if (!upgradeState.active && status?.investigationState === "INVESTIGATING") {
+      const upgradeState = await getUpgradeRequiredState();
+      const upgradeRequired = upgradeState.kind === "REQUIRED";
+      if (!upgradeRequired && status?.investigationState === "INVESTIGATING") {
         const investigatingIconApplied = await browser.action
           .setIcon({ tabId, path: animationFramePaths(0) })
           .then(() => true)
@@ -121,7 +123,7 @@ export function updateToolbarBadge(tabId: number, status: ExtensionPostStatus | 
       await browser.action
         .setTitle({
           tabId,
-          title: upgradeState.active ? upgradeState.message : DEFAULT_ACTION_TITLE,
+          title: upgradeState.kind === "REQUIRED" ? upgradeState.message : DEFAULT_ACTION_TITLE,
         })
         .catch(() => {
           /* noop */
@@ -157,7 +159,7 @@ function toToolbarBadgeState(
   status: ExtensionPostStatus | null,
   upgradeState: UpgradeRequiredState,
 ): ToolbarBadgeState {
-  if (upgradeState.active) {
+  if (upgradeState.kind === "REQUIRED") {
     return {
       text: "!",
       color: UPGRADE_REQUIRED_BADGE_COLOR,

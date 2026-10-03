@@ -5,6 +5,8 @@ import type {
   InvestigationClaim,
   InvestigationClaimPayload,
 } from "@openerrata/shared";
+import { installChromeMock } from "../helpers/chrome-mock";
+import { investigationId, sessionId } from "../helpers/statuses";
 
 type ToolbarBadgeModule = typeof import("../../src/background/toolbar-badge");
 
@@ -14,13 +16,6 @@ interface ActionCallLog {
   setBadgeBackgroundColor: unknown[];
   setTitle: unknown[];
 }
-
-const toolbarActionState: ActionCallLog = {
-  setIcon: [],
-  setBadgeText: [],
-  setBadgeBackgroundColor: [],
-  setTitle: [],
-};
 
 function makeClaimPayload(index: number): InvestigationClaimPayload {
   return {
@@ -46,15 +41,13 @@ function createPostStatus(
     confirmedClaimCount?: number;
   } = {},
 ): ExtensionPostStatus {
-  const sessionId = 1 as ExtensionPostStatus["tabSessionId"];
-
   const externalId = "123" as ExtensionPostStatus["externalId"];
 
   const claimId = (value: string): InvestigationClaim["id"] => value as InvestigationClaim["id"];
 
   const base = {
     kind: "POST",
-    tabSessionId: sessionId,
+    tabSessionId: sessionId(1),
     platform: "X",
     externalId,
     pageUrl: "https://x.com/example/status/123",
@@ -80,6 +73,7 @@ function createPostStatus(
     const status: ExtensionPostStatus = {
       ...base,
       investigationState: "INVESTIGATING",
+      investigationId: investigationId("investigation-1"),
       status: "PENDING",
       provenance: "SERVER_VERIFIED",
       pendingClaims,
@@ -93,6 +87,7 @@ function createPostStatus(
     const status: ExtensionPostStatus = {
       ...base,
       investigationState: "FAILED",
+      investigationId: investigationId("investigation-1"),
       provenance: "SERVER_VERIFIED",
     };
     return status;
@@ -117,61 +112,34 @@ function createPostStatus(
   const status: ExtensionPostStatus = {
     ...base,
     investigationState: "INVESTIGATED",
+    investigationId: investigationId("investigation-1"),
     provenance: "SERVER_VERIFIED",
     claims,
   };
   return status;
 }
 
-const toolbarChromeMock = {
-  runtime: {
-    id: "test-extension",
-    getURL: (asset: string) => `chrome-extension://test-extension/${asset}`,
-  },
-  action: {
-    setIcon: (details: unknown, callback?: () => void) => {
-      toolbarActionState.setIcon.push(details);
-      if (typeof callback === "function") {
-        callback();
-        return;
-      }
-      return Promise.resolve();
-    },
-    setBadgeText: (details: unknown, callback?: () => void) => {
-      toolbarActionState.setBadgeText.push(details);
-      if (typeof callback === "function") {
-        callback();
-        return;
-      }
-      return Promise.resolve();
-    },
-    setBadgeBackgroundColor: (details: unknown, callback?: () => void) => {
-      toolbarActionState.setBadgeBackgroundColor.push(details);
-      if (typeof callback === "function") {
-        callback();
-        return;
-      }
-      return Promise.resolve();
-    },
-    setTitle: (details: unknown, callback?: () => void) => {
-      toolbarActionState.setTitle.push(details);
-      if (typeof callback === "function") {
-        callback();
-        return;
-      }
-      return Promise.resolve();
-    },
-  },
-};
+const chromeState = installChromeMock();
 
-(globalThis as { chrome?: unknown }).chrome = toolbarChromeMock;
-
+/** Action calls made from now on, by method. */
 function installChromeActionMock(): ActionCallLog {
-  toolbarActionState.setIcon.length = 0;
-  toolbarActionState.setBadgeText.length = 0;
-  toolbarActionState.setBadgeBackgroundColor.length = 0;
-  toolbarActionState.setTitle.length = 0;
-  return toolbarActionState;
+  chromeState.actionCalls.length = 0;
+  const byMethod = (method: string) =>
+    chromeState.actionCalls.filter((call) => call.method === method).map((call) => call.details);
+  return {
+    get setIcon() {
+      return byMethod("setIcon");
+    },
+    get setBadgeText() {
+      return byMethod("setBadgeText");
+    },
+    get setBadgeBackgroundColor() {
+      return byMethod("setBadgeBackgroundColor");
+    },
+    get setTitle() {
+      return byMethod("setTitle");
+    },
+  };
 }
 
 function installIntervalMocks() {
@@ -205,10 +173,11 @@ function installIntervalMocks() {
 }
 
 async function flushAsyncQueue(): Promise<void> {
-  await new Promise<void>((resolve) => {
-    setImmediate(() => resolve());
-  });
-  await Promise.resolve();
+  for (let round = 0; round < 10; round += 1) {
+    await new Promise<void>((resolve) => {
+      setImmediate(() => resolve());
+    });
+  }
 }
 
 async function importToolbarBadgeModule(): Promise<ToolbarBadgeModule> {
@@ -396,14 +365,15 @@ test("upgrade-required state overrides badge and title until cleared", async () 
   const intervals = installIntervalMocks();
 
   try {
-    const { setUpgradeRequiredState } =
-      await import("../../src/background/upgrade-required-state.js");
+    const { markUpgradeRequired, clearUpgradeRequired } =
+      await import("../../src/background/upgrade-required.js");
     const { updateToolbarBadge } = await importToolbarBadgeModule();
-    setUpgradeRequiredState({
-      active: true,
-      message: "Extension upgrade required (minimum 0.2.0).",
+    await markUpgradeRequired({
       apiBaseUrl: "https://api.openerrata.com",
+      minimumSupportedExtensionVersion: "0.2.0",
     });
+    const upgradeMessage =
+      "Update required: this API server now requires OpenErrata extension version 0.2.0 or newer.";
 
     updateToolbarBadge(30, createPostStatus("INVESTIGATED", { claimCount: 2 }));
     await flushAsyncQueue();
@@ -413,10 +383,10 @@ test("upgrade-required state overrides badge and title until cleared", async () 
     assert.equal(colorCall.color, "#dc2626");
     assert.deepEqual(calls.setTitle[0], {
       tabId: 30,
-      title: "Extension upgrade required (minimum 0.2.0).",
+      title: upgradeMessage,
     });
 
-    setUpgradeRequiredState({ active: false });
+    await clearUpgradeRequired();
     updateToolbarBadge(30, createPostStatus("INVESTIGATED", { claimCount: 2 }));
     await flushAsyncQueue();
 

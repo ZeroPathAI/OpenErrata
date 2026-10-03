@@ -2,9 +2,10 @@
   import type { SettingsValidationOutput } from "@openerrata/shared";
   import {
     API_BASE_URL_REQUIREMENTS_MESSAGE,
-    DEFAULT_EXTENSION_SETTINGS,
+    DEFAULT_API_BASE_URL,
     ensureApiHostPermission,
     loadExtensionSettings,
+    loadSettingsFormValues,
     normalizeApiBaseUrl,
     normalizeOpenaiApiKey,
     saveExtensionSettings,
@@ -16,12 +17,15 @@
   type FeedbackTone = "pending" | "success" | "error";
   type Feedback = { tone: FeedbackTone; text: string };
 
-  let apiUrl = $state(DEFAULT_EXTENSION_SETTINGS.apiBaseUrl);
-  let instanceApiKey = $state(DEFAULT_EXTENSION_SETTINGS.apiKey);
-  let openaiApiKey = $state(DEFAULT_EXTENSION_SETTINGS.openaiApiKey);
-  let autoInvestigate = $state(DEFAULT_EXTENSION_SETTINGS.autoInvestigate);
-  let hmacSecret = $state(DEFAULT_EXTENSION_SETTINGS.hmacSecret);
+  // Form fields hold nothing meaningful until the stored settings are loaded;
+  // the form is not rendered before then.
+  let apiUrl = $state("");
+  let instanceApiKey = $state("");
+  let openaiApiKey = $state("");
+  let autoInvestigate = $state(false);
   let loaded = $state(false);
+  /** Why the stored settings cannot be used, until the user saves valid ones. */
+  let storedSettingsProblem = $state<string | null>(null);
   let saved = $state(false);
   let error = $state<string | null>(null);
   let openaiFeedback = $state<Feedback | null>(null);
@@ -31,12 +35,16 @@
   let validationTimer: ReturnType<typeof setTimeout> | null = null;
 
   async function load() {
-    const settings = await loadExtensionSettings();
-    apiUrl = settings.apiBaseUrl;
-    instanceApiKey = settings.apiKey;
-    openaiApiKey = settings.openaiApiKey;
-    autoInvestigate = settings.autoInvestigate;
-    hmacSecret = settings.hmacSecret;
+    // Show what is stored, even when it is invalid, so the user can fix it.
+    const [formValues, settings] = await Promise.all([
+      loadSettingsFormValues(),
+      loadExtensionSettings(),
+    ]);
+    apiUrl = formValues.apiBaseUrl;
+    instanceApiKey = formValues.apiKey;
+    openaiApiKey = formValues.openaiApiKey;
+    autoInvestigate = formValues.autoInvestigate;
+    storedSettingsProblem = settings.kind === "INVALID" ? settings.problem : null;
     loaded = true;
   }
 
@@ -158,10 +166,10 @@
       apiKey: instanceApiKey,
       openaiApiKey: normalizedOpenaiApiKey,
       autoInvestigate,
-      hmacSecret,
     });
     apiUrl = normalizedApiUrl;
     openaiApiKey = normalizedOpenaiApiKey;
+    storedSettingsProblem = null;
     saved = true;
     setTimeout(() => {
       saved = false;
@@ -258,77 +266,75 @@
 
 <h1>OpenErrata Settings</h1>
 
-<section class="section">
-  <h2>Basic</h2>
+{#if storedSettingsProblem}
+  <p class="error" role="alert">
+    The saved settings cannot be used, so OpenErrata is not checking pages: {storedSettingsProblem}
+    Correct them below and save.
+  </p>
+{/if}
 
-  <div class="field">
-    <label for="openai-key">OpenAI API Key</label>
-    <input
-      id="openai-key"
-      type="password"
-      bind:value={openaiApiKey}
-      placeholder="sk-..."
-      autocomplete="off"
-    />
-    <p class="hint">
-      Used only per request. The API does not store this key beyond request lifecycles.
-    </p>
-    {#if openaiFeedback}
-      <p class={`validation ${openaiFeedback.tone}`} aria-live="polite">
-        {openaiFeedback.text}
+{#if loaded}
+  <section class="section">
+    <h2>Basic</h2>
+
+    <div class="field">
+      <label for="openai-key">OpenAI API Key</label>
+      <input
+        id="openai-key"
+        type="password"
+        bind:value={openaiApiKey}
+        placeholder="sk-..."
+        autocomplete="off"
+      />
+      <p class="hint">
+        Used only per request. The API does not store this key beyond request lifecycles.
+      </p>
+      {#if openaiFeedback}
+        <p class={`validation ${openaiFeedback.tone}`} aria-live="polite">
+          {openaiFeedback.text}
+        </p>
+      {/if}
+    </div>
+
+    <label class="checkbox">
+      <input type="checkbox" bind:checked={autoInvestigate} />
+      <span>Auto-investigate when a viewed post is not yet investigated</span>
+    </label>
+  </section>
+
+  <details class="section advanced">
+    <summary>Advanced</summary>
+
+    <div class="field">
+      <label for="api-url">API Server URL</label>
+      <input id="api-url" type="url" bind:value={apiUrl} placeholder={DEFAULT_API_BASE_URL} />
+    </div>
+
+    <div class="field">
+      <label for="instance-api-key">Instance API Key</label>
+      <input
+        id="instance-api-key"
+        type="password"
+        bind:value={instanceApiKey}
+        placeholder="ts_live_..."
+        autocomplete="off"
+      />
+    </div>
+
+    {#if instanceFeedback}
+      <p class={`validation ${instanceFeedback.tone}`} aria-live="polite">
+        {instanceFeedback.text}
       </p>
     {/if}
-  </div>
+  </details>
 
-  <label class="checkbox">
-    <input type="checkbox" bind:checked={autoInvestigate} />
-    <span>Auto-investigate when a viewed post is not yet investigated</span>
-  </label>
-</section>
-
-<details class="section advanced">
-  <summary>Advanced</summary>
-
-  <div class="field">
-    <label for="api-url">API Server URL</label>
-    <input id="api-url" type="url" bind:value={apiUrl} placeholder="https://api.openerrata.com" />
-  </div>
-
-  <div class="field">
-    <label for="hmac-secret">HMAC Secret</label>
-    <input
-      id="hmac-secret"
-      type="password"
-      bind:value={hmacSecret}
-      placeholder="Optional override; blank uses bundled default"
-      autocomplete="off"
-    />
-  </div>
-
-  <div class="field">
-    <label for="instance-api-key">Instance API Key</label>
-    <input
-      id="instance-api-key"
-      type="password"
-      bind:value={instanceApiKey}
-      placeholder="ts_live_..."
-      autocomplete="off"
-    />
-  </div>
-
-  {#if instanceFeedback}
-    <p class={`validation ${instanceFeedback.tone}`} aria-live="polite">
-      {instanceFeedback.text}
-    </p>
+  <button onclick={save}>Save</button>
+  {#if saved}
+    <span class="saved">Saved!</span>
   {/if}
-</details>
-
-<button onclick={save}>Save</button>
-{#if saved}
-  <span class="saved">Saved!</span>
-{/if}
-{#if error}
-  <p class="error">{error}</p>
+  {#if error}
+    <p class="error">{error}</p>
+  {/if}
 {/if}
 
 <style>

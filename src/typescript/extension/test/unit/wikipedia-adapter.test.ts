@@ -85,11 +85,12 @@ test("Wikipedia adapter extracts article content and excludes references section
   const ready = assertReady(result);
   assert.equal(ready.content.platform, "WIKIPEDIA");
   assert.equal(ready.content.externalId, "en:12345");
-  assert.equal(ready.content.mediaState, "has_images");
-  assert.deepEqual(ready.content.imageUrls, ["https://en.wikipedia.org/images/example.jpg"]);
+  assert.equal(ready.content.hasVideo, false);
+  assert.deepEqual(
+    ready.content.imageOccurrences.map((occurrence) => occurrence.sourceUrl),
+    ["https://en.wikipedia.org/images/example.jpg"],
+  );
   const imageOccurrences = ready.content.imageOccurrences;
-  assert.notEqual(imageOccurrences, undefined);
-  if (imageOccurrences === undefined) throw new Error("expected imageOccurrences");
   assert.equal(imageOccurrences.length, 1);
   const firstOccurrence = imageOccurrences[0];
   assert.ok(firstOccurrence);
@@ -136,7 +137,7 @@ test("Wikipedia adapter classifies mixed image and video pages as has_video", ()
   );
 
   const ready = assertReady(result);
-  assert.equal(ready.content.mediaState, "has_video");
+  assert.equal(ready.content.hasVideo, true);
 });
 
 test("Wikipedia adapter extracts content when metadata is only available through inline RLCONF", () => {
@@ -472,8 +473,8 @@ test("Wikipedia adapter keeps infobox-style table text separated from surroundin
 //
 //   JSDOM (scripting disabled, as used in tests): <noscript> content is
 //   HTML-parsed into element nodes. querySelectorAll("img[src]") finds the
-//   <img> and adds the CentralAutoLogin URL to imageUrls/imageOccurrences,
-//   causing mediaState to be "has_images" instead of "text_only".
+//   <img> and adds the CentralAutoLogin URL to the image occurrences,
+//   making a text-only article look like it has images.
 //
 // The Assassination_of_Ali_Khamenei page ends with "See also" (not excluded),
 // so skipSectionLevel is NOT set — making the noscript visible to extraction
@@ -528,14 +529,10 @@ test("Wikipedia adapter excludes noscript tracking pixel when last section is no
   );
   // In JSDOM (scripting disabled), <noscript> content is parsed as elements,
   // so the img would be found by querySelectorAll unless noscript is pruned first.
-  assert.equal(
-    ready.content.mediaState,
-    "text_only",
+  assert.deepEqual(
+    ready.content.imageOccurrences,
+    [],
     "noscript img must not be classified as article image",
-  );
-  assert.ok(
-    ready.content.imageUrls.every((url) => !url.includes("CentralAutoLogin")),
-    "CentralAutoLogin URL must not appear in imageUrls",
   );
 });
 
@@ -719,4 +716,66 @@ test("Wikipedia adapter reads fresh config on each extract() call (stateless acr
     scope["Node"] = savedNodeCtor;
     scope["NodeFilter"] = savedNodeFilterCtor;
   }
+});
+
+// ── Live-DOM additions by Wikipedia's own scripts ─────────────────────────
+
+test("Wikipedia adapter excludes the fr.wikipedia archive links gadget, which the Parse API lacks", () => {
+  // fr.wikipedia appends `<small class="cachelinks">&nbsp;[archive]</small>`
+  // after external links (seen 2026-10); the canonical Parse API HTML has none.
+  const result = withInlineConfigScript(
+    "https://fr.wikipedia.org/wiki/Photosynth%C3%A8se",
+    `<div id="mw-content-text"><div class="mw-parser-output">
+      <p>La photosynthèse est étudiée depuis 1779
+        <a class="external text" href="https://example.org/source">selon une source</a><small class="cachelinks">&nbsp;[<a href="https://archive.wikiwix.com/cache/?url=https://example.org/source" title="archive sur Wikiwix">archive</a>]</small>.</p>
+    </div></div>`,
+    (document) => wikipediaAdapter.extract(document),
+  );
+
+  const ready = assertReady(result);
+  assert.equal(
+    ready.content.contentText,
+    "La photosynthèse est étudiée depuis 1779 selon une source.",
+  );
+});
+
+test("Wikipedia adapter detects video wrapped by the TimedMediaHandler player", () => {
+  // Once Wikipedia's player script has run, <video> sits inside
+  // `.mw-tmh-player`, which text extraction excludes as UI; video detection
+  // must still see it.
+  const result = withInlineConfigScript(
+    "https://en.wikipedia.org/wiki/Climate_change",
+    `<div id="mw-content-text"><div class="mw-parser-output">
+      <p>Prose about the topic.</p>
+      <figure typeof="mw:File/Thumb">
+        <span class="mw-tmh-player video" style="width:220px">
+          <video src="https://upload.wikimedia.org/example.webm"></video>
+          <span class="mw-tmh-duration mw-tmh-label">Duration: 1 minute and 3 seconds.</span>
+        </span>
+        <figcaption>A video.</figcaption>
+      </figure>
+    </div></div>`,
+    (document) => wikipediaAdapter.extract(document),
+  );
+
+  const ready = assertReady(result);
+  assert.equal(ready.content.hasVideo, true);
+  assert.equal(ready.content.contentText.includes("Duration"), false);
+});
+
+test("Wikipedia adapter treats a localized non-article namespace as unsupported via wgNamespaceNumber", () => {
+  const result = withMwConfig(
+    "https://de.wikipedia.org/wiki/Diskussion:Erde",
+    `<!doctype html><html><body><div id="mw-content-text"><div class="mw-parser-output"><p>Diskussion.</p></div></div></body></html>`,
+    {
+      wgNamespaceNumber: 1,
+      wgArticleId: 1,
+      wgRevisionId: 2,
+      wgRevisionTimestamp: "20260115010203",
+      wgPageName: "Diskussion:Erde",
+    },
+    (document) => wikipediaAdapter.extract(document),
+  );
+
+  assertNotReady(result, "unsupported");
 });

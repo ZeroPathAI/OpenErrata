@@ -11,11 +11,14 @@ import {
   substackHtmlToContentMarkdown,
 } from "../../src/lib/services/html-to-markdown.js";
 
+/** Base URL for resolving relative image sources. */
+const POST_URL = "https://www.lesswrong.com/posts/abc123/example-post";
+
 // ── Basic structural elements ────────────────────────────────────────────
 
 test("converts headings to markdown heading syntax", () => {
   const html = "<h1>Title</h1><h2>Subtitle</h2><h3>Sub-subtitle</h3>";
-  const md = lesswrongHtmlToContentMarkdown(html).markdown;
+  const md = lesswrongHtmlToContentMarkdown(html, POST_URL).markdown;
   assert.ok(md.includes("# Title"));
   assert.ok(md.includes("## Subtitle"));
   assert.ok(md.includes("### Sub-subtitle"));
@@ -23,7 +26,7 @@ test("converts headings to markdown heading syntax", () => {
 
 test("converts paragraphs to double-newline-separated blocks", () => {
   const html = "<p>First paragraph.</p><p>Second paragraph.</p>";
-  const md = lesswrongHtmlToContentMarkdown(html).markdown;
+  const md = lesswrongHtmlToContentMarkdown(html, POST_URL).markdown;
   assert.ok(md.includes("First paragraph."));
   assert.ok(md.includes("Second paragraph."));
   // Should have separation between paragraphs.
@@ -34,7 +37,7 @@ test("converts paragraphs to double-newline-separated blocks", () => {
 
 test("converts unordered lists to dash-prefixed items", () => {
   const html = "<ul><li>Item one</li><li>Item two</li><li>Item three</li></ul>";
-  const md = lesswrongHtmlToContentMarkdown(html).markdown;
+  const md = lesswrongHtmlToContentMarkdown(html, POST_URL).markdown;
   assert.ok(md.includes("-   Item one"));
   assert.ok(md.includes("-   Item two"));
   assert.ok(md.includes("-   Item three"));
@@ -42,7 +45,7 @@ test("converts unordered lists to dash-prefixed items", () => {
 
 test("converts ordered lists to numbered items", () => {
   const html = "<ol><li>First</li><li>Second</li><li>Third</li></ol>";
-  const md = lesswrongHtmlToContentMarkdown(html).markdown;
+  const md = lesswrongHtmlToContentMarkdown(html, POST_URL).markdown;
   assert.ok(md.includes("1.  First"), `Expected "1.  First" in: ${md}`);
   assert.ok(md.includes("2.  Second"), `Expected "2.  Second" in: ${md}`);
   assert.ok(md.includes("3.  Third"), `Expected "3.  Third" in: ${md}`);
@@ -51,7 +54,7 @@ test("converts ordered lists to numbered items", () => {
 test("handles nested lists with indentation", () => {
   const html =
     "<ul><li>Outer<ul><li>Inner one</li><li>Inner two</li></ul></li><li>Another outer</li></ul>";
-  const md = lesswrongHtmlToContentMarkdown(html).markdown;
+  const md = lesswrongHtmlToContentMarkdown(html, POST_URL).markdown;
   assert.ok(md.includes("-   Outer"), `Expected "-   Outer" in: ${md}`);
   assert.ok(md.includes("-   Inner one"), `Expected nested "-   Inner one" in: ${md}`);
   assert.ok(md.includes("-   Inner two"), `Expected nested "-   Inner two" in: ${md}`);
@@ -60,7 +63,7 @@ test("handles nested lists with indentation", () => {
 
 test("converts blockquotes to > prefixed text", () => {
   const html = "<blockquote><p>A wise quote.</p></blockquote>";
-  const md = lesswrongHtmlToContentMarkdown(html).markdown;
+  const md = lesswrongHtmlToContentMarkdown(html, POST_URL).markdown;
   assert.ok(md.includes("> A wise quote."), `Expected "> A wise quote." in: ${md}`);
 });
 
@@ -68,41 +71,41 @@ test("converts blockquotes to > prefixed text", () => {
 
 test("renders bold tags as plain text (no ** markers)", () => {
   const html = "<p>This is <strong>important</strong> text.</p>";
-  const md = lesswrongHtmlToContentMarkdown(html).markdown;
+  const md = lesswrongHtmlToContentMarkdown(html, POST_URL).markdown;
   assert.ok(md.includes("important"));
   assert.ok(!md.includes("**important**"));
 });
 
 test("renders <b> tags as plain text (no ** markers)", () => {
   const html = "<p>Also <b>bold</b> text.</p>";
-  const md = lesswrongHtmlToContentMarkdown(html).markdown;
+  const md = lesswrongHtmlToContentMarkdown(html, POST_URL).markdown;
   assert.ok(md.includes("bold"));
   assert.ok(!md.includes("**bold**"));
 });
 
 test("renders italic tags as plain text (no * markers)", () => {
   const html = "<p>This is <em>emphasized</em> text.</p>";
-  const md = lesswrongHtmlToContentMarkdown(html).markdown;
+  const md = lesswrongHtmlToContentMarkdown(html, POST_URL).markdown;
   assert.ok(md.includes("emphasized"));
   assert.ok(!md.includes("*emphasized*"));
 });
 
 test("renders <i> tags as plain text (no * markers)", () => {
   const html = "<p>Also <i>italic</i> text.</p>";
-  const md = lesswrongHtmlToContentMarkdown(html).markdown;
+  const md = lesswrongHtmlToContentMarkdown(html, POST_URL).markdown;
   assert.ok(md.includes("italic"));
   assert.ok(!md.includes("*italic*"));
 });
 
 test("converts links to markdown link syntax", () => {
   const html = '<p>Visit <a href="https://example.com">Example</a> for more.</p>';
-  const md = lesswrongHtmlToContentMarkdown(html).markdown;
+  const md = lesswrongHtmlToContentMarkdown(html, POST_URL).markdown;
   assert.ok(md.includes("[Example](https://example.com)"));
 });
 
 test("preserves superscript text inline", () => {
   const html = "<p>Footnote<sup>1</sup> here.</p>";
-  const md = lesswrongHtmlToContentMarkdown(html).markdown;
+  const md = lesswrongHtmlToContentMarkdown(html, POST_URL).markdown;
   assert.ok(md.includes("Footnote1 here."), `Expected inline superscript text in: ${md}`);
 });
 
@@ -111,7 +114,7 @@ test("preserves superscript text inline", () => {
 test("excludes NON_CONTENT_TAGS (script, style, noscript)", () => {
   const html =
     '<p>Article text.</p><script>var x = "leaked";</script><style>.cls { color: red; }</style><noscript>tracking</noscript><p>More text.</p>';
-  const md = lesswrongHtmlToContentMarkdown(html).markdown;
+  const md = lesswrongHtmlToContentMarkdown(html, POST_URL).markdown;
   assert.ok(!md.includes("leaked"));
   assert.ok(!md.includes("color"));
   assert.ok(!md.includes("tracking"));
@@ -120,29 +123,25 @@ test("excludes NON_CONTENT_TAGS (script, style, noscript)", () => {
 });
 
 test("replaces img elements with [IMAGE:N] placeholders", () => {
-  const { markdown, imagePlaceholders } = lesswrongHtmlToContentMarkdown(
+  const { markdown, imageSourceUrls } = lesswrongHtmlToContentMarkdown(
     '<p>Before image.</p><img src="test.jpg" alt="test"/><p>After image.</p>',
+    POST_URL,
   );
   assert.ok(!markdown.includes("test.jpg"), "src URL should not appear in markdown");
   assert.ok(markdown.includes("[IMAGE:0]"), "placeholder should appear in markdown");
   assert.ok(markdown.includes("Before image."));
   assert.ok(markdown.includes("After image."));
-  assert.equal(imagePlaceholders.length, 1);
-  assert.deepEqual(imagePlaceholders[0], {
-    index: 0,
-    matchBy: "SOURCE_URL",
-    sourceUrl: "test.jpg",
-  });
+  assert.deepEqual(imageSourceUrls, ["https://www.lesswrong.com/posts/abc123/test.jpg"]);
 });
 
 test("strips anchor wrapper when link contains only an image", () => {
   // Substack (and other platforms) wrap images in <a href="..."><img/></a>.
   // The anchor URL is redundant because the image URL is already captured in
-  // imagePlaceholders, so the link markup should be removed and only the
+  // imageSourceUrls, so the link markup should be removed and only the
   // [IMAGE:N] placeholder should remain.
   const html =
     '<p>Caption text.</p><a href="https://cdn.example.com/big.jpg"><img src="https://cdn.example.com/thumb.jpg"/></a><p>After.</p>';
-  const { markdown, imagePlaceholders } = substackHtmlToContentMarkdown(html);
+  const { markdown, imageSourceUrls } = substackHtmlToContentMarkdown(html, POST_URL);
   assert.ok(markdown.includes("[IMAGE:0]"), "placeholder should be present");
   assert.ok(
     !markdown.includes("](https://cdn.example.com/big.jpg)"),
@@ -152,12 +151,7 @@ test("strips anchor wrapper when link contains only an image", () => {
     !markdown.includes("[ [IMAGE:0] ]"),
     "placeholder should not be wrapped in link syntax",
   );
-  assert.equal(imagePlaceholders.length, 1);
-  assert.deepEqual(imagePlaceholders[0], {
-    index: 0,
-    matchBy: "SOURCE_URL",
-    sourceUrl: "https://cdn.example.com/thumb.jpg",
-  });
+  assert.deepEqual(imageSourceUrls, ["https://cdn.example.com/thumb.jpg"]);
 });
 
 test("strips anchor wrapper for image-in-div structure (Substack CDN pattern)", () => {
@@ -170,7 +164,7 @@ test("strips anchor wrapper for image-in-div structure (Substack CDN pattern)", 
     </a>
     <p>As you can see above.</p>
   `;
-  const { markdown } = substackHtmlToContentMarkdown(html);
+  const { markdown } = substackHtmlToContentMarkdown(html, POST_URL);
   assert.ok(markdown.includes("[IMAGE:0]"));
   assert.ok(!markdown.includes("](https://substackcdn.com/big.png)"));
   // No stray newlines inside the placeholder from the inner div
@@ -185,7 +179,7 @@ test("strips anchor wrapper for image-in-div structure (Substack CDN pattern)", 
 test("preserves anchor when link contains text alongside an image", () => {
   // An anchor with both text and an image should keep the link markup.
   const html = '<p><a href="https://example.com">See chart <img src="chart.png"/></a></p>';
-  const { markdown } = lesswrongHtmlToContentMarkdown(html);
+  const { markdown } = lesswrongHtmlToContentMarkdown(html, POST_URL);
   assert.ok(
     markdown.includes("[See chart  [IMAGE:0]  ](https://example.com)") ||
       markdown.includes("https://example.com"),
@@ -197,7 +191,7 @@ test("preserves anchor when link contains text alongside an image", () => {
 
 test("decodes HTML entities", () => {
   const html = "<p>Tea&nbsp;&amp;&nbsp;Biscuits</p>";
-  const md = lesswrongHtmlToContentMarkdown(html).markdown;
+  const md = lesswrongHtmlToContentMarkdown(html, POST_URL).markdown;
   assert.ok(md.includes("Tea"));
   assert.ok(md.includes("&"));
   assert.ok(md.includes("Biscuits"));
@@ -214,7 +208,7 @@ test("bullet list items are separate lines, not run-on text", () => {
       <li>issuing an executive order</li>
     </ul>
   `;
-  const md = substackHtmlToContentMarkdown(html).markdown;
+  const md = substackHtmlToContentMarkdown(html, POST_URL).markdown;
   assert.ok(md.includes("-   canceling the contract"));
   assert.ok(md.includes("-   using the Defense Production Act"));
   assert.ok(md.includes("-   issuing an executive order"));
@@ -241,7 +235,7 @@ test("wikipediaHtmlToContentMarkdown excludes all WIKIPEDIA_EXCLUDED_SECTION_TIT
       </div>
     `;
     assert.ok(
-      !wikipediaHtmlToContentMarkdown(html).markdown.includes("Excluded section text."),
+      !wikipediaHtmlToContentMarkdown(html, POST_URL).markdown.includes("Excluded section text."),
       `"${title}" section should be excluded (legacy heading format)`,
     );
   }
@@ -261,7 +255,7 @@ test("wikipediaHtmlToContentMarkdown excludes all WIKIPEDIA_EXCLUDED_SECTION_TIT
       </div>
     `;
     assert.ok(
-      !wikipediaHtmlToContentMarkdown(html).markdown.includes("Excluded section text."),
+      !wikipediaHtmlToContentMarkdown(html, POST_URL).markdown.includes("Excluded section text."),
       `"${title}" section should be excluded (Parsoid heading format)`,
     );
   }
@@ -273,7 +267,7 @@ test("wikipedia markdown excludes citation superscripts", () => {
       <p>A fact.<sup class="reference">[1]</sup></p>
     </div>
   `;
-  const md = wikipediaHtmlToContentMarkdown(html).markdown;
+  const md = wikipediaHtmlToContentMarkdown(html, POST_URL).markdown;
   assert.ok(md.includes("A fact."));
   assert.ok(!md.includes("[1]"));
 });
@@ -292,7 +286,7 @@ test("lesswrongHtmlToContentMarkdown handles complex post structure", () => {
     </ul>
     <blockquote><p>A quote from someone.</p></blockquote>
   `;
-  const md = lesswrongHtmlToContentMarkdown(html).markdown;
+  const md = lesswrongHtmlToContentMarkdown(html, POST_URL).markdown;
   assert.ok(md.includes("# Post Title"));
   assert.ok(md.includes("bold") && !md.includes("**bold**"));
   assert.ok(md.includes("italic") && !md.includes("*italic*"));
@@ -304,7 +298,7 @@ test("lesswrongHtmlToContentMarkdown handles complex post structure", () => {
 
 test("substackHtmlToContentMarkdown renders same as lesswrong for shared elements", () => {
   const html = "<h2>Title</h2><p>Paragraph one.</p><p>Paragraph two.</p>";
-  const md = substackHtmlToContentMarkdown(html).markdown;
+  const md = substackHtmlToContentMarkdown(html, POST_URL).markdown;
   assert.ok(md.includes("## Title"));
   assert.ok(md.includes("Paragraph one."));
   assert.ok(md.includes("Paragraph two."));
@@ -316,7 +310,7 @@ test("substackHtmlToContentMarkdown renders same as lesswrong for shared element
 // indices skip values, repeat, or don't match the array entries, images are
 // silently lost or mismatched in the prompt.
 
-test("multiple images produce sequential 0-based [IMAGE:N] placeholders with matching array entries", () => {
+test("multiple images produce sequential 0-based [IMAGE:N] placeholders with matching source URLs", () => {
   const html = `
     <p>First paragraph.</p>
     <img src="https://cdn.example.com/photo1.jpg" alt="Photo 1"/>
@@ -326,69 +320,47 @@ test("multiple images produce sequential 0-based [IMAGE:N] placeholders with mat
     <img src="https://cdn.example.com/diagram3.svg" alt="Diagram 3"/>
     <p>Final paragraph.</p>
   `;
-  const { markdown, imagePlaceholders } = lesswrongHtmlToContentMarkdown(html);
+  const { markdown, imageSourceUrls } = lesswrongHtmlToContentMarkdown(html, POST_URL);
 
-  // Exactly 3 placeholders in the markdown
+  // Exactly 3 placeholders in the markdown, numbered 0, 1, 2 in document order
   const placeholderMatches = [...markdown.matchAll(/\[IMAGE:(\d+)\]/g)];
-  assert.equal(placeholderMatches.length, 3);
+  assert.deepEqual(
+    placeholderMatches.map((match) => match[1]),
+    ["0", "1", "2"],
+  );
 
-  // Indices must be sequential: 0, 1, 2
-  assert.equal(placeholderMatches[0]?.[1], "0");
-  assert.equal(placeholderMatches[1]?.[1], "1");
-  assert.equal(placeholderMatches[2]?.[1], "2");
+  // imageSourceUrls[N] is the source of [IMAGE:N]
+  assert.deepEqual(imageSourceUrls, [
+    "https://cdn.example.com/photo1.jpg",
+    "https://cdn.example.com/chart2.png",
+    "https://cdn.example.com/diagram3.svg",
+  ]);
 
-  // imagePlaceholders array must have matching entries
-  assert.equal(imagePlaceholders.length, 3);
-
-  const [ph0, ph1, ph2] = imagePlaceholders as [
-    (typeof imagePlaceholders)[0],
-    (typeof imagePlaceholders)[0],
-    (typeof imagePlaceholders)[0],
-  ];
-  assert.deepEqual(ph0, {
-    index: 0,
-    matchBy: "SOURCE_URL",
-    sourceUrl: "https://cdn.example.com/photo1.jpg",
-  });
-  assert.deepEqual(ph1, {
-    index: 1,
-    matchBy: "SOURCE_URL",
-    sourceUrl: "https://cdn.example.com/chart2.png",
-  });
-  assert.deepEqual(ph2, {
-    index: 2,
-    matchBy: "SOURCE_URL",
-    sourceUrl: "https://cdn.example.com/diagram3.svg",
-  });
-
-  // Placeholders must appear in document order between surrounding text
-  const idx0 = markdown.indexOf("[IMAGE:0]");
-  const idx1 = markdown.indexOf("[IMAGE:1]");
-  const idx2 = markdown.indexOf("[IMAGE:2]");
-  assert.ok(idx0 < idx1);
-  assert.ok(idx1 < idx2);
-  assert.ok(markdown.indexOf("First paragraph.") < idx0);
-  assert.ok(idx2 < markdown.indexOf("Final paragraph."));
+  assert.ok(markdown.indexOf("First paragraph.") < markdown.indexOf("[IMAGE:0]"));
+  assert.ok(markdown.indexOf("[IMAGE:2]") < markdown.indexOf("Final paragraph."));
 });
 
-test("imagePlaceholders index equals array position for all images", () => {
-  // When buildInitialInput does `imagePlaceholders.find(p => p.index === N)`,
-  // it relies on each placeholder's .index matching the [IMAGE:N] in the
-  // markdown. This test verifies the identity: placeholder[i].index === i.
+test("image sources resolve against the post URL; unfetchable sources get no placeholder", () => {
+  // Wikipedia HTML uses protocol-relative URLs; image occurrences reported by
+  // the extension are absolute, so placeholders must be absolute to match.
   const html = `
-    <div>
-      <img src="a.png"/>
-      <img src="b.png"/>
-      <img src="c.png"/>
-      <img src="d.png"/>
-      <img src="e.png"/>
-    </div>
+    <img src="//upload.wikimedia.org/a.png"/>
+    <img src="data:image/gif;base64,R0lGODlhAQABAAAAACw="/>
+    <img src=""/>
+    <img src="/static/b.png"/>
   `;
-  const { imagePlaceholders } = lesswrongHtmlToContentMarkdown(html);
-  assert.equal(imagePlaceholders.length, 5);
-  for (let i = 0; i < imagePlaceholders.length; i++) {
-    assert.equal(imagePlaceholders[i]?.index, i, `imagePlaceholders[${i}].index must equal ${i}`);
-  }
+  const { markdown, imageSourceUrls } = wikipediaHtmlToContentMarkdown(
+    html,
+    "https://en.wikipedia.org/wiki/Example",
+  );
+  assert.deepEqual(imageSourceUrls, [
+    "https://upload.wikimedia.org/a.png",
+    "https://en.wikipedia.org/static/b.png",
+  ]);
+  assert.deepEqual(
+    [...markdown.matchAll(/\[IMAGE:(\d+)\]/g)].map((match) => match[1]),
+    ["0", "1"],
+  );
 });
 
 // ── Markdown prose ⊆ normalized text invariant ─────────────────────────
@@ -440,7 +412,7 @@ function assertMarkdownProseSubsetOfNormalizedText(
 
   const wrapHtml = platform === "wikipedia" ? `<div class="mw-parser-output">${html}</div>` : html;
 
-  const { markdown } = toMarkdown(wrapHtml);
+  const { markdown } = toMarkdown(wrapHtml, POST_URL);
   const normalizedText = toNormalized(wrapHtml);
   const proseWords = extractProseWords(markdown);
 
@@ -512,7 +484,7 @@ for (const { name, html } of PROSE_SUBSET_HTML_CASES) {
 // holds through the substackHtmlToContentMarkdown entry point too.
 for (const { name, html } of PROSE_SUBSET_HTML_CASES) {
   test(`markdown prose ⊆ normalized text: ${name} (substack)`, () => {
-    const { markdown } = substackHtmlToContentMarkdown(html);
+    const { markdown } = substackHtmlToContentMarkdown(html, POST_URL);
     const normalizedText = lesswrongHtmlToNormalizedText(html);
     const proseWords = extractProseWords(markdown);
 
@@ -552,9 +524,7 @@ describe("inline emphasis/code tags never produce markdown syntax", () => {
         wikipediaHtmlToContentMarkdown,
         substackHtmlToContentMarkdown,
       ]) {
-        const { markdown } = toMarkdown(
-          tag === "code" ? html : html, // same HTML for all
-        );
+        const { markdown } = toMarkdown(html, POST_URL);
         assert.ok(
           markdown.includes("wrapped content"),
           `<${tag}> content should appear in markdown`,

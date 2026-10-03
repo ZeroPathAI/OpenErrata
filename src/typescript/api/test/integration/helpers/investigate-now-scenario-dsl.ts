@@ -83,6 +83,10 @@ function expectedStoredStatusForScenario(
   if (scenario === "COMPLETE") {
     return "COMPLETE";
   }
+  // FAILED is terminal for a content version (SPEC §3.7); investigateNow returns it as is.
+  if (scenario === "FAILED") {
+    return "FAILED";
+  }
   if (scenario === "PROCESSING_ACTIVE") {
     return "PROCESSING";
   }
@@ -131,7 +135,7 @@ function createCallerPlan(input: {
     return {
       jitterMs: input.jitterMs,
       caller: createCaller({
-        userOpenAiApiKey: `sk-test-fuzz-${input.round.toString()}-${input.index.toString()}`,
+        userOpenAiApiKey: `sk-test-fuzz-key-${input.round.toString()}-${input.index.toString()}-0123456789`,
         viewerKey,
         ipRangeKey,
       }),
@@ -152,7 +156,7 @@ function createCallerPlan(input: {
   return {
     jitterMs: input.jitterMs,
     caller: createCaller({
-      userOpenAiApiKey: `sk-test-fuzz-mixed-${input.round.toString()}-${input.index.toString()}`,
+      userOpenAiApiKey: `sk-test-fuzz-mixed-${input.round.toString()}-${input.index.toString()}-0123456789`,
       viewerKey,
       ipRangeKey,
     }),

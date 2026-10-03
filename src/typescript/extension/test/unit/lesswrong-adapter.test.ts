@@ -13,6 +13,7 @@ test("LessWrong adapter reads author from post header instead of global /users l
           <a href="/users/lc">lc</a>
           <h1>The ML ontology and the alignment ontology</h1>
           <div id="postBody">
+            <script type="application/ld+json">{"url":"https://www.lesswrong.com/posts/abcd1234/the-ml-ontology-and-the-alignment-ontology"}</script>
             <div class="LWPostsPageHeader-authorInfo">
               by
               <span class="PostsAuthors-authorName">
@@ -45,6 +46,7 @@ test("LessWrong adapter omits author metadata when no post-header author exists"
           <a href="/users/lc">lc</a>
           <h1>Post without header author</h1>
           <div id="postBody">
+            <script type="application/ld+json">{"url":"https://www.lesswrong.com/posts/abcd1234/post-without-header-author"}</script>
             <div class="PostsPage-postContent">
               <div id="postContent"><p>Post body text.</p></div>
             </div>
@@ -70,6 +72,7 @@ test("LessWrong adapter versioning HTML uses #postContent and strips linkpost ca
         <body>
           <h1>Canonical HTML test</h1>
           <div id="postBody">
+            <script type="application/ld+json">{"url":"https://www.lesswrong.com/posts/abcd1234/canonical-html-test"}</script>
             <div class="LWPostsPageHeader-authorInfo">
               <span class="PostsAuthors-authorName">
                 <a href="/users/example_author">Example Author</a>
@@ -185,6 +188,7 @@ test("LessWrong adapter reports ambiguous_dom when multiple visible roots match"
       <html>
         <body>
           <div id="postBody">
+            <script type="application/ld+json">{"url":"https://www.lesswrong.com/posts/newPost123/current-post"}</script>
             <div class="LWPostsPageHeader-authorInfo">
               <span class="PostsAuthors-authorName">
                 <a href="/users/first_author">First Author</a>
@@ -198,6 +202,7 @@ test("LessWrong adapter reports ambiguous_dom when multiple visible roots match"
           </div>
 
           <div id="postBody">
+            <script type="application/ld+json">{"url":"https://www.lesswrong.com/posts/newPost123/current-post"}</script>
             <div class="LWPostsPageHeader-authorInfo">
               <span class="PostsAuthors-authorName">
                 <a href="/users/second_author">Second Author</a>
@@ -316,4 +321,50 @@ test("LessWrong adapter preserves word boundaries across adjacent block elements
 
   const extracted = assertReady(result).content;
   assert.equal(extracted.contentText, "Alpha Beta Gamma");
+});
+
+test("LessWrong adapter reads tags from tag chips linking to /w/ wiki pages, once each", () => {
+  // Since LessWrong's 2025 wiki merge, tag chips link to /w/<slug>; the
+  // header and footer both list them (seen 2026-10).
+  const url = "https://www.lesswrong.com/posts/tagsPost1/tags";
+  const result = withWindow(
+    url,
+    `<!doctype html><html><body>
+      <div id="postBody">
+        <script type="application/ld+json">{"url":"${url}"}</script>
+        <span class="FooterTag-root"><a href="/w/ai">AI</a></span>
+        <div class="PostsPage-postContent">
+          <div id="postContent"><p>See the <a href="/w/corrigibility">corrigibility</a> wiki page.</p></div>
+        </div>
+        <span class="FooterTag-root"><a href="/w/ai">AI</a></span>
+        <span class="FooterTag-root"><a href="/tag/rationality">Rationality</a></span>
+      </div>
+    </body></html>`,
+    (document) => lesswrongAdapter.extract(document),
+  );
+
+  const ready = assertReady(result);
+  if (ready.content.platform !== "LESSWRONG") throw new Error("expected a LessWrong post");
+  assert.deepEqual(ready.content.metadata.tags, ["AI", "Rationality"]);
+});
+
+test("LessWrong adapter never puts its own highlight marks into the versioning HTML", () => {
+  const url = "https://www.lesswrong.com/posts/marksPost1/marks";
+  const result = withWindow(
+    url,
+    `<!doctype html><html><body>
+      <div id="postBody">
+        <script type="application/ld+json">{"url":"${url}"}</script>
+        <div class="PostsPage-postContent">
+          <div id="postContent"><p>The <mark class="openerrata-annotation" data-openerrata-claim-id="c1">moon is cheese</mark>.</p></div>
+        </div>
+      </div>
+    </body></html>`,
+    (document) => lesswrongAdapter.extract(document),
+  );
+
+  const ready = assertReady(result);
+  if (ready.content.platform !== "LESSWRONG") throw new Error("expected a LessWrong post");
+  assert.equal(ready.content.metadata.htmlContent, "<p>The moon is cheese.</p>");
+  assert.equal(ready.content.contentText, "The moon is cheese.");
 });

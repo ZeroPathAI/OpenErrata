@@ -11,7 +11,7 @@ interface InvestigationFindFirstResult {
   id: string;
   checkedAt: Date | null;
   provider: string;
-  model: string;
+  model: string | null;
   input: {
     provenance: string;
   } | null;
@@ -124,7 +124,7 @@ test("getPublicInvestigationById maps a complete SERVER_VERIFIED investigation",
         id: "inv_1",
         checkedAt,
         provider: "OPENAI",
-        model: "OPENAI_GPT_5",
+        model: "gpt-6.1-sol",
         input: {
           provenance: "SERVER_VERIFIED",
         },
@@ -176,32 +176,33 @@ test("getPublicInvestigationById maps a complete SERVER_VERIFIED investigation",
     provenance: "SERVER_VERIFIED",
     serverVerifiedAt,
   });
+  assert.equal(result.investigation.model, "gpt-6.1-sol");
   assert.equal(result.post.platform, "X");
   assert.equal(result.post.externalId, "tweet_1");
   assert.equal(result.claims.length, 1);
   assert.equal(result.claims[0]?.sources.length, 1);
 });
 
-test("getPublicInvestigationById throws on invalid lifecycle provenance data", async () => {
+test("getPublicInvestigationById throws when a COMPLETE investigation has no recorded model", async () => {
   const prisma = createMockPrisma({
     investigation: {
       findFirst: async () => ({
-        id: "inv_invalid",
+        id: "inv_no_model",
         checkedAt: new Date("2026-02-27T09:30:00.000Z"),
         provider: "OPENAI",
-        model: "OPENAI_GPT_5",
+        model: null,
         input: {
-          provenance: "UNKNOWN_PROVENANCE",
+          provenance: "SERVER_VERIFIED",
         },
         postVersion: {
-          serverVerifiedAt: null,
+          serverVerifiedAt: new Date("2026-02-27T09:00:00.000Z"),
           contentBlob: {
-            contentHash: "hash-invalid",
+            contentHash: "hash-no-model",
           },
           post: {
             platform: "X",
-            externalId: "tweet_invalid",
-            url: "https://x.com/openerrata/status/tweet_invalid",
+            externalId: "tweet_no_model",
+            url: "https://x.com/openerrata/status/tweet_no_model",
           },
         },
         prompt: {
@@ -217,14 +218,13 @@ test("getPublicInvestigationById throws on invalid lifecycle provenance data", a
   });
 
   await assert.rejects(
-    getPublicInvestigationById(prisma, "inv_invalid"),
+    getPublicInvestigationById(prisma, "inv_no_model"),
     (error: unknown) =>
-      error instanceof PublicReadModelInvariantError &&
-      error.message.includes("invalid provenance"),
+      error instanceof PublicReadModelInvariantError && error.message.includes("null model"),
   );
 });
 
-test("getPublicMetrics computes incidence and handles empty query rows", async () => {
+test("getPublicMetrics computes incidence, and reports none when nothing was investigated", async () => {
   const metricsPrisma = createMockPrisma({
     $queryRaw: async () => [{ total_investigated: 4, with_flags: 1 }],
   });
@@ -242,12 +242,19 @@ test("getPublicMetrics computes incidence and handles empty query rows", async (
   });
 
   const emptyPrisma = createMockPrisma({
-    $queryRaw: async () => [],
+    $queryRaw: async () => [{ total_investigated: 0, with_flags: 0 }],
   });
   const empty = await getPublicMetrics(emptyPrisma, {});
   assert.deepEqual(empty, {
     totalInvestigatedPosts: 0,
     investigatedPostsWithFlags: 0,
-    factCheckIncidence: 0,
+    factCheckIncidence: null,
   });
+});
+
+test("getPublicMetrics fails loudly if the aggregate query returns no row", async () => {
+  const brokenPrisma = createMockPrisma({
+    $queryRaw: async () => [],
+  });
+  await assert.rejects(getPublicMetrics(brokenPrisma, {}), PublicReadModelInvariantError);
 });

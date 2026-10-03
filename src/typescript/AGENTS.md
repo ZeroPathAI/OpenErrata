@@ -1,6 +1,6 @@
 # TypeScript Workspace
 
-pnpm monorepo with four packages: `shared`, `api`, `extension`, `pulumi`.
+pnpm monorepo with five packages: `shared`, `api`, `extension`, `frontend`, `pulumi`.
 
 ## Useful Commands
 
@@ -9,6 +9,7 @@ pnpm check            # typecheck all packages + lint
 pnpm test             # run unit+integration tests
 pnpm dev:api          # Start API dev server
 pnpm dev:ext          # Build extension in watch mode
+pnpm dev:frontend     # Start the public website (needs API_BASE_URL)
 pnpm worker           # Start graphile-worker
 pnpm selector         # Run investigation selector
 pnpm db:migrate       # Create/apply Prisma migrations in development
@@ -55,6 +56,7 @@ export enum Platform {
 ```
 shared ← api       (types, schemas, normalization)
 shared ← extension (types, schemas, normalization)
+shared ← frontend  (public API schemas)
 ```
 
 Extension/API procedure compatibility is enforced via the shared
@@ -64,8 +66,14 @@ Extension/API procedure compatibility is enforced via the shared
 - Extension uses typed query/mutation path wrappers in
   `extension/src/background/api-client.ts`
 
+The public website talks to the API only through the public GraphQL endpoint.
+Its query documents (`frontend/src/lib/public-queries.ts`) select exactly the
+fields of the shared `public*OutputSchema`s, responses are parsed with those
+schemas, and `api/test/unit/frontend-graphql-contract.test.ts` runs the
+documents against the API's GraphQL schema.
+
 The `shared` package uses raw TypeScript source imports (`"main": "src/index.ts"`)
-within the monorepo. Both Vite (extension) and SvelteKit (API) transpile TS on
+within the monorepo. Vite (extension) and SvelteKit (API, frontend) transpile TS on
 the fly, so no separate build step is needed in dev.
 
 ## ESLint Configuration
@@ -73,9 +81,10 @@ the fly, so no separate build step is needed in dev.
 Flat config (ESLint 9+) at `eslint.config.js`. Key rules:
 
 - Type-aware linting (projectService) for `.ts` files across `api`, `shared`,
-  `extension`, and `pulumi` (excluding generated files/configs plus selected
-  tooling and extension test files).
-- Svelte files get non-type-aware linting; `svelte-check` handles type errors.
+  `extension`, `pulumi` and the frontend's tests (excluding generated
+  files/configs plus selected tooling and extension test files).
+- Svelte files and `frontend/src` get non-type-aware linting; `svelte-check`
+  handles their type errors.
 - Security rules: `no-eval`, `no-new-func`, `eqeqeq`.
 - Async safety: `no-floating-promises`, `no-misused-promises`, `await-thenable`.
 - Exhaustiveness: `switch-exhaustiveness-check`.

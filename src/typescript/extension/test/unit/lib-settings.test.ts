@@ -120,21 +120,28 @@ test("loadExtensionSettings reads local storage and normalizes values", async ()
       apiKey: "  api-key  ",
       openaiApiKey: "  sk-key  ",
       autoInvestigate: true,
-      hmacSecret: "  secret  ",
     },
   });
   const { loadExtensionSettings } = await importSettingsModule();
 
-  const loaded = await loadExtensionSettings();
-
-  assert.deepEqual(loaded, {
-    apiBaseUrl: "https://api.openerrata.example",
-    apiKey: "api-key",
-    openaiApiKey: "sk-key",
-    autoInvestigate: true,
-    hmacSecret: "secret",
+  assert.deepEqual(await loadExtensionSettings(), {
+    kind: "VALID",
+    settings: {
+      apiBaseUrl: "https://api.openerrata.example",
+      apiKey: "api-key",
+      openaiApiKey: "sk-key",
+      autoInvestigate: true,
+    },
   });
   assert.equal(mocks.getCalls.length, 1);
+});
+
+test("the options form shows an invalid stored API URL as stored, so it can be fixed", async () => {
+  installSettingsChromeMock({ stored: { apiBaseUrl: "http://selfhosted.example.com" } });
+  const { loadExtensionSettings, loadSettingsFormValues } = await importSettingsModule();
+
+  assert.equal((await loadExtensionSettings()).kind, "INVALID");
+  assert.equal((await loadSettingsFormValues()).apiBaseUrl, "http://selfhosted.example.com");
 });
 
 test("saveExtensionSettings persists normalized settings payload", async () => {
@@ -146,7 +153,6 @@ test("saveExtensionSettings persists normalized settings payload", async () => {
     apiKey: "  api-key  ",
     openaiApiKey: "  sk-key  ",
     autoInvestigate: true,
-    hmacSecret: "  secret  ",
   });
 
   assert.deepEqual(mocks.setCalls, [
@@ -155,9 +161,24 @@ test("saveExtensionSettings persists normalized settings payload", async () => {
       apiKey: "api-key",
       openaiApiKey: "sk-key",
       autoInvestigate: true,
-      hmacSecret: "secret",
     },
   ]);
+});
+
+test("saveExtensionSettings refuses settings that would not load", async () => {
+  const mocks = installSettingsChromeMock({});
+  const { saveExtensionSettings } = await importSettingsModule();
+
+  await assert.rejects(
+    saveExtensionSettings({
+      apiBaseUrl: "http://public.example.com",
+      apiKey: "",
+      openaiApiKey: "",
+      autoInvestigate: false,
+    }),
+    /API Server URL/,
+  );
+  assert.deepEqual(mocks.setCalls, []);
 });
 
 test("ensureApiHostPermission returns true without requesting when permission already exists", async () => {

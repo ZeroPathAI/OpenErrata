@@ -16,15 +16,6 @@ interface ScriptingApi {
   insertCSS: (details: { target: { tabId: number }; files: string[] }) => Promise<void>;
 }
 
-interface WebNavigationEvent {
-  addListener: (listener: (details: NavigationDetails) => void) => void;
-}
-
-interface WebNavigationApi {
-  onDOMContentLoaded: WebNavigationEvent;
-  onHistoryStateUpdated: WebNavigationEvent;
-}
-
 function isScriptingApi(value: unknown): value is ScriptingApi {
   if (!isNonNullObject(value)) {
     return false;
@@ -33,21 +24,8 @@ function isScriptingApi(value: unknown): value is ScriptingApi {
   return typeof value["executeScript"] === "function" && typeof value["insertCSS"] === "function";
 }
 
-function isWebNavigationEvent(value: unknown): value is WebNavigationEvent {
-  return isNonNullObject(value) && typeof value["addListener"] === "function";
-}
-
-function isWebNavigationApi(value: unknown): value is WebNavigationApi {
-  if (!isNonNullObject(value)) {
-    return false;
-  }
-
-  return (
-    isWebNavigationEvent(value["onDOMContentLoaded"]) &&
-    isWebNavigationEvent(value["onHistoryStateUpdated"])
-  );
-}
-
+// `browser.scripting` is MV3-only and missing from the polyfill's types, so it
+// is looked up and checked at runtime.
 function getScriptingApi(): ScriptingApi {
   const scripting: unknown = Reflect.get(browser as object, "scripting");
   if (!isScriptingApi(scripting)) {
@@ -58,24 +36,13 @@ function getScriptingApi(): ScriptingApi {
   return scripting;
 }
 
-function getWebNavigationApi(): WebNavigationApi | null {
-  const webNavigation: unknown = Reflect.get(browser as object, "webNavigation");
-  if (!isWebNavigationApi(webNavigation)) {
-    return null;
-  }
-  return webNavigation;
-}
-
-export async function executeTabFunction<TResult>(
-  tabId: number,
-  func: () => TResult,
-): Promise<TResult | undefined> {
+/** Run `func` in the tab's page; its result crosses a serialization boundary, so callers validate it. */
+export async function executeTabFunction(tabId: number, func: () => unknown): Promise<unknown> {
   const [probeResult] = await getScriptingApi().executeScript({
     target: { tabId },
     func,
   });
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- executeScript returns unknown; callers own the type contract
-  return probeResult?.result as TResult | undefined;
+  return probeResult?.result;
 }
 
 export async function injectTabAssets(input: {
@@ -96,34 +63,31 @@ export async function injectTabAssets(input: {
   ]);
 }
 
-export function addDomContentLoadedListener(listener: (details: NavigationDetails) => void): void {
-  const webNavigation = getWebNavigationApi();
-  if (webNavigation === null) {
-    console.warn("webNavigation API unavailable; skipping DOMContentLoaded listener.");
-    return;
-  }
-  webNavigation.onDOMContentLoaded.addListener((details) => {
-    listener({
-      frameId: details.frameId,
-      tabId: details.tabId,
-      url: details.url,
-    });
-  });
+function mainFrameOnly(
+  listener: (details: NavigationDetails) => void,
+): (details: NavigationDetails) => void {
+  return (details) => {
+    if (details.frameId !== 0) return;
+    listener({ frameId: details.frameId, tabId: details.tabId, url: details.url });
+  };
 }
 
-export function addHistoryStateUpdatedListener(
+/** A tab's top frame committed a new document (not a same-document navigation). */
+export function addMainFrameCommittedListener(
   listener: (details: NavigationDetails) => void,
 ): void {
-  const webNavigation = getWebNavigationApi();
-  if (webNavigation === null) {
-    console.warn("webNavigation API unavailable; skipping HistoryState listener.");
-    return;
-  }
-  webNavigation.onHistoryStateUpdated.addListener((details) => {
-    listener({
-      frameId: details.frameId,
-      tabId: details.tabId,
-      url: details.url,
-    });
-  });
+  browser.webNavigation.onCommitted.addListener(mainFrameOnly(listener));
+}
+
+export function addMainFrameDomContentLoadedListener(
+  listener: (details: NavigationDetails) => void,
+): void {
+  browser.webNavigation.onDOMContentLoaded.addListener(mainFrameOnly(listener));
+}
+
+/** A tab's top frame changed URL through the History API (`pushState`, `replaceState`, traversal). */
+export function addMainFrameHistoryStateUpdatedListener(
+  listener: (details: NavigationDetails) => void,
+): void {
+  browser.webNavigation.onHistoryStateUpdated.addListener(mainFrameOnly(listener));
 }

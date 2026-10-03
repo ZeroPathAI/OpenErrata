@@ -1,203 +1,151 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type OpenAI from "openai";
+import { INVESTIGATION_REQUEST_CONFIG } from "../../src/lib/investigators/openai-request-config.js";
 import {
-  runToolLoop,
-  ToolLoopExecutionError,
-} from "../../src/lib/investigators/openai-tool-loop.js";
-import type {
-  FunctionCallOutput,
-  PendingFunctionToolCall,
+  buildFunctionCallOutput,
+  type PendingFunctionToolCall,
 } from "../../src/lib/investigators/openai-tool-dispatch.js";
+import { runToolLoop } from "../../src/lib/investigators/openai-tool-loop.js";
+import {
+  createFakeOpenAiClient,
+  makeFunctionCall,
+  makeMessage,
+  makeResponse,
+  type FakeOpenAiReply,
+  type RecordedOpenAiRequest,
+} from "../helpers/fake-openai.js";
 
-function makeFunctionCall(call: { callId: string; name: string; argumentsJson: string }) {
-  return {
-    type: "function_call",
-    id: `fc_${call.callId}`,
-    call_id: call.callId,
-    name: call.name,
-    arguments: call.argumentsJson,
-    status: "completed",
-  };
+function runLoop(input: {
+  reply: (request: RecordedOpenAiRequest, index: number) => FakeOpenAiReply;
+  maxRounds: number;
+  onCalls?: (calls: PendingFunctionToolCall[]) => void;
+}) {
+  const { client, requests } = createFakeOpenAiClient(input.reply);
+  const handled: PendingFunctionToolCall[][] = [];
+  const result = runToolLoop({
+    client,
+    requestConfig: INVESTIGATION_REQUEST_CONFIG,
+    maxRounds: input.maxRounds,
+    instructions: "test instructions",
+    tools: [{ type: "web_search" }],
+    initialInput: { request: "initial prompt", audit: "initial prompt" },
+    signal: new AbortController().signal,
+    handleFunctionCalls: async (calls) => {
+      handled.push(calls);
+      input.onCalls?.(calls);
+      return calls.map((call) => buildFunctionCallOutput(call.callId, `output-${call.callId}`));
+    },
+  });
+  return { result, requests, handled };
 }
 
-test("runToolLoop routes submit/retain/research calls and collects response audits", async () => {
-  const routed: {
-    submitted: PendingFunctionToolCall[];
-    retained: PendingFunctionToolCall[];
-    research: PendingFunctionToolCall[];
-  } = {
-    submitted: [],
-    retained: [],
-    research: [],
-  };
+function toolCallRound(id: string, callId: string) {
+  return makeResponse({ id, output: [makeFunctionCall(callId, "fetch_url", { url: "x" })] });
+}
 
-  let callCount = 0;
-  const client = {
-    responses: {
-      create: async () => {
-        callCount += 1;
-        if (callCount === 1) {
-          return {
-            id: "resp-1",
-            status: "completed",
-            model: "test-model",
-            output: [
-              makeFunctionCall({
-                callId: "submit-1",
-                name: "submit_correction",
-                argumentsJson: JSON.stringify({
-                  text: "claim",
-                  context: "ctx",
-                  summary: "sum",
-                  reasoning: "reason",
-                  sources: [
-                    {
-                      url: "https://example.com",
-                      title: "Example",
-                      snippet: "Snippet",
-                    },
-                  ],
-                }),
-              }),
-              makeFunctionCall({
-                callId: "retain-1",
-                name: "retain_correction",
-                argumentsJson: JSON.stringify({ id: "old-1" }),
-              }),
-              makeFunctionCall({
-                callId: "research-1",
-                name: "fetch_url",
-                argumentsJson: JSON.stringify({ url: "https://example.com" }),
-              }),
-            ],
-            output_text: null,
-            usage: { input_tokens: 10, output_tokens: 10, total_tokens: 20 },
-          };
-        }
+test("the loop answers function calls until the model stops calling tools", async () => {
+  const { result, requests, handled } = runLoop({
+    maxRounds: 5,
+    reply: (_request, index) => ({
+      kind: "response",
+      response:
+        index === 0
+          ? toolCallRound("resp_0", "call-a")
+          : makeResponse({ id: "resp_1", output: [makeMessage("msg", "done")] }),
+    }),
+  });
 
-        return {
-          id: "resp-2",
-          status: "completed",
-          model: "test-model",
-          output: [
-            {
-              type: "message",
-              id: "msg-final",
-              status: "completed",
-              role: "assistant",
-              content: [],
-            },
-          ],
-          output_text: null,
-          usage: { input_tokens: 5, output_tokens: 5, total_tokens: 10 },
-        };
-      },
-    },
-  } as unknown as OpenAI;
+  const outcome = await result;
+  assert.equal(outcome.kind, "completed");
+  assert.equal(outcome.finalResponse.id, "resp_1");
+  assert.deepEqual(
+    handled.map((calls) => calls.map((call) => call.callId)),
+    [["call-a"]],
+  );
+  assert.equal(requests[1]?.body.previous_response_id, "resp_0");
+  assert.deepEqual(requests[1].body.input, [
+    { type: "function_call_output", call_id: "call-a", output: "output-call-a" },
+  ]);
+  assert.deepEqual(
+    outcome.rounds.map((round) => [round.subject, round.previousResponseId, round.input]),
+    [
+      [{ kind: "FACT_CHECK_ROUND", round: 0 }, null, "initial prompt"],
+      [
+        { kind: "FACT_CHECK_ROUND", round: 1 },
+        "resp_0",
+        [{ type: "function_call_output", call_id: "call-a", output: "output-call-a" }],
+      ],
+    ],
+  );
+});
 
-  const output = await runToolLoop({
-    client,
-    maxResponseToolRounds: 5,
-    baseResponseRequest: {
-      model: "test-model",
-      stream: false,
-      instructions: "test instructions",
-      tools: [],
-      reasoning: {
-        effort: "medium",
-        summary: "detailed",
-      },
-    },
-    initialInput: "input",
-    handleSubmittedClaims: async (calls) => {
-      routed.submitted = calls;
-      return [
-        {
-          type: "function_call_output",
-          call_id: calls[0]?.callId ?? "none",
-          output: '{"acknowledged":true}',
-        },
-      ] as FunctionCallOutput[];
-    },
-    handleRetainedClaims: async (calls) => {
-      routed.retained = calls;
-      return [
-        {
-          type: "function_call_output",
-          call_id: calls[0]?.callId ?? "none",
-          output: '{"acknowledged":true}',
-        },
-      ];
-    },
-    handleResearchCalls: async (calls) => {
-      routed.research = calls;
-      return [
-        {
-          type: "function_call_output",
-          call_id: calls[0]?.callId ?? "none",
-          output: '{"ok":true}',
-        },
-      ];
+test("the loop stops at the round limit without handling the last round's calls", async () => {
+  const { result, requests, handled } = runLoop({
+    maxRounds: 2,
+    reply: (_request, index) => ({
+      kind: "response",
+      response: toolCallRound(`resp_${index.toString()}`, `call-${index.toString()}`),
+    }),
+  });
+
+  const outcome = await result;
+  assert.equal(outcome.kind, "round_limit");
+  assert.equal(requests.length, 2);
+  assert.equal(outcome.rounds.length, 2);
+  assert.deepEqual(
+    handled.map((calls) => calls.map((call) => call.callId)),
+    [["call-0"]],
+  );
+});
+
+test("a response that did not complete ends the loop before its calls are handled", async () => {
+  const { result, handled } = runLoop({
+    maxRounds: 5,
+    reply: () => ({
+      kind: "response",
+      response: makeResponse({
+        id: "resp_0",
+        status: "incomplete",
+        incompleteReason: "content_filter",
+        output: [makeFunctionCall("call-a", "fetch_url", {})],
+      }),
+    }),
+  });
+
+  const outcome = await result;
+  assert.equal(outcome.kind, "response_not_completed");
+  assert.equal(handled.length, 0);
+});
+
+test("a failed request ends the loop with that request audited without a response", async () => {
+  const { result } = runLoop({
+    maxRounds: 5,
+    reply: (_request, index) =>
+      index === 0
+        ? { kind: "response", response: toolCallRound("resp_0", "call-a") }
+        : { kind: "http_error", status: 503, message: "overloaded" },
+  });
+
+  const outcome = await result;
+  assert.equal(outcome.kind, "failed");
+  assert.deepEqual(
+    outcome.rounds.map((round) => round.response?.providerResponseId ?? null),
+    ["resp_0", null],
+  );
+});
+
+test("a throwing tool handler ends the loop as failed", async () => {
+  const { result } = runLoop({
+    maxRounds: 5,
+    reply: () => ({ kind: "response", response: toolCallRound("resp_0", "call-a") }),
+    onCalls: () => {
+      throw new Error("tool exploded");
     },
   });
 
-  assert.equal(routed.submitted.length, 1);
-  assert.equal(routed.submitted[0]?.name, "submit_correction");
-  assert.equal(routed.retained.length, 1);
-  assert.equal(routed.retained[0]?.name, "retain_correction");
-  assert.equal(routed.research.length, 1);
-  assert.equal(routed.research[0]?.name, "fetch_url");
-  assert.equal(output.responseAudits.length, 2);
-  assert.equal(output.latestResponseRecord?.["id"], "resp-2");
-});
-
-test("runToolLoop throws ToolLoopExecutionError when tool calls have no response id", async () => {
-  const client = {
-    responses: {
-      create: async () => ({
-        id: null,
-        status: "completed",
-        model: "test-model",
-        output: [
-          makeFunctionCall({
-            callId: "submit-1",
-            name: "submit_correction",
-            argumentsJson: "{}",
-          }),
-        ],
-        output_text: null,
-      }),
-    },
-  } as unknown as OpenAI;
-
-  await assert.rejects(
-    () =>
-      runToolLoop({
-        client,
-        maxResponseToolRounds: 2,
-        baseResponseRequest: {
-          model: "test-model",
-          stream: false,
-          instructions: "test instructions",
-          tools: [],
-          reasoning: {
-            effort: "medium",
-            summary: "detailed",
-          },
-        },
-        initialInput: "input",
-        handleSubmittedClaims: async () => [],
-        handleRetainedClaims: async () => [],
-        handleResearchCalls: async () => [],
-      }),
-    (error: unknown) => {
-      if (!(error instanceof ToolLoopExecutionError)) {
-        return false;
-      }
-      assert.match(error.message, /response id/);
-      assert.equal(error.responseAudits.length, 1);
-      return true;
-    },
-  );
+  const outcome = await result;
+  assert.equal(outcome.kind, "failed");
+  assert.ok(outcome.error instanceof Error);
+  assert.equal(outcome.error.message, "tool exploded");
+  assert.equal(outcome.rounds.length, 1);
 });

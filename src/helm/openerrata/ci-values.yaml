@@ -1,13 +1,35 @@
+# Values for `helm lint` / `helm template` in CI. Enables the optional
+# templates too so every template is rendered.
+image:
+  tag: ci
+
+frontend:
+  enabled: true
+  apiBaseUrl: https://api.example.test
+  image:
+    tag: ci
+  ingress:
+    enabled: true
+    host: example.test
+
+ingress:
+  enabled: true
+  host: api.example.test
+
+networkPolicy:
+  workerEgress:
+    enabled: true
+    allowedCidrs:
+      - 10.20.0.0/16
+
 config:
   blobStorageProvider: aws
   blobStorageRegion: us-east-1
   blobStorageBucket: openerrata-ci-bucket
-  blobStoragePublicUrlPrefix: https://example.test/openerrata
 
 secrets:
   databaseUrl: postgresql://postgres:postgres@localhost:5432/openerrata
   openaiApiKey: sk-ci-test-openai-key
-  hmacSecret: ci-hmac-secret
   databaseEncryptionKey: ci-database-encryption-key
   blobStorageAccessKeyId: ci-blob-access-key
   blobStorageSecretAccessKey: ci-blob-secret

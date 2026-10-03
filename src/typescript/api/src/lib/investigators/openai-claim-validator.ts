@@ -1,129 +1,106 @@
 import type OpenAI from "openai";
-import { zodTextFormat } from "openai/helpers/zod";
-import { isNonNullObject, type InvestigationResult } from "@openerrata/shared";
-import type { InvestigatorResponseAudit } from "./interface.js";
-import { claimValidationResultSchema } from "./openai-schemas.js";
+import type { Response } from "openai/resources/responses/responses";
+import type { InvestigationClaimPayload } from "@openerrata/shared";
 import {
-  extractResponseAudit,
-  readIncompleteReason,
-  requireCompletedOutputText,
-  requireJsonObject,
-} from "./openai-response-audit.js";
-import { INVESTIGATION_VALIDATION_SYSTEM_PROMPT, buildValidationPrompt } from "./prompt.js";
-
-const isRecord = isNonNullObject;
+  InvestigatorIncompleteResponseError,
+  InvestigatorStructuredOutputError,
+} from "./errors.js";
+import type { InvestigatorRequestAudit } from "./interface.js";
+import {
+  buildClaimValidationRequestParams,
+  claimValidationVerdictSchema,
+  type InvestigationRequestConfig,
+} from "./openai-request-config.js";
+import { auditRequest, auditResponse } from "./openai-response-audit.js";
+import { buildValidationPrompt } from "./prompt.js";
 
 export const MAX_PER_CLAIM_VALIDATION_CONCURRENCY = 4;
 
-export class InvestigatorIncompleteResponseError extends Error {
-  readonly responseStatus: string | null;
-  readonly responseId: string | null;
-  readonly incompleteReason: string | null;
-  readonly outputTextLength: number;
+/** Outcome of one stage-2 validation call (SPEC §2.4.3.2). Never a rejection. */
+export type ClaimValidationResult =
+  | { kind: "approved"; claimIndex: number; request: InvestigatorRequestAudit }
+  | { kind: "rejected"; claimIndex: number; request: InvestigatorRequestAudit }
+  | { kind: "failed"; claimIndex: number; request: InvestigatorRequestAudit; error: Error };
 
-  constructor(input: {
-    responseStatus: string | null;
-    responseId: string | null;
-    incompleteReason: string | null;
-    outputTextLength: number;
-  }) {
-    const statusPart = input.responseStatus ?? "unknown";
-    const reasonPart = input.incompleteReason ?? "unknown";
-    const responseIdPart = input.responseId ?? "unknown";
-    super(
-      "OpenAI response did not complete " +
-        `(status=${statusPart}, reason=${reasonPart}, responseId=${responseIdPart}, outputTextLength=${input.outputTextLength.toString()})`,
-    );
-    this.name = "InvestigatorIncompleteResponseError";
-    this.responseStatus = input.responseStatus;
-    this.responseId = input.responseId;
-    this.incompleteReason = input.incompleteReason;
-    this.outputTextLength = input.outputTextLength;
-  }
+function toError(caught: unknown): Error {
+  return caught instanceof Error ? caught : new Error(String(caught));
 }
 
-export type PerClaimValidationResult =
-  | {
-      claimIndex: number;
-      approved: boolean;
-      responseAudit: InvestigatorResponseAudit;
-      error: null;
-    }
-  | {
-      claimIndex: number;
-      approved: false;
-      responseAudit: InvestigatorResponseAudit | null;
-      error: Error;
-    };
-
-export async function validateClaim(
-  client: OpenAI,
-  modelId: string,
-  claimIndex: number,
-  claim: InvestigationResult["claims"][number],
-  contentText: string,
-  imageContextNotes: string | undefined,
-  requestReasoning: {
-    effort: "low" | "medium" | "high";
-    summary: "auto" | "concise" | "detailed";
-  },
-): Promise<PerClaimValidationResult> {
-  const validationPrompt = buildValidationPrompt({
-    currentPostText: contentText,
-    candidateClaim: claim,
-    ...(imageContextNotes === undefined ? {} : { imageContextNotes }),
-  });
-
-  let response: unknown;
-  try {
-    response = await client.responses.create({
-      model: modelId,
-      stream: false,
-      instructions: INVESTIGATION_VALIDATION_SYSTEM_PROMPT,
-      input: validationPrompt,
-      reasoning: requestReasoning,
-      text: {
-        format: zodTextFormat(claimValidationResultSchema, "claim_validation_result"),
-      },
+/** The verdict in a completed validation response; throws when there is none. */
+function readVerdict(response: Response): boolean {
+  if (response.status !== "completed") {
+    throw new InvestigatorIncompleteResponseError({
+      responseStatus: response.status ?? null,
+      responseId: response.id,
+      incompleteReason: response.incomplete_details?.reason ?? null,
     });
+  }
+
+  const outputText = response.output
+    .flatMap((item) => (item.type === "message" ? item.content : []))
+    .flatMap((part) => (part.type === "output_text" ? [part.text] : []))
+    .join("");
+
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(outputText);
+  } catch {
+    throw new InvestigatorStructuredOutputError(
+      `Claim validation response ${response.id} did not return a JSON verdict`,
+    );
+  }
+  const verdict = claimValidationVerdictSchema.safeParse(decoded);
+  if (!verdict.success) {
+    throw new InvestigatorStructuredOutputError(
+      `Claim validation response ${response.id} returned an invalid verdict: ${verdict.error.message}`,
+    );
+  }
+  return verdict.data.approved;
+}
+
+export async function validateClaim(input: {
+  client: OpenAI;
+  requestConfig: InvestigationRequestConfig;
+  claimIndex: number;
+  claim: InvestigationClaimPayload;
+  contentText: string;
+  imageContextNotes: string | undefined;
+  signal: AbortSignal;
+}): Promise<ClaimValidationResult> {
+  const { claimIndex } = input;
+  const validationPrompt = buildValidationPrompt({
+    currentPostText: input.contentText,
+    candidateClaim: input.claim,
+    ...(input.imageContextNotes === undefined
+      ? {}
+      : { imageContextNotes: input.imageContextNotes }),
+  });
+  const params = buildClaimValidationRequestParams(input.requestConfig, validationPrompt);
+  const subject = { kind: "CLAIM_VALIDATION", claimIndex } as const;
+
+  let response: Response;
+  try {
+    response = await input.client.responses.create(params, { signal: input.signal });
   } catch (caught) {
     return {
+      kind: "failed",
       claimIndex,
-      approved: false,
-      responseAudit: null,
-      error: caught instanceof Error ? caught : new Error(String(caught)),
+      request: auditRequest({ subject, params, auditInput: validationPrompt, response: null }),
+      error: toError(caught),
     };
   }
 
-  const responseRecord = isRecord(response) ? response : {};
-  const responseAudit = extractResponseAudit(responseRecord);
+  const request = auditRequest({
+    subject,
+    params,
+    auditInput: validationPrompt,
+    response: auditResponse(response, new Date()),
+  });
   try {
-    if (responseAudit.responseStatus !== "completed") {
-      throw new InvestigatorIncompleteResponseError({
-        responseStatus: responseAudit.responseStatus,
-        responseId: responseAudit.responseId,
-        incompleteReason: readIncompleteReason(responseRecord),
-        outputTextLength: responseAudit.responseOutputText?.length ?? 0,
-      });
-    }
-
-    const outputText = requireCompletedOutputText({
-      responseAudit,
-      responseRecord,
-      context: "Claim validation response",
-    });
-
-    const parsed: unknown = JSON.parse(outputText);
-    const { approved } = claimValidationResultSchema.parse(
-      requireJsonObject(parsed, "Claim validation structured output"),
-    );
-    return { claimIndex, approved, responseAudit, error: null };
+    return readVerdict(response)
+      ? { kind: "approved", claimIndex, request }
+      : { kind: "rejected", claimIndex, request };
   } catch (caught) {
-    return {
-      claimIndex,
-      approved: false,
-      responseAudit,
-      error: caught instanceof Error ? caught : new Error(String(caught)),
-    };
+    return { kind: "failed", claimIndex, request, error: toError(caught) };
   }
 }

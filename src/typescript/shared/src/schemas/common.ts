@@ -1,15 +1,15 @@
 import { z } from "zod";
 import { CONTENT_PROVENANCE_VALUES, PLATFORM_VALUES } from "../enums.js";
 import {
-  EXTENSION_MESSAGE_PROTOCOL_VERSION,
   MAX_OBSERVED_CONTENT_TEXT_CHARS,
   MAX_OBSERVED_CONTENT_TEXT_UTF8_BYTES,
   MAX_OBSERVED_IMAGE_OCCURRENCES,
 } from "../constants.js";
 
+export const httpUrlSchema = z.url({ protocol: /^https?$/ });
+
 export const platformSchema = z.enum(PLATFORM_VALUES);
 export const contentProvenanceSchema = z.enum(CONTENT_PROVENANCE_VALUES);
-export const postMediaStateSchema = z.enum(["text_only", "has_images", "has_video"]);
 
 const utf8Encoder = new TextEncoder();
 
@@ -29,7 +29,7 @@ const observedImageOccurrenceSchema = z
   .object({
     originalIndex: z.number().int().nonnegative(),
     normalizedTextOffset: z.number().int().nonnegative(),
-    sourceUrl: z.url(),
+    sourceUrl: httpUrlSchema,
     captionText: z.string().min(1).optional(),
   })
   .strict();
@@ -39,16 +39,36 @@ export const observedImageOccurrencesSchema = z
   .max(MAX_OBSERVED_IMAGE_OCCURRENCES);
 
 export const postIdSchema = z.string().min(1).brand<"PostId">();
+
+// Per-platform external ID formats. Each is a `PostId`, additionally validated
+// against the shape the platform actually issues, so a client can never report
+// e.g. a Substack slug where the numeric Substack post ID belongs.
+export const lesswrongExternalIdSchema = z
+  .string()
+  .regex(/^[A-Za-z0-9]+$/)
+  .brand<"PostId">();
+export const xExternalIdSchema = z.string().regex(/^\d+$/).brand<"PostId">();
+export const substackExternalIdSchema = z.string().regex(/^\d+$/).brand<"PostId">();
+/** `{language}:{pageId}` — see `wikipediaExternalIdFromPageId`. */
+export const wikipediaExternalIdSchema = z
+  .string()
+  .regex(/^[a-z][a-z0-9-]*:\d+$/)
+  .brand<"PostId">();
+
 export const postVersionIdSchema = z.string().min(1).brand<"PostVersionId">();
-export const sessionIdSchema = z.number().int().nonnegative().brand<"SessionId">();
+/**
+ * Identifies one content-script page session (one observed page state in one
+ * tab). Random UUIDs keep ids unique across content-script instances, so a
+ * re-injected or orphaned script can never collide with the live one.
+ */
+export const tabSessionIdSchema = z.uuid().brand<"TabSessionId">();
 export const investigationIdSchema = z.string().min(1).brand<"InvestigationId">();
 export const claimIdSchema = z.string().min(1).brand<"ClaimId">();
 export const versionHashSchema = z.string().regex(/^[a-f0-9]{64}$/i);
-export const extensionMessageProtocolVersionSchema = z.literal(EXTENSION_MESSAGE_PROTOCOL_VERSION);
 
 const claimSourceSchema = z
   .object({
-    url: z.url(),
+    url: httpUrlSchema,
     title: z.string().min(1),
     snippet: z.string().min(1),
   })
@@ -95,7 +115,7 @@ export const xMetadataSchema = z
     authorHandle: z.string().min(1),
     authorDisplayName: z.string().min(1).nullable().optional(),
     text: observedContentTextSchema,
-    mediaUrls: z.array(z.url()),
+    mediaUrls: z.array(httpUrlSchema),
     likeCount: z.number().int().nonnegative().optional(),
     retweetCount: z.number().int().nonnegative().optional(),
     postedAt: z.iso.datetime().optional(),

@@ -49,4 +49,51 @@ spec:
         - protocol: TCP
           port: 3000
 {{- end }}
+{{- if .Values.networkPolicy.workerEgress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "openerrata.fullname" . }}-worker-egress
+  labels:
+    {{- include "openerrata.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "openerrata.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Public addresses only: excludes private, loopback, link-local (cloud
+    # metadata) and shared address space.
+    - to:
+        - ipBlock:
+            cidr: "0.0.0.0/0"
+            except:
+              - "10.0.0.0/8"
+              - "100.64.0.0/10"
+              - "127.0.0.0/8"
+              - "169.254.0.0/16"
+              - "172.16.0.0/12"
+              - "192.168.0.0/16"
+        - ipBlock:
+            cidr: "::/0"
+            except:
+              - "::1/128"
+              - "fc00::/7"
+              - "fe80::/10"
+    {{- with .Values.networkPolicy.workerEgress.allowedCidrs }}
+    - to:
+        {{- range . }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+    {{- end }}
+{{- end }}
 {{- end }}

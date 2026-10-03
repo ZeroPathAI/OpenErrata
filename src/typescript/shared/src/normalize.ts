@@ -1,20 +1,22 @@
 /**
- * Block-level HTML elements whose boundaries are treated as word separators
- * during content normalization. Used by both the extension (DOM TreeWalker)
- * and API (parse5 traversal) to ensure identical output on compact HTML where
- * no whitespace text nodes exist between adjacent block elements.
- *
- * Must be kept in sync between client and server to prevent canonicalization drift.
- * Spec §3.8.
- */
-/**
  * HTML tags that never contain article prose on any platform.
  * Text inside these elements is excluded unconditionally during
  * content extraction on both client and server.
  */
 export const NON_CONTENT_TAGS = new Set(["script", "style", "noscript"]);
 
-export const CONTENT_BLOCK_SEPARATOR_TAGS = new Set([
+/**
+ * HTML elements whose boundaries separate words in extracted text: block-level
+ * elements, and the line-breaking void elements `br` and `hr`, which render
+ * the text either side of them on separate lines ("hard.<br>This" reads
+ * "hard. This", not "hard.This"). Used by both the extension (DOM TreeWalker)
+ * and API (parse5 traversal) to ensure identical output on compact HTML where
+ * no whitespace text nodes exist between such elements and their neighbours.
+ *
+ * Must be kept in sync between client and server to prevent canonicalization drift.
+ * Spec §3.8.
+ */
+export const WORD_SEPARATOR_TAGS = new Set([
   "p",
   "li",
   "h1",
@@ -29,6 +31,8 @@ export const CONTENT_BLOCK_SEPARATOR_TAGS = new Set([
   "td",
   "th",
   "div",
+  "br",
+  "hr",
 ]);
 
 /**

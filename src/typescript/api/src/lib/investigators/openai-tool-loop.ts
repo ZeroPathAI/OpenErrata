@@ -1,147 +1,108 @@
 import type OpenAI from "openai";
-import type { ResponseCreateParamsNonStreaming } from "openai/resources/responses/responses";
-import { isNonNullObject } from "@openerrata/shared";
-import type { InvestigatorResponseAudit } from "./interface.js";
-import { InvestigatorStructuredOutputError } from "./openai-errors.js";
+import type { Response, Tool } from "openai/resources/responses/responses";
+import type { InvestigatorRequestAudit } from "./interface.js";
+import type { AuditedRequestInput } from "./openai-input-builder.js";
 import {
-  extractResponseAudit,
-  offsetResponseAuditIndices,
-  readString,
-} from "./openai-response-audit.js";
+  buildFactCheckRequestParams,
+  type InvestigationRequestConfig,
+} from "./openai-request-config.js";
+import { auditRequest, auditResponse } from "./openai-response-audit.js";
 import {
-  deduplicateFunctionToolCalls,
-  extractPendingFunctionToolCalls,
-  isClaimToolCall,
-  RETAIN_CORRECTION_TOOL_NAME,
-  SUBMIT_CORRECTION_TOOL_NAME,
+  extractFunctionToolCalls,
   type FunctionCallOutput,
   type PendingFunctionToolCall,
 } from "./openai-tool-dispatch.js";
 
-const isRecord = isNonNullObject;
-
-interface RequestReasoning {
-  effort: "low" | "medium" | "high";
-  summary: "auto" | "concise" | "detailed";
-}
-
-type RequiredResponseInput = NonNullable<ResponseCreateParamsNonStreaming["input"]>;
-
-interface BaseResponseRequest {
-  model: NonNullable<ResponseCreateParamsNonStreaming["model"]>;
-  stream: false;
-  instructions: string;
-  tools: NonNullable<ResponseCreateParamsNonStreaming["tools"]>;
-  reasoning: RequestReasoning;
-}
-
-export class ToolLoopExecutionError extends Error {
-  readonly responseAudits: readonly InvestigatorResponseAudit[];
-
-  constructor(
-    message: string,
-    responseAudits: readonly InvestigatorResponseAudit[],
-    cause?: unknown,
-  ) {
-    super(message, ...(cause !== undefined ? [{ cause }] : []));
-    this.name = "ToolLoopExecutionError";
-    this.responseAudits = responseAudits;
-  }
-}
-
-interface ToolLoopResult {
-  latestResponseRecord: Record<string, unknown> | null;
-  responseAudits: InvestigatorResponseAudit[];
-}
+/**
+ * How the stage-1 fact-check loop ended. `rounds` audits every request made,
+ * including a final one that failed without a response.
+ */
+type ToolLoopResult =
+  | {
+      /** The model stopped calling function tools. */
+      kind: "completed";
+      rounds: InvestigatorRequestAudit[];
+      finalResponse: Response;
+    }
+  | {
+      /** The model still had function calls pending when no round was left to answer them. */
+      kind: "round_limit";
+      rounds: InvestigatorRequestAudit[];
+    }
+  | {
+      /** A response ended with a status other than "completed". */
+      kind: "response_not_completed";
+      rounds: InvestigatorRequestAudit[];
+      response: Response;
+    }
+  | {
+      /** A provider request or a tool call threw. */
+      kind: "failed";
+      rounds: InvestigatorRequestAudit[];
+      error: unknown;
+    };
 
 export async function runToolLoop(input: {
   client: OpenAI;
-  maxResponseToolRounds: number;
-  baseResponseRequest: BaseResponseRequest;
-  initialInput: RequiredResponseInput;
-  handleSubmittedClaims: (
-    calls: PendingFunctionToolCall[],
-  ) => FunctionCallOutput[] | Promise<FunctionCallOutput[]>;
-  handleRetainedClaims: (
-    calls: PendingFunctionToolCall[],
-  ) => FunctionCallOutput[] | Promise<FunctionCallOutput[]>;
-  handleResearchCalls: (
-    calls: PendingFunctionToolCall[],
-  ) => FunctionCallOutput[] | Promise<FunctionCallOutput[]>;
+  requestConfig: InvestigationRequestConfig;
+  /** At least 1. */
+  maxRounds: number;
+  instructions: string;
+  tools: Tool[];
+  initialInput: AuditedRequestInput;
+  signal: AbortSignal;
+  handleFunctionCalls: (calls: PendingFunctionToolCall[]) => Promise<FunctionCallOutput[]>;
 }): Promise<ToolLoopResult> {
-  let outputIndexOffset = 0;
+  const rounds: InvestigatorRequestAudit[] = [];
+  let roundInput = input.initialInput;
   let previousResponseId: string | null = null;
-  let latestResponseRecord: Record<string, unknown> | null = null;
-  let nextInput: RequiredResponseInput = input.initialInput;
-  const responseAudits: InvestigatorResponseAudit[] = [];
 
-  let round = 0;
-  while (round < input.maxResponseToolRounds) {
-    const responseRequest: ResponseCreateParamsNonStreaming =
-      round === 0
-        ? {
-            ...input.baseResponseRequest,
-            input: nextInput,
-          }
-        : {
-            ...input.baseResponseRequest,
-            previous_response_id: previousResponseId,
-            input: nextInput,
-          };
+  for (let round = 0; ; round += 1) {
+    const subject = { kind: "FACT_CHECK_ROUND", round } as const;
+    const params = buildFactCheckRequestParams(input.requestConfig, {
+      instructions: input.instructions,
+      tools: input.tools,
+      input: roundInput.request,
+      previousResponseId,
+    });
 
-    let response: unknown;
+    let response: Response;
     try {
-      response = await input.client.responses.create(responseRequest);
+      response = await input.client.responses.create(params, { signal: input.signal });
     } catch (error) {
-      throw new ToolLoopExecutionError(
-        "OpenAI Responses API request failed",
-        responseAudits,
-        error,
-      );
+      rounds.push(auditRequest({ subject, params, auditInput: roundInput.audit, response: null }));
+      return { kind: "failed", rounds, error };
+    }
+    rounds.push(
+      auditRequest({
+        subject,
+        params,
+        auditInput: roundInput.audit,
+        response: auditResponse(response, new Date()),
+      }),
+    );
+
+    if (response.status !== "completed") {
+      return { kind: "response_not_completed", rounds, response };
     }
 
-    const responseRecord = isRecord(response) ? response : {};
-    latestResponseRecord = responseRecord;
-    previousResponseId = readString(responseRecord["id"]);
-
-    const responseAudit = extractResponseAudit(responseRecord);
-    responseAudits.push(offsetResponseAuditIndices(responseAudit, outputIndexOffset));
-    outputIndexOffset += responseAudit.outputItems.length;
-
-    const pendingFunctionCalls = deduplicateFunctionToolCalls(
-      extractPendingFunctionToolCalls(responseRecord),
-    );
-    if (pendingFunctionCalls.length === 0) {
-      break;
+    const calls = extractFunctionToolCalls(response);
+    if (calls.length === 0) {
+      return { kind: "completed", rounds, finalResponse: response };
+    }
+    // Answering these calls needs another round; don't run tools (or schedule
+    // claim validations) whose outputs could never be sent.
+    if (round + 1 >= input.maxRounds) {
+      return { kind: "round_limit", rounds };
     }
 
-    if (previousResponseId === null || previousResponseId.length === 0) {
-      throw new ToolLoopExecutionError(
-        "Tool calls were emitted without a response id",
-        responseAudits,
-        new InvestigatorStructuredOutputError("Tool calls were emitted without a response id"),
-      );
+    let outputs: FunctionCallOutput[];
+    try {
+      outputs = await input.handleFunctionCalls(calls);
+    } catch (error) {
+      return { kind: "failed", rounds, error };
     }
-
-    const submittedClaims = pendingFunctionCalls.filter(
-      (call) => call.name === SUBMIT_CORRECTION_TOOL_NAME,
-    );
-    const retainedClaims = pendingFunctionCalls.filter(
-      (call) => call.name === RETAIN_CORRECTION_TOOL_NAME,
-    );
-    const researchCalls = pendingFunctionCalls.filter((call) => !isClaimToolCall(call));
-
-    const outputs: FunctionCallOutput[] = [];
-    outputs.push(...(await input.handleSubmittedClaims(submittedClaims)));
-    outputs.push(...(await input.handleRetainedClaims(retainedClaims)));
-    outputs.push(...(await input.handleResearchCalls(researchCalls)));
-
-    nextInput = outputs;
-    round += 1;
+    roundInput = { request: outputs, audit: outputs.map((output) => ({ ...output })) };
+    previousResponseId = response.id;
   }
-
-  return {
-    latestResponseRecord,
-    responseAudits,
-  };
 }

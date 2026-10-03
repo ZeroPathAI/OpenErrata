@@ -5,7 +5,7 @@ import {
   lesswrongHtmlToNormalizedText,
   wikipediaHtmlToNormalizedText,
 } from "../../../api/src/lib/services/content-fetcher.js";
-import { extractContentWithImageOccurrencesFromRoot } from "../../src/content/adapters/utils.js";
+import { extractContent } from "../../src/content/adapters/utils.js";
 import { lesswrongAdapter } from "../../src/content/adapters/lesswrong.js";
 import { wikipediaAdapter } from "../../src/content/adapters/wikipedia.js";
 import { assertReady, withWindow } from "../helpers/adapter-harness.js";
@@ -186,7 +186,11 @@ for (const fixtureKey of Object.values(E2E_WIKIPEDIA_FIXTURE_KEYS)) {
 
 function extractClientTextFromBody(html: string, url: string): string {
   return withWindow(url, `<!doctype html><html><body>${html}</body></html>`, (document) => {
-    return extractContentWithImageOccurrencesFromRoot(document.body, url).contentText;
+    return extractContent(document.body, {
+      exclude: () => false,
+      imageSelector: "img[src]",
+      baseUrl: url,
+    }).contentText;
   });
 }
 
@@ -210,6 +214,34 @@ const STRUCTURAL_PARITY_CASES: { name: string; html: string }[] = [
   {
     name: "inline within block",
     html: "<p>word1<strong>word2</strong>word3</p>",
+  },
+  {
+    name: "script, style and noscript inside content",
+    html: "<p>Alpha<script>var x = 1;</script> beta</p><style>p{}</style><noscript>Enable JS</noscript>",
+  },
+  {
+    name: "extension highlight mark inside a paragraph",
+    html: '<p>The <mark class="openerrata-annotation" data-openerrata-claim-id="c">moon</mark> is cheese.</p>',
+  },
+  {
+    name: "line break between sentences",
+    html: "<p>See steg-reasoning-is-hard.<br>This work builds on METR.<br>(2) Next</p>",
+  },
+  {
+    name: "line breaks inside inline elements",
+    html: "<p><em>first verse<br>second verse</em><a href='#'>link<br>text</a></p>",
+  },
+  {
+    name: "consecutive and leading/trailing line breaks",
+    html: "<p><br>first<br><br>second<br></p><div>third<br></div>",
+  },
+  {
+    name: "line breaks between CJK lines",
+    html: "<p>我爱你<br>你爱我<br>蜜雪冰城甜蜜蜜</p>",
+  },
+  {
+    name: "horizontal rule between inline text",
+    html: "before<hr>after",
   },
 ];
 
@@ -241,10 +273,11 @@ describe("synthetic structural parity: client JSDOM vs server parse5", () => {
         (document) => {
           const root = document.querySelector(".mw-parser-output");
           if (!root) throw new Error("Missing .mw-parser-output");
-          return extractContentWithImageOccurrencesFromRoot(
-            root,
-            "https://en.wikipedia.org/wiki/Test",
-          ).contentText;
+          return extractContent(root, {
+            exclude: () => false,
+            imageSelector: "img[src]",
+            baseUrl: "https://en.wikipedia.org/wiki/Test",
+          }).contentText;
         },
       );
       const serverText = wikipediaHtmlToNormalizedText(wikiHtml);

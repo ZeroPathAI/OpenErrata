@@ -1,10 +1,13 @@
 import { z } from "zod";
+import { INVESTIGATION_PROVIDER_VALUES } from "../enums.js";
 import {
+  claimIdSchema,
+  contentProvenanceSchema,
+  httpUrlSchema,
   investigationIdSchema,
   platformSchema,
   postIdSchema,
   versionHashSchema,
-  contentProvenanceSchema,
   investigationClaimSchema,
 } from "./common.js";
 
@@ -61,18 +64,38 @@ export const getMetricsInputSchema = z
   })
   .strict();
 
-const publicInvestigationOriginSchema = z
-  .object({
-    provenance: contentProvenanceSchema,
-    serverVerifiedAt: z.iso.datetime().optional(),
-  })
-  .strict();
+/*
+ * Output schemas below describe the public GraphQL wire format: nullable
+ * fields are present with `null`, never omitted.
+ */
+
+/**
+ * `provenance` is the immutable snapshot of how the investigated content was
+ * obtained; `serverVerifiedAt` is the post version's verification latch. A
+ * SERVER_VERIFIED investigation ran on verified content, so its latch is
+ * always set. A CLIENT_FALLBACK investigation's latch may be set later, when a
+ * subsequent server fetch verifies the same content.
+ */
+const publicInvestigationOriginSchema = z.discriminatedUnion("provenance", [
+  z
+    .object({
+      provenance: contentProvenanceSchema.extract(["SERVER_VERIFIED"]),
+      serverVerifiedAt: z.iso.datetime(),
+    })
+    .strict(),
+  z
+    .object({
+      provenance: contentProvenanceSchema.extract(["CLIENT_FALLBACK"]),
+      serverVerifiedAt: z.iso.datetime().nullable(),
+    })
+    .strict(),
+]);
 
 const publicPostSchema = z
   .object({
     platform: platformSchema,
     externalId: postIdSchema,
-    url: z.url(),
+    url: httpUrlSchema,
   })
   .strict();
 
@@ -82,7 +105,8 @@ const publicInvestigationMetadataSchema = z
     corroborationCount: z.number().int().nonnegative(),
     checkedAt: z.iso.datetime(),
     promptVersion: z.string().min(1),
-    provider: z.string().min(1),
+    provider: z.enum(INVESTIGATION_PROVIDER_VALUES),
+    /** The provider's model id that produced the result, e.g. "gpt-6.1-sol". */
     model: z.string().min(1),
     origin: publicInvestigationOriginSchema,
   })
@@ -99,27 +123,8 @@ export const publicGetInvestigationOutputSchema = z
 
 const claimSummarySchema = z
   .object({
-    id: z.string().min(1),
+    id: claimIdSchema,
     summary: z.string().min(1),
-  })
-  .strict();
-
-export const publicGetPostInvestigationsOutputSchema = z
-  .object({
-    post: publicPostSchema.nullable(),
-    investigations: z.array(
-      z
-        .object({
-          id: investigationIdSchema,
-          contentHash: versionHashSchema,
-          corroborationCount: z.number().int().nonnegative(),
-          checkedAt: z.iso.datetime(),
-          claimCount: z.number().int().nonnegative(),
-          claimSummaries: z.array(claimSummarySchema),
-          origin: publicInvestigationOriginSchema,
-        })
-        .strict(),
-    ),
   })
   .strict();
 
@@ -133,7 +138,7 @@ export const publicSearchInvestigationsOutputSchema = z
           checkedAt: z.iso.datetime(),
           platform: platformSchema,
           externalId: postIdSchema,
-          url: z.url(),
+          url: httpUrlSchema,
           corroborationCount: z.number().int().nonnegative(),
           claimCount: z.number().int().nonnegative(),
           claimSummaries: z.array(claimSummarySchema),
@@ -142,13 +147,5 @@ export const publicSearchInvestigationsOutputSchema = z
         .strict(),
     ),
     hasMore: z.boolean(),
-  })
-  .strict();
-
-export const publicGetMetricsOutputSchema = z
-  .object({
-    totalInvestigatedPosts: z.number().int().nonnegative(),
-    investigatedPostsWithFlags: z.number().int().nonnegative(),
-    factCheckIncidence: z.number().nonnegative(),
   })
   .strict();

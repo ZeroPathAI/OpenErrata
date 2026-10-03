@@ -1,5 +1,5 @@
 apiVersion: v2
 name: openerrata
 description: OpenErrata fact-checking API and background workers
+# No appVersion: the deployed application version is the image tag/digest.
 version: 0.1.0
-appVersion: "0.1.0"

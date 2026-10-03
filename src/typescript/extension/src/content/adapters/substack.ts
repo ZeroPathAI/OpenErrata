@@ -1,20 +1,21 @@
-import { normalizeContent, isNonNullObject, utf8ByteLength } from "@openerrata/shared";
-import { ANNOTATION_SELECTOR } from "../annotation-dom";
+import { isNonNullObject, normalizeContent, substackExternalIdSchema } from "@openerrata/shared";
+import { isSubstackHost, pageLocatorFor, type PageLocator } from "../../lib/page-locator";
 import type { AdapterExtractionResult, PlatformAdapter } from "./model";
 import {
-  extractContentWithImageOccurrencesFromRoot,
+  extractContent,
   hasVideoContent,
   readFirstMetaDateAsIso,
   readFirstTimeDateAsIso,
+  readJsonLdBlocks,
   readPublishedDateFromJsonLd,
+  serializeContentHtml,
+  toTransportableHtml,
 } from "./utils";
-import { extractSubstackPostSlug, isSubstackPostPath } from "../../lib/substack-url";
 
 const CONTENT_SELECTOR = ".body.markup";
 const TITLE_SELECTOR = "h1.post-title";
 const SUBTITLE_SELECTOR = "h3.subtitle, h2.subtitle";
 const AUTHOR_META_SELECTOR = 'meta[name="author"]';
-const JSON_LD_SELECTOR = 'script[type="application/ld+json"]';
 const META_DATE_SELECTORS = [
   'meta[property="article:published_time"]',
   'meta[name="article:published_time"]',
@@ -28,7 +29,6 @@ const SUBSTACK_FINGERPRINT_SELECTOR = [
   'meta[property="og:url"][content*=".substack.com"]',
   'meta[name="twitter:image"][content*="post_preview/"]',
 ].join(",");
-const SUBSTACK_HOST_REGEX = /(^|\.)substack\.com$/i;
 const SUBSTACK_POST_PREVIEW_ID_REGEX = /post_preview\/(\d+)\/(?:twitter|facebook)\.(?:jpg|png)/i;
 const SUBSTACK_PUBLICATION_REGEX = /([a-z0-9-]+)\.substack\.com/i;
 const PRIVATE_OR_GATED_SELECTOR = [
@@ -49,6 +49,23 @@ const PRIVATE_OR_GATED_PATTERNS = [
 ] as const;
 const ACCESS_CONTROL_TERMS = ["paywall", "subscriber", "subscription"] as const;
 const SUBSTACK_HTML_CONTENT_MAX_BYTES = 256 * 1024;
+/**
+ * Editor components in the post body that are not the post's own text, by
+ * the `data-component-name` Substack renders them with: calls to action
+ * (subscribe forms; share, comment and subscribe buttons) and cards embedding
+ * content from elsewhere — tweets, whose text is another author's (quoted
+ * tweets are not analyzed, spec §2.1), and other posts. Their text, avatars
+ * and media stay out of the content text and image occurrences.
+ */
+const NON_POST_COMPONENT_SELECTOR = [
+  "SubscribeWidget",
+  "ButtonCreateButton",
+  "Twitter2ToDOM",
+  "DigestPostEmbed",
+  "EmbeddedPostToDOM",
+]
+  .map((componentName) => `[data-component-name="${componentName}"]`)
+  .join(",");
 
 function isHiddenElement(element: Element): boolean {
   return element.closest('[hidden], [aria-hidden="true"]') !== null;
@@ -203,15 +220,8 @@ function extractInteractionCounts(document: Document): {
     }
   };
 
-  for (const script of document.querySelectorAll<HTMLScriptElement>(JSON_LD_SELECTOR)) {
-    const text = script.textContent.trim();
-    if (text.length === 0) continue;
-
-    try {
-      visit(JSON.parse(text) as unknown);
-    } catch {
-      // Ignore malformed JSON-LD payloads.
-    }
+  for (const block of readJsonLdBlocks(document)) {
+    visit(block);
   }
 
   return state;
@@ -224,15 +234,8 @@ function extractAuthorHandle(document: Document): string | undefined {
   return normalized.length > 0 ? normalized : undefined;
 }
 
-function parseSlug(url: URL): string | null {
-  const rawSlug = extractSubstackPostSlug(url.pathname);
-  if (rawSlug === null) return null;
-  const slug = normalizeContent(rawSlug);
-  return slug.length > 0 ? slug : null;
-}
-
 function parsePublicationSubdomain(url: URL, imageCandidates: string[]): string | null {
-  if (SUBSTACK_HOST_REGEX.test(url.hostname) && url.hostname.includes(".")) {
+  if (isSubstackHost(url.hostname)) {
     const parts = url.hostname.toLowerCase().split(".");
     const publicationSubdomainCandidate = parts.length >= 3 ? parts[parts.length - 3] : undefined;
     if (
@@ -261,15 +264,44 @@ function parseSubstackPostId(imageCandidates: string[]): string | null {
   return null;
 }
 
-function hasSubstackHost(url: URL): boolean {
-  return SUBSTACK_HOST_REGEX.test(url.hostname) && url.hostname !== "substack.com";
+type SubstackLocator = Extract<PageLocator, { platform: "SUBSTACK" }>;
+
+/** Substack's non-post components under the content root (`NON_POST_COMPONENT_SELECTOR`). */
+function substackExclusionFilter(): (element: Element) => boolean {
+  return (element) => element.matches(NON_POST_COMPONENT_SELECTOR);
 }
 
-function hasSubstackPostPath(pathname: string): boolean {
-  return isSubstackPostPath(pathname);
+function substackLocator(url: string): SubstackLocator | null {
+  const locator = pageLocatorFor("SUBSTACK", url);
+  return locator?.platform === "SUBSTACK" ? locator : null;
+}
+
+/**
+ * Substack's JSON-LD declares `isAccessibleForFree: false` on every paid-only
+ * post, whichever paywall copy the page renders (free-unlock offers included),
+ * so it is a structural signal where paywall wording is not. A paid
+ * subscriber viewing the full post sees the same declaration: subscriber-only
+ * posts are skipped for everyone (spec §3.11).
+ */
+function isDeclaredNotAccessibleForFree(document: Document): boolean {
+  const visit = (node: unknown, depth: number): boolean => {
+    if (depth > 10) return false;
+    if (Array.isArray(node)) {
+      return node.some((nested: unknown) => visit(nested, depth + 1));
+    }
+    if (!isNonNullObject(node)) return false;
+    const flag = node["isAccessibleForFree"];
+    if (flag === false || flag === "false" || flag === "False") return true;
+    return Object.values(node).some((nested) => visit(nested, depth + 1));
+  };
+  return readJsonLdBlocks(document).some((block) => visit(block, 0));
 }
 
 function hasPrivateOrGatedMarkers(document: Document): boolean {
+  if (isDeclaredNotAccessibleForFree(document)) {
+    return true;
+  }
+
   const explicitMarkers = document.querySelectorAll(PRIVATE_OR_GATED_SELECTOR);
   for (const marker of explicitMarkers) {
     if (isHiddenElement(marker)) continue;
@@ -316,65 +348,23 @@ function hasPrivateOrGatedMarkers(document: Document): boolean {
   return false;
 }
 
-/**
- * Serialize the content root's HTML, stripping any OpenErrata annotation
- * marks that may have been injected into the DOM. The stored HTML must
- * represent the original page content, not our annotations.
- */
-function serializeContentHtml(root: Element): string {
-  const annotations = root.querySelectorAll(ANNOTATION_SELECTOR);
-  if (annotations.length === 0) {
-    return root.innerHTML;
-  }
-
-  const clone = root.cloneNode(true);
-  if (!(clone instanceof Element)) return root.innerHTML;
-  for (const mark of clone.querySelectorAll(ANNOTATION_SELECTOR)) {
-    const parent = mark.parentNode;
-    if (parent === null) continue;
-    while (mark.firstChild !== null) {
-      parent.insertBefore(mark.firstChild, mark);
-    }
-    parent.removeChild(mark);
-  }
-  return clone.innerHTML;
-}
-
-/**
- * htmlContent is optional in the API schema. Omit oversized payloads to avoid
- * failing the entire viewPost request against the extension's hard body limit.
- */
-function toTransportableHtmlContent(html: string): string | undefined {
-  if (html.length === 0) {
-    return undefined;
-  }
-  return utf8ByteLength(html) <= SUBSTACK_HTML_CONTENT_MAX_BYTES ? html : undefined;
-}
-
 export const substackAdapter: PlatformAdapter = {
   platformKey: "SUBSTACK",
-  contentRootSelector: CONTENT_SELECTOR,
 
   matches(url: string): boolean {
-    try {
-      const parsed = new URL(url);
-      return hasSubstackHost(parsed) && hasSubstackPostPath(parsed.pathname);
-    } catch {
-      return false;
-    }
+    const locator = substackLocator(url);
+    return locator !== null && isSubstackHost(new URL(locator.origin).hostname);
   },
 
   detectFromDom(document: Document): boolean {
-    try {
-      const parsed = new URL(document.location.href);
-      if (!hasSubstackPostPath(parsed.pathname)) {
-        return false;
-      }
-    } catch {
-      return false;
-    }
+    return (
+      substackLocator(document.location.href) !== null &&
+      document.querySelector(SUBSTACK_FINGERPRINT_SELECTOR) !== null
+    );
+  },
 
-    return document.querySelector(SUBSTACK_FINGERPRINT_SELECTOR) !== null;
+  pageLocator(url: string): PageLocator | null {
+    return substackLocator(url);
   },
 
   detectPrivateOrGated(document: Document): boolean {
@@ -383,26 +373,16 @@ export const substackAdapter: PlatformAdapter = {
 
   extract(document: Document): AdapterExtractionResult {
     const url = window.location.href;
-    const root = document.querySelector(CONTENT_SELECTOR);
-
-    let parsedUrl: URL;
-    try {
-      parsedUrl = new URL(url);
-    } catch {
+    const locator = substackLocator(url);
+    const slug = locator === null ? "" : normalizeContent(locator.slug);
+    if (slug.length === 0) {
       return {
         kind: "not_ready",
         reason: "missing_identity",
       };
     }
 
-    const slug = parseSlug(parsedUrl);
-    if (slug === null || slug.length === 0) {
-      return {
-        kind: "not_ready",
-        reason: "missing_identity",
-      };
-    }
-
+    const root = this.getContentRoot(document);
     if (!root) {
       return {
         kind: "not_ready",
@@ -439,7 +419,7 @@ export const substackAdapter: PlatformAdapter = {
       };
     }
 
-    const publicationSubdomain = parsePublicationSubdomain(parsedUrl, imageCandidates);
+    const publicationSubdomain = parsePublicationSubdomain(new URL(url), imageCandidates);
     if (publicationSubdomain === null || publicationSubdomain.length === 0) {
       return {
         kind: "not_ready",
@@ -447,28 +427,29 @@ export const substackAdapter: PlatformAdapter = {
       };
     }
 
-    const extractedContent = extractContentWithImageOccurrencesFromRoot(root, url);
-    const contentText = extractedContent.contentText;
-    const htmlContent = toTransportableHtmlContent(serializeContentHtml(root));
+    const extractedContent = extractContent(root, {
+      exclude: substackExclusionFilter(),
+      imageSelector: "img[src]",
+      baseUrl: url,
+    });
+    const htmlContent = toTransportableHtml(
+      serializeContentHtml(root, substackExclusionFilter),
+      SUBSTACK_HTML_CONTENT_MAX_BYTES,
+    );
 
     const subtitle = normalizeContent(document.querySelector(SUBTITLE_SELECTOR)?.textContent ?? "");
     const publishedAt = extractPublishedAt(document, root);
     const interactionCounts = extractInteractionCounts(document);
     const authorSubstackHandle = extractAuthorHandle(document);
 
-    const imageUrls = extractedContent.imageUrls;
-    const hasVideo = hasVideoContent(root);
-    const mediaState = hasVideo ? "has_video" : imageUrls.length > 0 ? "has_images" : "text_only";
-
     return {
       kind: "ready",
       content: {
         platform: "SUBSTACK",
-        externalId: substackPostId,
+        externalId: substackExternalIdSchema.parse(substackPostId),
         url,
-        contentText,
-        mediaState,
-        imageUrls,
+        contentText: extractedContent.contentText,
+        hasVideo: hasVideoContent(root),
         imageOccurrences: extractedContent.imageOccurrences,
         metadata: {
           substackPostId,
@@ -494,4 +475,6 @@ export const substackAdapter: PlatformAdapter = {
   getContentRoot(document: Document): Element | null {
     return document.querySelector(CONTENT_SELECTOR);
   },
+
+  contentExclusionFilter: substackExclusionFilter,
 };

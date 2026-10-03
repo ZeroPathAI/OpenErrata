@@ -1,17 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { ResolvedPostVersion } from "../../src/lib/trpc/routes/post/content-storage.js";
 import {
-  ensureInvestigationsWithUpdateMetadata,
-  findCompletedInvestigationByPostVersionId,
-  findLatestServerVerifiedCompleteInvestigationForPost,
-  investigationQueriesInternals,
+  carryForwardClaims,
+  findCarriedForwardClaims,
   loadInvestigationWithClaims,
   maybeRecordCorroboration,
   parseProgressClaims,
   requireCompleteCheckedAtIso,
-  selectSourceInvestigationForUpdate,
-  toPriorInvestigationResult,
   unreachableInvestigationStatus,
   type InvestigationRepository,
 } from "../../src/lib/trpc/routes/post/investigation-queries.js";
@@ -19,30 +14,20 @@ import {
 function nullRepo(): InvestigationRepository {
   return {
     findInvestigationWithClaims: async () => null,
-    findCompletedByPostVersionId: async () => null,
-    findLatestServerVerifiedComplete: async () => null,
+    findLatestCompleteOnOtherVersion: async () => null,
     findClientFallbackInvestigationId: async () => null,
     recordCorroborationCredit: async () => {},
   };
 }
 
-function buildResolvedPostVersion(contentText = "new line"): ResolvedPostVersion {
+function claim(id: string, text: string) {
   return {
-    id: "post-version-id",
-    postId: "post-id",
-    versionHash: "version-hash",
-    serverVerifiedAt: new Date(),
-    contentBlob: {
-      contentHash: "content-hash",
-      contentText,
-      wordCount: 2,
-    },
-    post: {
-      id: "post-id",
-      platform: "X",
-      externalId: "external-id",
-      url: "https://x.com/openerrata/status/1",
-    },
+    id,
+    text,
+    context: `Context of ${text}`,
+    summary: `Summary of ${text}`,
+    reasoning: `Reasoning about ${text}`,
+    sources: [{ url: `https://example.com/${id}`, title: `Source ${id}`, snippet: "Snippet" }],
   };
 }
 
@@ -53,84 +38,77 @@ test("requireCompleteCheckedAtIso returns ISO and throws when checkedAt is missi
   assert.throws(() => requireCompleteCheckedAtIso("inv-2", null), /COMPLETE with null checkedAt/);
 });
 
-test("selectSourceInvestigationForUpdate drops same-version source and keeps prior version", () => {
+test("carryForwardClaims keeps exactly the claims whose text still occurs in the content", () => {
   const source = {
     id: "source-investigation-id",
-    postVersion: {
-      id: "source-post-version-id",
-      contentBlob: {
-        contentText: "old line",
-      },
-    },
-    claims: [],
-  };
-
-  assert.equal(selectSourceInvestigationForUpdate(null, "current-post-version-id"), null);
-  assert.equal(selectSourceInvestigationForUpdate(source, "source-post-version-id"), null);
-  assert.equal(selectSourceInvestigationForUpdate(source, "current-post-version-id"), source);
-});
-
-test("toPriorInvestigationResult maps source claims and handles null source", () => {
-  assert.equal(toPriorInvestigationResult(null), null);
-
-  const source = {
-    id: "source-investigation-id",
-    postVersion: {
-      id: "source-post-version-id",
-      contentBlob: { contentText: "old line" },
-    },
     claims: [
-      {
-        id: "claim_1",
-        text: "Claim text",
-        context: "Claim context",
-        summary: "Claim summary",
-        reasoning: "Claim reasoning",
-        sources: [
-          {
-            url: "https://example.com/1",
-            title: "Source 1",
-            snippet: "Snippet 1",
-          },
-        ],
-      },
+      claim("claim_kept", "The moon is made of cheese."),
+      claim("claim_removed", "Mars has three moons."),
     ],
   };
+  const contentText = "Intro. The moon is made of cheese. Mars has two moons.";
 
-  assert.deepEqual(toPriorInvestigationResult(source), {
+  assert.deepEqual(carryForwardClaims(source, contentText), {
     sourceInvestigationId: "source-investigation-id",
-    oldClaims: [
-      {
-        id: "claim_1",
-        text: "Claim text",
-        context: "Claim context",
-        summary: "Claim summary",
-        reasoning: "Claim reasoning",
-        sources: [
-          {
-            url: "https://example.com/1",
-            title: "Source 1",
-            snippet: "Snippet 1",
-          },
-        ],
-      },
-    ],
+    oldClaims: [claim("claim_kept", "The moon is made of cheese.")],
   });
 });
 
-test("buildLineDiff reports no changes and changed line blocks", () => {
-  assert.equal(
-    investigationQueriesInternals.buildLineDiff("same\ncontent", "same\ncontent"),
-    "No changes detected.",
-  );
+test("carryForwardClaims is null when no claim survives", () => {
+  const source = { id: "source", claims: [claim("claim_1", "Removed sentence.")] };
+  assert.equal(carryForwardClaims(source, "Entirely rewritten post."), null);
+  assert.equal(carryForwardClaims({ id: "source", claims: [] }, "Any text."), null);
+});
 
-  const diff = investigationQueriesInternals.buildLineDiff(
-    "keep one\nremove me\nkeep tail",
-    "keep one\nadd me\nkeep tail",
+test("carryForwardClaims matches claim text after content normalization", () => {
+  // Content text is normalized (§3.8): curly quotes and dashes become ASCII
+  // and whitespace collapses. A claim quoting the page's original typography
+  // still occurs in it.
+  const source = {
+    id: "source",
+    claims: [claim("claim_1", "It\u2019s  a \u201Ctest\u201D \u2014 really.")],
+  };
+  const result = carryForwardClaims(source, `Prefix. It's a "test" - really. Suffix.`);
+  assert.equal(result?.oldClaims.length, 1);
+});
+
+test("carryForwardClaims never carries a claim whose text normalizes to nothing", () => {
+  const source = { id: "source", claims: [claim("claim_1", " \u200B ")] };
+  assert.equal(carryForwardClaims(source, "Some content."), null);
+});
+
+test("findCarriedForwardClaims excludes the requested version and filters the latest complete source", async () => {
+  const lookups: { postId: string; excludedPostVersionId: string }[] = [];
+  const repo: InvestigationRepository = {
+    ...nullRepo(),
+    findLatestCompleteOnOtherVersion: async (postId, excludedPostVersionId) => {
+      lookups.push({ postId, excludedPostVersionId });
+      return {
+        id: "source",
+        claims: [claim("claim_1", "Kept sentence."), claim("claim_2", "Gone sentence.")],
+      };
+    },
+  };
+
+  const result = await findCarriedForwardClaims(repo, {
+    id: "requested-version",
+    postId: "post-1",
+    contentText: "Kept sentence. New sentence.",
+  });
+
+  assert.deepEqual(lookups, [{ postId: "post-1", excludedPostVersionId: "requested-version" }]);
+  assert.deepEqual(
+    result?.oldClaims.map((c) => c.id),
+    ["claim_1"],
   );
-  assert.match(diff, /Diff summary \(line context\):/);
-  assert.match(diff, /- Removed lines:\nremove me/);
-  assert.match(diff, /\+ Added lines:\nadd me/);
+  assert.equal(
+    await findCarriedForwardClaims(nullRepo(), {
+      id: "requested-version",
+      postId: "post-1",
+      contentText: "Kept sentence.",
+    }),
+    null,
+  );
 });
 
 test("unreachableInvestigationStatus throws explicit internal error", () => {
@@ -147,11 +125,8 @@ test("parseProgressClaims fails fast on malformed progress payload", () => {
   );
 });
 
-test("load and lookup helpers delegate to repository methods", async () => {
-  const repo = nullRepo();
-  assert.equal(await loadInvestigationWithClaims(repo, "inv-1"), null);
-  assert.equal(await findCompletedInvestigationByPostVersionId(repo, "pv-1"), null);
-  assert.equal(await findLatestServerVerifiedCompleteInvestigationForPost(repo, "post-1"), null);
+test("load helper delegates to repository method", async () => {
+  assert.equal(await loadInvestigationWithClaims(nullRepo(), "inv-1"), null);
 });
 
 test("maybeRecordCorroboration gates on auth and delegates to repository", async () => {
@@ -196,70 +171,4 @@ test("maybeRecordCorroboration gates on auth and delegates to repository", async
   await maybeRecordCorroboration(repo, "pv-1", "viewer-key", true);
   assert.equal(lookupCalls, 3);
   assert.equal(creditCalls, 2);
-});
-
-test("ensureInvestigationsWithUpdateMetadata forwards create and update payloads", async () => {
-  const ensureQueuedCalls: {
-    prisma: { name: string };
-    postVersionId: string;
-    promptId: string;
-    parentInvestigationId?: string;
-    contentDiff?: string;
-    rejectOverWordLimitOnCreate: true;
-    allowRequeueFailed: true;
-    onPendingInvestigation?: unknown;
-  }[] = [];
-  const ensureQueued = async (input: (typeof ensureQueuedCalls)[number]) => {
-    ensureQueuedCalls.push(input);
-    return { investigation: { id: "inv-id", status: "PENDING" as const } };
-  };
-  const postVersion = buildResolvedPostVersion("new line\ntail");
-  const prismaToken = { name: "prisma-token" };
-  const onPendingInvestigation = async () => {};
-
-  await ensureInvestigationsWithUpdateMetadata({
-    prisma: prismaToken,
-    promptId: "prompt-id",
-    postVersion,
-    sourceInvestigation: null,
-    onPendingInvestigation,
-    ensureQueued,
-  });
-
-  assert.deepEqual(ensureQueuedCalls[0], {
-    prisma: prismaToken,
-    postVersionId: "post-version-id",
-    promptId: "prompt-id",
-    rejectOverWordLimitOnCreate: true,
-    allowRequeueFailed: true,
-    onPendingInvestigation,
-  });
-
-  await ensureInvestigationsWithUpdateMetadata({
-    prisma: prismaToken,
-    promptId: "prompt-id",
-    postVersion,
-    sourceInvestigation: {
-      id: "source-investigation-id",
-      postVersion: {
-        id: "old-post-version-id",
-        contentBlob: {
-          contentText: "old line\ntail",
-        },
-      },
-      claims: [],
-    },
-    ensureQueued,
-  });
-
-  assert.deepEqual(ensureQueuedCalls[1], {
-    prisma: prismaToken,
-    postVersionId: "post-version-id",
-    promptId: "prompt-id",
-    parentInvestigationId: "source-investigation-id",
-    contentDiff:
-      "Diff summary (line context):\n- Removed lines:\nold line\n+ Added lines:\nnew line",
-    rejectOverWordLimitOnCreate: true,
-    allowRequeueFailed: true,
-  });
 });

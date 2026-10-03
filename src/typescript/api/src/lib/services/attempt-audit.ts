@@ -1,12 +1,99 @@
 import { getPrisma } from "$lib/db/client";
-import {
-  parseInvestigatorAttemptAudit,
-  type InvestigatorAttemptAudit,
+import type {
+  InvestigatorAttemptAudit,
+  InvestigatorFailedAttemptAudit,
+  InvestigatorOutputItemAudit,
+  InvestigatorRequestAudit,
+  InvestigatorResponseAudit,
 } from "$lib/investigators/interface.js";
-import { toDate, toOptionalDate } from "$lib/date.js";
 import type { Prisma } from "$lib/db/prisma-client";
 import { consumeOpenAiKeySource } from "./user-key-source.js";
 
+function toOutputItemCreate(
+  item: InvestigatorOutputItemAudit,
+  outputIndex: number,
+): Prisma.InvestigationAttemptOutputItemCreateWithoutResponseInput {
+  const base = {
+    outputIndex,
+    providerItemId: item.providerItemId,
+    itemType: item.itemType,
+    itemStatus: item.itemStatus,
+  };
+  switch (item.content.kind) {
+    case "MESSAGE":
+      return {
+        ...base,
+        textParts: {
+          create: item.content.textParts.map((part, partIndex) => ({
+            partIndex,
+            partType: part.partType,
+            text: part.text,
+            annotations: {
+              create: part.annotations.map((annotation, annotationIndex) => ({
+                annotationIndex,
+                ...annotation,
+              })),
+            },
+          })),
+        },
+      };
+    case "REASONING":
+      return {
+        ...base,
+        reasoningSummaries: {
+          create: item.content.summaries.map((text, summaryIndex) => ({ summaryIndex, text })),
+        },
+      };
+    case "TOOL_CALL":
+      return { ...base, toolCall: { create: { rawPayload: item.content.rawPayload } } };
+  }
+}
+
+function toResponseCreate(
+  response: InvestigatorResponseAudit,
+): Prisma.InvestigationAttemptResponseCreateWithoutRequestInput {
+  return {
+    providerResponseId: response.providerResponseId,
+    status: response.status,
+    modelVersion: response.modelVersion,
+    receivedAt: response.receivedAt,
+    outputItems: { create: response.outputItems.map(toOutputItemCreate) },
+    ...(response.usage === null ? {} : { usage: { create: response.usage } }),
+  };
+}
+
+function toRequestCreate(
+  request: InvestigatorRequestAudit,
+): Prisma.InvestigationAttemptRequestCreateWithoutAttemptInput {
+  return {
+    kind: request.subject.kind,
+    factCheckRound: request.subject.kind === "FACT_CHECK_ROUND" ? request.subject.round : null,
+    claimIndex: request.subject.kind === "CLAIM_VALIDATION" ? request.subject.claimIndex : null,
+    model: request.model,
+    instructions: request.instructions,
+    input: request.input,
+    previousResponseId: request.previousResponseId,
+    reasoningEffort: request.reasoningEffort,
+    reasoningSummary: request.reasoningSummary,
+    include: request.include,
+    requestedTools: {
+      create: request.tools.map((tool, requestOrder) => ({
+        requestOrder,
+        toolType: tool.toolType,
+        rawDefinition: tool.rawDefinition,
+      })),
+    },
+    ...(request.response === null
+      ? {}
+      : { response: { create: toResponseCreate(request.response) } }),
+  };
+}
+
+/**
+ * Inserts an attempt's audit (SPEC §2.12). Insert-only: each attemptNumber is
+ * claimed once per investigation and its audit is written once, at the
+ * attempt's terminal transition.
+ */
 export async function persistAttemptAudit(
   tx: Prisma.TransactionClient,
   input: {
@@ -15,194 +102,19 @@ export async function persistAttemptAudit(
     attemptAudit: InvestigatorAttemptAudit;
   },
 ): Promise<void> {
-  const attemptAudit = parseInvestigatorAttemptAudit(input.attemptAudit);
-  // outcome is derived from the audit's discriminated union — error !== null
-  // means FAILED. No separate parameter needed, no inconsistent state possible.
-  const outcome = attemptAudit.error !== null ? "FAILED" : "SUCCEEDED";
-
-  const attempt = await tx.investigationAttempt.upsert({
-    where: {
-      investigationId_attemptNumber: {
-        investigationId: input.investigationId,
-        attemptNumber: input.attemptNumber,
-      },
-    },
-    create: {
+  const { attemptAudit } = input;
+  await tx.investigationAttempt.create({
+    data: {
       investigationId: input.investigationId,
       attemptNumber: input.attemptNumber,
-      outcome,
-      requestModel: attemptAudit.requestModel,
-      requestInstructions: attemptAudit.requestInstructions,
-      requestInput: attemptAudit.requestInput,
-      requestReasoningEffort: attemptAudit.requestReasoningEffort,
-      requestReasoningSummary: attemptAudit.requestReasoningSummary,
-      responseId: attemptAudit.response?.responseId ?? null,
-      responseStatus: attemptAudit.response?.responseStatus ?? null,
-      responseModelVersion: attemptAudit.response?.responseModelVersion ?? null,
-      responseOutputText: attemptAudit.response?.responseOutputText ?? null,
-      startedAt: toDate(attemptAudit.startedAt),
-      completedAt: toOptionalDate(attemptAudit.completedAt, { strict: true }),
+      outcome: attemptAudit.outcome,
+      startedAt: attemptAudit.startedAt,
+      completedAt: attemptAudit.completedAt,
+      requests: { create: attemptAudit.requests.map(toRequestCreate) },
+      ...(attemptAudit.outcome === "FAILED" ? { error: { create: attemptAudit.error } } : {}),
     },
-    update: {
-      outcome,
-      requestModel: attemptAudit.requestModel,
-      requestInstructions: attemptAudit.requestInstructions,
-      requestInput: attemptAudit.requestInput,
-      requestReasoningEffort: attemptAudit.requestReasoningEffort,
-      requestReasoningSummary: attemptAudit.requestReasoningSummary,
-      responseId: attemptAudit.response?.responseId ?? null,
-      responseStatus: attemptAudit.response?.responseStatus ?? null,
-      responseModelVersion: attemptAudit.response?.responseModelVersion ?? null,
-      responseOutputText: attemptAudit.response?.responseOutputText ?? null,
-      startedAt: toDate(attemptAudit.startedAt),
-      completedAt: toOptionalDate(attemptAudit.completedAt, { strict: true }),
-    },
+    select: { id: true },
   });
-
-  await tx.investigationAttemptRequestedTool.deleteMany({
-    where: { attemptId: attempt.id },
-  });
-  await tx.investigationAttemptToolCall.deleteMany({
-    where: { attemptId: attempt.id },
-  });
-  await tx.investigationAttemptOutputItem.deleteMany({
-    where: { attemptId: attempt.id },
-  });
-  await tx.investigationAttemptUsage.deleteMany({
-    where: { attemptId: attempt.id },
-  });
-  await tx.investigationAttemptError.deleteMany({
-    where: { attemptId: attempt.id },
-  });
-
-  for (const requestedTool of attemptAudit.requestedTools) {
-    await tx.investigationAttemptRequestedTool.create({
-      data: {
-        attemptId: attempt.id,
-        requestOrder: requestedTool.requestOrder,
-        toolType: requestedTool.toolType,
-        rawDefinition: requestedTool.rawDefinition,
-      },
-    });
-  }
-
-  const outputItemIdByIndex = new Map<number, string>();
-  for (const outputItem of attemptAudit.response?.outputItems ?? []) {
-    const createdOutputItem = await tx.investigationAttemptOutputItem.create({
-      data: {
-        attemptId: attempt.id,
-        outputIndex: outputItem.outputIndex,
-        providerItemId: outputItem.providerItemId,
-        itemType: outputItem.itemType,
-        itemStatus: outputItem.itemStatus,
-      },
-    });
-    outputItemIdByIndex.set(outputItem.outputIndex, createdOutputItem.id);
-  }
-
-  const textPartIdByKey = new Map<string, string>();
-  for (const textPart of attemptAudit.response?.outputTextParts ?? []) {
-    const outputItemId = outputItemIdByIndex.get(textPart.outputIndex);
-    if (outputItemId === undefined || outputItemId.length === 0) {
-      throw new Error(`Missing output item for text part outputIndex=${textPart.outputIndex}`);
-    }
-
-    const createdTextPart = await tx.investigationAttemptOutputTextPart.create({
-      data: {
-        outputItemId,
-        partIndex: textPart.partIndex,
-        partType: textPart.partType,
-        text: textPart.text,
-      },
-    });
-
-    textPartIdByKey.set(`${textPart.outputIndex}:${textPart.partIndex}`, createdTextPart.id);
-  }
-
-  for (const annotation of attemptAudit.response?.outputTextAnnotations ?? []) {
-    const textPartId = textPartIdByKey.get(`${annotation.outputIndex}:${annotation.partIndex}`);
-    if (textPartId === undefined || textPartId.length === 0) {
-      throw new Error(
-        `Missing text part for annotation outputIndex=${annotation.outputIndex} partIndex=${annotation.partIndex}`,
-      );
-    }
-
-    await tx.investigationAttemptOutputTextAnnotation.create({
-      data: {
-        textPartId,
-        annotationIndex: annotation.annotationIndex,
-        annotationType: annotation.annotationType,
-        startIndex: annotation.characterPosition?.start ?? null,
-        endIndex: annotation.characterPosition?.end ?? null,
-        url: annotation.url,
-        title: annotation.title,
-        fileId: annotation.fileId,
-      },
-    });
-  }
-
-  for (const summary of attemptAudit.response?.reasoningSummaries ?? []) {
-    const outputItemId = outputItemIdByIndex.get(summary.outputIndex);
-    if (outputItemId === undefined || outputItemId.length === 0) {
-      throw new Error(
-        `Missing output item for reasoning summary outputIndex=${summary.outputIndex}`,
-      );
-    }
-
-    await tx.investigationAttemptReasoningSummary.create({
-      data: {
-        outputItemId,
-        summaryIndex: summary.summaryIndex,
-        text: summary.text,
-      },
-    });
-  }
-
-  for (const toolCall of attemptAudit.response?.toolCalls ?? []) {
-    const outputItemId = outputItemIdByIndex.get(toolCall.outputIndex);
-    if (outputItemId === undefined || outputItemId.length === 0) {
-      throw new Error(`Missing output item for tool call outputIndex=${toolCall.outputIndex}`);
-    }
-
-    await tx.investigationAttemptToolCall.create({
-      data: {
-        attemptId: attempt.id,
-        outputItemId,
-        outputIndex: toolCall.outputIndex,
-        providerToolCallId: toolCall.providerToolCallId,
-        toolType: toolCall.toolType,
-        status: toolCall.status,
-        rawPayload: toolCall.rawPayload,
-        capturedAt: toDate(toolCall.capturedAt),
-        providerStartedAt: toOptionalDate(toolCall.providerStartedAt, { strict: true }),
-        providerCompletedAt: toOptionalDate(toolCall.providerCompletedAt, { strict: true }),
-      },
-    });
-  }
-
-  if (attemptAudit.response?.usage) {
-    await tx.investigationAttemptUsage.create({
-      data: {
-        attemptId: attempt.id,
-        inputTokens: attemptAudit.response.usage.inputTokens,
-        outputTokens: attemptAudit.response.usage.outputTokens,
-        totalTokens: attemptAudit.response.usage.totalTokens,
-        cachedInputTokens: attemptAudit.response.usage.cachedInputTokens,
-        reasoningOutputTokens: attemptAudit.response.usage.reasoningOutputTokens,
-      },
-    });
-  }
-
-  if (attemptAudit.error) {
-    await tx.investigationAttemptError.create({
-      data: {
-        attemptId: attempt.id,
-        errorName: attemptAudit.error.errorName,
-        errorMessage: attemptAudit.error.errorMessage,
-        statusCode: attemptAudit.error.statusCode,
-      },
-    });
-  }
 }
 
 /**
@@ -216,7 +128,7 @@ export async function markInvestigationFailedInTx(
     investigationId: string;
     workerIdentity: string;
     attemptNumber: number;
-    attemptAudit: InvestigatorAttemptAudit | null;
+    attemptAudit: InvestigatorFailedAttemptAudit | null;
   },
 ): Promise<boolean> {
   // Guard: delete the lease row matching our workerIdentity. If it doesn't
@@ -260,7 +172,7 @@ export async function persistFailedAttemptAndMarkInvestigationFailed(input: {
   investigationId: string;
   workerIdentity: string;
   attemptNumber: number;
-  attemptAudit: InvestigatorAttemptAudit | null;
+  attemptAudit: InvestigatorFailedAttemptAudit | null;
 }): Promise<boolean> {
   return getPrisma().$transaction((tx) => markInvestigationFailedInTx(tx, input));
 }
@@ -276,7 +188,7 @@ export async function releaseLeaseToRetryInTx(
     investigationId: string;
     workerIdentity: string;
     attemptNumber: number;
-    attemptAudit: InvestigatorAttemptAudit | null;
+    attemptAudit: InvestigatorFailedAttemptAudit | null;
     retryAfter: Date;
   },
 ): Promise<boolean> {
@@ -327,7 +239,7 @@ export async function persistFailedAttemptAndReleaseLease(input: {
   investigationId: string;
   workerIdentity: string;
   attemptNumber: number;
-  attemptAudit: InvestigatorAttemptAudit | null;
+  attemptAudit: InvestigatorFailedAttemptAudit | null;
   retryAfter: Date;
 }): Promise<boolean> {
   return getPrisma().$transaction((tx) => releaseLeaseToRetryInTx(tx, input));

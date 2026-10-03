@@ -1,14 +1,20 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  WIKIPEDIA_EXCLUDED_SECTION_TITLES,
   effectiveHeadingLevel,
   effectiveHeadingText,
   headingLevelFromTag,
   isExcludedWikipediaSectionTitle,
+  normalizeWikipediaSectionTitle,
   shouldExcludeWikipediaElement,
   type WikipediaHeadingLevelDescriptor,
   type WikipediaNodeDescriptor,
 } from "../../src/wikipedia-canonicalization.js";
+
+function element(tagName: string, classTokens: string[] = [], role: string | null = null) {
+  return { tagName, classTokens, role };
+}
 
 test("isExcludedWikipediaSectionTitle normalizes whitespace and casing", () => {
   assert.equal(isExcludedWikipediaSectionTitle("  References  "), true);
@@ -16,31 +22,74 @@ test("isExcludedWikipediaSectionTitle normalizes whitespace and casing", () => {
   assert.equal(isExcludedWikipediaSectionTitle("History"), false);
 });
 
+test("isExcludedWikipediaSectionTitle matches the appendix titles of the largest wikis", () => {
+  for (const title of [
+    "Einzelnachweise",
+    "Weblinks",
+    "Notes et références",
+    "Liens externes",
+    "Enlaces externos",
+    "Collegamenti esterni",
+    "Ligações externas",
+    "Externe links",
+    "Przypisy",
+    "Примечания",
+    "脚注",
+    "外部リンク",
+    "參考文獻",
+    "外部链接",
+  ]) {
+    assert.equal(isExcludedWikipediaSectionTitle(title), true, title);
+  }
+});
+
+test("isExcludedWikipediaSectionTitle keeps See also sections in every language, as English does", () => {
+  for (const title of [
+    "See also",
+    "Siehe auch",
+    "Voir aussi",
+    "Véase también",
+    "Voci correlate",
+    "関連項目",
+  ]) {
+    assert.equal(isExcludedWikipediaSectionTitle(title), false, title);
+  }
+});
+
+test("excluded section titles are stored in their normalized form", () => {
+  // Matching compares normalized heading text against the list verbatim.
+  for (const title of WIKIPEDIA_EXCLUDED_SECTION_TITLES) {
+    assert.equal(normalizeWikipediaSectionTitle(title), title);
+  }
+});
+
 test("shouldExcludeWikipediaElement excludes references-class blocks", () => {
-  assert.equal(
-    shouldExcludeWikipediaElement({
-      tagName: "ol",
-      classTokens: ["references"],
-    }),
-    true,
-  );
+  assert.equal(shouldExcludeWikipediaElement(element("ol", ["references"])), true);
 });
 
 test("shouldExcludeWikipediaElement excludes citation superscripts only", () => {
+  assert.equal(shouldExcludeWikipediaElement(element("sup", ["reference"])), true);
+  assert.equal(shouldExcludeWikipediaElement(element("sup")), false);
+});
+
+test("shouldExcludeWikipediaElement excludes navigation landmarks whatever their classes", () => {
+  // de "Hauptartikel" links, nl navboxes, en series sidebars.
+  assert.equal(shouldExcludeWikipediaElement(element("div", ["hauptartikel"], "navigation")), true);
+  assert.equal(shouldExcludeWikipediaElement(element("table", ["sidebar"], " Navigation ")), true);
+  assert.equal(shouldExcludeWikipediaElement(element("table", ["infobox"], "presentation")), false);
+  assert.equal(shouldExcludeWikipediaElement(element("div", [], "note")), false);
+});
+
+test("shouldExcludeWikipediaElement excludes the cross-wiki non-prose conventions", () => {
+  // Hatnotes, navboxes and authority control are kept out of search.
   assert.equal(
-    shouldExcludeWikipediaElement({
-      tagName: "sup",
-      classTokens: ["reference"],
-    }),
+    shouldExcludeWikipediaElement(element("div", ["hatnote", "navigation-not-searchable"], "note")),
     true,
   );
-  assert.equal(
-    shouldExcludeWikipediaElement({
-      tagName: "sup",
-      classTokens: [],
-    }),
-    false,
-  );
+  // Banners and person-data tables are about the article, not of it.
+  assert.equal(shouldExcludeWikipediaElement(element("table", ["metadata", "ambox"])), true);
+  assert.equal(shouldExcludeWikipediaElement(element("p")), false);
+  assert.equal(shouldExcludeWikipediaElement(element("table", ["wikitable"])), false);
 });
 
 // ---------------------------------------------------------------------------

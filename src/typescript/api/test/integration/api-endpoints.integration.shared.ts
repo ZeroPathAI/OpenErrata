@@ -6,6 +6,7 @@ import {
   hashContent,
   isNonNullObject,
   normalizeContent,
+  observedImageUrlsFromOccurrences,
   serializeVersionHashSeed,
   serializeVersionIdentityImageOccurrences,
   WORD_COUNT_LIMIT,
@@ -22,11 +23,17 @@ import {
 import {
   buildFailedAttemptAudit,
   buildSucceededAttemptAudit,
+  buildSucceededInvestigatorOutput,
 } from "./api-endpoints.integration.attempt-audit.js";
 import { applyIntegrationEnvironmentDefaults } from "./integration-env.js";
+import {
+  installMockOpenAiApi,
+  lesswrongPostIdFromGraphqlBody,
+} from "./helpers/external-api-mocks.js";
 import { INTEGRATION_LESSWRONG_FIXTURE_KEYS, readLesswrongFixture } from "./lesswrong-fixtures.js";
 
 applyIntegrationEnvironmentDefaults(process.env);
+installMockOpenAiApi();
 
 const INTEGRATION_TEST_RUN_ID = [
   Date.now().toString(36),
@@ -48,11 +55,12 @@ const [
   { buildHealthResponse },
   { handlePublicGraphqlRequest },
   { closeQueueUtils },
-  { ensureInvestigationQueued },
   { runSelector },
+  { requestInvestigation, UserOpenAiKeyRejectedError },
+  { LeaseLostError },
   { lesswrongHtmlToNormalizedText },
   { orchestrateInvestigation },
-  { OpenAIInvestigator, InvestigatorExecutionError },
+  { InvestigatorExecutionError },
 ] = await Promise.all([
   import("../../src/lib/trpc/router.js"),
   import("../../src/lib/db/client.js"),
@@ -61,11 +69,12 @@ const [
   import("../../src/lib/services/health.js"),
   import("../../src/lib/graphql/handler.js"),
   import("../../src/lib/services/queue.js"),
-  import("../../src/lib/services/investigation-lifecycle.js"),
   import("../../src/lib/services/selector.js"),
+  import("../../src/lib/services/investigate-now.js"),
+  import("../../src/lib/services/investigation-lease.js"),
   import("../../src/lib/services/content-fetcher.js"),
   import("../../src/lib/services/orchestrator.js"),
-  import("../../src/lib/investigators/openai.js"),
+  import("../../src/lib/investigators/errors.js"),
 ]);
 
 const prisma = getPrisma();
@@ -137,15 +146,12 @@ function createCaller(options: CallerOptions = {}): AppCaller {
     viewerKey: options.viewerKey ?? "integration-viewer",
     ipRangeKey: options.ipRangeKey ?? "integration-ip-range",
     isAuthenticated,
-    canInvestigate: isAuthenticated || userOpenAiApiKey !== null,
     userOpenAiApiKey,
-    hasValidAttestation: false,
     extensionVersion: options.extensionVersion ?? MINIMUM_SUPPORTED_EXTENSION_VERSION,
     minimumSupportedExtensionVersion: MINIMUM_SUPPORTED_EXTENSION_VERSION,
   });
 
   return {
-    public: caller.public,
     post: {
       registerObservedVersion: caller.post.registerObservedVersion,
       getInvestigation: caller.post.getInvestigation,
@@ -464,6 +470,8 @@ async function assertSchemaCatalogInvariants(): Promise<void> {
     WHERE n.nspname = 'public'
       AND NOT tg.tgisinternal
       AND tg.tgname IN (
+        'enforce_lease_status_on_investigation_trigger',
+        'enforce_lease_status_on_lease_trigger',
         'enforce_investigation_parent_semantics_trigger',
         'enforce_referenced_parent_investigation_validity_trigger',
         'enforce_server_verified_at_latch_trigger',
@@ -476,6 +484,22 @@ async function assertSchemaCatalogInvariants(): Promise<void> {
     string,
     { tableName: string; functionName: string; requiredFragments: string[] }
   >([
+    [
+      "enforce_lease_status_on_investigation_trigger",
+      {
+        tableName: "Investigation",
+        functionName: "enforce_lease_status_on_investigation",
+        requiredFragments: ["after insert or update of status", "deferrable initially deferred"],
+      },
+    ],
+    [
+      "enforce_lease_status_on_lease_trigger",
+      {
+        tableName: "InvestigationLease",
+        functionName: "enforce_lease_status_on_lease",
+        requiredFragments: ["after insert or delete or update", "deferrable initially deferred"],
+      },
+    ],
     [
       "enforce_investigation_parent_semantics_trigger",
       {
@@ -565,6 +589,8 @@ async function assertSchemaCatalogInvariants(): Promise<void> {
     FROM information_schema.triggers
     WHERE trigger_schema = 'public'
       AND trigger_name IN (
+        'enforce_lease_status_on_investigation_trigger',
+        'enforce_lease_status_on_lease_trigger',
         'enforce_investigation_parent_semantics_trigger',
         'enforce_referenced_parent_investigation_validity_trigger',
         'enforce_server_verified_at_latch_trigger',
@@ -575,6 +601,11 @@ async function assertSchemaCatalogInvariants(): Promise<void> {
   const expectedTriggerEvents = [
     "enforce_investigation_parent_semantics_trigger|Investigation|BEFORE|INSERT",
     "enforce_investigation_parent_semantics_trigger|Investigation|BEFORE|UPDATE",
+    "enforce_lease_status_on_investigation_trigger|Investigation|AFTER|INSERT",
+    "enforce_lease_status_on_investigation_trigger|Investigation|AFTER|UPDATE",
+    "enforce_lease_status_on_lease_trigger|InvestigationLease|AFTER|DELETE",
+    "enforce_lease_status_on_lease_trigger|InvestigationLease|AFTER|INSERT",
+    "enforce_lease_status_on_lease_trigger|InvestigationLease|AFTER|UPDATE",
     "enforce_referenced_parent_investigation_validity_trigger|Investigation|BEFORE|UPDATE",
     "enforce_server_verified_at_latch_trigger|PostVersion|BEFORE|UPDATE",
     "enforce_server_verified_html_snapshot_trigger|PostVersion|AFTER|INSERT",
@@ -791,34 +822,8 @@ async function ensureServerHtmlSnapshotForSeed(input: {
       }
       return;
     }
-    case "SUBSTACK": {
-      const existing = await prisma.substackVersionMeta.findUnique({
-        where: { postVersionId: input.postVersionId },
-        select: { serverHtmlBlobId: true },
-      });
-      if (existing === null) {
-        await prisma.substackVersionMeta.create({
-          data: {
-            postVersionId: input.postVersionId,
-            substackPostId: `seed-${input.externalId}`,
-            publicationSubdomain: "seed",
-            slug: `seed-${input.externalId}`,
-            title: "Seeded Substack Post",
-            serverHtmlBlobId: htmlBlob.id,
-            imageUrls: [],
-            authorName: "Seed Author",
-          },
-        });
-        return;
-      }
-      if (existing.serverHtmlBlobId === null) {
-        await prisma.substackVersionMeta.updateMany({
-          where: { postVersionId: input.postVersionId, serverHtmlBlobId: null },
-          data: { serverHtmlBlobId: htmlBlob.id },
-        });
-      }
-      return;
-    }
+    case "SUBSTACK":
+      throw new Error("Substack has no server-side fetch; seed Substack posts as CLIENT_FALLBACK");
     case "WIKIPEDIA": {
       const existing = await prisma.wikipediaVersionMeta.findUnique({
         where: { postVersionId: input.postVersionId },
@@ -1095,6 +1100,10 @@ async function seedInvestigation(input: {
   contentDiff?: string;
   leaseOwner?: string | null;
   leaseExpiresAt?: Date | null;
+  /** Defaults to INSTANCE_REQUEST so seeds never count against the selector's daily budget. */
+  origin?: "SELECTOR" | "INSTANCE_REQUEST" | "USER_KEY_REQUEST";
+  admittedAt?: Date;
+  attemptCount?: number;
 }): Promise<{ id: string }> {
   const prompt = await seedPrompt(input.promptLabel);
   const checkedAt = input.status === "COMPLETE" ? (input.checkedAt ?? new Date()) : null;
@@ -1107,12 +1116,19 @@ async function seedInvestigation(input: {
 
   const investigationId = randomUUID();
   const investigation = await prisma.$transaction(async (tx) => {
+    const post = await tx.post.findUniqueOrThrow({
+      where: { id: input.postId },
+      select: { url: true },
+    });
     await tx.investigationInput.create({
       data: {
         investigationId,
         provenance: input.provenance,
         contentHash: input.contentHash,
         markdownSource: "NONE",
+        imagePlaceholderSourceUrls: [],
+        postUrl: post.url,
+        hasVideo: false,
       },
     });
 
@@ -1124,7 +1140,10 @@ async function seedInvestigation(input: {
         status: input.status,
         promptId: prompt.id,
         provider: "OPENAI",
-        model: "OPENAI_GPT_5",
+        model: input.status === "COMPLETE" ? "gpt-6.1-sol" : null,
+        origin: input.origin ?? "INSTANCE_REQUEST",
+        admittedAt: input.admittedAt ?? new Date(),
+        attemptCount: input.attemptCount ?? 0,
         checkedAt,
         parentInvestigationId: input.parentInvestigationId ?? null,
         contentDiff: input.contentDiff ?? null,
@@ -1174,14 +1193,19 @@ async function seedInvestigationWithLeaseFields(input: {
   });
 }
 
+/**
+ * Seed one claim with one source. `text` is the passage the claim quotes;
+ * tests that do not depend on where the claim sits get a generic label.
+ */
 async function seedClaimWithSource(
   investigationId: string,
   index: number,
+  options: { text?: string } = {},
 ): Promise<{ id: string }> {
   const claim = await prisma.claim.create({
     data: {
       investigationId,
-      text: `Claim ${index.toString()}`,
+      text: options.text ?? `Claim ${index.toString()}`,
       context: `Context ${index.toString()}`,
       summary: `Summary ${index.toString()}`,
       reasoning: `Reasoning ${index.toString()}`,
@@ -1195,7 +1219,6 @@ async function seedClaimWithSource(
       url: `https://example.com/source-${index.toString()}`,
       title: `Source ${index.toString()}`,
       snippet: `Snippet ${index.toString()}`,
-      retrievedAt: new Date("2026-02-19T00:00:00.000Z"),
     },
   });
 
@@ -1216,7 +1239,6 @@ async function seedCorroborationCredits(investigationId: string, count: number):
 function buildXViewInput(input: {
   externalId: string;
   observedContentText: string;
-  observedImageUrls?: string[];
   observedImageOccurrences?: {
     originalIndex: number;
     normalizedTextOffset: number;
@@ -1226,14 +1248,12 @@ function buildXViewInput(input: {
 }) {
   const externalId = withIntegrationPrefix(input.externalId);
   const observedContentText = input.observedContentText;
-  const observedImageUrls = input.observedImageUrls ?? [];
 
   return {
     platform: "X" as const,
     externalId,
     url: `https://x.com/openerrata/status/${externalId}`,
     observedContentText,
-    ...(observedImageUrls.length === 0 ? {} : { observedImageUrls }),
     ...(input.observedImageOccurrences === undefined
       ? {}
       : { observedImageOccurrences: input.observedImageOccurrences }),
@@ -1241,7 +1261,7 @@ function buildXViewInput(input: {
       authorHandle: withIntegrationPrefix("author"),
       authorDisplayName: "Integration Author",
       text: observedContentText,
-      mediaUrls: observedImageUrls,
+      mediaUrls: observedImageUrlsFromOccurrences(input.observedImageOccurrences),
     },
   };
 }
@@ -1270,6 +1290,12 @@ async function withMockLesswrongFetch<ResponseType>(
   return withMockLesswrongCanonicalHtml(fixture.html, run);
 }
 
+/** Identity the mocked LessWrong GraphQL API reports for every post. */
+const LESSWRONG_MOCK_SERVER_SLUG = "server-slug";
+const LESSWRONG_MOCK_SERVER_TITLE = "Server LW Title";
+const LESSWRONG_MOCK_SERVER_AUTHOR_SLUG = withIntegrationPrefix("server-lw-author");
+const LESSWRONG_MOCK_SERVER_AUTHOR_NAME = "Server LW Author";
+
 async function withMockLesswrongCanonicalHtml<ResponseType>(
   html: string,
   run: () => Promise<ResponseType>,
@@ -1284,14 +1310,22 @@ async function withMockLesswrongCanonicalHtml<ResponseType>(
       return originalFetch(input, init);
     }
     sawLesswrongRequest = true;
+    const postId = lesswrongPostIdFromGraphqlBody(init?.body);
 
     return new Response(
       JSON.stringify({
         data: {
           post: {
             result: {
+              _id: postId,
+              slug: LESSWRONG_MOCK_SERVER_SLUG,
+              title: LESSWRONG_MOCK_SERVER_TITLE,
               contents: {
                 html,
+              },
+              user: {
+                slug: LESSWRONG_MOCK_SERVER_AUTHOR_SLUG,
+                displayName: LESSWRONG_MOCK_SERVER_AUTHOR_NAME,
               },
             },
           },
@@ -1413,9 +1447,13 @@ export {
   EMPTY_IMAGE_OCCURRENCES_HASH,
   INTEGRATION_DATA_PREFIX,
   INTEGRATION_LESSWRONG_FIXTURE_KEYS,
+  LeaseLostError,
+  LESSWRONG_MOCK_SERVER_AUTHOR_NAME,
+  LESSWRONG_MOCK_SERVER_AUTHOR_SLUG,
+  LESSWRONG_MOCK_SERVER_SLUG,
+  LESSWRONG_MOCK_SERVER_TITLE,
   InvestigatorExecutionError,
   MINIMUM_SUPPORTED_EXTENSION_VERSION,
-  OpenAIInvestigator,
   WORD_COUNT_LIMIT,
   appRouter,
   assert,
@@ -1424,13 +1462,13 @@ export {
   buildHealthResponse,
   buildLesswrongViewInput,
   buildSucceededAttemptAudit,
+  buildSucceededInvestigatorOutput,
   buildXViewInput,
   closeQueueUtils,
   createCaller,
   createContext,
   createDeterministicRandom,
   createMockRequestEvent,
-  ensureInvestigationQueued,
   ensurePostVersionForSeed,
   errorHasOpenErrataCode,
   getPrisma,
@@ -1446,6 +1484,7 @@ export {
   randomChance,
   randomInt,
   readLesswrongFixture,
+  requestInvestigation,
   resetDatabase,
   runConcurrentInvestigateNowScenario,
   runSelector,
@@ -1465,6 +1504,7 @@ export {
   sha256,
   sleep,
   test,
+  UserOpenAiKeyRejectedError,
   versionHashFromContentHash,
   withIntegrationPrefix,
   withMockLesswrongCanonicalHtml,

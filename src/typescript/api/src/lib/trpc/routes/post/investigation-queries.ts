@@ -1,23 +1,19 @@
 /**
- * Investigation query helpers for the post router.
- *
- * Provides loading, formatting, and lifecycle helpers for investigations:
- * claim formatting, diff computation for update investigations,
- * corroboration recording, and investigation queueing with update metadata.
+ * Investigation query helpers for the post router: loading, claim formatting,
+ * interim claim carry-forward, and corroboration recording.
  */
 
 import {
   claimIdSchema,
   investigationClaimPayloadSchema,
+  normalizeContent,
   type InvestigationClaim,
   type InvestigationClaimPayload,
 } from "@openerrata/shared";
 import { z } from "zod";
-import { ensureInvestigationQueued } from "$lib/services/investigation-lifecycle.js";
 import { isUniqueConstraintError } from "$lib/db/errors.js";
 import type { Prisma, PrismaClient } from "$lib/db/prisma-client";
 import { TRPCError } from "@trpc/server";
-import type { ResolvedPostVersion } from "./content-storage.js";
 
 // ---------------------------------------------------------------------------
 // Prisma include shapes and derived payload types
@@ -28,6 +24,8 @@ const investigationWithClaimsInclude = {
   lease: true,
   postVersion: {
     select: {
+      id: true,
+      postId: true,
       contentBlob: {
         select: {
           contentText: true,
@@ -39,24 +37,6 @@ const investigationWithClaimsInclude = {
   claims: {
     include: {
       sources: true,
-    },
-  },
-  parentInvestigation: {
-    include: {
-      claims: {
-        include: {
-          sources: true,
-        },
-      },
-      postVersion: {
-        select: {
-          contentBlob: {
-            select: {
-              contentText: true,
-            },
-          },
-        },
-      },
     },
   },
 } satisfies Prisma.InvestigationInclude;
@@ -64,48 +44,6 @@ const investigationWithClaimsInclude = {
 type InvestigationWithClaims = Prisma.InvestigationGetPayload<{
   include: typeof investigationWithClaimsInclude;
 }>;
-
-const completedInvestigationInclude = {
-  input: true,
-  postVersion: {
-    select: {
-      id: true,
-      contentBlob: {
-        select: {
-          contentText: true,
-          contentHash: true,
-        },
-      },
-    },
-  },
-  claims: {
-    include: {
-      sources: true,
-    },
-  },
-} satisfies Prisma.InvestigationInclude;
-
-type CompletedInvestigation = Prisma.InvestigationGetPayload<{
-  include: typeof completedInvestigationInclude;
-}>;
-
-const serverVerifiedSourceInclude = {
-  postVersion: {
-    select: {
-      id: true,
-      contentBlob: {
-        select: {
-          contentText: true,
-        },
-      },
-    },
-  },
-  claims: {
-    include: {
-      sources: true,
-    },
-  },
-} satisfies Prisma.InvestigationInclude;
 
 interface ClaimSourceSummary {
   url: string;
@@ -122,69 +60,10 @@ interface ClaimSummary {
   sources: ClaimSourceSummary[];
 }
 
-interface SourceInvestigationForUpdate {
+/** A complete investigation whose claims may be carried forward to another version. */
+interface CompleteInvestigationClaims {
   id: string;
-  postVersion: {
-    id: string;
-    contentBlob: {
-      contentText: string;
-    };
-  };
   claims: ClaimSummary[];
-}
-
-type LatestServerVerifiedCompleteInvestigation = SourceInvestigationForUpdate | null;
-
-type EnsuredInvestigationStatus = Awaited<
-  ReturnType<typeof ensureInvestigationQueued>
->["investigation"]["status"];
-
-interface EnsureInvestigationResult {
-  investigation: {
-    id: string;
-    status: EnsuredInvestigationStatus;
-  };
-}
-
-interface EnsureQueuedInput<TPrisma> {
-  prisma: TPrisma;
-  postVersionId: string;
-  promptId: string;
-  parentInvestigationId?: string;
-  contentDiff?: string;
-  rejectOverWordLimitOnCreate: true;
-  allowRequeueFailed: true;
-  onPendingInvestigation?: (input: {
-    prisma: TPrisma;
-    investigation: {
-      id: string;
-      status: EnsuredInvestigationStatus;
-    };
-  }) => Promise<void>;
-}
-
-type EnsureQueued<TPrisma> = (
-  input: EnsureQueuedInput<TPrisma>,
-) => Promise<EnsureInvestigationResult>;
-
-interface EnsureWithDefaultInput {
-  prisma: PrismaClient;
-  promptId: string;
-  postVersion: ResolvedPostVersion;
-  sourceInvestigation: LatestServerVerifiedCompleteInvestigation;
-  onPendingInvestigation?: Parameters<
-    typeof ensureInvestigationQueued
-  >[0]["onPendingInvestigation"];
-  ensureQueued?: undefined;
-}
-
-interface EnsureWithCustomInput<TPrisma> {
-  prisma: TPrisma;
-  promptId: string;
-  postVersion: ResolvedPostVersion;
-  sourceInvestigation: LatestServerVerifiedCompleteInvestigation;
-  onPendingInvestigation?: EnsureQueuedInput<TPrisma>["onPendingInvestigation"];
-  ensureQueued: EnsureQueued<TPrisma>;
 }
 
 /**
@@ -194,8 +73,14 @@ interface EnsureWithCustomInput<TPrisma> {
  */
 export interface InvestigationRepository {
   findInvestigationWithClaims(id: string): Promise<InvestigationWithClaims | null>;
-  findCompletedByPostVersionId(postVersionId: string): Promise<CompletedInvestigation | null>;
-  findLatestServerVerifiedComplete(postId: string): Promise<SourceInvestigationForUpdate | null>;
+  /**
+   * The post's most recently completed investigation of any provenance on a
+   * version other than `excludedPostVersionId`, or null when there is none.
+   */
+  findLatestCompleteOnOtherVersion(
+    postId: string,
+    excludedPostVersionId: string,
+  ): Promise<CompleteInvestigationClaims | null>;
   findClientFallbackInvestigationId(postVersionId: string): Promise<string | null>;
   recordCorroborationCredit(investigationId: string, reporterKey: string): Promise<void>;
 }
@@ -209,21 +94,17 @@ export function prismaInvestigationRepository(prisma: PrismaClient): Investigati
         include: investigationWithClaimsInclude,
       });
     },
-    async findCompletedByPostVersionId(postVersionId) {
-      return prisma.investigation.findFirst({
-        where: { postVersionId, status: "COMPLETE" },
-        include: completedInvestigationInclude,
-      });
-    },
-    async findLatestServerVerifiedComplete(postId) {
+    async findLatestCompleteOnOtherVersion(postId, excludedPostVersionId) {
       return prisma.investigation.findFirst({
         where: {
           status: "COMPLETE",
-          postVersion: { postId },
-          input: { provenance: "SERVER_VERIFIED" },
+          postVersion: { postId, id: { not: excludedPostVersionId } },
         },
-        orderBy: { checkedAt: "desc" },
-        include: serverVerifiedSourceInclude,
+        orderBy: [{ checkedAt: "desc" }, { id: "desc" }],
+        select: {
+          id: true,
+          claims: { include: { sources: true } },
+        },
       });
     },
     async findClientFallbackInvestigationId(postVersionId) {
@@ -331,87 +212,61 @@ export async function loadInvestigationWithClaims(
   return repo.findInvestigationWithClaims(investigationId);
 }
 
-export async function findCompletedInvestigationByPostVersionId(
-  repo: InvestigationRepository,
-  postVersionId: string,
-): Promise<CompletedInvestigation | null> {
-  return repo.findCompletedByPostVersionId(postVersionId);
-}
-
-export async function findLatestServerVerifiedCompleteInvestigationForPost(
-  repo: InvestigationRepository,
-  postId: string,
-): Promise<LatestServerVerifiedCompleteInvestigation> {
-  return repo.findLatestServerVerifiedComplete(postId);
-}
-
 // ---------------------------------------------------------------------------
-// Update investigation helpers
+// Interim claim carry-forward (spec §2.8 "Interim carry-forward")
 // ---------------------------------------------------------------------------
 
-export function selectSourceInvestigationForUpdate(
-  latestServerVerifiedSource: LatestServerVerifiedCompleteInvestigation,
-  currentPostVersionId: string,
-): LatestServerVerifiedCompleteInvestigation {
-  if (latestServerVerifiedSource === null) {
-    return null;
-  }
-
-  return latestServerVerifiedSource.postVersion.id === currentPostVersionId
-    ? null
-    : latestServerVerifiedSource;
-}
-
-export function toPriorInvestigationResult(
-  sourceInvestigation: LatestServerVerifiedCompleteInvestigation,
-): {
+/** Claims shown on a post version while it has no finished investigation of its own. */
+interface CarriedForwardClaims {
   oldClaims: InvestigationClaim[];
   sourceInvestigationId: string;
-} | null {
-  if (sourceInvestigation === null) {
+}
+
+/**
+ * Whether a claim's quoted text occurs verbatim in `contentText`, compared
+ * after the normalization all content text gets (spec §3.8) — the text the
+ * extension locates claims in. Empty text quotes nothing.
+ */
+function claimTextOccursIn(claimText: string, contentText: string): boolean {
+  const normalizedClaimText = normalizeContent(claimText);
+  return normalizedClaimText.length > 0 && contentText.includes(normalizedClaimText);
+}
+
+/**
+ * The claims of `source` that are still about `contentText`: those whose
+ * quoted text still occurs in it. A correction is only shown while the exact
+ * text it corrects is still on the page. Null when no claim survives.
+ */
+export function carryForwardClaims(
+  source: CompleteInvestigationClaims,
+  contentText: string,
+): CarriedForwardClaims | null {
+  const survivingClaims = source.claims.filter((claim) =>
+    claimTextOccursIn(claim.text, contentText),
+  );
+  if (survivingClaims.length === 0) {
     return null;
   }
-
   return {
-    oldClaims: formatClaims(sourceInvestigation.claims),
-    sourceInvestigationId: sourceInvestigation.id,
+    oldClaims: formatClaims(survivingClaims),
+    sourceInvestigationId: source.id,
   };
 }
 
-function buildLineDiff(previous: string, current: string): string {
-  if (previous === current) {
-    return "No changes detected.";
-  }
-
-  const previousLines = previous.split("\n");
-  const currentLines = current.split("\n");
-  const maxStart = Math.min(previousLines.length, currentLines.length);
-  let start = 0;
-  while (start < maxStart && previousLines[start] === currentLines[start]) {
-    start += 1;
-  }
-
-  let previousEnd = previousLines.length;
-  let currentEnd = currentLines.length;
-  while (
-    previousEnd > start &&
-    currentEnd > start &&
-    previousLines[previousEnd - 1] === currentLines[currentEnd - 1]
-  ) {
-    previousEnd -= 1;
-    currentEnd -= 1;
-  }
-
-  const removed = previousLines.slice(start, previousEnd);
-  const added = currentLines.slice(start, currentEnd);
-
-  return [
-    "Diff summary (line context):",
-    "- Removed lines:",
-    removed.length > 0 ? removed.join("\n") : "(none)",
-    "+ Added lines:",
-    added.length > 0 ? added.join("\n") : "(none)",
-  ].join("\n");
+/**
+ * Interim claims for a post version with no finished investigation (spec §2.8
+ * "Interim carry-forward"): the claims of the post's latest complete
+ * investigation of another version — of either provenance — that still occur
+ * in this version's content text. Null when there is no such investigation or
+ * none of its claims survive. Every status that reports interim claims
+ * (not investigated, investigating) takes them from here.
+ */
+export async function findCarriedForwardClaims(
+  repo: InvestigationRepository,
+  postVersion: { id: string; postId: string; contentText: string },
+): Promise<CarriedForwardClaims | null> {
+  const source = await repo.findLatestCompleteOnOtherVersion(postVersion.postId, postVersion.id);
+  return source === null ? null : carryForwardClaims(source, postVersion.contentText);
 }
 
 // ---------------------------------------------------------------------------
@@ -431,101 +286,3 @@ export async function maybeRecordCorroboration(
 
   await repo.recordCorroborationCredit(investigationId, viewerKey);
 }
-
-// ---------------------------------------------------------------------------
-// Investigation queueing with update metadata
-// ---------------------------------------------------------------------------
-
-function buildEnsureQueuedInputWithoutPending<TPrisma>(input: {
-  prisma: TPrisma;
-  promptId: string;
-  postVersion: ResolvedPostVersion;
-  sourceInvestigation: LatestServerVerifiedCompleteInvestigation;
-}): Omit<EnsureQueuedInput<TPrisma>, "onPendingInvestigation"> {
-  const baseInput: Omit<EnsureQueuedInput<TPrisma>, "onPendingInvestigation"> = {
-    prisma: input.prisma,
-    postVersionId: input.postVersion.id,
-    promptId: input.promptId,
-    rejectOverWordLimitOnCreate: true,
-    allowRequeueFailed: true,
-  };
-
-  if (input.sourceInvestigation === null) {
-    return baseInput;
-  }
-
-  return {
-    ...baseInput,
-    parentInvestigationId: input.sourceInvestigation.id,
-    contentDiff: buildLineDiff(
-      input.sourceInvestigation.postVersion.contentBlob.contentText,
-      input.postVersion.contentBlob.contentText,
-    ),
-  };
-}
-
-export async function ensureInvestigationsWithUpdateMetadata(
-  input: EnsureWithDefaultInput,
-): Promise<EnsureInvestigationResult>;
-
-export async function ensureInvestigationsWithUpdateMetadata<TPrisma>(input: {
-  prisma: TPrisma;
-  promptId: string;
-  postVersion: ResolvedPostVersion;
-  sourceInvestigation: LatestServerVerifiedCompleteInvestigation;
-  onPendingInvestigation?: EnsureQueuedInput<TPrisma>["onPendingInvestigation"];
-  ensureQueued: EnsureQueued<TPrisma>;
-}): Promise<EnsureInvestigationResult>;
-
-export async function ensureInvestigationsWithUpdateMetadata<TPrisma>(
-  input:
-    | {
-        prisma: PrismaClient;
-        promptId: string;
-        postVersion: ResolvedPostVersion;
-        sourceInvestigation: LatestServerVerifiedCompleteInvestigation;
-        onPendingInvestigation?: Parameters<
-          typeof ensureInvestigationQueued
-        >[0]["onPendingInvestigation"];
-        ensureQueued?: undefined;
-      }
-    | EnsureWithCustomInput<TPrisma>,
-): Promise<EnsureInvestigationResult> {
-  if (input.ensureQueued !== undefined) {
-    const queuedInput: EnsureQueuedInput<TPrisma> = {
-      ...buildEnsureQueuedInputWithoutPending<TPrisma>({
-        prisma: input.prisma,
-        promptId: input.promptId,
-        postVersion: input.postVersion,
-        sourceInvestigation: input.sourceInvestigation,
-      }),
-      ...(input.onPendingInvestigation === undefined
-        ? {}
-        : { onPendingInvestigation: input.onPendingInvestigation }),
-    };
-    return input.ensureQueued(queuedInput);
-  }
-
-  const queuedInput: Parameters<typeof ensureInvestigationQueued>[0] = {
-    ...buildEnsureQueuedInputWithoutPending<PrismaClient>({
-      prisma: input.prisma,
-      promptId: input.promptId,
-      postVersion: input.postVersion,
-      sourceInvestigation: input.sourceInvestigation,
-    }),
-    ...(input.onPendingInvestigation === undefined
-      ? {}
-      : { onPendingInvestigation: input.onPendingInvestigation }),
-  };
-  const ensured = await ensureInvestigationQueued(queuedInput);
-  return {
-    investigation: {
-      id: ensured.investigation.id,
-      status: ensured.investigation.status,
-    },
-  };
-}
-
-export const investigationQueriesInternals = {
-  buildLineDiff,
-};

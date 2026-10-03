@@ -19,6 +19,10 @@ spec:
           restartPolicy: OnFailure
           serviceAccountName: {{ include "openerrata.serviceAccountName" (dict "root" . "component" "selector") }}
           automountServiceAccountToken: false
+          securityContext:
+            {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          initContainers:
+            {{- include "openerrata.waitForMigrationsInitContainer" . | nindent 12 }}
           containers:
             - name: selector
               image: {{ include "openerrata.image" . | quote }}
@@ -29,3 +33,7 @@ spec:
                     name: {{ include "openerrata.secretName" . }}
                 - configMapRef:
                     name: {{ include "openerrata.fullname" . }}
+              securityContext:
+                {{- toYaml .Values.containerSecurityContext | nindent 16 }}
+              resources:
+                {{- toYaml .Values.resources.selector | nindent 16 }}

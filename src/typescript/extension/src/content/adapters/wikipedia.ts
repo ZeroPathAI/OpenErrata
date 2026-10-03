@@ -5,31 +5,21 @@ import {
   isExcludedWikipediaSectionTitle,
   normalizeContent,
   normalizeWikipediaSectionTitle,
+  normalizeWikipediaTitleToken,
   shouldExcludeWikipediaElement,
-  utf8ByteLength,
+  wikipediaExternalIdFromPageId,
+  wikipediaExternalIdSchema,
   type WikipediaNodeDescriptor,
 } from "@openerrata/shared";
+import { pageLocatorFor, type PageLocator } from "../../lib/page-locator";
 import type { AdapterExtractionResult, PlatformAdapter } from "./model";
-import { cloneElement, extractContentWithImageOccurrencesFromRoot } from "./utils";
-import {
-  normalizeWikipediaTitleToken,
-  parseWikipediaIdentity,
-  wikipediaExternalIdFromPageId,
-} from "../../lib/wikipedia-url.js";
+import { extractContent, serializeContentHtml, toTransportableHtml } from "./utils";
 
-// The comma-selector "#mw-content-text .mw-parser-output, #mw-content-text" cannot be
-// used with querySelector() for content root selection: querySelector returns the first
-// match in document order, and parent elements precede their descendants, so
-// #mw-content-text always wins over its descendant .mw-parser-output. We use the
-// comma-selector only for detection (contentRootSelector / detectFromDom), where we
-// just need to know if either element exists. getContentRoot() uses two separate queries
-// with an explicit fallback so .mw-parser-output is preferred.
-//
-// Preferring .mw-parser-output matters because the Wikipedia Parse API returns only the
-// article body (.mw-parser-output equivalent), not the surrounding #mw-content-text which
-// also contains tracking pixels, printfooter, and other non-article elements. Scoping
-// client extraction to .mw-parser-output keeps it consistent with the server's source.
-const CONTENT_ROOT_SELECTOR = "#mw-content-text .mw-parser-output, #mw-content-text";
+// Prefer `.mw-parser-output`: the Wikipedia Parse API (the API's canonical
+// source) returns only the article body, not the surrounding
+// `#mw-content-text`, which also holds tracking pixels, the print footer and
+// other non-article elements.
+const CONTENT_ROOT_SELECTORS = ["#mw-content-text .mw-parser-output", "#mw-content-text"] as const;
 const HEADING_SELECTOR = "h2, h3, h4, h5, h6";
 const VIDEO_SELECTOR = [
   "video",
@@ -43,22 +33,6 @@ const INLINE_WIKIPEDIA_CONFIG_SCRIPT_HINTS = ["RLCONF", "mw.config.set"] as cons
 
 /** Maximum serialized HTML size (UTF-8 bytes) for client-side HTML transport. */
 const WIKIPEDIA_HTML_CONTENT_MAX_BYTES = 256 * 1024;
-
-/**
- * Convert pruned Wikipedia HTML to a transportable string, or undefined if
- * the serialized HTML exceeds the byte-size cap.
- *
- * Unlike Substack's serializeContentHtml, no annotation stripping is needed
- * here: pruneWikipediaContent already operates on a cloneElement() detached
- * from the live DOM, so OpenErrata annotations are never present.
- */
-function toTransportableHtmlContent(prunedRoot: Element): string | undefined {
-  const html = prunedRoot.innerHTML;
-  if (html.length === 0) {
-    return undefined;
-  }
-  return utf8ByteLength(html) <= WIKIPEDIA_HTML_CONTENT_MAX_BYTES ? html : undefined;
-}
 
 // ── MediaWiki config reading ──────────────────────────────────────────────
 //
@@ -248,84 +222,115 @@ function firstDirectChildHeadingElement(element: Element): Element | null {
   return null;
 }
 
+function isExcludedWikipediaElement(element: Element): boolean {
+  return shouldExcludeWikipediaElement({
+    tagName: element.tagName,
+    classTokens: Array.from(element.classList),
+    role: element.getAttribute("role"),
+  });
+}
+
+/** `textContent` without the text of excluded descendants (e.g. "[edit]" links in headings). */
+function contentTextOf(element: Element): string {
+  let text = "";
+  for (const child of element.childNodes) {
+    if (isTextNode(child)) {
+      text += child.data;
+    } else if (isElementNode(child) && !isExcludedWikipediaElement(child)) {
+      text += contentTextOf(child);
+    }
+  }
+  return text;
+}
+
+function isTextNode(node: Node): node is Text {
+  return node.nodeType === 3;
+}
+
+function isElementNode(node: Node): node is Element {
+  return node.nodeType === 1;
+}
+
 /** Build a WikipediaNodeDescriptor from a DOM Element for shared heading logic. */
 function toNodeDescriptor(element: Element): WikipediaNodeDescriptor {
   const firstHeading = firstDirectChildHeadingElement(element);
   return {
     tagName: element.tagName,
     classTokens: Array.from(element.classList),
-    textContent: element.textContent,
+    textContent: contentTextOf(element),
     firstChildHeading:
       firstHeading !== null
-        ? { tagName: firstHeading.tagName, textContent: firstHeading.textContent }
+        ? { tagName: firstHeading.tagName, textContent: contentTextOf(firstHeading) }
         : null,
   };
 }
 
 function normalizeHeadingText(heading: Element): string {
   const headline = heading.querySelector(".mw-headline");
-  const descriptor = toNodeDescriptor(heading);
   return normalizeWikipediaSectionTitle(
-    effectiveHeadingText(descriptor, (headline ?? heading).textContent),
+    effectiveHeadingText(toNodeDescriptor(heading), contentTextOf(headline ?? heading)),
   );
 }
 
-function removeSectionFromHeading(heading: HTMLElement): void {
+/**
+ * The elements making up the section a heading opens: the heading (or its
+ * Parsoid `div.mw-heading` wrapper — section content is a sibling of the
+ * wrapper, not of the inner heading) and every following sibling up to the
+ * next heading of the same or a higher level.
+ */
+function sectionElements(heading: Element): Element[] {
   const level = headingLevelFromTag(heading.tagName);
   if (level === null) {
-    heading.remove();
-    return;
+    return [heading];
   }
 
-  // Parsoid HTML wraps headings in `<div class="mw-heading mw-headingN">`.
-  // Starting removal from the wrapper div (rather than the inner <h2>) ensures
-  // that cursor.nextElementSibling is the actual section content — in the
-  // new format, all section content is a sibling of the wrapper, not of the
-  // heading element inside it.
   const parent = heading.parentElement;
   const parentLevel = parent !== null ? effectiveHeadingLevel(toNodeDescriptor(parent)) : null;
-  const startCursor: Element = parent !== null && parentLevel !== null ? parent : heading;
+  const start: Element = parent !== null && parentLevel !== null ? parent : heading;
 
-  let cursor: Element = startCursor;
-  while (true) {
-    const nextSibling: Element | null = cursor.nextElementSibling;
-    cursor.remove();
-
-    if (!nextSibling) {
-      return;
-    }
-
-    const nextLevel = effectiveHeadingLevel(toNodeDescriptor(nextSibling));
-    if (nextLevel !== null && nextLevel <= level) {
-      return;
-    }
-
-    cursor = nextSibling;
+  const elements = [start];
+  for (
+    let sibling = start.nextElementSibling;
+    sibling !== null;
+    sibling = sibling.nextElementSibling
+  ) {
+    const siblingLevel = effectiveHeadingLevel(toNodeDescriptor(sibling));
+    if (siblingLevel !== null && siblingLevel <= level) break;
+    elements.push(sibling);
   }
+  return elements;
 }
 
-function pruneWikipediaContent(root: Element): Element {
-  const clone = cloneElement(root);
+function isWithinExcludedElement(element: Element, root: Element): boolean {
+  for (
+    let cursor: Element | null = element;
+    cursor !== null && cursor !== root;
+    cursor = cursor.parentElement
+  ) {
+    if (isExcludedWikipediaElement(cursor)) return true;
+  }
+  return false;
+}
 
-  for (const node of clone.querySelectorAll<HTMLElement>("*")) {
-    if (
-      shouldExcludeWikipediaElement({
-        tagName: node.tagName,
-        classTokens: Array.from(node.classList),
-      })
-    ) {
-      node.remove();
+/**
+ * Wikipedia's non-article content under `root`: excluded elements (citation
+ * superscripts, edit links, navboxes, JS-injected UI — see
+ * `shouldExcludeWikipediaElement`) and whole excluded sections (References,
+ * External links, ...). Mirrors the API's canonical Parse-API filtering
+ * (`createWikipediaNodeFilter`) so client and server text agree.
+ */
+function wikipediaExclusionFilter(root: Element): (element: Element) => boolean {
+  const excludedSectionElements = new Set<Element>();
+  for (const heading of root.querySelectorAll(HEADING_SELECTOR)) {
+    if (isWithinExcludedElement(heading, root)) continue;
+    if (!isExcludedWikipediaSectionTitle(normalizeHeadingText(heading))) continue;
+    for (const element of sectionElements(heading)) {
+      excludedSectionElements.add(element);
     }
   }
 
-  for (const heading of clone.querySelectorAll<HTMLElement>(HEADING_SELECTOR)) {
-    const headingText = normalizeHeadingText(heading);
-    if (isExcludedWikipediaSectionTitle(headingText)) {
-      removeSectionFromHeading(heading);
-    }
-  }
-
-  return clone;
+  return (element: Element): boolean =>
+    isExcludedWikipediaElement(element) || excludedSectionElements.has(element);
 }
 
 function displayTitleFromDocument(document: Document): string | undefined {
@@ -341,32 +346,41 @@ function metadataTitleFromMwConfig(mwConfig: MwConfig): string | null {
   return normalizeWikipediaTitleToken(pageName);
 }
 
+type WikipediaLocator = Extract<PageLocator, { platform: "WIKIPEDIA" }>;
+
+function wikipediaLocator(url: string): WikipediaLocator | null {
+  const locator = pageLocatorFor("WIKIPEDIA", url);
+  return locator?.platform === "WIKIPEDIA" ? locator : null;
+}
+
 // ── Adapter ───────────────────────────────────────────────────────────────
 
 export const wikipediaAdapter: PlatformAdapter = {
   platformKey: "WIKIPEDIA",
-  contentRootSelector: CONTENT_ROOT_SELECTOR,
 
   matches(url: string): boolean {
-    return parseWikipediaIdentity(url) !== null;
+    return wikipediaLocator(url) !== null;
   },
 
-  detectFromDom(document: Document): boolean {
-    return document.querySelector(CONTENT_ROOT_SELECTOR) !== null;
+  pageLocator(url: string): PageLocator | null {
+    return wikipediaLocator(url);
   },
 
   extract(document: Document): AdapterExtractionResult {
-    const identity = parseWikipediaIdentity(document.location.href);
-    if (!identity) {
+    const locator = wikipediaLocator(document.location.href);
+    if (locator === null) {
       return {
         kind: "not_ready",
         reason: "missing_identity",
       };
     }
+    const { article } = locator;
 
     // Read all MediaWiki config values in one pass — no module-level cache.
     const mwConfig = readMwConfig(document);
 
+    // wgNamespaceNumber is authoritative: URL parsing only knows canonical
+    // namespace names, not localized ones (e.g. German "Diskussion:").
     const namespaceNumber = mwConfig.wgNamespaceNumber;
     if (typeof namespaceNumber === "number" && namespaceNumber !== 0) {
       return {
@@ -383,11 +397,11 @@ export const wikipediaAdapter: PlatformAdapter = {
       };
     }
 
-    const prunedRoot = pruneWikipediaContent(contentRoot);
-    const extracted = extractContentWithImageOccurrencesFromRoot(
-      prunedRoot,
-      document.location.href,
-    );
+    const extracted = extractContent(contentRoot, {
+      exclude: wikipediaExclusionFilter(contentRoot),
+      imageSelector: "img[src]",
+      baseUrl: document.location.href,
+    });
     if (extracted.contentText.length === 0) {
       return {
         kind: "not_ready",
@@ -404,7 +418,7 @@ export const wikipediaAdapter: PlatformAdapter = {
       };
     }
 
-    const metadataTitle = identity.title ?? metadataTitleFromMwConfig(mwConfig);
+    const metadataTitle = article.title ?? metadataTitleFromMwConfig(mwConfig);
     if (metadataTitle === null || metadataTitle.length === 0) {
       return {
         kind: "not_ready",
@@ -412,26 +426,31 @@ export const wikipediaAdapter: PlatformAdapter = {
       };
     }
 
-    const { imageUrls, imageOccurrences } = extracted;
-    const hasVideo = prunedRoot.querySelector(VIDEO_SELECTOR) !== null;
-    const mediaState = hasVideo ? "has_video" : imageUrls.length > 0 ? "has_images" : "text_only";
-
+    // Video is detected on the live root, not through the content exclusions:
+    // TimedMediaHandler wraps <video> in `.mw-tmh-player` (excluded as
+    // non-text UI), so excluding first would miss any video whose player had
+    // initialised before extraction.
+    const hasVideo = contentRoot.querySelector(VIDEO_SELECTOR) !== null;
     const lastModifiedAt = toIsoDate(mwConfig.wgRevisionTimestamp);
     const displayTitle = displayTitleFromDocument(document);
-    const htmlContent = toTransportableHtmlContent(prunedRoot);
+    const htmlContent = toTransportableHtml(
+      serializeContentHtml(contentRoot, wikipediaExclusionFilter),
+      WIKIPEDIA_HTML_CONTENT_MAX_BYTES,
+    );
 
     return {
       kind: "ready",
       content: {
         platform: "WIKIPEDIA",
-        externalId: wikipediaExternalIdFromPageId(identity.language, pageId),
+        externalId: wikipediaExternalIdSchema.parse(
+          wikipediaExternalIdFromPageId(article.language, pageId),
+        ),
         url: document.location.href,
         contentText: extracted.contentText,
-        mediaState,
-        imageUrls,
-        imageOccurrences,
+        hasVideo,
+        imageOccurrences: extracted.imageOccurrences,
         metadata: {
-          language: identity.language,
+          language: article.language,
           title: metadataTitle,
           pageId,
           revisionId,
@@ -443,52 +462,13 @@ export const wikipediaAdapter: PlatformAdapter = {
     };
   },
 
-  buildMatchingFilter(root: Element): (element: Element) => boolean {
-    // Precompute the set of direct-child elements within excluded sections
-    // (e.g. "References", "External links"). An excluded section starts at a
-    // heading whose title matches isExcludedWikipediaSectionTitle and extends
-    // to the next sibling heading of equal or higher level — mirroring the
-    // section removal logic in pruneWikipediaContent / removeSectionFromHeading.
-    const excludedSectionElements = new Set<Element>();
-
-    for (const child of root.children) {
-      const descriptor = toNodeDescriptor(child);
-      const level = effectiveHeadingLevel(descriptor);
-      if (level === null) continue;
-
-      const headingText = normalizeHeadingText(child);
-      if (!isExcludedWikipediaSectionTitle(headingText)) continue;
-
-      excludedSectionElements.add(child);
-      let sibling = child.nextElementSibling;
-      while (sibling) {
-        const siblingLevel = effectiveHeadingLevel(toNodeDescriptor(sibling));
-        if (siblingLevel !== null && siblingLevel <= level) break;
-        excludedSectionElements.add(sibling);
-        sibling = sibling.nextElementSibling;
-      }
-    }
-
-    return (element: Element): boolean => {
-      // Element-level exclusion (citations, edit sections, navboxes, etc.)
-      if (
-        shouldExcludeWikipediaElement({
-          tagName: element.tagName,
-          classTokens: Array.from(element.classList),
-        })
-      ) {
-        return true;
-      }
-      // Section-level exclusion — the TreeWalker's FILTER_REJECT skips
-      // subtrees, so checking direct membership is sufficient.
-      return excludedSectionElements.has(element);
-    };
-  },
-
   getContentRoot(document: Document): Element | null {
-    return (
-      document.querySelector("#mw-content-text .mw-parser-output") ??
-      document.querySelector("#mw-content-text")
-    );
+    for (const selector of CONTENT_ROOT_SELECTORS) {
+      const root = document.querySelector(selector);
+      if (root !== null) return root;
+    }
+    return null;
   },
+
+  contentExclusionFilter: wikipediaExclusionFilter,
 };

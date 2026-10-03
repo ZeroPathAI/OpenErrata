@@ -1,16 +1,17 @@
 # OpenErrata Privacy Policy
 
-**Effective date:** February 22, 2026
+**Effective date:** October 2, 2026
 
 OpenErrata is a browser extension that investigates web content for factual
-accuracy using large language models. This policy describes what data the
-extension collects, how it is used, and how it is stored.
+accuracy using large language models, plus a public website that shows the
+results. This policy describes what data the extension and website collect, how
+it is used, and how it is stored.
 
 ## What Data We Collect
 
 ### Post content you visit
 
-When you visit a supported page (LessWrong, X/Twitter, or Substack), the
+When you visit a supported page (LessWrong, X/Twitter, Substack, or Wikipedia), the
 extension extracts the post's text, images, and public metadata (title, author
 name/handle, publication date, tags, engagement counts) and sends it to the
 OpenErrata API server for investigation. Only content on supported platforms is
@@ -72,7 +73,14 @@ abuse.
   investigation. OpenAI's data usage policies apply to that processing. See
   [OpenAI's privacy policy](https://openai.com/privacy).
 - **Platform APIs** — The server may fetch canonical post content from
-  LessWrong's public GraphQL API to verify content authenticity.
+  LessWrong's public GraphQL API and Wikipedia's public API to verify content
+  authenticity.
+- **Cloudflare** — The hosted API and website are served through Cloudflare,
+  which handles the network connection (including your IP address) to deliver
+  requests. See [Cloudflare's privacy policy](https://www.cloudflare.com/privacypolicy/).
+- **Google Fonts** — The website loads its typeface from Google Fonts, so your
+  browser requests it from Google's servers when you open the site. See
+  [Google's privacy policy](https://policies.google.com/privacy).
 
 No data is shared with advertising networks, data brokers, analytics providers,
 or any other third parties.
@@ -94,6 +102,12 @@ or any other third parties.
 - User-provided OpenAI keys are encrypted at rest with AES-256-GCM on the
   server and deleted after use.
 - The extension requests only the permissions necessary for its operation.
+
+## Website
+
+The OpenErrata website does not use cookies, accounts, analytics, or tracking.
+Search terms you enter are sent to the OpenErrata API to find matching
+investigations.
 
 ## Public Investigations
 

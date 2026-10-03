@@ -16,9 +16,15 @@ spec:
       labels:
         {{- include "openerrata.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: api
+      annotations:
+        {{- include "openerrata.configChecksums" . | nindent 8 }}
     spec:
       serviceAccountName: {{ include "openerrata.serviceAccountName" (dict "root" . "component" "api") }}
       automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+        {{- include "openerrata.waitForMigrationsInitContainer" . | nindent 8 }}
       containers:
         - name: api
           image: {{ include "openerrata.image" . | quote }}
@@ -32,6 +38,10 @@ spec:
                 name: {{ include "openerrata.secretName" . }}
             - configMapRef:
                 name: {{ include "openerrata.fullname" . }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources.api | nindent 12 }}
           livenessProbe:
             httpGet:
               path: /health

@@ -1,22 +1,12 @@
 <script lang="ts">
   import type { PageData } from "./$types";
-  import type { InvestigationSummary } from "./+page.server";
+  import { PLATFORM_LABELS } from "$lib/platform-labels";
 
   const { data }: { data: PageData } = $props();
 
-  const platformLabels: Record<InvestigationSummary["platform"], string> = {
-    LESSWRONG: "LessWrong",
-    X: "X",
-    SUBSTACK: "Substack",
-    WIKIPEDIA: "Wikipedia",
-  };
-
-  const platforms = [
+  const platformOptions = [
     { value: "", label: "All platforms" },
-    { value: "LESSWRONG", label: "LessWrong" },
-    { value: "X", label: "X" },
-    { value: "SUBSTACK", label: "Substack" },
-    { value: "WIKIPEDIA", label: "Wikipedia" },
+    ...Object.entries(PLATFORM_LABELS).map(([value, label]) => ({ value, label })),
   ];
 
   function formatDate(iso: string): string {
@@ -41,6 +31,10 @@
     }
     return withoutProtocol.substring(0, maxLength) + "...";
   }
+
+  function correctionCountLabel(count: number): string {
+    return count === 1 ? "Correction" : `${count} corrections`;
+  }
 </script>
 
 <svelte:head>
@@ -55,10 +49,6 @@
   <main class="content">
     <div class="content-inner">
       <h1>Latest Corrections</h1>
-      <p class="subtitle">
-        Browse completed fact-check investigations. Each correction identifies empirically incorrect
-        or unambiguously misleading claims in online posts.
-      </p>
 
       <form class="search-bar" method="get" action="/corrections">
         <div class="search-inputs">
@@ -70,12 +60,8 @@
             class="search-input"
           />
           <select name="platform" class="platform-select">
-            {#each platforms as p (p.value)}
-              <option
-                value={p.value}
-                selected={data.platform === p.value ||
-                  (data.platform === undefined && p.value === "")}
-              >
+            {#each platformOptions as p (p.value)}
+              <option value={p.value} selected={(data.platform ?? "") === p.value}>
                 {p.label}
               </option>
             {/each}
@@ -84,12 +70,7 @@
         </div>
       </form>
 
-      {#if data.error}
-        <div class="error-state">
-          <p>Failed to load corrections. The API may be unavailable.</p>
-          <p class="error-detail">{data.error}</p>
-        </div>
-      {:else if data.investigations.length === 0}
+      {#if data.investigations.length === 0}
         <div class="empty-state">
           <p>No corrections found{data.query ? ` matching "${data.query}"` : ""}.</p>
         </div>
@@ -99,7 +80,7 @@
             <a href="/corrections/{investigation.id}" class="investigation-card">
               <div class="card-header">
                 <span class="platform-badge platform-{investigation.platform.toLowerCase()}">
-                  {platformLabels[investigation.platform]}
+                  {PLATFORM_LABELS[investigation.platform]}
                 </span>
                 <span class="date">
                   {formatDate(investigation.checkedAt)} at {formatTime(investigation.checkedAt)}
@@ -115,7 +96,7 @@
               {/if}
               <div class="card-footer">
                 <span class="claim-count" class:has-claims={investigation.claimCount > 0}>
-                  {investigation.claimCount} correction{investigation.claimCount !== 1 ? "s" : ""}
+                  {correctionCountLabel(investigation.claimCount)}
                 </span>
                 <span class="view-arrow">&rarr;</span>
               </div>
@@ -194,13 +175,6 @@
     font-weight: 700;
     letter-spacing: -0.025em;
     margin-bottom: 0.5rem;
-  }
-
-  .subtitle {
-    color: var(--color-text-muted);
-    font-size: 1rem;
-    line-height: 1.5;
-    margin-bottom: 2rem;
   }
 
   /* Search */
@@ -396,23 +370,6 @@
   .claim-count.has-claims {
     color: var(--color-error);
     font-weight: 600;
-  }
-
-  /* Error state */
-  .error-state {
-    text-align: center;
-    padding: 3rem 1rem;
-    color: var(--color-text-muted);
-    background: var(--color-surface);
-    border: 1px solid var(--color-border);
-    border-radius: 12px;
-  }
-
-  .error-detail {
-    font-size: 0.8125rem;
-    color: var(--color-error);
-    margin-top: 0.5rem;
-    font-family: monospace;
   }
 
   /* Empty state */

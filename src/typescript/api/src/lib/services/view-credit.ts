@@ -1,12 +1,7 @@
 import { getIpRangeCreditCap } from "$lib/config/runtime.js";
+import { startOfUtcDay } from "$lib/date.js";
 import { isUniqueConstraintError } from "$lib/db/errors.js";
 import type { PrismaClient } from "$lib/db/prisma-client";
-
-function startOfUTCDay(date: Date): Date {
-  const dayStart = new Date(date);
-  dayStart.setUTCHours(0, 0, 0, 0);
-  return dayStart;
-}
 
 export async function maybeIncrementUniqueViewScore(
   prisma: PrismaClient,
@@ -15,7 +10,7 @@ export async function maybeIncrementUniqueViewScore(
   ipRangeKey: string,
 ): Promise<boolean> {
   const ipRangeCreditCap = getIpRangeCreditCap();
-  const bucketDay = startOfUTCDay(new Date());
+  const bucketDay = startOfUtcDay(new Date());
 
   return prisma.$transaction(async (tx) => {
     // Serialize per-post view-credit updates so cap checks stay consistent

@@ -3,15 +3,54 @@ import DOMPurify from "dompurify";
 
 const SAFE_SOURCE_PROTOCOLS = new Set(["http:", "https:"]);
 
+// Claim reasoning is LLM output, and a post's author can steer it (prompt
+// injection), so it must not be able to make the reader's browser fetch
+// anything: no images, and only text-formatting tags survive sanitization.
+// Links stay, but only load when the reader clicks them.
 const markdownRenderer = new MarkdownIt({
   html: false,
   linkify: true,
   breaks: true,
-});
+}).disable("image");
+
+const ALLOWED_REASONING_TAGS = [
+  "a",
+  "p",
+  "br",
+  "strong",
+  "em",
+  "b",
+  "i",
+  "s",
+  "del",
+  "code",
+  "pre",
+  "blockquote",
+  "ul",
+  "ol",
+  "li",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "hr",
+  "table",
+  "thead",
+  "tbody",
+  "tr",
+  "th",
+  "td",
+];
 
 export function renderClaimReasoningHtml(markdown: string): string {
   const rawHtml = markdownRenderer.render(markdown);
-  const sanitizedHtml = DOMPurify.sanitize(rawHtml);
+  const sanitizedHtml = DOMPurify.sanitize(rawHtml, {
+    ALLOWED_TAGS: ALLOWED_REASONING_TAGS,
+    ALLOWED_ATTR: ["href"],
+    ALLOW_DATA_ATTR: false,
+  });
   const template = document.createElement("template");
   template.innerHTML = sanitizedHtml;
 

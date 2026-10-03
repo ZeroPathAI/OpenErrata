@@ -6,7 +6,8 @@ import {
   createInvestigationRunState,
   getConfirmedClaims,
 } from "../../src/lib/investigators/openai-investigation-run-state.js";
-import type { PerClaimValidationResult } from "../../src/lib/investigators/openai-claim-validator.js";
+import type { ClaimValidationResult } from "../../src/lib/investigators/openai-claim-validator.js";
+import { makeValidationRequestAudit } from "../helpers/fake-openai.js";
 
 function makeClaim(label: string): InvestigationResult["claims"][number] {
   return {
@@ -24,23 +25,11 @@ function makeClaim(label: string): InvestigationResult["claims"][number] {
   };
 }
 
-function makeValidationResult(claimIndex: number, approved: boolean): PerClaimValidationResult {
+function makeValidationResult(claimIndex: number, approved: boolean): ClaimValidationResult {
   return {
+    kind: approved ? "approved" : "rejected",
     claimIndex,
-    approved,
-    responseAudit: {
-      responseId: `resp-${claimIndex.toString()}`,
-      responseStatus: "completed",
-      responseModelVersion: "test-model",
-      responseOutputText: JSON.stringify({ approved }),
-      outputItems: [],
-      outputTextParts: [],
-      outputTextAnnotations: [],
-      reasoningSummaries: [],
-      toolCalls: [],
-      usage: null,
-    },
-    error: null,
+    request: makeValidationRequestAudit(claimIndex),
   };
 }
 
@@ -48,13 +37,13 @@ test("claim validation scheduler preserves submission ordering in confirmed clai
   const claimA = makeClaim("alpha");
   const claimB = makeClaim("beta");
 
-  const resolvers: ((result: PerClaimValidationResult) => void)[] = [];
+  const resolvers: ((result: ClaimValidationResult) => void)[] = [];
 
   const scheduler = createClaimValidationScheduler({
     initialState: createInvestigationRunState({}),
     validationLimiter: async (task) => task(),
     runValidation: async (claimIndex) =>
-      new Promise<PerClaimValidationResult>((resolve) => {
+      new Promise<ClaimValidationResult>((resolve) => {
         resolvers[claimIndex] = resolve;
       }),
   });

@@ -6,7 +6,7 @@ import {
   releaseLeaseToRetryInTx,
 } from "../../src/lib/services/attempt-audit.js";
 import type { Prisma } from "../../src/lib/db/prisma-client";
-import type { InvestigatorAttemptAudit } from "../../src/lib/investigators/interface.js";
+import type { InvestigatorSucceededAttemptAudit } from "../../src/lib/investigators/interface.js";
 
 /**
  * Invariants under test:
@@ -31,29 +31,12 @@ import type { InvestigatorAttemptAudit } from "../../src/lib/investigators/inter
  *   inconsistent non-PROCESSING state, silently corrupting the lifecycle.
  */
 
-function makeMinimalAttemptAudit(): InvestigatorAttemptAudit {
+function makeMinimalAttemptAudit(): InvestigatorSucceededAttemptAudit {
   return {
-    startedAt: new Date().toISOString(),
-    completedAt: new Date().toISOString(),
-    requestModel: "test-model",
-    requestInstructions: "test instructions",
-    requestInput: "test input",
-    requestReasoningEffort: null,
-    requestReasoningSummary: null,
-    requestedTools: [],
-    response: {
-      responseId: "resp_test",
-      responseStatus: "completed",
-      responseModelVersion: null,
-      responseOutputText: null,
-      outputItems: [],
-      outputTextParts: [],
-      outputTextAnnotations: [],
-      reasoningSummaries: [],
-      toolCalls: [],
-      usage: null,
-    },
-    error: null,
+    outcome: "SUCCEEDED",
+    startedAt: new Date(),
+    completedAt: new Date(),
+    requests: [],
   };
 }
 
@@ -69,7 +52,7 @@ function makeClaim() {
 
 test("persistCompletedInvestigation returns false and writes nothing when guard fails", async () => {
   let claimCreateCalled = false;
-  let attemptUpsertCalled = false;
+  let attemptCreateCalled = false;
 
   // Mock transaction client where investigationLease.deleteMany returns 0 rows
   // (guard fails). All other methods throw if called — the test fails if any
@@ -84,8 +67,8 @@ test("persistCompletedInvestigation returns false and writes nothing when guard 
       },
     },
     investigationAttempt: {
-      upsert: async () => {
-        attemptUpsertCalled = true;
+      create: async () => {
+        attemptCreateCalled = true;
         throw new Error("Attempt audit write leaked past guard");
       },
     },
@@ -103,12 +86,13 @@ test("persistCompletedInvestigation returns false and writes nothing when guard 
     claims: [makeClaim(), makeClaim()],
     attemptNumber: 1,
     attemptAudit: makeMinimalAttemptAudit(),
-    modelVersion: null,
+    model: "gpt-6.1-sol",
+    modelVersion: "gpt-6.1-sol-2026-09-01",
   });
 
   assert.equal(result, false, "Should return false when guard matches 0 rows");
   assert.equal(claimCreateCalled, false, "claim.create must not be called when guard fails");
-  assert.equal(attemptUpsertCalled, false, "attemptAudit must not be written when guard fails");
+  assert.equal(attemptCreateCalled, false, "attemptAudit must not be written when guard fails");
 });
 
 test("persistCompletedInvestigation proceeds to claim writes when guard succeeds", async () => {
@@ -117,23 +101,25 @@ test("persistCompletedInvestigation proceeds to claim writes when guard succeeds
   // investigation.updateMany is called (which happens immediately after the
   // lease guard). Full claim-write verification is covered by integration tests.
   let investigationUpdateManyReached = false;
+  let completionData: unknown = null;
 
   const mockTx = {
     investigationLease: {
       deleteMany: async () => ({ count: 1 }),
     },
     investigation: {
-      updateMany: async () => {
+      updateMany: async (args: { data: unknown }) => {
         investigationUpdateManyReached = true;
+        completionData = args.data;
         // Return count=1 to indicate the status transition succeeded, then
         // throw on the next call to short-circuit the deeply-mocked path.
         return { count: 1 };
       },
     },
-    // persistAttemptAudit calls upsert first — intercept it to stop execution
-    // after verifying the guard passed and updateMany was called.
+    // persistAttemptAudit creates the attempt first — intercept it to stop
+    // execution after verifying the guard passed and updateMany was called.
     investigationAttempt: {
-      upsert: async () => {
+      create: async () => {
         throw new Error("Mock: stopping after guard verification");
       },
     },
@@ -146,7 +132,8 @@ test("persistCompletedInvestigation proceeds to claim writes when guard succeeds
       claims: [makeClaim()],
       attemptNumber: 1,
       attemptAudit: makeMinimalAttemptAudit(),
-      modelVersion: null,
+      model: "gpt-6.1-sol",
+      modelVersion: "gpt-6.1-sol-2026-09-01",
     }),
     /Mock: stopping after guard verification/,
   );
@@ -155,6 +142,16 @@ test("persistCompletedInvestigation proceeds to claim writes when guard succeeds
     investigationUpdateManyReached,
     true,
     "When guard succeeds (count=1), execution must proceed past the guard to investigation.updateMany",
+  );
+  // INV-INV-MODEL-AT-COMPLETION: the model that ran is recorded with the COMPLETE transition.
+  assert.deepEqual(
+    { ...(completionData as Record<string, unknown>), checkedAt: "<set>" },
+    {
+      status: "COMPLETE",
+      checkedAt: "<set>",
+      model: "gpt-6.1-sol",
+      modelVersion: "gpt-6.1-sol-2026-09-01",
+    },
   );
 });
 
@@ -182,7 +179,8 @@ test("persistCompletedInvestigation throws invariant error when lease deleted bu
       claims: [],
       attemptNumber: 1,
       attemptAudit: makeMinimalAttemptAudit(),
-      modelVersion: null,
+      model: "gpt-6.1-sol",
+      modelVersion: "gpt-6.1-sol-2026-09-01",
     }),
     /Invariant violation.*inv-test-123/,
     "Must throw invariant error when lease exists but investigation is not PROCESSING",

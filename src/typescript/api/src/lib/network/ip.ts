@@ -1,136 +1,37 @@
-import { isIP } from "node:net";
+import ipaddr from "ipaddr.js";
 
-type Ipv4Octets = [number, number, number, number];
-
-function parseIpv4Octets(value: string): Ipv4Octets | null {
-  const parts = value.split(".");
-  if (parts.length !== 4) return null;
-
-  const parsedOctets = parts.map((part) => {
-    if (!/^\d{1,3}$/.test(part)) return Number.NaN;
-    const parsed = Number.parseInt(part, 10);
-    return parsed >= 0 && parsed <= 255 ? parsed : Number.NaN;
-  });
-
-  if (parsedOctets.some((octet) => Number.isNaN(octet))) return null;
-
-  const a = parsedOctets[0];
-  const b = parsedOctets[1];
-  const c = parsedOctets[2];
-  const d = parsedOctets[3];
-  if (a === undefined || b === undefined || c === undefined || d === undefined) return null;
-  return [a, b, c, d];
-}
-
-function ipv4Prefix(octets: number[]): string {
-  return octets.slice(0, 3).join(".");
-}
-
-function isValidHextet(hextet: string): boolean {
-  return /^[0-9a-f]{1,4}$/i.test(hextet);
-}
-
-function normalizeHextet(hextet: string): string {
-  return Number.parseInt(hextet, 16).toString(16);
-}
-
-function expandIpv6(input: string): string[] | null {
-  let address = input.trim().toLowerCase();
-
-  const zoneIndex = address.indexOf("%");
-  if (zoneIndex >= 0) {
-    address = address.slice(0, zoneIndex);
+function parseClientAddress(clientAddress: string): ipaddr.IPv4 | ipaddr.IPv6 {
+  const trimmed = clientAddress.trim();
+  const zoneSeparatorIndex = trimmed.indexOf("%");
+  const withoutZone = zoneSeparatorIndex === -1 ? trimmed : trimmed.slice(0, zoneSeparatorIndex);
+  if (ipaddr.IPv4.isValidFourPartDecimal(withoutZone)) {
+    return ipaddr.IPv4.parse(withoutZone);
   }
-
-  if (address.includes(".")) {
-    const lastColon = address.lastIndexOf(":");
-    if (lastColon < 0) return null;
-
-    const ipv4Part = address.slice(lastColon + 1);
-    const octets = parseIpv4Octets(ipv4Part);
-    if (!octets) return null;
-
-    const high = ((octets[0] << 8) | octets[1]).toString(16);
-    const low = ((octets[2] << 8) | octets[3]).toString(16);
-    address = `${address.slice(0, lastColon)}:${high}:${low}`;
+  if (ipaddr.IPv6.isValid(withoutZone)) {
+    const ipv6 = ipaddr.IPv6.parse(withoutZone);
+    return ipv6.isIPv4MappedAddress() ? ipv6.toIPv4Address() : ipv6;
   }
-
-  const parts = address.split("::");
-  if (parts.length > 2) return null;
-
-  const left =
-    parts[0] !== undefined && parts[0].length > 0
-      ? parts[0].split(":").filter((part) => part.length > 0)
-      : [];
-  const right =
-    parts.length === 2 && parts[1] !== undefined && parts[1].length > 0
-      ? parts[1].split(":").filter((part) => part.length > 0)
-      : [];
-
-  if (!left.every(isValidHextet) || !right.every(isValidHextet)) {
-    return null;
-  }
-
-  const missing = 8 - (left.length + right.length);
-  if (parts.length === 1 && missing !== 0) return null;
-  if (parts.length === 2 && missing < 1) return null;
-
-  const expanded = [
-    ...left,
-    ...(parts.length === 2 ? Array.from({ length: missing }, () => "0") : []),
-    ...right,
-  ].map(normalizeHextet);
-
-  return expanded.length === 8 ? expanded : null;
+  throw new Error(`Client address is not an IP address: ${JSON.stringify(clientAddress)}`);
 }
 
-function mappedIpv4FromIpv6(expandedIpv6: string[]): Ipv4Octets | null {
-  const mappedMarker = expandedIpv6[5];
-  const highHextet = expandedIpv6[6];
-  const lowHextet = expandedIpv6[7];
-  if (
-    mappedMarker === undefined ||
-    mappedMarker.length === 0 ||
-    highHextet === undefined ||
-    highHextet.length === 0 ||
-    lowHextet === undefined ||
-    lowHextet.length === 0
-  ) {
-    return null;
+/**
+ * Derive the network range a client address belongs to for the per-day
+ * IP-range view-credit cap (SPEC §2.10): the /24 for IPv4 (first three
+ * octets) and the /48 for IPv6 (first three hextets). IPv4-mapped IPv6
+ * addresses count as their IPv4 address.
+ *
+ * The client address comes from the socket peer or the trusted proxy header
+ * (ADDRESS_HEADER), so anything that is not an IP address means the proxy
+ * configuration is broken; that throws rather than bucketing such clients
+ * together.
+ */
+export function deriveIpRangePrefix(clientAddress: string): string {
+  const address = parseClientAddress(clientAddress);
+  if (address instanceof ipaddr.IPv4) {
+    return address.octets.slice(0, 3).join(".");
   }
-
-  const isMappedPrefix =
-    expandedIpv6.slice(0, 5).every((hextet) => hextet === "0") && mappedMarker === "ffff";
-  if (!isMappedPrefix) return null;
-
-  const high = Number.parseInt(highHextet, 16);
-  const low = Number.parseInt(lowHextet, 16);
-  return [high >> 8, high & 0xff, low >> 8, low & 0xff];
-}
-
-function ipv6Prefix(expandedIpv6: string[]): string {
-  return expandedIpv6.slice(0, 3).join(":");
-}
-
-export function deriveIpRangePrefix(clientIp: string): string {
-  const trimmed = clientIp.trim();
-  if (trimmed.length === 0) return "unknown";
-
-  const ipv4 = parseIpv4Octets(trimmed);
-  if (ipv4) {
-    return ipv4Prefix(ipv4);
-  }
-
-  if (isIP(trimmed) === 6) {
-    const expanded = expandIpv6(trimmed);
-    if (!expanded) return `invalid:${trimmed.toLowerCase()}`;
-
-    const mappedIpv4 = mappedIpv4FromIpv6(expanded);
-    if (mappedIpv4) {
-      return ipv4Prefix(mappedIpv4);
-    }
-    return ipv6Prefix(expanded);
-  }
-
-  return `invalid:${trimmed.toLowerCase()}`;
+  return address.parts
+    .slice(0, 3)
+    .map((part) => part.toString(16))
+    .join(":");
 }

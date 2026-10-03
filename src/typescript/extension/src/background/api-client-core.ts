@@ -3,14 +3,10 @@ import { EXTENSION_TRPC_PATH } from "@openerrata/shared";
 import type { ExtensionSettings } from "../lib/settings-core.js";
 import { ApiClientError } from "./api-client-error.js";
 
-export const BUNDLED_ATTESTATION_SECRET = "openerrata-attestation-v1";
 export const TRPC_REQUEST_BODY_LIMIT_BYTES = 512 * 1024;
 export const EXTENSION_VERSION_HEADER_NAME = "x-openerrata-extension-version";
 
-type ApiClientSettings = Pick<
-  ExtensionSettings,
-  "apiBaseUrl" | "apiKey" | "openaiApiKey" | "hmacSecret"
->;
+type ApiClientSettings = Pick<ExtensionSettings, "apiBaseUrl" | "apiKey" | "openaiApiKey">;
 
 interface TrpcFetchInit {
   headers?: HeadersInit;
@@ -23,11 +19,7 @@ function utf8ByteLength(value: string): number {
   return new TextEncoder().encode(value).byteLength;
 }
 
-export function attestationSecretFor(settingsValue: ApiClientSettings): string {
-  const configured = settingsValue.hmacSecret.trim();
-  return configured.length > 0 ? configured : BUNDLED_ATTESTATION_SECRET;
-}
-
+/** Cache key for a tRPC client: every setting its requests depend on. */
 export function clientKeyFor(
   settingsValue: ApiClientSettings,
   includeUserOpenAiHeader: boolean,
@@ -36,7 +28,6 @@ export function clientKeyFor(
     settingsValue.apiBaseUrl,
     settingsValue.apiKey.trim(),
     includeUserOpenAiHeader ? settingsValue.openaiApiKey.trim() : "",
-    attestationSecretFor(settingsValue),
   ].join("|");
 }
 
@@ -44,14 +35,13 @@ export function shouldIncludeUserOpenAiKeyHeader(path: ExtensionApiProcedurePath
   return path === EXTENSION_TRPC_PATH.INVESTIGATE_NOW;
 }
 
-export async function buildTrpcRequestInit(input: {
+export function buildTrpcRequestInit(input: {
   init: TrpcFetchInit | undefined;
   settings: ApiClientSettings;
   includeUserOpenAiHeader: boolean;
   extensionVersion: string;
-  computeHmac: (secret: string, body: string) => Promise<string>;
   utf8Length?: (value: string) => number;
-}): Promise<RequestInit> {
+}): RequestInit {
   const headers = new Headers(input.init?.headers);
   const apiKey = input.settings.apiKey.trim();
   if (apiKey.length > 0) {
@@ -66,7 +56,7 @@ export async function buildTrpcRequestInit(input: {
     headers.set(EXTENSION_VERSION_HEADER_NAME, trimmedExtensionVersion);
   }
 
-  if (typeof input.init?.body === "string" && input.init.body.length > 0) {
+  if (typeof input.init?.body === "string") {
     const bodyBytes = (input.utf8Length ?? utf8ByteLength)(input.init.body);
     if (bodyBytes > TRPC_REQUEST_BODY_LIMIT_BYTES) {
       throw new ApiClientError(
@@ -74,11 +64,6 @@ export async function buildTrpcRequestInit(input: {
         { errorCode: "PAYLOAD_TOO_LARGE" },
       );
     }
-    const signature = await input.computeHmac(
-      attestationSecretFor(input.settings),
-      input.init.body,
-    );
-    headers.set("x-openerrata-signature", signature);
   }
 
   const requestInit: RequestInit = { headers };

@@ -38,6 +38,7 @@ const browserCompatState: {
 
 const domContentLoadedEvent = createNavigationEventMock();
 const historyStateUpdatedEvent = createNavigationEventMock();
+const committedEvent = createNavigationEventMock();
 
 const chromeMock = {
   runtime: {
@@ -63,6 +64,7 @@ const chromeMock = {
     },
   },
   webNavigation: {
+    onCommitted: committedEvent,
     onDOMContentLoaded: domContentLoadedEvent,
     onHistoryStateUpdated: historyStateUpdatedEvent,
   },
@@ -76,12 +78,14 @@ function installChromeMock(input: { executeScriptResult?: { result?: unknown }[]
   browserCompatState.insertCssCalls.length = 0;
   domContentLoadedEvent.listeners.length = 0;
   historyStateUpdatedEvent.listeners.length = 0;
+  committedEvent.listeners.length = 0;
 
   return {
     executeScriptCalls: browserCompatState.executeScriptCalls,
     insertCssCalls: browserCompatState.insertCssCalls,
     domContentLoadedListeners: domContentLoadedEvent.listeners,
     historyStateUpdatedListeners: historyStateUpdatedEvent.listeners,
+    committedListeners: committedEvent.listeners,
   };
 }
 
@@ -137,36 +141,34 @@ test("injectTabAssets runs script and CSS injection for a tab", async () => {
   ]);
 });
 
-test("navigation listeners forward event details to callbacks", async () => {
+test("navigation listeners forward top-frame navigations only", async () => {
   const mocks = installChromeMock({});
-  const { addDomContentLoadedListener, addHistoryStateUpdatedListener } =
-    await importBrowserCompat();
-  const domCalls: NavigationDetails[] = [];
-  const historyCalls: NavigationDetails[] = [];
+  const {
+    addMainFrameCommittedListener,
+    addMainFrameDomContentLoadedListener,
+    addMainFrameHistoryStateUpdatedListener,
+  } = await importBrowserCompat();
+  const calls: { event: string; details: NavigationDetails }[] = [];
 
-  addDomContentLoadedListener((details) => {
-    domCalls.push(details);
-  });
-  addHistoryStateUpdatedListener((details) => {
-    historyCalls.push(details);
-  });
+  addMainFrameCommittedListener((details) => calls.push({ event: "committed", details }));
+  addMainFrameDomContentLoadedListener((details) => calls.push({ event: "dom", details }));
+  addMainFrameHistoryStateUpdatedListener((details) => calls.push({ event: "history", details }));
 
-  const domPayload = {
-    frameId: 0,
-    tabId: 8,
-    url: "https://example.com/dom",
-  };
-  const historyPayload = {
-    frameId: 1,
-    tabId: 9,
-    url: "https://example.com/history",
-  };
+  const topFrame = { frameId: 0, tabId: 8, url: "https://example.com/page" };
+  const subFrame = { frameId: 3, tabId: 8, url: "https://ads.example.com/frame" };
+  for (const listeners of [
+    mocks.committedListeners,
+    mocks.domContentLoadedListeners,
+    mocks.historyStateUpdatedListeners,
+  ]) {
+    assert.equal(listeners.length, 1);
+    listeners[0]?.(subFrame);
+    listeners[0]?.(topFrame);
+  }
 
-  assert.equal(mocks.domContentLoadedListeners.length, 1);
-  assert.equal(mocks.historyStateUpdatedListeners.length, 1);
-  mocks.domContentLoadedListeners[0]?.(domPayload);
-  mocks.historyStateUpdatedListeners[0]?.(historyPayload);
-
-  assert.deepEqual(domCalls, [domPayload]);
-  assert.deepEqual(historyCalls, [historyPayload]);
+  assert.deepEqual(calls, [
+    { event: "committed", details: topFrame },
+    { event: "dom", details: topFrame },
+    { event: "history", details: topFrame },
+  ]);
 });

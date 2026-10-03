@@ -5,6 +5,7 @@ import { MARKDOWN_RENDERER_VERSION } from "../../src/lib/services/html-to-markdo
 import { resolveMarkdownForInvestigation } from "../../src/lib/services/markdown-resolution.js";
 
 const HTML_PLATFORMS: Platform[] = ["LESSWRONG", "SUBSTACK", "WIKIPEDIA"];
+const POST_URL = "https://example.com/posts/1";
 
 function sampleHtml(platform: Platform): string {
   return `<h1>${platform} title</h1><p>Body with an <img src="https://example.com/image.png" /></p>`;
@@ -17,6 +18,7 @@ test("resolveMarkdownForInvestigation trust source is monotonic with serverVerif
     const clientFallback = resolveMarkdownForInvestigation({
       platform,
       snapshots: { serverVerifiedAt: null, serverHtml: null, clientHtml: html },
+      postUrl: POST_URL,
     });
     assert.equal(clientFallback.source, "CLIENT_HTML");
 
@@ -27,13 +29,15 @@ test("resolveMarkdownForInvestigation trust source is monotonic with serverVerif
         serverHtml: html,
         clientHtml: html,
       },
+      postUrl: POST_URL,
     });
     assert.equal(serverVerified.source, "SERVER_HTML");
 
     // Trust label can change from CLIENT_HTML -> SERVER_HTML, but the rendered
     // markdown payload should stay stable for identical HTML input.
     assert.equal(serverVerified.markdown, clientFallback.markdown);
-    assert.deepEqual(serverVerified.imagePlaceholders, clientFallback.imagePlaceholders);
+    assert.deepEqual(serverVerified.imageSourceUrls, clientFallback.imageSourceUrls);
+    assert.deepEqual(serverVerified.imageSourceUrls, ["https://example.com/image.png"]);
     assert.equal(serverVerified.rendererVersion, MARKDOWN_RENDERER_VERSION);
     assert.equal(clientFallback.rendererVersion, MARKDOWN_RENDERER_VERSION);
   }
@@ -47,6 +51,7 @@ test("resolveMarkdownForInvestigation returns NONE for missing html regardless o
       resolveMarkdownForInvestigation({
         platform,
         snapshots: { serverVerifiedAt: null, serverHtml: null, clientHtml: null },
+        postUrl: POST_URL,
       }),
       { source: "NONE" },
     );

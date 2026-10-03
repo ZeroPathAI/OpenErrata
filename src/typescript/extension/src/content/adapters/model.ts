@@ -1,10 +1,20 @@
 import type { Platform, PlatformContent } from "@openerrata/shared";
+import type { PageLocator } from "../../lib/page-locator.js";
 
+/**
+ * Why an adapter cannot produce content for the current page (spec §3.8):
+ *
+ * - `hydrating` / `ambiguous_dom` / `missing_identity` are transient: the page
+ *   may still be rendering. The content script keeps re-checking and reports
+ *   `unsupported_content` only after a grace period.
+ * - `unsupported` is final for the current DOM: the page is the platform's but
+ *   holds nothing the extension can check (e.g. a non-article namespace).
+ */
 export type AdapterNotReadyReason =
   | "hydrating"
   | "ambiguous_dom"
-  | "unsupported"
-  | "missing_identity";
+  | "missing_identity"
+  | "unsupported";
 
 export type AdapterExtractionResult =
   | {
@@ -18,47 +28,34 @@ export type AdapterExtractionResult =
 
 export interface PlatformAdapter {
   platformKey: Platform;
-  contentRootSelector: string;
+  /** URL-first platform selection (spec §3.8). */
   matches(url: string): boolean;
+  /** DOM-fingerprint fallback for platform pages on custom domains. */
   detectFromDom?(document: Document): boolean;
+  /** What the URL alone says about which post the page shows, or null if it cannot be one. */
+  pageLocator(url: string): PageLocator | null;
   detectPrivateOrGated?(document: Document): boolean;
   extract(document: Document): AdapterExtractionResult;
-  getContentRoot(document: Document): Element | null;
-
   /**
-   * Build a per-root element exclusion filter for claim-to-DOM matching.
-   * The returned predicate identifies elements whose subtrees should be
-   * excluded from both text extraction and annotation rendering, keeping the
-   * DOM mapper's text consistent with the server-side content that claims
-   * were generated against.
-   *
-   * Receives the content root so it can precompute structural exclusions
-   * (e.g. Wikipedia excluded sections like "References" / "External links")
-   * in addition to element-level exclusions (e.g. citation superscripts).
-   *
-   * Returns `undefined` when no filtering is needed (non-Wikipedia adapters).
+   * The element whose text is the post's content text — where claims are
+   * located and highlighted — or null while it is not in the DOM.
    */
-  buildMatchingFilter?(root: Element): ((element: Element) => boolean) | undefined;
+  getContentRoot(document: Document): Element | null;
+  /**
+   * Elements under `root` whose subtrees are not post content on this
+   * platform (beyond `NON_CONTENT_TAGS`, which are always excluded). One
+   * predicate serves text extraction, claim matching and HTML snapshots, so
+   * they agree with each other and with the API's canonical text.
+   */
+  contentExclusionFilter(root: Element): (element: Element) => boolean;
 }
 
+/** No platform-specific exclusions. */
+export function excludeNothing(): (element: Element) => boolean {
+  return () => false;
+}
+
+/** Whether `element` is rendered (not `display: none` / `visibility: hidden` / `hidden`). */
 export function isLikelyVisible(element: Element): boolean {
-  const defaultView = element.ownerDocument.defaultView;
-  if (!defaultView || !(element instanceof defaultView.HTMLElement)) {
-    return true;
-  }
-
-  if (element.hidden) {
-    return false;
-  }
-  const style = defaultView.getComputedStyle(element);
-  if (style.display === "none" || style.visibility === "hidden") {
-    return false;
-  }
-
-  const isJsdom = defaultView.navigator.userAgent.toLowerCase().includes("jsdom");
-  if (!isJsdom && element.offsetParent === null && style.position !== "fixed") {
-    return false;
-  }
-
-  return true;
+  return element.checkVisibility({ visibilityProperty: true });
 }

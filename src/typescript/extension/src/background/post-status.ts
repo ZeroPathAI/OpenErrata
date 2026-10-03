@@ -1,194 +1,112 @@
-import { extensionPostStatusSchema } from "@openerrata/shared";
 import type {
-  ContentProvenance,
   ExtensionPostStatus,
-  InvestigationClaimPayload,
-  InvestigationStatusOutput,
-  ViewPostInput,
+  GetInvestigationOutput,
+  InvestigateNowOutput,
+  InvestigationId,
+  Platform,
+  PostId,
+  TabSessionId,
   ViewPostOutput,
 } from "@openerrata/shared";
-type PriorInvestigationResult = NonNullable<
-  Extract<
-    InvestigationStatusOutput,
-    { investigationState: "NOT_INVESTIGATED" | "INVESTIGATING" }
-  >["priorInvestigationResult"]
->;
 
-interface PostStatusIdentity {
-  tabSessionId: number;
-  platform: ViewPostInput["platform"];
-  externalId: string;
+/** The page session a post status describes. */
+export interface PostPage {
+  tabSessionId: TabSessionId;
+  platform: Platform;
+  externalId: PostId;
   pageUrl: string;
-  investigationId?: string;
 }
 
-type PostStatusInput =
-  | (PostStatusIdentity & {
-      investigationState: "NOT_INVESTIGATED";
-      priorInvestigationResult: PriorInvestigationResult | null;
-    })
-  | (PostStatusIdentity & {
-      investigationState: "INVESTIGATING";
-      status: "PENDING" | "PROCESSING";
-      provenance: ContentProvenance;
-      pendingClaims: InvestigationClaimPayload[];
-      confirmedClaims: InvestigationClaimPayload[];
-      priorInvestigationResult: PriorInvestigationResult | null;
-    })
-  | (PostStatusIdentity & {
-      investigationState: "FAILED";
-      provenance: ContentProvenance;
-    })
-  | (PostStatusIdentity & {
-      investigationState: "API_ERROR";
-    })
-  | (PostStatusIdentity & {
-      investigationState: "INVESTIGATED";
-      provenance: ContentProvenance;
-      claims: Extract<InvestigationStatusOutput, { investigationState: "INVESTIGATED" }>["claims"];
-    });
+type PriorInvestigationResult = Extract<
+  ExtensionPostStatus,
+  { investigationState: "NOT_INVESTIGATED" }
+>["priorInvestigationResult"];
 
-type InvestigationSnapshot = InvestigationStatusOutput | ViewPostOutput;
-
-const API_ERROR_INVESTIGATION_STATE = { investigationState: "API_ERROR" as const };
-
-function toPostStatusBase(input: PostStatusIdentity): {
-  kind: "POST";
-  tabSessionId: number;
-  platform: ViewPostInput["platform"];
-  externalId: string;
-  pageUrl: string;
-  investigationId?: string;
-} {
-  const base: {
-    kind: "POST";
-    tabSessionId: number;
-    platform: ViewPostInput["platform"];
-    externalId: string;
-    pageUrl: string;
-    investigationId?: string;
-  } = {
-    kind: "POST",
-    tabSessionId: input.tabSessionId,
-    platform: input.platform,
-    externalId: input.externalId,
-    pageUrl: input.pageUrl,
+function base(page: PostPage) {
+  return {
+    kind: "POST" as const,
+    tabSessionId: page.tabSessionId,
+    platform: page.platform,
+    externalId: page.externalId,
+    pageUrl: page.pageUrl,
   };
-
-  if (input.investigationId !== undefined) {
-    base.investigationId = input.investigationId;
-  }
-
-  return base;
 }
 
-export function createPostStatus(input: PostStatusInput): ExtensionPostStatus {
-  const base = toPostStatusBase(input);
-
-  switch (input.investigationState) {
-    case "NOT_INVESTIGATED":
-      return extensionPostStatusSchema.parse({
-        ...base,
-        investigationState: "NOT_INVESTIGATED",
-        priorInvestigationResult: input.priorInvestigationResult,
-      });
-    case "INVESTIGATING":
-      return extensionPostStatusSchema.parse({
-        ...base,
-        investigationState: "INVESTIGATING",
-        status: input.status,
-        provenance: input.provenance,
-        pendingClaims: input.pendingClaims,
-        confirmedClaims: input.confirmedClaims,
-        priorInvestigationResult: input.priorInvestigationResult,
-      });
-    case "FAILED":
-      return extensionPostStatusSchema.parse({
-        ...base,
-        investigationState: "FAILED",
-        provenance: input.provenance,
-      });
-    case "API_ERROR":
-      return extensionPostStatusSchema.parse({
-        ...base,
-        investigationState: "API_ERROR",
-      });
-    case "INVESTIGATED":
-      return extensionPostStatusSchema.parse({
-        ...base,
-        investigationState: "INVESTIGATED",
-        provenance: input.provenance,
-        claims: input.claims,
-      });
-  }
+/** Status from `recordViewAndGetStatus`. */
+export function postStatusFromView(page: PostPage, view: ViewPostOutput): ExtensionPostStatus {
+  return { ...base(page), ...view };
 }
 
-export function createPostStatusFromInvestigation(
-  input: PostStatusIdentity & InvestigationSnapshot,
+/**
+ * Status from `investigateNow`. Its output carries no progress or interim
+ * claims; `prior` keeps the interim claims the page already showed until the
+ * first poll reports the investigation's own.
+ */
+export function postStatusFromInvestigateNow(
+  page: PostPage,
+  result: InvestigateNowOutput,
+  prior: PriorInvestigationResult,
 ): ExtensionPostStatus {
-  const identity: PostStatusIdentity = {
-    tabSessionId: input.tabSessionId,
-    platform: input.platform,
-    externalId: input.externalId,
-    pageUrl: input.pageUrl,
-  };
-  if (input.investigationId !== undefined) {
-    identity.investigationId = input.investigationId;
-  }
-
-  switch (input.investigationState) {
-    case "INVESTIGATED":
-      return createPostStatus({
-        ...identity,
+  switch (result.status) {
+    case "COMPLETE":
+      return {
+        ...base(page),
         investigationState: "INVESTIGATED",
-        provenance: input.provenance,
-        claims: input.claims,
-      });
-    case "INVESTIGATING":
-      return createPostStatus({
-        ...identity,
+        investigationId: result.investigationId,
+        provenance: result.provenance,
+        claims: result.claims,
+      };
+    case "PENDING":
+    case "PROCESSING":
+      return {
+        ...base(page),
         investigationState: "INVESTIGATING",
-        status: input.status,
-        provenance: input.provenance,
-        pendingClaims: input.pendingClaims,
-        confirmedClaims: input.confirmedClaims,
-        priorInvestigationResult: input.priorInvestigationResult ?? null,
-      });
+        investigationId: result.investigationId,
+        status: result.status,
+        provenance: result.provenance,
+        pendingClaims: [],
+        confirmedClaims: [],
+        priorInvestigationResult: prior,
+      };
     case "FAILED":
-      return createPostStatus({
-        ...identity,
+      return {
+        ...base(page),
         investigationState: "FAILED",
-        provenance: input.provenance,
-      });
-    case "NOT_INVESTIGATED":
-      return createPostStatus({
-        ...identity,
-        investigationState: "NOT_INVESTIGATED",
-        priorInvestigationResult: input.priorInvestigationResult ?? null,
-      });
+        investigationId: result.investigationId,
+        provenance: result.provenance,
+      };
   }
 }
 
-export function apiErrorToPostStatus(input: {
-  error: unknown;
-  tabSessionId: number;
-  platform: ViewPostInput["platform"];
-  externalId: string;
-  pageUrl: string;
-  investigationId?: string;
-}): ExtensionPostStatus {
-  // API errors (network failures, version mismatches, etc.) produce API_ERROR,
-  // not FAILED. FAILED is reserved for investigations that ran and failed on the
-  // server, which always have provenance.
-  const statusInput: PostStatusInput = {
-    tabSessionId: input.tabSessionId,
-    platform: input.platform,
-    externalId: input.externalId,
-    pageUrl: input.pageUrl,
-    ...API_ERROR_INVESTIGATION_STATE,
-  };
-  if (input.investigationId !== undefined) {
-    statusInput.investigationId = input.investigationId;
+/** Status from polling `getInvestigation` for `investigationId`. */
+export function postStatusFromPoll(
+  page: PostPage,
+  investigationId: InvestigationId,
+  output: GetInvestigationOutput,
+): ExtensionPostStatus {
+  switch (output.investigationState) {
+    case "NOT_INVESTIGATED":
+      // The API no longer knows the investigation.
+      return { ...base(page), ...output };
+    case "INVESTIGATING":
+    case "FAILED":
+      return { ...base(page), investigationId, ...output };
+    case "INVESTIGATED": {
+      const { checkedAt: _checkedAt, ...investigated } = output;
+      return { ...base(page), investigationId, ...investigated };
+    }
   }
-  return createPostStatus(statusInput);
+}
+
+/** The extension could not get a status from the API for this page. */
+export function apiErrorPostStatus(page: PostPage): ExtensionPostStatus {
+  return { ...base(page), investigationState: "API_ERROR" };
+}
+
+/** Interim claims a status shows, to carry over into a newer status of the same page. */
+export function priorResultOf(status: ExtensionPostStatus): PriorInvestigationResult {
+  return status.investigationState === "INVESTIGATING" ||
+    status.investigationState === "NOT_INVESTIGATED"
+    ? status.priorInvestigationResult
+    : null;
 }

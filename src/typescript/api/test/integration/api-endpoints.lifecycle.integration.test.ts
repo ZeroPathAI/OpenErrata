@@ -1,11 +1,11 @@
-import type { InvestigatorInput } from "../../src/lib/investigators/interface.js";
+import OpenAI from "openai";
+import type { Investigator } from "../../src/lib/investigators/interface.js";
 import {
   EMPTY_IMAGE_OCCURRENCES_HASH,
   INTEGRATION_DATA_PREFIX,
   INTEGRATION_LESSWRONG_FIXTURE_KEYS,
   InvestigatorExecutionError,
   MINIMUM_SUPPORTED_EXTENSION_VERSION,
-  OpenAIInvestigator,
   WORD_COUNT_LIMIT,
   appRouter,
   assert,
@@ -13,13 +13,13 @@ import {
   buildFailedAttemptAudit,
   buildLesswrongViewInput,
   buildSucceededAttemptAudit,
+  buildSucceededInvestigatorOutput,
   buildXViewInput,
   closeQueueUtils,
   createCaller,
   createContext,
   createDeterministicRandom,
   createMockRequestEvent,
-  ensureInvestigationQueued,
   ensurePostVersionForSeed,
   errorHasOpenErrataCode,
   getPrisma,
@@ -58,6 +58,11 @@ import {
   withIntegrationPrefix,
   withMockLesswrongCanonicalHtml,
   withMockLesswrongFetch,
+  LeaseLostError,
+  LESSWRONG_MOCK_SERVER_AUTHOR_NAME,
+  LESSWRONG_MOCK_SERVER_SLUG,
+  requestInvestigation,
+  UserOpenAiKeyRejectedError,
 } from "./api-endpoints.integration.shared.js";
 
 void [
@@ -66,7 +71,6 @@ void [
   INTEGRATION_LESSWRONG_FIXTURE_KEYS,
   InvestigatorExecutionError,
   MINIMUM_SUPPORTED_EXTENSION_VERSION,
-  OpenAIInvestigator,
   WORD_COUNT_LIMIT,
   appRouter,
   assert,
@@ -74,13 +78,13 @@ void [
   buildFailedAttemptAudit,
   buildLesswrongViewInput,
   buildSucceededAttemptAudit,
+  buildSucceededInvestigatorOutput,
   buildXViewInput,
   closeQueueUtils,
   createCaller,
   createContext,
   createDeterministicRandom,
   createMockRequestEvent,
-  ensureInvestigationQueued,
   ensurePostVersionForSeed,
   errorHasOpenErrataCode,
   getPrisma,
@@ -141,36 +145,21 @@ void test("orchestrateInvestigation skips work when lease is held by another wor
   });
 
   let investigateCalled = false;
-  const originalInvestigateDescriptor = Object.getOwnPropertyDescriptor(
-    OpenAIInvestigator.prototype,
-    "investigate",
-  );
-  assert.ok(originalInvestigateDescriptor);
-  assert.equal(typeof originalInvestigateDescriptor.value, "function");
-  OpenAIInvestigator.prototype.investigate = async () => {
-    investigateCalled = true;
-    return {
-      result: { claims: [] },
-      attemptAudit: buildSucceededAttemptAudit("lease-held"),
-      modelVersion: "test-model-version",
-    };
-  };
+  const createInvestigator = (): Investigator => ({
+    investigate: async () => {
+      investigateCalled = true;
+      return buildSucceededInvestigatorOutput("lease-held");
+    },
+  });
 
-  try {
-    await orchestrateInvestigation(
-      investigation.id,
-      { info() {}, warn() {}, error() {} },
-      {
-        workerIdentity: withIntegrationPrefix("contending-worker"),
-      },
-    );
-  } finally {
-    Object.defineProperty(
-      OpenAIInvestigator.prototype,
-      "investigate",
-      originalInvestigateDescriptor,
-    );
-  }
+  await orchestrateInvestigation(
+    investigation.id,
+    { info() {}, warn() {}, error() {} },
+    {
+      workerIdentity: withIntegrationPrefix("contending-worker"),
+      createInvestigator,
+    },
+  );
 
   assert.equal(investigateCalled, false);
   const storedInvestigation = await prisma.investigation.findUnique({
@@ -214,54 +203,39 @@ void test("orchestrateInvestigation passes update context to investigator for up
   });
 
   let sawExpectedUpdateContext = false;
-  const originalInvestigateDescriptor = Object.getOwnPropertyDescriptor(
-    OpenAIInvestigator.prototype,
-    "investigate",
-  );
-  assert.ok(originalInvestigateDescriptor);
-  assert.equal(typeof originalInvestigateDescriptor.value, "function");
-  OpenAIInvestigator.prototype.investigate = async (input: InvestigatorInput) => {
-    assert.equal(input.isUpdate, true);
-    assert.equal(input.contentDiff, contentDiff);
-    assert.deepStrictEqual(input.oldClaims, [
-      {
-        id: parentClaim.id,
-        text: "Claim 1",
-        context: "Context 1",
-        summary: "Summary 1",
-        reasoning: "Reasoning 1",
-        sources: [
-          {
-            url: "https://example.com/source-1",
-            title: "Source 1",
-            snippet: "Snippet 1",
-          },
-        ],
-      },
-    ]);
-    sawExpectedUpdateContext = true;
-    return {
-      result: { claims: [] },
-      attemptAudit: buildSucceededAttemptAudit("update-context"),
-      modelVersion: "test-model-version",
-    };
-  };
+  const createInvestigator = (): Investigator => ({
+    investigate: async (input) => {
+      assert.equal(input.isUpdate, true);
+      assert.equal(input.contentDiff, contentDiff);
+      assert.deepStrictEqual(input.oldClaims, [
+        {
+          id: parentClaim.id,
+          text: "Claim 1",
+          context: "Context 1",
+          summary: "Summary 1",
+          reasoning: "Reasoning 1",
+          sources: [
+            {
+              url: "https://example.com/source-1",
+              title: "Source 1",
+              snippet: "Snippet 1",
+            },
+          ],
+        },
+      ]);
+      sawExpectedUpdateContext = true;
+      return buildSucceededInvestigatorOutput("update-context");
+    },
+  });
 
-  try {
-    await orchestrateInvestigation(
-      updateInvestigation.id,
-      { info() {}, warn() {}, error() {} },
-      {
-        workerIdentity: withIntegrationPrefix("worker-update-context"),
-      },
-    );
-  } finally {
-    Object.defineProperty(
-      OpenAIInvestigator.prototype,
-      "investigate",
-      originalInvestigateDescriptor,
-    );
-  }
+  await orchestrateInvestigation(
+    updateInvestigation.id,
+    { info() {}, warn() {}, error() {} },
+    {
+      workerIdentity: withIntegrationPrefix("worker-update-context"),
+      createInvestigator,
+    },
+  );
 
   assert.equal(sawExpectedUpdateContext, true);
 
@@ -294,74 +268,59 @@ void test("orchestrateInvestigation does not persist late progress updates after
     resolveLateCallbackFired = resolve;
   });
 
-  const originalInvestigateDescriptor = Object.getOwnPropertyDescriptor(
-    OpenAIInvestigator.prototype,
-    "investigate",
+  const createInvestigator = (): Investigator => ({
+    investigate: async (_input, options) => {
+      const latePending = [
+        {
+          text: "Late pending claim",
+          context: "Late pending context",
+          summary: "Late pending summary",
+          reasoning: "Late pending reasoning",
+          sources: [
+            {
+              url: "https://example.com/late-pending",
+              title: "Late Pending Source",
+              snippet: "Late pending snippet",
+            },
+          ],
+        },
+      ];
+      const lateConfirmed = [
+        {
+          text: "Late confirmed claim",
+          context: "Late confirmed context",
+          summary: "Late confirmed summary",
+          reasoning: "Late confirmed reasoning",
+          sources: [
+            {
+              url: "https://example.com/late-confirmed",
+              title: "Late Confirmed Source",
+              snippet: "Late confirmed snippet",
+            },
+          ],
+        },
+      ];
+
+      setTimeout(() => {
+        options.callbacks?.onProgressUpdate(latePending, lateConfirmed);
+        resolveLateCallbackFired();
+      }, 25);
+
+      return buildSucceededInvestigatorOutput("late-progress");
+    },
+  });
+
+  await orchestrateInvestigation(
+    investigation.id,
+    { info() {}, warn() {}, error() {} },
+    {
+      workerIdentity: withIntegrationPrefix("worker-late-progress"),
+      createInvestigator,
+    },
   );
-  assert.ok(originalInvestigateDescriptor);
-  assert.equal(typeof originalInvestigateDescriptor.value, "function");
-  OpenAIInvestigator.prototype.investigate = async (_input: InvestigatorInput, callbacks) => {
-    const latePending = [
-      {
-        text: "Late pending claim",
-        context: "Late pending context",
-        summary: "Late pending summary",
-        reasoning: "Late pending reasoning",
-        sources: [
-          {
-            url: "https://example.com/late-pending",
-            title: "Late Pending Source",
-            snippet: "Late pending snippet",
-          },
-        ],
-      },
-    ];
-    const lateConfirmed = [
-      {
-        text: "Late confirmed claim",
-        context: "Late confirmed context",
-        summary: "Late confirmed summary",
-        reasoning: "Late confirmed reasoning",
-        sources: [
-          {
-            url: "https://example.com/late-confirmed",
-            title: "Late Confirmed Source",
-            snippet: "Late confirmed snippet",
-          },
-        ],
-      },
-    ];
-
-    setTimeout(() => {
-      callbacks?.onProgressUpdate(latePending, lateConfirmed);
-      resolveLateCallbackFired();
-    }, 25);
-
-    return {
-      result: { claims: [] },
-      attemptAudit: buildSucceededAttemptAudit("late-progress"),
-      modelVersion: "test-model-version",
-    };
-  };
-
-  try {
-    await orchestrateInvestigation(
-      investigation.id,
-      { info() {}, warn() {}, error() {} },
-      {
-        workerIdentity: withIntegrationPrefix("worker-late-progress"),
-      },
-    );
-    await lateCallbackFired;
-    // Allow the asynchronous callback write attempt to settle.
-    await sleep(50);
-  } finally {
-    Object.defineProperty(
-      OpenAIInvestigator.prototype,
-      "investigate",
-      originalInvestigateDescriptor,
-    );
-  }
+  await lateCallbackFired;
+  // Allow the asynchronous callback write attempt to settle.
+  await sleep(50);
 
   const storedInvestigation = await prisma.investigation.findUnique({
     where: { id: investigation.id },
@@ -407,29 +366,21 @@ void test("orchestrateInvestigation ignores stale transient failure after anothe
     };
   });
 
-  const originalInvestigateDescriptor = Object.getOwnPropertyDescriptor(
-    OpenAIInvestigator.prototype,
-    "investigate",
-  );
-  assert.ok(originalInvestigateDescriptor);
-  assert.equal(typeof originalInvestigateDescriptor.value, "function");
-  OpenAIInvestigator.prototype.investigate = async () => {
-    callCount += 1;
-    if (callCount === 1) {
-      markFirstStarted();
-      await firstWorkerContinue;
-      throw new InvestigatorExecutionError(
-        "simulated transient failure from stale worker",
-        buildFailedAttemptAudit("stale"),
-        new Error("network timeout"),
-      );
-    }
-    return {
-      result: { claims: [] },
-      attemptAudit: buildSucceededAttemptAudit("winner"),
-      modelVersion: "test-model-version",
-    };
-  };
+  const createInvestigator = (): Investigator => ({
+    investigate: async () => {
+      callCount += 1;
+      if (callCount === 1) {
+        markFirstStarted();
+        await firstWorkerContinue;
+        throw new InvestigatorExecutionError(
+          "simulated transient failure from stale worker",
+          buildFailedAttemptAudit("stale"),
+          new Error("network timeout"),
+        );
+      }
+      return buildSucceededInvestigatorOutput("winner");
+    },
+  });
 
   try {
     const firstWorker = orchestrateInvestigation(
@@ -437,6 +388,7 @@ void test("orchestrateInvestigation ignores stale transient failure after anothe
       { info() {}, warn() {}, error() {} },
       {
         workerIdentity: withIntegrationPrefix("worker-a"),
+        createInvestigator,
       },
     );
     await firstWorkerStarted;
@@ -455,6 +407,7 @@ void test("orchestrateInvestigation ignores stale transient failure after anothe
       { info() {}, warn() {}, error() {} },
       {
         workerIdentity: withIntegrationPrefix("worker-b"),
+        createInvestigator,
       },
     );
 
@@ -462,11 +415,6 @@ void test("orchestrateInvestigation ignores stale transient failure after anothe
     await firstWorker;
   } finally {
     releaseFirstWorker();
-    Object.defineProperty(
-      OpenAIInvestigator.prototype,
-      "investigate",
-      originalInvestigateDescriptor,
-    );
   }
 
   assert.equal(callCount, 2);
@@ -518,6 +466,7 @@ void test("orchestrateInvestigation marks exhausted stale PROCESSING investigati
     { info() {}, warn() {}, error() {} },
     {
       workerIdentity: withIntegrationPrefix("worker-exhausted-stale"),
+      createInvestigator: () => assert.fail("an exhausted investigation must not run"),
     },
   );
 
@@ -533,12 +482,12 @@ void test("orchestrateInvestigation marks exhausted stale PROCESSING investigati
   assert.equal(stored.lease, null);
 });
 
-void test("ensureInvestigationQueued requeueing FAILED resets retry counters and clears stale lease row", async () => {
+void test("investigateNow leaves FAILED investigations terminal and never resets attempt numbering", async () => {
   const post = await seedPost({
     platform: "X",
-    externalId: withIntegrationPrefix("ensure-queued-requeue-failed-reset-1"),
-    url: "https://x.com/openerrata/status/ensure-queued-requeue-failed-reset-1",
-    contentText: "Failed investigations should become runnable when requeued.",
+    externalId: "investigate-now-failed-terminal-1",
+    url: "https://x.com/openerrata/status/investigate-now-failed-terminal-1",
+    contentText: "Failed investigations stay failed for this content version.",
   });
   const investigation = await seedInvestigation({
     postId: post.id,
@@ -546,58 +495,20 @@ void test("ensureInvestigationQueued requeueing FAILED resets retry counters and
     contentText: post.contentText,
     provenance: "CLIENT_FALLBACK",
     status: "FAILED",
-    promptLabel: "ensure-queued-requeue-failed-reset",
+    promptLabel: "investigate-now-failed-terminal",
+    attemptCount: 4,
   });
-  const prompt = await seedPrompt("ensure-queued-requeue-failed-reset-prompt");
 
-  await prisma.investigation.update({
+  const caller = createCaller({ isAuthenticated: true });
+  const result = await caller.post.investigateNow({ postVersionId: post.postVersionId });
+
+  assert.equal(result.investigationId, investigation.id);
+  assert.equal(result.status, "FAILED");
+  const stored = await prisma.investigation.findUniqueOrThrow({
     where: { id: investigation.id },
-    data: {
-      attemptCount: 4, // MAX_INVESTIGATION_ATTEMPTS
-      retryAfter: new Date(Date.now() + 10 * 60_000),
-    },
+    select: { status: true, attemptCount: true },
   });
-  await prisma.investigationLease.create({
-    data: {
-      investigationId: investigation.id,
-      leaseOwner: withIntegrationPrefix("stale-failed-lease"),
-      leaseExpiresAt: new Date(Date.now() - 5 * 60_000),
-      startedAt: new Date(Date.now() - 10 * 60_000),
-      heartbeatAt: new Date(Date.now() - 5 * 60_000),
-    },
-  });
-
-  const storedBefore = await prisma.investigation.findUnique({
-    where: { id: investigation.id },
-    select: { postVersionId: true },
-  });
-  assert.ok(storedBefore);
-
-  const result = await ensureInvestigationQueued({
-    prisma,
-    postVersionId: storedBefore.postVersionId,
-    promptId: prompt.id,
-    allowRequeueFailed: true,
-    enqueue: false,
-  });
-
-  assert.equal(result.investigation.id, investigation.id);
-  assert.equal(result.investigation.status, "PENDING");
-
-  const storedAfter = await prisma.investigation.findUnique({
-    where: { id: investigation.id },
-    select: {
-      status: true,
-      attemptCount: true,
-      retryAfter: true,
-      lease: { select: { investigationId: true } },
-    },
-  });
-  assert.ok(storedAfter);
-  assert.equal(storedAfter.status, "PENDING");
-  assert.equal(storedAfter.attemptCount, 0);
-  assert.equal(storedAfter.retryAfter, null);
-  assert.equal(storedAfter.lease, null);
+  assert.deepEqual(stored, { status: "FAILED", attemptCount: 4 });
 });
 
 void test("investigateNow persists InvestigationInput snapshot at queue time", async () => {
@@ -618,6 +529,7 @@ void test("investigateNow persists InvestigationInput snapshot at queue time", a
     select: {
       id: true,
       inputId: true,
+      origin: true,
       input: {
         select: {
           investigationId: true,
@@ -625,257 +537,388 @@ void test("investigateNow persists InvestigationInput snapshot at queue time", a
           markdownSource: true,
           markdown: true,
           markdownRendererVersion: true,
+          postUrl: true,
+          authorName: true,
+          hasVideo: true,
+          imagePlaceholderSourceUrls: true,
         },
       },
     },
   });
   assert.ok(investigation);
   assert.equal(investigation.inputId, investigation.id);
+  assert.equal(investigation.origin, "INSTANCE_REQUEST");
   assert.equal(investigation.input.investigationId, investigation.id);
   assert.equal(investigation.input.provenance, "SERVER_VERIFIED");
   assert.equal(investigation.input.markdownSource, "SERVER_HTML");
   assert.equal(typeof investigation.input.markdown, "string");
   assert.equal(typeof investigation.input.markdownRendererVersion, "string");
+  // Prompt context comes from the server-verified identity, frozen at queue time.
+  assert.equal(
+    investigation.input.postUrl,
+    `https://www.lesswrong.com/posts/${viewInput.externalId}/${LESSWRONG_MOCK_SERVER_SLUG}`,
+  );
+  assert.equal(investigation.input.authorName, LESSWRONG_MOCK_SERVER_AUTHOR_NAME);
+  assert.equal(investigation.input.hasVideo, false);
+  assert.deepEqual(investigation.input.imagePlaceholderSourceUrls, []);
+
+  // Later changes to the live Post row do not reach the snapshot.
+  await prisma.post.updateMany({
+    where: { externalId: viewInput.externalId },
+    data: { url: "https://www.lesswrong.com/posts/changed" },
+  });
+  const snapshotAfterEdit = await prisma.investigationInput.findUniqueOrThrow({
+    where: { investigationId: investigation.id },
+    select: { postUrl: true },
+  });
+  assert.equal(snapshotAfterEdit.postUrl, investigation.input.postUrl);
 });
 
-void test("ensureInvestigationQueued randomized state model preserves lifecycle invariants", async () => {
-  const random = createDeterministicRandom(0x94ab73d1);
-  const rounds = 18;
-  const seedCases = [
-    { name: "new", status: null },
-    { name: "failed", status: "FAILED" },
-    { name: "pending", status: "PENDING" },
-    { name: "processing-stale", status: "PROCESSING", leaseKind: "STALE" },
-    { name: "processing-active", status: "PROCESSING", leaseKind: "ACTIVE" },
-  ] as const;
+type RequestedState =
+  | "NONE"
+  | "COMPLETE"
+  | "FAILED"
+  | "PENDING_FUNDED"
+  | "PENDING_UNFUNDED"
+  | "PROCESSING_ACTIVE"
+  | "PROCESSING_STALE"
+  | "PROCESSING_STALE_EXHAUSTED";
 
-  for (let round = 0; round < rounds; round += 1) {
-    const seedCaseIndex = randomInt(random, 0, seedCases.length - 1);
-    const seedCase = seedCases[seedCaseIndex];
-    assert.ok(seedCase, `seed case index out of bounds: ${seedCaseIndex.toString()}`);
-    const allowRequeueFailed = randomChance(random, 0.5);
-    const enqueue = randomChance(random, 0.7);
-    const includeOnPendingInvestigation = randomChance(random, 0.6);
-    const canonicalProvenance = randomChance(random, 0.5) ? "SERVER_VERIFIED" : "CLIENT_FALLBACK";
-    const roundTag = [
-      `round=${round.toString()}`,
-      `seedCase=${seedCase.name}`,
-      `allowRequeueFailed=${allowRequeueFailed.toString()}`,
-      `enqueue=${enqueue.toString()}`,
-      `canonicalProvenance=${canonicalProvenance}`,
-    ].join(" ");
+interface RequestInvestigationCase {
+  state: RequestedState;
+  requester: "INSTANCE_API_KEY" | "USER_OPENAI_KEY";
+  expected: {
+    status: "PENDING" | "PROCESSING" | "COMPLETE" | "FAILED";
+    origin: "SELECTOR" | "INSTANCE_REQUEST" | "USER_KEY_REQUEST";
+    hasKeySource: boolean;
+    hasLease: boolean;
+  };
+}
 
+const REQUEST_INVESTIGATION_CASES: RequestInvestigationCase[] = [
+  {
+    state: "NONE",
+    requester: "INSTANCE_API_KEY",
+    expected: {
+      status: "PENDING",
+      origin: "INSTANCE_REQUEST",
+      hasKeySource: false,
+      hasLease: false,
+    },
+  },
+  {
+    state: "NONE",
+    requester: "USER_OPENAI_KEY",
+    expected: {
+      status: "PENDING",
+      origin: "USER_KEY_REQUEST",
+      hasKeySource: true,
+      hasLease: false,
+    },
+  },
+  {
+    state: "COMPLETE",
+    requester: "USER_OPENAI_KEY",
+    expected: { status: "COMPLETE", origin: "SELECTOR", hasKeySource: false, hasLease: false },
+  },
+  {
+    state: "FAILED",
+    requester: "USER_OPENAI_KEY",
+    expected: { status: "FAILED", origin: "SELECTOR", hasKeySource: false, hasLease: false },
+  },
+  // A user key never takes over an investigation someone else is paying for.
+  {
+    state: "PENDING_FUNDED",
+    requester: "USER_OPENAI_KEY",
+    expected: { status: "PENDING", origin: "SELECTOR", hasKeySource: false, hasLease: false },
+  },
+  {
+    state: "PENDING_UNFUNDED",
+    requester: "INSTANCE_API_KEY",
+    expected: {
+      status: "PENDING",
+      origin: "INSTANCE_REQUEST",
+      hasKeySource: false,
+      hasLease: false,
+    },
+  },
+  {
+    state: "PENDING_UNFUNDED",
+    requester: "USER_OPENAI_KEY",
+    expected: {
+      status: "PENDING",
+      origin: "USER_KEY_REQUEST",
+      hasKeySource: true,
+      hasLease: false,
+    },
+  },
+  {
+    state: "PROCESSING_ACTIVE",
+    requester: "USER_OPENAI_KEY",
+    expected: { status: "PROCESSING", origin: "SELECTOR", hasKeySource: false, hasLease: true },
+  },
+  {
+    state: "PROCESSING_STALE",
+    requester: "INSTANCE_API_KEY",
+    expected: { status: "PENDING", origin: "SELECTOR", hasKeySource: false, hasLease: false },
+  },
+  {
+    state: "PROCESSING_STALE_EXHAUSTED",
+    requester: "INSTANCE_API_KEY",
+    expected: { status: "FAILED", origin: "SELECTOR", hasKeySource: false, hasLease: false },
+  },
+];
+
+function seedStatusFor(state: Exclude<RequestedState, "NONE">) {
+  switch (state) {
+    case "COMPLETE":
+      return "COMPLETE" as const;
+    case "FAILED":
+      return "FAILED" as const;
+    case "PENDING_FUNDED":
+    case "PENDING_UNFUNDED":
+      return "PENDING" as const;
+    case "PROCESSING_ACTIVE":
+    case "PROCESSING_STALE":
+    case "PROCESSING_STALE_EXHAUSTED":
+      return "PROCESSING" as const;
+  }
+}
+
+void test("requestInvestigation follows the investigateNow state table for every starting state", async () => {
+  const prompt = await seedPrompt("request-investigation-state-table");
+  for (const [index, testCase] of REQUEST_INVESTIGATION_CASES.entries()) {
+    const caseTag = `${testCase.state}/${testCase.requester}`;
     const post = await seedPost({
       platform: "X",
-      externalId: `ensure-queued-fuzz-${round.toString()}`,
-      url: `https://x.com/openerrata/status/${withIntegrationPrefix(`ensure-queued-fuzz-${round.toString()}`)}`,
-      contentText: `ensureInvestigationQueued fuzz payload ${roundTag}`,
+      externalId: `request-investigation-state-${index.toString()}`,
+      url: `https://x.com/openerrata/status/${withIntegrationPrefix(`request-investigation-state-${index.toString()}`)}`,
+      contentText: `requestInvestigation state table ${caseTag}`,
     });
-    const prompt = await seedPrompt(`ensure-queued-fuzz-${round.toString()}`);
 
-    let seededInvestigationId: string | null = null;
-    let seededExistingProvenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK" | null = null;
-    let seededActiveLeaseOwner: string | null = null;
-    let seededActiveLeaseExpiresAt: Date | null = null;
-
-    if (seedCase.status !== null) {
-      seededExistingProvenance = randomChance(random, 0.5) ? "SERVER_VERIFIED" : "CLIENT_FALLBACK";
-      const leaseKind = "leaseKind" in seedCase ? seedCase.leaseKind : null;
-
-      const activeLeaseOwner =
-        leaseKind === "ACTIVE" ? withIntegrationPrefix(`active-worker-${round.toString()}`) : null;
-      const activeLeaseExpiresAt =
-        leaseKind === "ACTIVE" ? new Date(Date.now() + 10 * 60_000) : null;
-      seededActiveLeaseOwner = activeLeaseOwner;
-      seededActiveLeaseExpiresAt = activeLeaseExpiresAt;
-
-      const investigation = await seedInvestigation({
+    let seededId: string | null = null;
+    if (testCase.state !== "NONE") {
+      const stale = testCase.state.startsWith("PROCESSING_STALE");
+      const seeded = await seedInvestigation({
         postId: post.id,
         contentHash: post.contentHash,
         contentText: post.contentText,
-        provenance: seededExistingProvenance,
-        status: seedCase.status,
-        promptLabel: `ensure-queued-existing-${round.toString()}`,
-        ...(leaseKind === "ACTIVE" && activeLeaseOwner !== null && activeLeaseExpiresAt !== null
-          ? {
-              leaseOwner: activeLeaseOwner,
-              leaseExpiresAt: activeLeaseExpiresAt,
-            }
-          : leaseKind === "STALE"
-            ? {
-                leaseOwner: withIntegrationPrefix(`stale-worker-${round.toString()}`),
-                leaseExpiresAt: new Date(Date.now() - 5 * 60_000),
-              }
-            : {}),
+        provenance: "CLIENT_FALLBACK",
+        status: seedStatusFor(testCase.state),
+        promptLabel: `request-investigation-state-${index.toString()}`,
+        origin: testCase.state === "PENDING_UNFUNDED" ? "USER_KEY_REQUEST" : "SELECTOR",
+        attemptCount: testCase.state === "PROCESSING_STALE_EXHAUSTED" ? 4 : 1,
+        ...(stale ? { leaseExpiresAt: new Date(Date.now() - 60_000) } : {}),
       });
-      seededInvestigationId = investigation.id;
-      // The lease row (including leaseOwner, leaseExpiresAt) is fully created
-      // by seedInvestigation above. No follow-up seedInvestigationWithLeaseFields
-      // call is needed here — startedAt/heartbeatAt are not asserted in this test.
+      seededId = seeded.id;
     }
 
-    let onPendingInvestigationCalls = 0;
-    let onPendingInvestigationId: string | null = null;
-    const canonicalPostVersion = await ensurePostVersionForSeed({
-      postId: post.id,
-      contentHash: post.contentHash,
-      contentText: post.contentText,
-      provenance: canonicalProvenance,
-    });
-    const result = await ensureInvestigationQueued({
-      prisma,
-      postVersionId: canonicalPostVersion.id,
-      promptId: prompt.id,
-      allowRequeueFailed,
-      enqueue,
-      ...(includeOnPendingInvestigation
-        ? {
-            onPendingInvestigation: async ({ investigation }) => {
-              onPendingInvestigationCalls += 1;
-              onPendingInvestigationId = investigation.id;
-            },
-          }
-        : {}),
-    });
-
-    const startedWithoutInvestigation = seedCase.status === null;
-    const expectedCreated = startedWithoutInvestigation;
-    const statusAfterRecord = startedWithoutInvestigation
-      ? "PENDING"
-      : seedCase.status === "FAILED" && allowRequeueFailed
-        ? "PENDING"
-        : seedCase.status;
-    const leaseKind = "leaseKind" in seedCase ? seedCase.leaseKind : null;
-    const expectedRecoveredFromStaleProcessing =
-      statusAfterRecord === "PROCESSING" && leaseKind === "STALE";
-    const expectedFinalStatus = expectedRecoveredFromStaleProcessing
-      ? "PENDING"
-      : statusAfterRecord;
-    const expectedEnqueued = enqueue && expectedFinalStatus === "PENDING";
-
-    assert.equal(result.created, expectedCreated, `created mismatch (${roundTag})`);
-    assert.equal(result.enqueued, expectedEnqueued, `enqueued mismatch (${roundTag})`);
-    assert.equal(
-      result.investigation.status,
-      expectedFinalStatus,
-      `result status mismatch (${roundTag})`,
-    );
-    if (seededInvestigationId !== null) {
-      assert.equal(
-        result.investigation.id,
-        seededInvestigationId,
-        `existing investigation identity mismatch (${roundTag})`,
-      );
-    }
-
-    const expectedOnPendingInvestigationCalls =
-      includeOnPendingInvestigation && expectedEnqueued ? 1 : 0;
-    assert.equal(
-      onPendingInvestigationCalls,
-      expectedOnPendingInvestigationCalls,
-      `onPendingInvestigation invocation mismatch (${roundTag})`,
-    );
-    if (expectedOnPendingInvestigationCalls === 1) {
-      assert.equal(
-        onPendingInvestigationId,
-        result.investigation.id,
-        `onPendingInvestigation investigation mismatch (${roundTag})`,
-      );
-    }
-
-    const storedInvestigations = await prisma.investigation.findMany({
-      where: {
-        postVersion: {
-          postId: post.id,
-        },
-      },
+    const postVersion = await prisma.postVersion.findUniqueOrThrow({
+      where: { id: post.postVersionId },
       select: {
         id: true,
-        status: true,
-        queuedAt: true,
-        postVersion: {
-          select: {
-            serverVerifiedAt: true,
-          },
-        },
+        postId: true,
+        contentBlob: { select: { contentText: true, wordCount: true } },
       },
     });
-    assert.equal(
-      storedInvestigations.length,
-      1,
-      `exactly one investigation row expected (${roundTag})`,
-    );
-    const storedInvestigation = storedInvestigations[0];
-    assert.ok(storedInvestigation, `missing stored investigation (${roundTag})`);
-    assert.equal(
-      storedInvestigation.id,
-      result.investigation.id,
-      `stored investigation id mismatch (${roundTag})`,
-    );
-    assert.equal(
-      storedInvestigation.status,
-      expectedFinalStatus,
-      `stored status mismatch (${roundTag})`,
-    );
-
-    const expectedServerVerified =
-      seedCase.status === null
-        ? canonicalProvenance === "SERVER_VERIFIED"
-        : seededExistingProvenance === "SERVER_VERIFIED" ||
-          canonicalProvenance === "SERVER_VERIFIED";
-    if (expectedServerVerified) {
-      assert.notEqual(
-        storedInvestigation.postVersion.serverVerifiedAt,
-        null,
-        `server-verified rows should have serverVerifiedAt (${roundTag})`,
-      );
-    } else {
-      assert.equal(
-        storedInvestigation.postVersion.serverVerifiedAt,
-        null,
-        `client-fallback rows should not have serverVerifiedAt (${roundTag})`,
-      );
-    }
-
-    // queuedAt is now always non-null (@default(now())), so just verify it's set
-    assert.notEqual(
-      storedInvestigation.queuedAt,
-      null,
-      `queuedAt should always be populated (${roundTag})`,
-    );
-
-    // Check lease state via InvestigationLease table
-    const storedLease = await prisma.investigationLease.findUnique({
-      where: { investigationId: storedInvestigation.id },
-      select: { leaseOwner: true, leaseExpiresAt: true },
+    const { investigationId } = await requestInvestigation(prisma, {
+      postVersion,
+      promptId: prompt.id,
+      requester:
+        testCase.requester === "INSTANCE_API_KEY"
+          ? { kind: "INSTANCE_API_KEY" }
+          : {
+              kind: "USER_OPENAI_KEY",
+              apiKey: `sk-test-state-table-${index.toString()}-0123456789`,
+            },
     });
 
-    if (expectedRecoveredFromStaleProcessing) {
-      assert.equal(
-        storedLease,
-        null,
-        `recovered stale investigations should have no lease row (${roundTag})`,
-      );
+    if (seededId !== null) {
+      assert.equal(investigationId, seededId, `existing investigation reused (${caseTag})`);
     }
-
-    if (statusAfterRecord === "PROCESSING" && !expectedRecoveredFromStaleProcessing) {
-      assert.equal(
-        leaseKind,
-        "ACTIVE",
-        `non-recovered processing cases must come from active lease seeds (${roundTag})`,
-      );
-      assert.ok(storedLease, `active processing investigation should have lease row (${roundTag})`);
-      assert.equal(
-        storedLease.leaseOwner,
-        seededActiveLeaseOwner,
-        `active processing investigation should keep lease owner (${roundTag})`,
-      );
-      assert.ok(seededActiveLeaseExpiresAt, `active lease should have seeded expiry (${roundTag})`);
-      assert.equal(
-        storedLease.leaseExpiresAt.getTime(),
-        seededActiveLeaseExpiresAt.getTime(),
-        `active processing investigation should keep lease expiry (${roundTag})`,
-      );
-    }
+    const stored = await prisma.investigation.findUniqueOrThrow({
+      where: { id: investigationId },
+      select: {
+        status: true,
+        origin: true,
+        openAiKeySource: { select: { investigationId: true } },
+        lease: { select: { investigationId: true } },
+      },
+    });
+    assert.deepEqual(
+      {
+        status: stored.status,
+        origin: stored.origin,
+        hasKeySource: stored.openAiKeySource !== null,
+        hasLease: stored.lease !== null,
+      },
+      testCase.expected,
+      caseTag,
+    );
   }
+});
+
+void test("requestInvestigation verifies a user key before it funds anything", async () => {
+  const prompt = await seedPrompt("request-investigation-rejected-key");
+  const post = await seedPost({
+    platform: "X",
+    externalId: "request-investigation-rejected-key-1",
+    url: `https://x.com/openerrata/status/${withIntegrationPrefix("request-investigation-rejected-key-1")}`,
+    contentText: "A key OpenAI rejects must not create or fund an investigation.",
+  });
+  const postVersion = await prisma.postVersion.findUniqueOrThrow({
+    where: { id: post.postVersionId },
+    select: {
+      id: true,
+      postId: true,
+      contentBlob: { select: { contentText: true, wordCount: true } },
+    },
+  });
+
+  await assert.rejects(
+    requestInvestigation(prisma, {
+      postVersion,
+      promptId: prompt.id,
+      requester: { kind: "USER_OPENAI_KEY", apiKey: "sk-test-rejected-key-0123456789" },
+    }),
+    (error: unknown) =>
+      error instanceof UserOpenAiKeyRejectedError && error.outcome.openaiApiKeyStatus === "invalid",
+  );
+  assert.equal(
+    await prisma.investigation.count({ where: { postVersionId: post.postVersionId } }),
+    0,
+  );
+});
+
+async function requestUserKeyInvestigation(externalId: string): Promise<string> {
+  const caller = createCaller({ userOpenAiApiKey: `sk-test-${externalId}` });
+  const result = await caller.post.investigateNow(
+    buildXViewInput({ externalId, observedContentText: `User key funding for ${externalId}.` }),
+  );
+  assert.equal(result.status, "PENDING");
+  return result.investigationId;
+}
+
+void test("orchestrateInvestigation drops a user key OpenAI refuses instead of failing the investigation", async () => {
+  const investigationId = await requestUserKeyInvestigation("user-key-refused-1");
+
+  await orchestrateInvestigation(
+    investigationId,
+    { info() {}, warn() {}, error() {} },
+    {
+      workerIdentity: withIntegrationPrefix("worker-user-key-refused"),
+      createInvestigator: () => ({
+        investigate: () =>
+          Promise.reject(
+            new InvestigatorExecutionError(
+              "OpenAI rejected the key",
+              buildFailedAttemptAudit("user-key-refused"),
+              OpenAI.APIError.generate(
+                401,
+                { error: { message: "Incorrect API key provided" } },
+                undefined,
+                new Headers(),
+              ),
+            ),
+          ),
+      }),
+    },
+  );
+
+  const stored = await prisma.investigation.findUniqueOrThrow({
+    where: { id: investigationId },
+    select: {
+      status: true,
+      origin: true,
+      attemptCount: true,
+      openAiKeySource: { select: { investigationId: true } },
+      attempts: { select: { attemptNumber: true, outcome: true } },
+    },
+  });
+  assert.equal(stored.status, "PENDING");
+  assert.equal(stored.origin, "USER_KEY_REQUEST");
+  assert.equal(stored.openAiKeySource, null);
+  assert.deepEqual(stored.attempts, [{ attemptNumber: 1, outcome: "FAILED" }]);
+
+  // Unfunded: a worker that picks the job up again does nothing, and never
+  // falls back to the server key.
+  await orchestrateInvestigation(
+    investigationId,
+    { info() {}, warn() {}, error() {} },
+    {
+      workerIdentity: withIntegrationPrefix("worker-user-key-unfunded"),
+      createInvestigator: () => assert.fail("an unfunded investigation must not run"),
+    },
+  );
+  const afterSkip = await prisma.investigation.findUniqueOrThrow({
+    where: { id: investigationId },
+    select: { status: true, attemptCount: true },
+  });
+  assert.deepEqual(afterSkip, { status: "PENDING", attemptCount: stored.attemptCount });
+});
+
+void test("orchestrateInvestigation drops an expired user key before calling OpenAI", async () => {
+  const investigationId = await requestUserKeyInvestigation("user-key-expired-1");
+  await prisma.investigationOpenAiKeySource.update({
+    where: { investigationId },
+    data: { expiresAt: new Date(Date.now() - 1_000) },
+  });
+
+  await orchestrateInvestigation(
+    investigationId,
+    { info() {}, warn() {}, error() {} },
+    {
+      workerIdentity: withIntegrationPrefix("worker-user-key-expired"),
+      createInvestigator: () => assert.fail("an expired user key must not reach OpenAI"),
+    },
+  );
+
+  const stored = await prisma.investigation.findUniqueOrThrow({
+    where: { id: investigationId },
+    select: { status: true, openAiKeySource: { select: { investigationId: true } } },
+  });
+  assert.equal(stored.status, "PENDING");
+  assert.equal(stored.openAiKeySource, null);
+});
+
+void test("orchestrateInvestigation abandons an attempt whose lease was lost without writing", async () => {
+  const post = await seedPost({
+    platform: "X",
+    externalId: "orchestrator-lease-lost-1",
+    url: "https://x.com/openerrata/status/orchestrator-lease-lost-1",
+    contentText: "A run that lost its lease must not write results.",
+  });
+  const investigation = await seedPendingInvestigation({
+    postId: post.id,
+    contentHash: post.contentHash,
+    contentText: post.contentText,
+    provenance: "CLIENT_FALLBACK",
+  });
+  const workerIdentity = withIntegrationPrefix("worker-lease-lost");
+
+  await orchestrateInvestigation(
+    investigation.id,
+    { info() {}, warn() {}, error() {} },
+    {
+      workerIdentity,
+      createInvestigator: () => ({
+        investigate: () =>
+          Promise.reject(new LeaseLostError(investigation.id, "simulated lost lease")),
+      }),
+    },
+  );
+
+  const stored = await prisma.investigation.findUniqueOrThrow({
+    where: { id: investigation.id },
+    select: {
+      status: true,
+      attempts: { select: { id: true } },
+      lease: { select: { leaseOwner: true } },
+    },
+  });
+  // Left for expired-lease recovery: still PROCESSING under this worker's
+  // lease, with no attempt audit or status change written.
+  assert.equal(stored.status, "PROCESSING");
+  assert.deepEqual(stored.attempts, []);
+  assert.equal(stored.lease?.leaseOwner, workerIdentity);
 });

@@ -157,8 +157,9 @@ The following are explicitly out of scope:
 | **Background Worker**      | Service worker. Routes messages between content scripts, popup, and the API. Manages local cache. Can auto-trigger `investigateNow` when user key mode is enabled. |
 | **Popup**                  | UI for extension state: toggle, summary of current page, settings.                                                                                            |
 | **OpenErrata API**         | Records post views, serves cached investigations, runs selection, and exposes both internal RPC endpoints and a public GraphQL API. All investigations execute asynchronously through the queue (including user-supplied key requests). |
-| **Blob Storage**           | Stores downloaded investigation-time images (hash-deduplicated) and serves public URLs used in multimodal model input.                                         |
-| **Investigation Selector** | Cron job that periodically selects uninvestigated posts with the highest capped unique-view score and enqueues them. Pluggable selection algorithm — v1 uses capped unique-view score; future versions can factor in recency, engagement, author, etc. |
+| **Blob Storage**           | Stores downloaded investigation-time images (hash-deduplicated). The model receives the image bytes inline, not blob URLs.                                      |
+| **Investigation Selector** | Cron job that periodically admits uninvestigated posts with the highest capped unique-view score, up to a per-UTC-day budget, and enqueues them. Pluggable selection algorithm — v1 uses capped unique-view score; future versions can factor in recency, engagement, author, etc. |
+| **Public Website**         | Server-rendered SvelteKit site listing corrections and showing each investigation's claims, reasoning, and sources. A read-only client of the public GraphQL API (§3.4); it has no database access. |
 
 ## 2.4 LLM Investigation Approach
 
@@ -251,9 +252,14 @@ The investigator prompt uses a single content section:
 
 Markdown is produced from version-scoped HTML (`HtmlBlob` referenced by
 `*VersionMeta` rows), then snapshotted into immutable `InvestigationInput`
-(`markdown`, `markdownSource`, `markdownRendererVersion`) on first execution.
-Retries reuse that snapshot verbatim, so investigation input is stable across
-attempts even if markdown conversion logic changes later.
+(`markdown`, `markdownSource`, `markdownRendererVersion`) when the investigation
+is created, together with the source URL behind each `[IMAGE:N]` placeholder
+(resolved to an absolute URL against the post URL; images without a fetchable
+source get no placeholder) and the prompt context (post URL, author, publication
+time, video flag). The investigator matches placeholders to downloaded images by
+source URL, never by position. Every attempt reuses that snapshot verbatim, so
+investigation input is stable across attempts even if markdown conversion logic or
+the live post metadata change later.
 
 Claim `text` and `context` still must anchor against normalized post text in the
 extension, so markdown formatting characters are stripped from model outputs
@@ -288,7 +294,11 @@ LessWrong/SubStack posts.
 
 LLMs are bad at counting characters, so we don't ask for offsets. The model returns the **exact
 claim text** plus **surrounding context** (~10 words before and after). The extension matches claims
-to DOM positions using:
+against the same normalized content text it reported to the API (one text index over the live
+content root, block boundaries included as word breaks — §3.8 "Content normalization"), so claim
+and context strings line up with the page exactly as they did for the investigator. Matches map
+back to text-node pieces, which are highlighted individually; removing highlights restores the
+page's own text nodes (it never merges text nodes the page owns). Matching uses:
 
 1. **Exact substring match** — search for the claim text in the post content. Works for unique
    sentences.
@@ -353,8 +363,11 @@ ISSUES FOUND:          CLEAN:                 NOT YET INVESTIGATED:
 Settings are split into:
 
 - **Basic:** OpenAI API key + auto-investigate toggle.
-- **Advanced:** API server URL, attestation/HMAC secret override, instance API
-  key. If unset, defaults to hosted instance.
+- **Advanced:** API server URL and instance API
+  key. If unset, defaults to hosted instance. A stored value that is set but
+  unusable (e.g. an API URL that fails validation) is an error shown in the
+  options page and popup, and the extension makes no API calls until it is
+  fixed — it never falls back to the hosted instance.
 
 ### Annotation Styling
 
@@ -396,20 +409,24 @@ User visits post
 
   → Background worker calls API: recordViewAndGetStatus({ postVersionId })
   → API looks up PostVersion by primary key
-      NOT FOUND → return { investigationState: "NOT_INVESTIGATED", claims: null,
-                           priorInvestigationResult: null }
-                  (version was never registered; nothing to do)
+      NOT FOUND → reject request (unknown post version)
   → API increments raw viewCount, updates uniqueViewScore, records corroboration credit
-  → API checks whether this content version has a completed investigation:
-      HIT  → return { investigationState: "INVESTIGATED", provenance, claims: [...] }
-             (already investigated for this content version; client is done)
-      MISS + latest complete SERVER_VERIFIED exists for this post →
-         return { investigationState: "NOT_INVESTIGATED", claims: null,
-                  priorInvestigationResult: { oldClaims: claims, sourceInvestigationId } }
-         (reuse prior verified claims as interim context; no run is queued)
-      MISS + only CLIENT_FALLBACK/none latest exists →
-         return { investigationState: "NOT_INVESTIGATED", claims: null }
-         (no completed investigation yet for this content version)
+  → API checks the investigation of this content version (at most one exists, §3.5):
+      COMPLETE → return { investigationState: "INVESTIGATED", investigationId, provenance, claims }
+                 (already investigated for this content version; client is done)
+      PENDING / PROCESSING →
+         return { investigationState: "INVESTIGATING", investigationId, status, provenance,
+                  pendingClaims, confirmedClaims, priorInvestigationResult }
+         (queued by another viewer, the selector, or an earlier visit; the client polls
+          getInvestigation({ investigationId }) until it settles, exactly as for its own;
+          priorInvestigationResult carries claims forward as below)
+      FAILED → return { investigationState: "FAILED", investigationId, provenance }
+               (auto-investigate does not start new work for a failed version)
+      NONE →
+         return { investigationState: "NOT_INVESTIGATED",
+                  priorInvestigationResult: { oldClaims, sourceInvestigationId } | null }
+         (claims carried forward from another version, §2.8 "Interim carry-forward";
+          null when none applies; no run is queued)
   → Client renders current state; recordViewAndGetStatus alone does not enqueue a new investigation
   → Investigation begins only via investigateNow(...) or selector queueing
 ```
@@ -426,19 +443,26 @@ User clicks "Investigate Now" (or auto-investigate triggers)
   → Background worker calls API: registerObservedVersion(...) (if not already done)
   → Background worker calls API: investigateNow({ postVersionId }),
     optionally including a user OpenAI key via x-openai-api-key header
+  → The request's funding: its user OpenAI key if it sent one, otherwise the instance
+    API key it authenticated with; neither → reject (UNAUTHORIZED)
   → API looks up PostVersion by primary key
       NOT FOUND → reject request (unknown post version)
   → API checks for an existing Investigation row for that content version
-      no row     → create PENDING row, start background run,
+      no row     → reject if over the word limit; if funding is a user key, verify it with
+                   OpenAI first (rejected or unverifiable → reject the request, nothing is
+                   created); create the PENDING row with update lineage (§2.4.3) and the
+                   request's funding (origin INSTANCE_REQUEST or USER_KEY_REQUEST, user key
+                   attached in the same transaction), enqueue,
                    return { investigationId, status: PENDING }
   → If a row already exists, API returns immediately with status-based behavior:
       COMPLETE   → return { investigationId, status: COMPLETE, claims }
-      FAILED     → return { investigationId, status: FAILED } (unless explicit retry action is requested)
+      FAILED     → return { investigationId, status: FAILED } (FAILED is terminal, §3.7)
       PROCESSING → return { investigationId, status: PROCESSING }; no second run is started
-      PENDING    → if request includes a user OpenAI key and no user-key source is attached yet,
-                   attach one (first key wins)
-                   once PROCESSING starts, user-key source is immutable for that run
-                   ensure a background run exists
+                   (an expired lease is recovered first, §3.7)
+      PENDING    → funded (someone is paying): ensure a queue job exists; the request's
+                   user key is never attached — it never takes over a run someone else funds
+                   unfunded (its user key was dropped, §3.7): fund it with this request
+                   (verifying a user key first), enqueue
                    return { investigationId, status: PENDING }
   → Extension polls getInvestigation({ investigationId }) until COMPLETE/FAILED
   → Worker claims queued job, sets PROCESSING, runs investigation, then writes COMPLETE/FAILED
@@ -447,19 +471,21 @@ User clicks "Investigate Now" (or auto-investigate triggers)
 **Auto-investigate (extension-side):**
 
 ```
-After recordViewAndGetStatus returns { investigationState: "NOT_INVESTIGATED", claims: null,
+After recordViewAndGetStatus returns { investigationState: "NOT_INVESTIGATED",
                                        priorInvestigationResult: ... | null }
   → If user OpenAI key exists and auto-investigate is enabled:
       background worker calls investigateNow({ postVersionId }) and then polls for completion
   → Result is cached locally when returned
 ```
 
-**Background selection (server-managed budget):**
+**Background selection (server-managed daily budget):**
 
 ```
 Cron job runs every N minutes
-  → SELECT uninvestigated posts ORDER BY unique_view_score DESC LIMIT :budget
-  → INSERT Investigation(status=PENDING) for each
+  → Recover expired leases; re-enqueue funded PENDING investigations that are due
+  → Admit uninvestigated latest versions (and unfunded investigations) ORDER BY
+    unique_view_score DESC, while today's SELECTOR admissions < SELECTOR_DAILY_BUDGET
+  → INSERT Investigation(status=PENDING, origin=SELECTOR) for each new one
   → Job queue workers pick up and investigate
 ```
 
@@ -494,16 +520,26 @@ completed investigation matching the current version.
   `registerObservedVersion`; the API computes the version key internally. Subsequent calls
   (`recordViewAndGetStatus`, `investigateNow`) reference the resolved version by `postVersionId`.
 - **Hit**: Return claims. The view still increments the counter.
-- **Miss**: Return `{ investigationState: "NOT_INVESTIGATED", claims: null }` (optionally with
-  `priorInvestigationResult` when a prior complete `SERVER_VERIFIED` investigation exists).
-  The view is recorded; the selector may pick this post up later.
+- **Miss**: Return `{ investigationState: "NOT_INVESTIGATED", priorInvestigationResult }`, with
+  claims carried forward from another version when any apply (below). The view is recorded;
+  the selector may pick this post up later.
 - **Strict version rule**: Never return or render an investigation for a different content version
-  of the same post. No fallback to older versions.
-- **Interim update rule**: For a version miss with no complete result on the requested
-  version, the API may return a prior complete `SERVER_VERIFIED` investigation as
-  interim via `priorInvestigationResult = { oldClaims, sourceInvestigationId }`.
-  This is a temporary UI state only, does not count as a final cache hit, and does
-  not by itself queue a new investigation run.
+  of the same post as that version's result. The only claims of another version a viewer sees
+  are the interim ones below.
+- **Interim carry-forward**: While the requested version has no finished investigation (not
+  investigated yet, or investigating), `priorInvestigationResult` (`{ oldClaims,
+  sourceInvestigationId }`) comes from the post's latest complete investigation (by
+  `checkedAt`) on another version — never the requested version itself — of either
+  provenance, and holds only the claims whose exact `text` still occurs in the requested
+  version's content text (after the same normalization claim texts were taken from, §3.8).
+  If there is no such investigation or none of its claims survives, it is null.
+  Rationale: a correction is only shown while the exact text it corrects is still on the
+  page. An edit (or a content-normalization change) then never leaves a correction pointing
+  at text that is gone, and a correction of text that is still there stays visible until the
+  new version's own investigation replaces it, however the earlier version's content was
+  obtained. This is a temporary UI state only: it is not a cache hit, does not by itself
+  queue an investigation, and does not change which investigation an update run uses as its
+  parent (still the latest complete `SERVER_VERIFIED` one, §2.4.3).
 - **Version key semantics**: The version key (`versionHash`) is derived from both normalized text
   and image occurrences: `sha256(contentHash + "\n" + occurrencesHash)`. For LessWrong and
   Wikipedia, normalized text is derived server-side from canonical sources; for X/Substack it is
@@ -529,7 +565,18 @@ So server-side verification is preferred but best-effort.
 - Identity binding rule: server-canonical responses define authoritative platform identity.
   For server-verifiable platforms (for example, Wikipedia `pageId` + `revisionId`), if
   client-submitted identity disagrees with the platform response, the API records an
-  integrity anomaly and corrects stored identity to the server value.
+  integrity anomaly and corrects stored identity to the server value. The post URL and
+  author are identity too: when the server fetch succeeds (LessWrong: post URL from
+  `_id` + `slug`, author and title from the post's user; Wikipedia: article URL from the
+  parse API title), they come from the platform response and `Post.identityVerifiedAt`
+  latches. Once latched, client-submitted URL/author never overwrite them.
+- Client-submitted post URLs are validated per platform before they are stored: `https`
+  only, on the platform's host (`lesswrong.com`, `x.com`/`twitter.com`,
+  `<lang>.wikipedia.org`; Substack may use custom domains, so only a `/p/<slug>` path is
+  required), naming the same post as `externalId` where the URL encodes it.
+- The canonical fetch runs inside `registerObservedVersion`, so it is bounded: one
+  10-second deadline across all transient retries and a 10 MB response cap; exceeding
+  either falls back to `CLIENT_FALLBACK`.
 - Primary path: server verifies platform content and derives the canonical content version.
 - Mismatch policy: if identity-bound verification succeeds but conflicts with submitted content,
   record an integrity anomaly and continue with the server-derived canonical content
@@ -568,14 +615,18 @@ consumers can apply their own trust policy.
   (e.g., on a subsequent `registerObservedVersion` where the server retries),
   matching `PostVersion` rows latch `serverVerifiedAt` from null to a timestamp.
   Existing investigation provenance snapshots are immutable and are not rewritten.
-- **Interim display policy:** Interim reuse is only enabled when the prior completed investigation has
-  `provenance = "SERVER_VERIFIED"` on `InvestigationInput`. `CLIENT_FALLBACK` investigations are never reused as
-  interim results on a new version.
+- **Interim display policy:** interim claims may come from a `CLIENT_FALLBACK` investigation as
+  well as a `SERVER_VERIFIED` one (§2.8 "Interim carry-forward"): what makes a carried-forward
+  claim safe to show is that the exact text it corrects is on the viewer's page, not how the
+  earlier version's content was obtained.
 
 ## 2.10 Investigation Prioritization
 
 The investigation selector is a cron job that runs every N minutes, selecting uninvestigated posts
-ordered by capped unique-view score. Budget is configurable (e.g. 100 investigations/day).
+ordered by capped unique-view score. The budget (`SELECTOR_DAILY_BUDGET`, default 100) caps the
+investigations the selector admits per UTC day, however often it runs. Investigations admitted by
+investigateNow (instance-key or user-key funded) do not count against it; re-enqueueing already
+admitted work does not either.
 
 Scoring rules (v1):
 
@@ -585,6 +636,10 @@ Scoring rules (v1):
     post per 24h)
   - IP-range credit cap for this post today has not been exceeded
 - The IP-range credit cap is configurable.
+- The client IP behind both rules is the viewer's, not the proxy's: behind the deployment's
+  ingress the API reads it from the trusted proxy header (`ADDRESS_HEADER` / `XFF_DEPTH`), and
+  refuses to start in production without that configuration. A client address that is not an IP
+  address is a configuration error, not a bucket.
 
 This naturally handles edits: if a post was investigated but then edited, the content hash no longer
 matches any existing investigation, so it re-enters the selection pool.
@@ -646,13 +701,25 @@ For every completed investigation, persist audit artifacts:
 - Normalized input text and `contentHash`
 - Content provenance and any server-fetch failure reason
 - Prompt reference (`promptId` → `Prompt.version`, `Prompt.hash`, `Prompt.text`)
-- Provider/model metadata (enum values for provider/model, plus provider-reported model version)
-- Normalized per-attempt request/response records:
-  requested tools, output items, output text parts + citations, reasoning summaries,
-  tool calls (with raw provider payloads), token usage, and provider/parsing errors
+- Provider/model metadata: the provider enum, the provider model id the stage-1
+  fact-check ran on (recorded at completion, never predicted at queue time), and
+  the provider-reported model version of the final stage-1 response
+- Normalized per-attempt records, with one request record per provider request
+  (each stage-1 fact-check round and each stage-2 claim validation): the exact
+  model, instructions, input (image parts recorded by content hash), previous
+  response id, reasoning options, `include` values and tool definitions sent; and
+  its response, if any: output items with their text parts + citations, reasoning
+  summaries and tool calls (raw provider payloads, including web-search sources),
+  and token usage. Attempt-level provider/parsing errors.
+- Attempts recorded before per-request auditing (pre-2026-10) are kept as a single
+  `LEGACY_COMBINED` request whose fields merge all of that attempt's requests
 - Input lineage for update runs: `oldClaims`, current article text, and computed
   content diff included in request/input records so we can reconstruct why only parts changed
-- Source snapshots or immutable excerpts used for claims, with hash and retrieval timestamp
+- The immutable excerpt (`snippet`) for each claim source; what the model actually retrieved
+  (web search results, `fetch_url` bodies with retrieval timestamps) is in the attempt's raw
+  tool-call payloads
+- Per-attempt records are insert-only and keyed by a never-reset attempt number, so retries
+  never overwrite earlier attempts
 
 Stored artifacts are the canonical audit record. Re-running the same
 investigation later may produce different outputs because external web content
@@ -669,9 +736,9 @@ out of scope for v1, but the following baseline measures are required:
 1. **Extension attestation signal (not authentication).** The extension includes an attestation
    signal generated from a bundled default secret (with an optional local override in extension
    settings). Because extensions are inspectable, this is
-   treated only as a low-confidence abuse signal for filtering/telemetry, not a security boundary.
-   Missing/invalid attestation is treated as "no signal" rather than an auth failure. Authorization
-   and trust decisions must not rely on this signal alone.
+   at most a low-confidence abuse signal for filtering/telemetry, never a security boundary.
+   The v1 server does not verify or consume it; authorization and trust decisions must not rely
+   on it.
 2. **Server-side content verification.** The server always attempts to fetch canonical content
    from the platform (see §2.9). Client-submitted text is only used as fallback when the server
    fetch fails, limiting the attacker's ability to inject fabricated content into investigations.
@@ -682,8 +749,14 @@ out of scope for v1, but the following baseline measures are required:
    won't match a server-verified investigation shown to real users.
 5. **User-key handling.** User-supplied OpenAI keys may be persisted locally in the extension, but
    plaintext keys must never be persisted server-side in application data or durable logs.
-6. **SSRF-safe image fetch.** Investigation-time image downloading must block private/internal
-   network targets and enforce count/size limits before upload to blob storage.
+6. **SSRF-safe fetching.** Investigation-time image downloads and the model's `fetch_url` tool
+   fetch URLs chosen by untrusted input, so the check lives on the connection: every connection
+   resolves through a DNS lookup that rejects the answer unless all addresses are public unicast
+   (no private, loopback, link-local, CGNAT, multicast, reserved, IPv4-mapped, NAT64, 6to4 or
+   Teredo ranges) and pins the connection to the addresses it checked, so DNS rebinding has no
+   window. IP-literal hosts, embedded credentials and non-HTTP(S) schemes are rejected before
+   dispatch; redirects are followed manually through the same check; bodies are read up to a
+   byte cap. Images are downloaded only after the run's funding key is resolved.
 7. **Transport limits.** The following limits are enforced on API inputs:
    - `MAX_OBSERVED_CONTENT_TEXT_CHARS` / `MAX_OBSERVED_CONTENT_TEXT_UTF8_BYTES`: 500,000
    - `MAX_IMAGES_PER_INVESTIGATION`: 10
@@ -706,11 +779,12 @@ measures (proof-of-work, behavioral analysis) are planned for future versions.
 | Cross-browser   | **webextension-polyfill**                                         | Normalizes Chrome/Firefox API differences behind a single Promise-based API   |
 | Type safety     | **TypeScript + Zod**                                              | Runtime validation at API boundary                                            |
 | API framework   | **SvelteKit + tRPC + GraphQL**                                    | tRPC for extension/internal consumers; GraphQL for public third-party API     |
-| Database        | **Supabase (hosted Postgres) + Prisma**                           | Stores investigations, view counts, user accounts                             |
-| Job queue       | **Postgres-backed** (graphile-worker or `FOR UPDATE SKIP LOCKED`) | No Redis dependency; runs against the same Supabase database                  |
-| LLM             | **OpenAI Responses API with tools**                               | v1 provider. Anthropic support planned via `Investigator` interface           |
+| Database        | **Postgres + Prisma**                                             | Stores posts, content versions, investigations, view credits, audit records   |
+| Job queue       | **Postgres-backed** (graphile-worker)                             | No Redis dependency; runs against the same database                           |
+| Public website  | **SvelteKit (server-rendered)**                                   | Reads only the public GraphQL API; parses responses with the shared public schemas |
+| LLM             | **OpenAI Responses API with tools** (`gpt-6.1-sol`)               | v1 provider and model, fixed in code (`openai-request-config.ts`). Anthropic support planned via `Investigator` interface |
 | Auth            | **Anonymous + required instance OpenAI key + optional request-scoped user OpenAI key** | Instance-managed investigations are always available; users may still override with their own key for on-demand runs |
-| Deployment      | **Helm chart** (on-prem), **Pulumi** (official hosted, deploys the same chart) | Single artifact for both on-prem and hosted; no deployment drift              |
+| Deployment      | **Helm chart** (on-prem), **Pulumi** (official hosted, deploys the same chart)         | Single artifact for both on-prem and hosted; no deployment drift                                                     |
 
 ## 3.2 Data Model
 
@@ -724,9 +798,10 @@ model Post {
   id              String   @id @default(cuid())
   platform        Platform
   externalId      String          // Platform's native ID
-  url             String
+  url             String          // https on the platform host; server-verified when identityVerifiedAt is set
   authorId        String?
   author          Author?  @relation(fields: [authorId], references: [id])
+  identityVerifiedAt DateTime?    // Latch: url/author came from a server fetch; client data never overwrites them
   viewCount       Int      @default(0) // Raw views (analytics)
   uniqueViewScore Int      @default(0) // Capped selector score
   lastViewedAt    DateTime?
@@ -784,6 +859,26 @@ model Author {
 }
 ```
 
+### Instance API keys
+
+Operators issue API keys that authorize `investigateNow` on the instance's own
+OpenAI key. Only a SHA-256 hash of each key is stored; keys are managed with
+`pnpm --filter @openerrata/api instance-api-key` (list / activate / revoke).
+
+```prisma
+model InstanceApiKey {
+  id        String    @id @default(cuid())
+  name      String
+  keyHash   String    @unique  // SHA-256 of the trimmed key
+  revokedAt DateTime?          // Revoked keys are kept for audit and never authorize
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([name])
+  @@index([revokedAt])
+}
+```
+
 ### Platform metadata
 
 Platform metadata is version-scoped only. Each `PostVersion` can have one
@@ -819,7 +914,6 @@ model HtmlBlob {
 
   lesswrongServerVersionMetas LesswrongVersionMeta[] @relation("LesswrongServerHtml")
   lesswrongClientVersionMetas LesswrongVersionMeta[] @relation("LesswrongClientHtml")
-  substackServerVersionMetas  SubstackVersionMeta[]  @relation("SubstackServerHtml")
   substackClientVersionMetas  SubstackVersionMeta[]  @relation("SubstackClientHtml")
   wikipediaServerVersionMetas WikipediaVersionMeta[] @relation("WikipediaServerHtml")
   wikipediaClientVersionMetas WikipediaVersionMeta[] @relation("WikipediaClientHtml")
@@ -914,9 +1008,7 @@ model SubstackVersionMeta {
   slug                   String
   title                  String
   subtitle               String?
-  serverHtmlBlobId       String?
-  serverHtmlBlob         HtmlBlob?   @relation("SubstackServerHtml", fields: [serverHtmlBlobId], references: [id], onDelete: Restrict)
-  clientHtmlBlobId       String?
+  clientHtmlBlobId       String?    // No Substack server fetch exists, so only client HTML is stored
   clientHtmlBlob         HtmlBlob?   @relation("SubstackClientHtml", fields: [clientHtmlBlobId], references: [id], onDelete: Restrict)
   imageUrls              String[]
   authorName             String
@@ -977,17 +1069,22 @@ model Investigation {
   promptId              String
   prompt                Prompt                 @relation(fields: [promptId], references: [id])
   provider              InvestigationProvider
-  model                 InvestigationModel
-  modelVersion          String?                // Provider-reported model revision/version when available
+  // INV-INV-MODEL-AT-COMPLETION: set iff status = COMPLETE (CHECK
+  // "Investigation_model_consistency_check"); the provider model id the stage-1
+  // fact-check requests were sent to, e.g. "gpt-6.1-sol".
+  model                 String?
+  modelVersion          String?                // Provider-reported revision of the final stage-1 response
   checkedAt             DateTime?              // Null until completion
   queuedAt              DateTime               @default(now())
-  // Monotonically increasing attempt counter. Incremented atomically when a
-  // worker claims the lease. Gives each retry a distinct attemptNumber for
-  // the InvestigationAttempt audit trail.
+  origin                InvestigationOrigin    // Who admitted (and pays for) the investigation, §3.7
+  admittedAt            DateTime               // When the current origin admitted it; drives the daily selector budget
+  // Monotonically increasing attempt counter, never reset. Incremented
+  // atomically when a worker claims the lease, so every attempt has a distinct
+  // attemptNumber in the InvestigationAttempt audit trail.
   attemptCount          Int                    @default(0)
-  // INV-LEASE: The InvestigationLease row exists iff the investigation is
-  // PROCESSING and has an active lease holder. Structurally prevents
-  // leaseOwner/leaseExpiresAt without PROCESSING, and vice versa.
+  retryAfter            DateTime?              // Backoff gate for the selector after a transient failure
+  // INV-LEASE: an InvestigationLease row exists iff status = PROCESSING.
+  // Enforced at commit by deferred constraint triggers.
   lease                 InvestigationLease?
   openAiKeySource       InvestigationOpenAiKeySource?
   attempts              InvestigationAttempt[]
@@ -1002,24 +1099,30 @@ model Investigation {
   @@index([status])
 }
 
+// Everything the investigator is given that could change after queue time,
+// captured when the investigation is created; every attempt reuses it.
 model InvestigationInput {
-  investigationId         String             @id
-  investigation           Investigation?     @relation("InvestigationInputOwner")
+  investigationId            String             @id
+  investigation              Investigation?     @relation("InvestigationInputOwner")
   // Immutable after insert; enforced by trigger "reject_investigation_input_updates_trigger".
-  provenance              ContentProvenance
-  contentHash             String
-  markdownSource          MarkdownSource
-  markdown                String?            // null iff markdownSource = NONE
-  markdownRendererVersion String?            // null iff markdownSource = NONE
-  createdAt               DateTime           @default(now())
+  provenance                 ContentProvenance
+  contentHash                String
+  markdownSource             MarkdownSource
+  markdown                   String?            // null iff markdownSource = NONE
+  markdownRendererVersion    String?            // null iff markdownSource = NONE
+  imagePlaceholderSourceUrls String[]           // Source URL behind each [IMAGE:N], indexed by N; empty when NONE
+  postUrl                    String             // Prompt context, frozen at queue time
+  authorName                 String?
+  postPublishedAt            DateTime?
+  hasVideo                   Boolean
+  createdAt                  DateTime           @default(now())
 }
 
-// INV-LEASE: The existence of an InvestigationLease row means "this
-// investigation is PROCESSING and has an active lease holder". All fields
+// INV-LEASE: an InvestigationLease row exists iff its investigation is
+// PROCESSING (checked at commit by deferred constraint triggers). All fields
 // are NOT NULL — structurally prevents partial lease states. The row is
-// deleted on every terminal transition (COMPLETE, FAILED) and on lease
-// release (transient failure → PENDING), so progressClaims is automatically
-// cleaned up without needing sentinel values.
+// deleted on every transition out of PROCESSING (COMPLETE, FAILED, release to
+// PENDING, expired-lease recovery), so progressClaims is cleaned up with it.
 model InvestigationLease {
   investigationId String        @id
   investigation   Investigation @relation(fields: [investigationId], references: [id], onDelete: Cascade)
@@ -1072,63 +1175,94 @@ model InvestigationImage {
   @@index([imageBlobId])
 }
 
+// Insert-only: each attemptNumber is claimed once per investigation and its
+// audit is written once, at the attempt's terminal transition.
 model InvestigationAttempt {
-  id                      String                              @id @default(cuid())
-  investigationId         String
-  investigation           Investigation                       @relation(fields: [investigationId], references: [id], onDelete: Cascade)
-  attemptNumber           Int
-  outcome                 InvestigationAttemptOutcome
-  requestModel            String   // Provider request model id (e.g. gpt-5-*)
-  requestInstructions     String   // Exact instructions/system prompt sent
-  requestInput            String   // Exact user input sent
-  requestReasoningEffort  String?
-  requestReasoningSummary String?
-  responseId              String?  // Provider response id
-  responseStatus          String?
-  responseModelVersion    String?
-  responseOutputText      String?  // Raw structured output text returned
-  startedAt               DateTime
-  completedAt             DateTime?
-  requestedTools          InvestigationAttemptRequestedTool[]
-  outputItems             InvestigationAttemptOutputItem[]
-  toolCalls               InvestigationAttemptToolCall[]
-  usage                   InvestigationAttemptUsage?
-  error                   InvestigationAttemptError?
-  createdAt               DateTime                            @default(now())
-  updatedAt               DateTime                            @updatedAt
+  id              String                        @id @default(cuid())
+  investigationId String
+  investigation   Investigation                 @relation(fields: [investigationId], references: [id], onDelete: Cascade)
+  attemptNumber   Int
+  outcome         InvestigationAttemptOutcome
+  startedAt       DateTime
+  completedAt     DateTime?
+  requests        InvestigationAttemptRequest[]
+  error           InvestigationAttemptError?
+  createdAt       DateTime                      @default(now())
+  updatedAt       DateTime                      @updatedAt
 
   @@unique([investigationId, attemptNumber])
   @@index([investigationId, startedAt])
 }
 
+// One provider request made during an attempt, exactly as sent.
+model InvestigationAttemptRequest {
+  id                 String                              @id @default(cuid())
+  attemptId          String
+  attempt            InvestigationAttempt                @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  kind               InvestigationAttemptRequestKind
+  // INV-ATTEMPT-REQUEST-SUBJECT: factCheckRound is set iff kind = FACT_CHECK_ROUND;
+  // claimIndex is set iff kind = CLAIM_VALIDATION (CHECK "InvestigationAttemptRequest_subject_check").
+  factCheckRound     Int?
+  claimIndex         Int?
+  model              String   // Provider request model id (e.g. gpt-6.1-sol)
+  instructions       String   // Exact instructions/system prompt sent
+  input              Json     // Exact `input` sent; image parts carry imageContentHash (ImageBlob.contentHash) instead of the data URI
+  previousResponseId String?  // Set on fact-check rounds after the first
+  reasoningEffort    String?
+  reasoningSummary   String?
+  include            String[]
+  requestedTools     InvestigationAttemptRequestedTool[]
+  response           InvestigationAttemptResponse?   // Absent when the request failed without a response
+  createdAt          DateTime                            @default(now())
+
+  @@unique([attemptId, factCheckRound])
+  @@unique([attemptId, claimIndex])
+  @@index([attemptId])
+}
+
 model InvestigationAttemptRequestedTool {
-  id            String               @id @default(cuid())
-  attemptId     String
-  attempt       InvestigationAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  id            String                      @id @default(cuid())
+  requestId     String
+  request       InvestigationAttemptRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
   requestOrder  Int
   toolType      String
   rawDefinition Json     // Full provider tool-definition payload for this request position
-  createdAt     DateTime             @default(now())
+  createdAt     DateTime                    @default(now())
 
-  @@unique([attemptId, requestOrder])
-  @@index([attemptId])
+  @@unique([requestId, requestOrder])
+  @@index([requestId])
+}
+
+model InvestigationAttemptResponse {
+  id                 String                           @id @default(cuid())
+  requestId          String                           @unique
+  request            InvestigationAttemptRequest      @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  providerResponseId String
+  status             String?   // Provider-reported status; null if omitted (the attempt then fails)
+  modelVersion       String    // Provider-reported model revision
+  receivedAt         DateTime? // Null only on LEGACY_COMBINED requests
+  outputItems        InvestigationAttemptOutputItem[]
+  usage              InvestigationAttemptUsage?
+  createdAt          DateTime                         @default(now())
 }
 
 model InvestigationAttemptOutputItem {
   id                 String                                 @id @default(cuid())
-  attemptId          String
-  attempt            InvestigationAttempt                   @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  responseId         String
+  response           InvestigationAttemptResponse           @relation(fields: [responseId], references: [id], onDelete: Cascade)
   outputIndex        Int
   providerItemId     String?
   itemType           String   // Provider-defined output item type
   itemStatus         String?
+  // By itemType: textParts for "message", reasoningSummaries for "reasoning",
+  // toolCall for every other (tool call) item.
   textParts          InvestigationAttemptOutputTextPart[]
   reasoningSummaries InvestigationAttemptReasoningSummary[]
   toolCall           InvestigationAttemptToolCall?
   createdAt          DateTime                               @default(now())
 
-  @@unique([attemptId, outputIndex])
-  @@index([attemptId])
+  @@unique([responseId, outputIndex])
+  @@index([responseId])
 }
 
 model InvestigationAttemptOutputTextPart {
@@ -1175,36 +1309,23 @@ model InvestigationAttemptReasoningSummary {
 }
 
 model InvestigationAttemptToolCall {
-  id                  String                         @id @default(cuid())
-  attemptId           String
-  attempt             InvestigationAttempt           @relation(fields: [attemptId], references: [id], onDelete: Cascade)
-  outputItemId        String
-  outputItem          InvestigationAttemptOutputItem @relation(fields: [outputItemId], references: [id], onDelete: Cascade)
-  outputIndex         Int
-  providerToolCallId  String?
-  toolType            String
-  status              String?
-  rawPayload          Json     // Full provider output item payload for this call
-  capturedAt          DateTime
-  providerStartedAt   DateTime?
-  providerCompletedAt DateTime?
-  createdAt           DateTime                       @default(now())
-
-  @@unique([attemptId, outputIndex])
-  @@unique([outputItemId])
-  @@index([attemptId])
+  id           String                         @id @default(cuid())
+  outputItemId String                         @unique
+  outputItem   InvestigationAttemptOutputItem @relation(fields: [outputItemId], references: [id], onDelete: Cascade)
+  rawPayload   Json     // Full provider output item payload for this call
+  createdAt    DateTime                       @default(now())
 }
 
 model InvestigationAttemptUsage {
-  id                    String               @id @default(cuid())
-  attemptId             String               @unique
-  attempt               InvestigationAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  id                    String                       @id @default(cuid())
+  responseId            String                       @unique
+  response              InvestigationAttemptResponse @relation(fields: [responseId], references: [id], onDelete: Cascade)
   inputTokens           Int
   outputTokens          Int
   totalTokens           Int
   cachedInputTokens     Int?
   reasoningOutputTokens Int?
-  createdAt             DateTime             @default(now())
+  createdAt             DateTime                     @default(now())
 }
 
 model InvestigationAttemptError {
@@ -1249,10 +1370,7 @@ model Source {
   claim        Claim    @relation(fields: [claimId], references: [id], onDelete: Cascade)
   url          String
   title        String
-  snippet      String
-  snapshotText String?  // Immutable excerpt/body used during the run (if retained)
-  snapshotHash String?  // Hash of snapshotText or archived source bytes
-  retrievedAt  DateTime
+  snippet      String   // Immutable excerpt the claim relies on; retrieval data is in the attempt's tool calls
 
   @@index([claimId])
 }
@@ -1281,16 +1399,21 @@ enum InvestigationProvider {
   ANTHROPIC
 }
 
-enum InvestigationModel {
-  OPENAI_GPT_5
-  OPENAI_GPT_5_MINI
-  ANTHROPIC_CLAUDE_SONNET
-  ANTHROPIC_CLAUDE_OPUS
-}
-
 enum InvestigationAttemptOutcome {
   SUCCEEDED
   FAILED
+}
+
+enum InvestigationAttemptRequestKind {
+  FACT_CHECK_ROUND   // One round of the stage-1 fact-check tool loop
+  CLAIM_VALIDATION   // One stage-2 per-claim validation call
+  LEGACY_COMBINED    // Pre-2026-10 merged audit of a whole attempt; never written by current code
+}
+
+enum InvestigationOrigin {
+  SELECTOR          // Background selection; server key; counts against SELECTOR_DAILY_BUDGET
+  INSTANCE_REQUEST  // investigateNow from an instance-API-key client; server key
+  USER_KEY_REQUEST  // investigateNow funded by the requester's verified OpenAI key
 }
 
 // No Verdict enum. Every Claim in the database is an incorrect claim.
@@ -1335,48 +1458,54 @@ interface InvestigationResult {
 // canonical content via server-side verification (best effort) or client fallback.
 // Returns a postVersionId that subsequent calls use as a cheap PK reference.
 postRouter.registerObservedVersion
-  Input:  { platform, externalId, url, observedImageUrls?, observedImageOccurrences?,
+  Input:  { platform, externalId, url,
+            observedImageOccurrences?, // every observed image in page order; the distinct
+                                       // image URLs are derived from it (absent = no images)
             observedContentText?, // required for X/Substack/Wikipedia; omitted for LessWrong
             metadata: { title?, authorName?, ... } }
   Output: { platform, externalId, versionHash, postVersionId, provenance: ContentProvenance }
 
-// Record a view and return cached investigation status. Increments raw viewCount
-// and updates uniqueViewScore. Uses postVersionId from registerObservedVersion
-// for a direct primary-key lookup (no content re-derivation).
+// Record a view and return the status of this version's investigation, if any.
+// Increments raw viewCount and updates uniqueViewScore. Uses postVersionId from
+// registerObservedVersion for a direct primary-key lookup (no content re-derivation);
+// rejects unknown post versions. Every variant about an existing investigation
+// carries its id, so the client can poll an investigation it did not start.
 postRouter.recordViewAndGetStatus
   Input:  { postVersionId }
   Output:
     | { investigationState: "NOT_INVESTIGATED",
         priorInvestigationResult: { oldClaims: Claim[], sourceInvestigationId: string } | null }
-    | { investigationState: "INVESTIGATING", status: "PENDING" | "PROCESSING",
+    | { investigationState: "INVESTIGATING", investigationId, status: "PENDING" | "PROCESSING",
         provenance: ContentProvenance,
         pendingClaims: ClaimPayload[], confirmedClaims: ClaimPayload[],
         priorInvestigationResult: { oldClaims: Claim[], sourceInvestigationId: string } | null }
-    | { investigationState: "INVESTIGATED", provenance: ContentProvenance, claims: Claim[] }
+    | { investigationState: "FAILED", investigationId, provenance: ContentProvenance }
+    | { investigationState: "INVESTIGATED", investigationId, provenance: ContentProvenance,
+        claims: Claim[] }
 
 // Fetch results for a specific investigation (used for polling)
 postRouter.getInvestigation
   Input:  { investigationId }
   Output:
-    | { investigationState: "NOT_INVESTIGATED",
-        priorInvestigationResult: { oldClaims: Claim[], sourceInvestigationId: string } | null,
-        checkedAt?: DateTime }
+    | { investigationState: "NOT_INVESTIGATED", // unknown investigationId
+        priorInvestigationResult: null }
     | { investigationState: "INVESTIGATING", status: "PENDING" | "PROCESSING",
         provenance: ContentProvenance,
         pendingClaims: ClaimPayload[], confirmedClaims: ClaimPayload[],
-        priorInvestigationResult: { oldClaims: Claim[], sourceInvestigationId: string } | null,
-        checkedAt?: DateTime }
-    | { investigationState: "FAILED", provenance: ContentProvenance,
-        checkedAt?: DateTime }
+        priorInvestigationResult: { oldClaims: Claim[], sourceInvestigationId: string } | null }
+    | { investigationState: "FAILED", provenance: ContentProvenance }
     | { investigationState: "INVESTIGATED", provenance: ContentProvenance,
         claims: Claim[], checkedAt: DateTime }
 
 // Request immediate investigation. Uses postVersionId from registerObservedVersion.
 // Authorization: instance API key OR request-scoped user OpenAI key (`x-openai-api-key`).
+// A user key is verified with OpenAI before it funds anything (rejected → UNAUTHORIZED,
+// restricted → FORBIDDEN, unverifiable → BAD_GATEWAY) and only funds an investigation this
+// request admits (§2.6).
 // Rejects posts exceeding the word count limit (same 10,000-word cap as the selector).
 // Idempotent: if an investigation already exists for this content version, returns its
 // current status (which may be COMPLETE or FAILED, not just PENDING).
-// All paths are async queue-backed; user-key requests attach an encrypted short-lived lease.
+// All paths are async queue-backed; user-key requests attach an encrypted short-lived key source.
 postRouter.investigateNow
   Input:  { postVersionId }
   Output:
@@ -1464,6 +1593,11 @@ type PublicInvestigationResult {
   claims: [PublicClaim!]!
 }
 
+type ClaimSummary {
+  id: ID!
+  summary: String!
+}
+
 type PostInvestigationSummary {
   id: ID!
   contentHash: String!
@@ -1471,6 +1605,7 @@ type PostInvestigationSummary {
   corroborationCount: Int!
   checkedAt: DateTime!
   claimCount: Int!
+  claimSummaries: [ClaimSummary!]!
 }
 
 type PostInvestigationsResult {
@@ -1488,8 +1623,11 @@ type SearchInvestigationSummary {
   origin: InvestigationOrigin!
   corroborationCount: Int!
   claimCount: Int!
+  claimSummaries: [ClaimSummary!]!
 }
 
+# SERVER_VERIFIED implies serverVerifiedAt is set; a CLIENT_FALLBACK
+# investigation's serverVerifiedAt is set if the content was verified later.
 type InvestigationOrigin {
   provenance: ContentProvenance!
   serverVerifiedAt: DateTime
@@ -1497,20 +1635,25 @@ type InvestigationOrigin {
 
 type SearchInvestigationsResult {
   investigations: [SearchInvestigationSummary!]!
+  hasMore: Boolean!
 }
 
 type PublicMetrics {
   totalInvestigatedPosts: Int!
   investigatedPostsWithFlags: Int!
-  factCheckIncidence: Float!
+  factCheckIncidence: Float # null when no investigated posts match the filters
 }
 
 type Query {
   publicInvestigation(investigationId: ID!): PublicInvestigationResult
-  postInvestigations(platform: Platform!, externalId: String!): PostInvestigationsResult!
+  postInvestigations(
+    platform: Platform!
+    externalId: String!
+  ): PostInvestigationsResult!
   searchInvestigations(
     query: String
     platform: Platform
+    minClaimCount: Int
     limit: Int = 20
     offset: Int = 0
   ): SearchInvestigationsResult!
@@ -1531,7 +1674,12 @@ type Query {
   when no post exists; otherwise includes all complete investigations for that post.
 - `searchInvestigations(...)` returns all complete investigations matching the filters.
 - `publicMetrics(...)` counts all complete investigations matching the filters.
-- `searchInvestigations.limit` must be in `[1, 100]`; `offset >= 0`.
+- `searchInvestigations.limit` must be in `[1, 100]`; `offset >= 0`; `minClaimCount` (optional,
+  `>= 0`) keeps only investigations with at least that many claims; `hasMore` is true when
+  results exist beyond `offset + limit`.
+- Post URLs and source URLs are always `http(s)` URLs.
+- The shared `public*OutputSchema`s in `shared/src/schemas/public-api.ts` are the
+  machine-readable form of these response shapes.
 - Public responses include trust signals (`provenance`, `corroborationCount`,
   `serverVerifiedAt`) so clients can apply their own thresholds.
 
@@ -1541,7 +1689,11 @@ In v1, public metrics focus on incidence rather than truth-rate leaderboards:
 
 ### Public Surface
 
-- External public integrations use GraphQL (`/graphql`).
+- External public integrations use GraphQL (`/graphql`); it is the only public read surface
+  (there is no public tRPC router).
+- The public website is one of those integrations: it sends only GraphQL queries and parses
+  each response with the shared public schemas, so a response outside this contract renders
+  an error page (HTTP 502) rather than partial or unchecked data.
 - Extension/internal traffic uses `postRouter.*` tRPC procedures.
 
 ## 3.5 Cache & Idempotency Implementation
@@ -1560,17 +1712,17 @@ WHERE "postVersionId" = $1 AND "status" = 'COMPLETE'
 LIMIT 1;
 ```
 
-Interim update candidate query (latest complete server-verified investigation for a post):
+Interim carry-forward source query (latest complete investigation of the post on another
+version, any provenance; its claims are then filtered to those still on the page, §2.8):
 
 ```sql
 SELECT i.*
 FROM "Investigation" i
 JOIN "PostVersion" pv ON pv."id" = i."postVersionId"
-JOIN "InvestigationInput" ii ON ii."investigationId" = i."id"
 WHERE pv."postId" = $1
+  AND pv."id" <> $2 -- the requested version
   AND i."status" = 'COMPLETE'
-  AND ii."provenance" = 'SERVER_VERIFIED'
-ORDER BY i."checkedAt" DESC
+ORDER BY i."checkedAt" DESC, i."id" DESC
 LIMIT 1;
 ```
 
@@ -1583,51 +1735,62 @@ uniqueness on `postVersionId` in `Investigation` to prevent duplicates under con
 
 ## 3.6 Investigation Selector Queries
 
-The selector picks the most recently seen `PostVersion` per post, joins to
-`ContentBlob` for word-count filtering, and left-joins `Investigation` +
-`InvestigationRun` to find versions that are either uninvestigated or stuck in
-a recoverable pending/processing state.
+Each selector run (`runSelector({ dailyBudget })`) does three things, isolating
+failures per item (a failing item is reported and the run continues; the
+entrypoint exits non-zero if any item failed):
+
+1. **Recover expired leases** — every PROCESSING investigation whose lease has
+   expired goes through the single recovery path (§3.7).
+2. **Re-enqueue funded work** — every funded PENDING investigation whose
+   `retryAfter` has passed is enqueued again (the per-investigation jobKey
+   collapses duplicates), so a lost queue job never strands one. Not budgeted.
+3. **Admit new work** — while today's SELECTOR admissions (counted by
+   `origin = SELECTOR AND admittedAt >= start of the UTC day`) are below
+   `SELECTOR_DAILY_BUDGET`, admit candidates in score order. Each admission
+   takes a transaction-scoped advisory lock and re-counts, so concurrent runs
+   cannot overspend. New investigations get update lineage (§2.4.3) and an input
+   snapshot exactly as investigateNow does; unfunded investigations are re-funded
+   as SELECTOR.
 
 ```sql
--- Select candidate post versions for investigation, ordered by unique-view score.
+-- Admission candidates: latest version per post with no investigation, or an
+-- unfunded one (user key dropped), ordered by unique-view score.
 WITH latest_versions AS (
   SELECT DISTINCT ON (pv."postId")
     pv."id" AS "postVersionId",
     pv."postId",
-    pv."contentBlobId",
-    pv."lastSeenAt"
+    pv."contentBlobId"
   FROM "PostVersion" pv
   ORDER BY pv."postId", pv."lastSeenAt" DESC, pv."id" DESC
 )
 SELECT
   lv."postVersionId",
-  i."id" AS "investigationId",
-  i."status" AS "investigationStatus"
+  i."id" AS "unfundedInvestigationId"
 FROM latest_versions lv
 JOIN "Post" p ON p."id" = lv."postId"
 JOIN "ContentBlob" cb ON cb."id" = lv."contentBlobId"
 LEFT JOIN "Investigation" i ON i."postVersionId" = lv."postVersionId"
-LEFT JOIN "InvestigationLease" il ON il."investigationId" = i."id"
 WHERE cb."wordCount" <= 10000
   AND (
-    i."id" IS NULL                          -- no investigation yet
-    OR i."status" = 'PENDING'               -- pending, ready for enqueueing
-    OR (i."status" = 'PROCESSING'           -- stuck processing (lease expired or missing)
-        AND (il."investigationId" IS NULL OR il."leaseExpiresAt" <= NOW()))
+    i."id" IS NULL
+    OR (i."status" = 'PENDING' AND i."origin" = 'USER_KEY_REQUEST'
+        AND NOT EXISTS (SELECT 1 FROM "InvestigationOpenAiKeySource" ks
+                        WHERE ks."investigationId" = i."id"))
   )
-ORDER BY p."uniqueViewScore" DESC
-LIMIT :budget;
+ORDER BY p."uniqueViewScore" DESC, lv."postVersionId"
+LIMIT :remainingDailyBudget;
 ```
-
-Each candidate is then passed to `ensureInvestigationQueued({ postVersionId, promptId })`
-which handles idempotent creation of the `Investigation` row and job enqueueing.
 
 ## 3.7 Job Queue
 
 Postgres-backed (graphile-worker). No Redis.
 Used by selector work and all `investigateNow` requests.
-User-key requests attach an encrypted short-lived key source on the Investigation
-for worker-side credential handoff.
+
+Every investigation is admitted with an origin that fixes who pays for its runs:
+`SELECTOR` (server key, daily budget), `INSTANCE_REQUEST` (server key, trusted
+instance-API-key client) or `USER_KEY_REQUEST` (the requester's verified OpenAI
+key, stored as an encrypted, 30-minute InvestigationOpenAiKeySource). A
+`USER_KEY_REQUEST` run never falls back to the server key.
 
 Each graphile-worker job is enqueued with `maxAttempts: 1` and a per-investigation
 `jobKey` (`investigate:${investigationId}`). Retry control is managed by the
@@ -1635,36 +1798,66 @@ application, not graphile-worker: transient failures reclaim the investigation t
 PENDING and explicitly re-enqueue with a backoff delay.
 
 ```
-Investigation selected (by selector or any investigateNow request)
+Investigation admitted (by selector or any investigateNow request)
   → Upsert investigation for postVersionId (idempotent: one investigation per content version)
   → If already exists: reuse existing investigation row and do not enqueue duplicate work
-  → Worker picks up job → claim lease (PENDING → PROCESSING, atomically increment attemptCount)
-  → Worker calls Investigator.investigate()
-  → On success: delete lease, UPDATE status = COMPLETE
-  → On failure: classify and retry or fail permanently
+  → Worker picks up job → claim lease (funded PENDING → PROCESSING, atomically increment attemptCount)
+  → Worker resolves the funding key (before downloading any image), then calls Investigator.investigate()
+  → Heartbeat renews the lease every 15s; if a renewal finds the lease gone (or renewals fail
+    past its expiry) the run is aborted and writes nothing further
+  → On success: delete lease, UPDATE status = COMPLETE, record the model that ran
+  → On failure: classify and retry, drop the user key, or fail permanently
+
+Lease invariant:
+  - An InvestigationLease row exists iff status = PROCESSING, enforced by deferred
+    constraint triggers at commit.
+  - One recovery path for expired leases (used by the worker, the selector and
+    investigateNow): delete the lease; PENDING again, or FAILED if the lost attempt
+    was attempt MAX_INVESTIGATION_ATTEMPTS or later.
 
 Retry model:
-  - Investigation.attemptCount tracks retries (incremented at lease claim).
-  - MAX_INVESTIGATION_ATTEMPTS = 4. When exhausted, the investigation is marked FAILED.
+  - Investigation.attemptCount numbers attempts (incremented at lease claim, never reset),
+    so every InvestigationAttempt audit row keeps its own attemptNumber.
+  - MAX_INVESTIGATION_ATTEMPTS = 4: a transient failure on attempt 4 or later marks FAILED.
   - Transient retries use exponential backoff: delay = 10s × 2^(attempt - 1).
 
 Failure classes:
   TRANSIENT (reclaim to PENDING, re-enqueue with backoff, up to MAX_INVESTIGATION_ATTEMPTS):
-    - Provider 5xx errors, rate limits (429), network timeouts
+    - Provider 5xx errors, rate limits (429) on the server key, network timeouts and connection errors
+  USER KEY UNUSABLE (drop the key; the investigation becomes unfunded PENDING, not re-enqueued):
+    - User-key source missing, expired or undecryptable when the worker starts
+    - OpenAI refuses the user key: 401, 403, 404 (no model access), 429 (rate/quota)
+    The failed attempt is still recorded. Unfunded investigations wait until the selector
+    (within its budget) or a new investigateNow funds them, so a bad key can never make a
+    post permanently uninvestigable.
   NON_RETRYABLE (mark FAILED immediately):
-    - Structured output fails Zod validation (likely prompt/schema issue, not transient)
+    - Unusable model output: an unparseable validation verdict, or the stage-1
+      tool loop exceeding its round limit
     - Provider content-policy refusal
-    - Authentication/authorization errors (401, 403)
-  PARTIAL (mark FAILED, log partial output for debugging):
-    - Provider returns truncated or incomplete tool-call trace
+    - Provider request rejections on the server key: malformed request (400),
+      authentication/authorization (401, 403), unknown model/resource (404),
+      unprocessable (422)
+    - Investigator input violating its contract
+  PARTIAL (mark FAILED, keep the partial output in the attempt audit):
+    - A provider response that ends with any status other than "completed"
+      (e.g. "incomplete": truncated output or tool-call trace)
 
-If a user-key source is missing/expired when the worker starts, the investigation
-fails and requires an explicit user re-request. Key sources are consumed (deleted)
-on every terminal transition (COMPLETE, FAILED).
+Claim submissions that fail the shared claim schema (e.g. a non-http(s) source
+URL) are not failures: the tool call's output tells the model the claim was not
+recorded, and the model may resubmit within the same run.
 
-`FAILED` is terminal for a given `postVersionId` in v1. Re-running that exact content
-version requires an explicit operator/admin action (e.g., reset status or delete/recreate row),
-not automatic selector retries.
+Before taking jobs, the worker sends a probe with the investigation request's
+exact shape (model, tools, include, reasoning options; tool use disabled, output
+capped) and refuses to start if OpenAI rejects it; user-key validation in
+settings runs the same probe.
+
+Key sources are consumed (deleted) on every terminal transition (COMPLETE, FAILED)
+and when the key is dropped.
+
+`FAILED` is terminal for a given `postVersionId` in v1: investigateNow returns it
+unchanged and the selector never re-admits it. Re-running that exact content
+version requires an explicit operator/admin action (e.g. delete/recreate the row),
+not automatic retries.
 ```
 
 ## 3.8 Platform Adapter Interface
@@ -1672,11 +1865,13 @@ not automatic selector retries.
 Each content script implements:
 
 ```typescript
+// hydrating / ambiguous_dom / missing_identity are transient (the page may
+// still be rendering); unsupported is final for the current DOM.
 type AdapterNotReadyReason =
   | "hydrating"
   | "ambiguous_dom"
-  | "unsupported"
-  | "missing_identity";
+  | "missing_identity"
+  | "unsupported";
 
 type AdapterExtractionResult =
   | { kind: "ready"; content: PlatformContent }
@@ -1684,16 +1879,19 @@ type AdapterExtractionResult =
 
 interface PlatformAdapter {
   platformKey: Platform;
-  contentRootSelector: string;
-  matches(url: string): boolean;
-  detectFromDom?(document: Document): boolean;
+  matches(url: string): boolean; // URL-first selection
+  detectFromDom?(document: Document): boolean; // custom-domain fallback
+  pageLocator(url: string): PageLocator | null; // what the URL says about the post (below)
   detectPrivateOrGated?(document: Document): boolean;
   extract(document: Document): AdapterExtractionResult;
   getContentRoot(document: Document): Element | null;
+  // Subtrees under the root that are not post content on this platform; used
+  // alike for text extraction, claim matching and HTML snapshots.
+  contentExclusionFilter(root: Element): (element: Element) => boolean;
 }
 
 interface ImageOccurrence {
-  originalIndex: number;        // 0-based ordinal position of the image in the page
+  originalIndex: number; // 0-based ordinal position of the image in the page
   normalizedTextOffset: number; // Character offset in the normalized content text
   sourceUrl: string;
   captionText?: string;
@@ -1701,34 +1899,68 @@ interface ImageOccurrence {
 
 interface PlatformContent {
   platform: Platform;
-  externalId: string;
+  externalId: string; // per-platform format, validated: LessWrong post ID,
+  // numeric tweet ID, numeric Substack post ID,
+  // Wikipedia `{language}:{pageId}`
   url: string;
-  contentText: string; // Client-observed normalized plain text; must be non-empty
-  mediaState: "text_only" | "has_images" | "has_video"; // Precedence: "has_video" if any video/iframe is detected; otherwise "has_images" when imageUrls is non-empty; otherwise "text_only".
-  imageUrls: string[];
-  imageOccurrences?: ImageOccurrence[]; // Positional image data; sent to API as observedImageOccurrences
+  contentText: string; // Client-observed normalized plain text
+  hasVideo: boolean; // any video/audio/video-iframe embed
+  imageOccurrences: ImageOccurrence[]; // every image, in page order; the only image data
+  // (sent to the API as observedImageOccurrences)
   metadata: Record<string, unknown>;
 }
 ```
 
+Media state is derived, not stored: `has_video` if `hasVideo`; otherwise
+`has_images` when there are image occurrences; otherwise `text_only`.
+
+A `PageLocator` is what a URL alone says about the post a page shows:
+LessWrong post ID, tweet ID, Substack origin + slug, or Wikipedia language +
+page ID and/or title. It identifies pages whose external ID is not (yet)
+known — skipped pages, and the popup's check that a cached status still
+describes the tab's page — and is parsed in one shared module.
+
 Adapter selection is URL-first (`matches(url)`), then optional DOM-fingerprint fallback
 (`detectFromDom(document)`) for custom-domain platform pages.
+
+When an adapter stays `not_ready` with a transient reason for 5 seconds on the
+same URL (e.g. a tweet whose identity cannot be proven), the page is reported
+as skipped with `unsupported_content`; it keeps being re-checked on DOM changes.
 
 ### Content normalization (shared package)
 
 Both client (extension) and server (API) must produce identical normalized text from
-the same HTML. Two shared components ensure this:
+the same HTML. The extension reads content text from the live content root
+through one text index — the same index the claim mapper (§2.4.1) and the
+content-change check use — skipping `NON_CONTENT_TAGS` and the adapter's
+exclusions; word separators exist only in the text (they have no DOM
+position). Two shared components ensure parity with the server:
 
-**Block separator injection:** `CONTENT_BLOCK_SEPARATOR_TAGS` defines block-level HTML
-elements whose boundaries are treated as word separators during extraction. Both the
-extension (DOM TreeWalker) and API (parse5 traversal) inject a space character at the
-entry of these elements, ensuring compact HTML without whitespace text nodes still
-normalizes identically.
+**Word separator injection:** `WORD_SEPARATOR_TAGS` defines the HTML elements whose
+boundaries are treated as word separators during extraction: block-level elements, and the
+line-breaking void elements `br` and `hr` (`hard.<br>This` reads `hard. This`, not
+`hard.This`). Both the extension (DOM TreeWalker) and API (parse5 traversal) inject a space
+character at the entry and exit of these elements, ensuring compact HTML without whitespace
+text nodes still normalizes identically.
 
 ```typescript
-const CONTENT_BLOCK_SEPARATOR_TAGS = new Set([
-  "p", "li", "h1", "h2", "h3", "h4", "h5", "h6",
-  "figcaption", "blockquote", "tr", "td", "th", "div",
+const WORD_SEPARATOR_TAGS = new Set([
+  "p",
+  "li",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "figcaption",
+  "blockquote",
+  "tr",
+  "td",
+  "th",
+  "div",
+  "br",
+  "hr",
 ]);
 
 const NON_CONTENT_TAGS = new Set(["script", "style", "noscript"]);
@@ -1738,10 +1970,10 @@ const NON_CONTENT_TAGS = new Set(["script", "style", "noscript"]);
 
 ```typescript
 const TYPOGRAPHIC_REPLACEMENTS: [RegExp, string][] = [
-  [/[\u201C\u201D]/g, '"'],                        // Left/right double quotes → "
-  [/[\u2018\u2019]/g, "'"],                        // Left/right single quotes → '
-  [/[\u2010-\u2015]/g, "-"],                       // Hyphens + en/em dashes → -
-  [/\u2026/g, "..."],                              // Horizontal ellipsis → ...
+  [/[\u201C\u201D]/g, '"'], // Left/right double quotes → "
+  [/[\u2018\u2019]/g, "'"], // Left/right single quotes → '
+  [/[\u2010-\u2015]/g, "-"], // Hyphens + en/em dashes → -
+  [/\u2026/g, "..."], // Horizontal ellipsis → ...
 ];
 
 function normalizeContent(raw: string): string {
@@ -1750,11 +1982,15 @@ function normalizeContent(raw: string): string {
     text = text.replace(pattern, replacement);
   }
   return text
-    .replace(/[\u200B-\u200D\uFEFF]/g, "")  // Remove zero-width characters
-    .replace(/\s+/g, " ")                    // Collapse whitespace
+    .replace(/[\u200B-\u200D\uFEFF]/g, "") // Remove zero-width characters
+    .replace(/\s+/g, " ") // Collapse whitespace
     .trim();
 }
 ```
+
+Page HTML sent to the API (LessWrong/Substack/Wikipedia `metadata.htmlContent`) is
+serialized from a copy of the content root with the extension's own highlight
+marks unwrapped and excluded subtrees removed; marks never leave the page.
 
 `contentText` must be non-empty. Posts that normalize to empty text are currently
 treated as unsupported and are skipped by the extension (`reason: "no_text"`).
@@ -1766,19 +2002,61 @@ views). In that case, the extension must skip sending content to the API and emi
 
 **All skip reasons:**
 
-| Reason                 | Condition                                         |
-| ---------------------- | ------------------------------------------------- |
-| `has_video`            | Any video/iframe embed detected                   |
-| `word_count`           | Normalized text exceeds `WORD_COUNT_LIMIT` (10000)|
-| `no_text`              | Content normalizes to empty string                |
-| `private_or_gated`     | Private/protected/subscriber-only content         |
-| `unsupported_content`  | Content type not supported by the adapter         |
+| Reason                | Condition                                                                                          |
+| --------------------- | -------------------------------------------------------------------------------------------------- |
+| `has_video`           | Any video/iframe embed detected                                                                    |
+| `word_count`          | Normalized text exceeds `WORD_COUNT_LIMIT` (10000)                                                 |
+| `no_text`             | Content normalizes to empty string                                                                 |
+| `private_or_gated`    | Private/protected/subscriber-only content                                                          |
+| `unsupported_content` | Content not extractable (non-article page, or post still unextractable after the 5 s grace period) |
 
-### Extension message protocol versioning
+Skipped pages are identified by platform, page URL and reason only: a skip can
+be decided before the post's external ID is known.
 
-All extension messages include a `v` field set to `EXTENSION_MESSAGE_PROTOCOL_VERSION`
-(currently `1`). This enables the API to reject or handle messages from outdated
-extension versions.
+### 3.8.1 Extension Message Protocol
+
+Messages between the extension's contexts are `{ type, payload }` and every
+reply is an envelope `{ ok: true, value } | { ok: false, error, errorCode? }`;
+listeners always reply with a promise, so error replies are delivered.
+Each direction has one request map (`BACKGROUND_REQUESTS`,
+`CONTENT_REQUESTS` in the shared package) from type to payload and response
+schemas; senders and handler tables are typed from it and receivers validate
+against it.
+
+| Direction                  | Type                                                                            | Purpose                                                                                                                            |
+| -------------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| content → background       | `PAGE_CONTENT`                                                                  | Register observed content, record the view; replies with the page session's status                                                 |
+| content → background       | `PAGE_SKIPPED`                                                                  | Report a skipped page                                                                                                              |
+| content → background       | `PAGE_RESET`                                                                    | The page session ended; its status is discarded                                                                                    |
+| content → background       | `INVESTIGATE_NOW`                                                               | Investigate the session's post; replies with its status                                                                            |
+| popup → background         | `GET_TAB_STATUS`                                                                | A tab's cached status, or the upgrade-required notice                                                                              |
+| background/popup → content | `PING`                                                                          | Liveness probe; no side effects                                                                                                    |
+| popup → content            | `GET_VISIBILITY`                                                                | Highlight visibility; no side effects                                                                                              |
+| popup → content            | `SHOW_ANNOTATIONS` / `HIDE_ANNOTATIONS` / `REQUEST_INVESTIGATE` / `FOCUS_CLAIM` | User actions                                                                                                                       |
+| background → content       | `LOCATION_CHANGED`                                                              | Relay of `webNavigation.onHistoryStateUpdated`: content scripts run in an isolated world and cannot observe the page's `pushState` |
+| background → content       | `STATUS_CHANGED`                                                                | The background cached a new status for the tab                                                                                     |
+
+**Page sessions.** A content script starts a page session (with a random
+UUID `tabSessionId`) for each distinct observed page state: a tracked post
+version or a skip. The background treats the first message from a new session
+as the tab's current one and retires the previous; replies for retired
+sessions are dropped. A tab's status lives in `storage.session` (it survives
+service-worker restarts, never browser restarts) and is cleared when the tab
+commits a new document. `INVESTIGATING` statuses — whether this tab started
+the investigation or the API reported one already running — are polled until
+they settle; transient poll failures back off and give up after 5 attempts
+(`API_ERROR`).
+
+**Injection.** Each page gets one content-script controller: injection is
+probed with `PING` first, and a repeated injection finds the live controller
+and does not boot a second one. A controller orphaned by an extension
+reload/update shuts itself down and removes its highlights.
+
+The protocol is not versioned: all contexts ship in one bundle, and a content
+script orphaned by an extension update can no longer reach the new background.
+API compatibility is versioned separately over HTTP
+(`x-openerrata-extension-version`, minimum supported version → upgrade
+required).
 
 Future work: design a dedicated UI/UX flow for fact-checking image-only posts
 without relying on text-span highlighting.
@@ -1791,11 +2069,17 @@ DOM manipulation is reliable.
 **Extraction:**
 
 1. Wait for `document_idle`.
-2. Locate post body: `document.querySelector('.PostsPage-postContent')`.
-3. Extract post ID from URL: `/posts/{postId}/{slug}`.
-4. Normalize `textContent`.
-5. Extract image URLs (`<img src>`), filter malformed/data URLs, and compute `mediaState`.
-6. Send `{ platform: "LESSWRONG", externalId, url, metadata.htmlContent, observedImageUrls? }` to background worker.
+2. Extract post ID from URL: `/posts/{postId}/{slug}`.
+3. Locate the post body: the `.PostsPage-postContent` whose `#postBody` JSON-LD names that
+   post ID (never extract before that identity appears, so SPA switches cannot hash another
+   post's DOM), then its canonical `#postContent`.
+4. Read content text and image occurrences through the shared text index, excluding the
+   client-rendered linkpost callout (`.LinkPostMessage-root`), which GraphQL `contents.html`
+   lacks.
+5. Tags are the tag chips (`.FooterTag-root` links to `/w/<slug>`, formerly `/tag/<slug>`),
+   once each.
+6. Send `{ platform: "LESSWRONG", externalId, url, metadata.htmlContent, observedImageOccurrences }`
+   to the background worker.
 
 **Media behavior:** Posts with images and no video are investigated. Posts detected as private/gated
 are skipped (`reason: "private_or_gated"`). Among public posts, any `has_video` post
@@ -1809,9 +2093,12 @@ re-apply annotations. Store annotations in extension state, not DOM.
 X uses a React SPA with aggressive DOM recycling.
 
 1. `MutationObserver` to detect tweet content in viewport.
-2. For individual tweet pages (`/status/{id}`), extract main tweet text.
-3. Target `[data-testid="tweetText"]`. Acknowledge this selector is fragile and may need
-   maintenance.
+2. For individual tweet pages (`/status/{id}`), extract main tweet text: the `<article>` that
+   links to the status permalink — when several do (replies, quotes), the one whose author
+   (first profile link) is the URL's handle.
+3. Logged in, tweet text is `[data-testid="tweetText"]`; the logged-out frontend has no test
+   ids and renders it as the article's own first `div[dir="auto"]`. Acknowledge these
+   selectors are fragile and may need maintenance.
 
 **Media behavior:** Extract image URLs separately from video detection. Investigate image-only
 tweets. Skip private/protected tweets (`reason: "private_or_gated"`). Among accessible tweets, skip
@@ -1825,14 +2112,23 @@ any `has_video` tweet (video present, even when extracted images and/or tweet te
    `chrome.scripting`.
 3. `externalId` is the numeric Substack post ID parsed from social image metadata
    (`post_preview/{numericId}/twitter.jpg` pattern).
-4. Content root selector: `.body.markup`.
+4. Content root selector: `.body.markup`. Editor components in the body that are not the
+   post's own text are excluded from content text, image occurrences and transported HTML,
+   by their `data-component-name`: calls to action (`SubscribeWidget`,
+   `ButtonCreateButton` share/comment/subscribe buttons) and embeds of content from
+   elsewhere — tweets (`Twitter2ToDOM`: another author's words, like the quote tweets v1
+   does not analyze, §2.1; the avatar and tweet media go with it) and other posts
+   (`DigestPostEmbed`, `EmbeddedPostToDOM`).
 5. Subscriber-only/paywalled views are skipped (`reason: "private_or_gated"`) and are not sent
-   to `registerObservedVersion`/`recordViewAndGetStatus`/`investigateNow`.
+   to `registerObservedVersion`/`recordViewAndGetStatus`/`investigateNow`. A post whose JSON-LD
+   declares `isAccessibleForFree: false` is subscriber-only whatever paywall copy it shows —
+   including for a paid subscriber who can read it in full; paywall wording and markers are
+   checked as well.
 
 Because custom-domain Substack publishers can use arbitrary hostnames, the extension cannot
-pre-enumerate all required origins in the manifest. v1 therefore keeps broad host permissions
-and applies strict runtime checks before injection (path must be `/p/*` and Substack fingerprint
-must be present). This is an intentional tradeoff for custom-domain support.
+pre-enumerate all required origins in the manifest. v1 therefore keeps broad HTTPS host
+permissions and applies strict runtime checks before injection (path must be `/p/*` and Substack
+fingerprint must be present). This is an intentional tradeoff for custom-domain support.
 
 ## 3.12 Wikipedia Content Script
 
@@ -1845,44 +2141,75 @@ JavaScript globals (`mw.config`).
    and the hostname language code.
 3. The adapter reads MediaWiki config values (`wgArticleId`, `wgRevisionId`,
    `wgNamespaceNumber`, `wgPageName`, `wgRevisionTimestamp`) and filters out
-   non-article namespaces (namespace !== 0).
-4. Content root: `#mw-content-text .mw-parser-output`. Excluded sections
-   (References, External links, Further reading, Notes, Bibliography, Sources,
-   Citations) and non-article elements (navboxes, infobox metadata, edit links,
-   etc.) are pruned before text extraction. "See also" is intentionally
-   **not** excluded — it contains substantive content about related topics.
+   non-article namespaces (namespace !== 0). `wgNamespaceNumber` is authoritative:
+   URL parsing only recognizes MediaWiki's canonical (English) namespace names, which
+   every language edition accepts, not localized ones such as German `Diskussion:`.
+4. Content root: `#mw-content-text .mw-parser-output`. Excluded sections and
+   non-article elements are pruned before text extraction, by one predicate shared
+   with the API (`shared/src/wikipedia-canonicalization.ts`):
+   - Non-article elements are recognized by markup every wiki emits, whatever its
+     language: citation superscripts, reference lists, edit links, navboxes; anything
+     with `role="navigation"` (navboxes, series sidebars, "main article" links); the
+     `navigation-not-searchable` class (what Wikimedia search leaves out: hatnotes,
+     navboxes, authority control); the `metadata` class (maintenance and quality
+     banners, sister-project boxes, person-data tables); plus a few per-wiki boxes those
+     conventions miss (fr.wikipedia's portal bar, nl.wikipedia's appendix and
+     sister-project boxes). Inline styles are never read: Wikipedia's scripts and reader
+     interaction change them on the live page, so they cannot agree with the Parse API.
+   - Excluded sections are the appendices listing citations, sources and outbound links
+     (English: References, Notes, Further reading, External links, Bibliography, Sources,
+     Citations), matched by title in English and in the equivalent titles of the largest
+     wikis (de, fr, es, it, pt, nl, pl, ru, ja, zh). An excluded section is its heading and
+     the heading's following siblings up to the next sibling heading of the same or a
+     higher level (subsections go with it), which holds both for the flat Parse API
+     output and for read views that nest each section in a `<section>` element.
+     "See also" and its equivalents are intentionally **not** excluded — they contain
+     substantive content about related topics.
 5. Server-side canonical fetch uses the MediaWiki `action=parse` API pinned to
    the observed `revisionId`, ensuring content verification matches exactly the
    revision the user saw.
 6. Wikipedia articles have no single author; no `Author` row is linked.
 
-**Media behavior:** Same rules as other platforms — extract image URLs and
-occurrences from the article body; any `has_video` article is skipped.
+**Media behavior:** Same rules as other platforms — extract image occurrences from the
+article body; any `has_video` article is skipped. Video is detected on the live content
+root, not through the text exclusions: Wikipedia's player script wraps `<video>` in
+`.mw-tmh-player`, which text extraction excludes as UI. Elements Wikipedia's own scripts
+add to the article (collapsible toggles, the player, fr.wikipedia's `cachelinks` archive
+links) are excluded so client text matches the Parse API's.
 
 ## 3.13 Extension Manifest (v3)
 
 The canonical manifest is `extension/src/manifest.json`. This section documents
 the design decisions rather than duplicating the file.
 
-**Required permissions:** `activeTab`, `storage`, `scripting`, `webNavigation`, `alarms`.
+**Required permissions:** `storage`, `scripting`, `webNavigation`, `alarms`.
 
-**Host permissions:** Broad (`https://*/*`, `http://*/*`). Required because
+**Host permissions:** Broad HTTPS (`https://*/*`). Required because
 custom-domain Substack publishers use arbitrary hostnames that cannot be
-pre-enumerated (see §3.11). Runtime checks restrict actual injection to
-recognized platforms.
+pre-enumerated (see §3.11); Substack serves custom domains over HTTPS only.
+Runtime checks restrict actual injection to recognized platforms.
+`http://*/*` is an optional host permission, requested by the options page
+only for a self-hosted API at a local/private-network HTTP address.
+
+**Firefox:** minimum version 128 — Firefox grants MV3 host permissions at
+install only from 127 on, and `storage.session` needs 115.
 
 **Content script injection strategy:**
 
-| Platform   | Injection        | Match patterns                                                     |
-| ---------- | ---------------- | ------------------------------------------------------------------ |
-| LessWrong  | Declarative      | `lesswrong.com/*`                                                  |
-| X          | Declarative      | `x.com/*`, `twitter.com/*`                                        |
-| Substack   | Declarative + dynamic | `*.substack.com/p/*` (declarative); custom domains via `chrome.scripting` after fingerprint check |
-| Wikipedia  | Declarative      | `*.wikipedia.org/wiki/*`, `*.wikipedia.org/w/index.php*`          |
+| Platform  | Injection             | Match patterns                                                                                    |
+| --------- | --------------------- | ------------------------------------------------------------------------------------------------- |
+| LessWrong | Declarative           | `lesswrong.com/*`                                                                                 |
+| X         | Declarative           | `x.com/*`, `twitter.com/*`                                                                        |
+| Substack  | Declarative + dynamic | `*.substack.com/p/*` (declarative); custom domains via `chrome.scripting` after fingerprint check |
+| Wikipedia | Declarative           | `*.wikipedia.org/wiki/*`, `*.wikipedia.org/w/index.php*`                                          |
 
 All declarative entries inject the same content script and annotation CSS at
-`document_idle`. Dynamic injection (Substack custom domains) uses the same
-assets via `chrome.scripting.executeScript` / `chrome.scripting.insertCSS`.
+`document_idle`. Dynamic injection uses the same assets via
+`chrome.scripting.executeScript` / `chrome.scripting.insertCSS`: for
+custom-domain Substack pages at `DOMContentLoaded`, and for any post page that
+lacks a live content script (tabs open before install/update, SPA navigations
+into post paths the declarative patterns did not match) on tab activation,
+History API navigation and service-worker start.
 
 **Background:** Module service worker (Chrome MV3); IIFE fallback for Firefox.
 
@@ -1891,16 +2218,21 @@ assets via `chrome.scripting.executeScript` / `chrome.scripting.insertCSS`.
 ```
 openerrata/
 ├── src/
+│   ├── aws/ci-iam/setup.sh            # IAM role hosted deploys assume via GitHub OIDC
+│   ├── kubernetes/ci-rbac/            # RBAC for that role's Kubernetes group
 │   ├── helm/
 │   │   └── openerrata/                # Helm chart — single source of truth for deployment
 │   │       ├── Chart.yaml
 │   │       ├── values.yaml            # Defaults for on-prem; Pulumi overrides for hosted
 │   │       └── templates/
 │   │           ├── _helpers.tpl
-│   │           ├── api-deployment.yaml
-│   │           ├── api-service.yaml
+│   │           ├── api-deployment.yaml / api-service.yaml / api-ingress.yaml
 │   │           ├── worker-deployment.yaml
 │   │           ├── selector-cronjob.yaml
+│   │           ├── migration-job.yaml # prisma migrate deploy; workloads wait for it
+│   │           ├── frontend-*.yaml    # Public website (optional)
+│   │           ├── network-policies.yaml
+│   │           ├── serviceaccounts.yaml
 │   │           ├── configmap.yaml
 │   │           └── secrets.yaml       # DATABASE_URL, OPENAI_API_KEY, etc.
 │   │
@@ -1978,6 +2310,7 @@ openerrata/
 │       │   │   │   │       │   │   ├── content-preparation.ts
 │       │   │   │   │       │   │   ├── blobs.ts
 │       │   │   │   │       │   │   ├── occurrences.ts
+│       │   │   │   │       │   │   ├── observed-url.ts
 │       │   │   │   │       │   │   ├── post-upsert.ts
 │       │   │   │   │       │   │   ├── post-version.ts
 │       │   │   │   │       │   │   ├── metadata.ts
@@ -1985,28 +2318,32 @@ openerrata/
 │       │   │   │   │       │   │   └── shared.ts
 │       │   │   │   │       │   ├── investigation-queries.ts
 │       │   │   │   │       │   └── wikipedia.ts
-│       │   │   │   │       └── public.ts       # Legacy public tRPC router
 │       │   │   │   ├── investigators/
-│       │   │   │   │   ├── interface.ts
+│       │   │   │   │   ├── interface.ts               # Investigator contract + attempt audit types
+│       │   │   │   │   ├── errors.ts                  # Investigator error classes
 │       │   │   │   │   ├── prompt.ts                  # System prompts (fresh, update, validation)
-│       │   │   │   │   ├── openai.ts                  # v1 OpenAI Responses investigator
-│       │   │   │   │   ├── openai-schemas.ts          # Provider-facing Zod schemas
+│       │   │   │   │   ├── openai.ts                  # v1 OpenAI Responses investigator + factory
+│       │   │   │   │   ├── openai-request-config.ts   # The model (gpt-6.1-sol) and every request shape
+│       │   │   │   │   ├── openai-probe.ts            # Request-shape probe (startup, key validation)
+│       │   │   │   │   ├── openai-claim-tools.ts      # submit_correction/retain_correction schemas
+│       │   │   │   │   ├── openai-tool-loop.ts        # Stage 1 fact-check rounds
+│       │   │   │   │   ├── openai-tool-dispatch.ts    # Function-call routing and research tools
 │       │   │   │   │   ├── openai-input-builder.ts    # Multimodal request input builder
-│       │   │   │   │   ├── openai-response-audit.ts   # Response → audit struct parsing
-│       │   │   │   │   ├── openai-tool-dispatch.ts    # submit_correction/retain_correction tools
-│       │   │   │   │   ├── openai-claim-validator.ts  # Stage 2 per-claim validation
-│       │   │   │   │   └── openai-errors.ts
+│       │   │   │   │   ├── openai-response-audit.ts   # Request/response → audit records
+│       │   │   │   │   └── openai-claim-validator.ts  # Stage 2 per-claim validation
 │       │   │   │   ├── services/
 │       │   │   │   │   ├── orchestrator.ts            # Main investigation orchestrator
 │       │   │   │   │   ├── orchestrator-errors.ts     # Error classification
-│       │   │   │   │   ├── investigation-lease.ts      # Atomic lease claim/release + heartbeat
-│       │   │   │   │   ├── prompt-context.ts          # Post metadata extraction for prompts
+│       │   │   │   │   ├── investigation-lease.ts      # Lease claim, heartbeat, expired-lease recovery
 │       │   │   │   │   ├── attempt-audit.ts           # Audit record persistence
 │       │   │   │   │   ├── markdown-resolution.ts     # Trust-policy-based markdown resolution
-│       │   │   │   │   ├── investigation-lifecycle.ts # Status transitions + lease recovery
-│       │   │   │   │   ├── selector.ts                # Investigation selection cron
+│       │   │   │   │   ├── investigation-admission.ts # Creating/funding investigations with an origin
+│       │   │   │   │   ├── investigation-input.ts     # Immutable InvestigationInput snapshot
+│       │   │   │   │   ├── investigate-now.ts         # investigateNow state handling
+│       │   │   │   │   ├── update-lineage.ts          # Update-investigation parent + diff
+│       │   │   │   │   ├── user-key-source.ts         # Verified, encrypted user OpenAI keys
+│       │   │   │   │   ├── selector.ts                # Investigation selection cron (daily budget)
 │       │   │   │   │   ├── queue.ts                   # graphile-worker integration
-│       │   │   │   │   ├── queue-lifecycle.ts
 │       │   │   │   │   ├── content-fetcher.ts         # Server-side HTML fetch + parse5 extraction
 │       │   │   │   │   ├── canonical-resolution.ts    # Server-verified vs client-fallback
 │       │   │   │   │   ├── html-to-markdown.ts        # Turndown-based HTML → Markdown
@@ -2017,7 +2354,8 @@ openerrata/
 │       │   │   │   ├── graphql/
 │       │   │   │   │   └── public-schema.ts
 │       │   │   │   ├── network/
-│       │   │   │   │   ├── host-safety.ts             # SSRF protection
+│       │   │   │   │   ├── host-safety.ts             # Public-unicast address classification
+│       │   │   │   │   ├── public-http-fetch.ts       # SSRF-safe fetch (connection-level DNS check)
 │       │   │   │   │   └── ip.ts
 │       │   │   │   └── db/
 │       │   │   │       └── client.ts
@@ -2036,7 +2374,7 @@ openerrata/
 │       │   │   ├── enums.ts           # Platform, CheckStatus, ContentProvenance, etc.
 │       │   │   ├── types.ts           # InvestigationResult, PlatformContent, etc.
 │       │   │   ├── constants.ts       # WORD_COUNT_LIMIT, POLL_INTERVAL_MS, etc.
-│       │   │   ├── normalize.ts       # normalizeContent(), CONTENT_BLOCK_SEPARATOR_TAGS
+│       │   │   ├── normalize.ts       # normalizeContent(), WORD_SEPARATOR_TAGS
 │       │   │   ├── schemas.ts         # Barrel re-export for schemas/
 │       │   │   ├── schemas/
 │       │   │   │   ├── common.ts              # Branded IDs, platform metadata schemas
@@ -2054,6 +2392,18 @@ openerrata/
 │       │   ├── tsconfig.json
 │       │   └── package.json
 │       │
+│       ├── frontend/                  # Public website (SvelteKit, adapter-node)
+│       │   ├── src/
+│       │   │   ├── lib/
+│       │   │   │   ├── public-queries.ts      # GraphQL documents + shared response schemas
+│       │   │   │   ├── server/public-api*.ts  # GraphQL client; API errors → 502 page
+│       │   │   │   └── claim-markdown.ts      # Reasoning markdown (no HTML, no images)
+│       │   │   ├── routes/            # /, /corrections, /corrections/[id], /health, +error
+│       │   │   └── hooks.server.ts    # Startup check of API_BASE_URL
+│       │   ├── svelte.config.js       # Content Security Policy
+│       │   ├── Dockerfile
+│       │   └── package.json
+│       │
 │       ├── pulumi/                    # Official hosted infra — deploys helm/openerrata
 │       │   ├── index.ts               # Uses @pulumi/kubernetes.helm.v3.Chart
 │       │   ├── tsconfig.json
@@ -2068,13 +2418,24 @@ openerrata/
 ```
 
 The chart does not bundle a database — it takes a `DATABASE_URL` as config (via `secrets.yaml`),
-pointing at Supabase for the official hosted deployment or any Postgres-compatible database for
-on-prem. On-prem operators deploy with `helm install openerrata ./src/helm/openerrata` and override
-`values.yaml` for their environment. The official hosted deployment uses Pulumi's
-`@pulumi/kubernetes` Helm provider to deploy the same chart with hosted-specific overrides
-(Supabase connection string, domain, TLS, autoscaling). This guarantees that on-prem and hosted
-deployments use identical workload definitions — no drift between two separate deployment
+pointing at any Postgres database. On-prem operators deploy with
+`helm install openerrata ./src/helm/openerrata` and override `values.yaml` for their environment.
+The official hosted deployment uses Pulumi's `@pulumi/kubernetes` Helm provider to deploy the same
+chart with hosted-specific overrides (image, hostnames, Cloudflare DNS, and either a supplied
+database URL or a Pulumi-managed RDS instance and S3 bucket). This guarantees that on-prem and
+hosted deployments use identical workload definitions — no drift between two separate deployment
 manifests.
+
+Hosted deploys run in GitHub Actions without long-lived credentials: the job's OIDC token joins
+the tailnet (the cluster's API endpoint is private) and assumes an IAM role scoped to the resources
+Pulumi manages, which EKS maps to a Kubernetes group allowed into the two OpenErrata namespaces
+only. The managed database accepts connections only from the cluster's VPC, and blob storage is
+private (images reach the model inline, never by public URL).
+
+Migrations: Helm runs the migrate Job as a hook (after the first install, before upgrades), while
+Pulumi's Helm support ignores hooks and creates it alongside the workloads. In both cases every
+database-using pod has a `wait-for-migrations` init container that blocks until all migrations in
+its image are applied, so new code never starts on an older schema.
 
 Each sub-project's `tsconfig.json` extends the shared base:
 

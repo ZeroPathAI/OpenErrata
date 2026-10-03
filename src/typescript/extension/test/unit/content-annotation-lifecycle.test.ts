@@ -5,13 +5,8 @@ import {
   extensionPageStatusSchema,
   investigationIdSchema,
   type InvestigationClaim,
-  type ViewPostOutput,
 } from "@openerrata/shared";
-import {
-  areClaimsEqual,
-  extractDisplayClaimsFromStatus,
-  extractDisplayClaimsFromViewPost,
-} from "../../src/content/annotation-lifecycle.js";
+import { areClaimsEqual, displayClaimsForStatus } from "../../src/content/annotation-lifecycle.js";
 
 function makeClaim(id: string): InvestigationClaim {
   return {
@@ -55,61 +50,55 @@ test("areClaimsEqual returns false when source fields differ", () => {
   assert.equal(areClaimsEqual(left, right), false);
 });
 
-test("extractDisplayClaimsFromViewPost returns investigated claims", () => {
+test("displayClaimsForStatus shows final claims, else interim claims, else nothing", () => {
   const claims = [makeClaim("claim-1")];
-  const viewPost: ViewPostOutput = {
-    investigationState: "INVESTIGATED",
-    provenance: "SERVER_VERIFIED",
-    claims,
+  const prior = {
+    oldClaims: [makeClaim("old-1")],
+    sourceInvestigationId: investigationIdSchema.parse("old"),
   };
-
-  assert.deepEqual(extractDisplayClaimsFromViewPost(viewPost), claims);
-});
-
-test("extractDisplayClaimsFromViewPost falls back to prior investigation old claims", () => {
-  const claims = [makeClaim("claim-1")];
-  const viewPost: ViewPostOutput = {
-    investigationState: "NOT_INVESTIGATED",
-    priorInvestigationResult: {
-      oldClaims: claims,
-      sourceInvestigationId: investigationIdSchema.parse("inv-1"),
-    },
-  };
-
-  assert.deepEqual(extractDisplayClaimsFromViewPost(viewPost), claims);
-});
-
-test("extractDisplayClaimsFromStatus returns null for non-post statuses", () => {
-  const status = {
-    kind: "SKIPPED",
-    tabSessionId: 1,
-    platform: "X",
-    externalId: "post-1",
-    pageUrl: "https://x.com/example/status/1",
-    reason: "no_text",
-  };
-
-  assert.equal(extractDisplayClaimsFromStatus(extensionPageStatusSchema.parse(status)), null);
-});
-
-test("extractDisplayClaimsFromStatus returns prior old claims for in-progress status", () => {
-  const claims = [makeClaim("claim-1")];
-  const status = {
+  const base = {
     kind: "POST",
-    tabSessionId: 1,
+    tabSessionId: "00000000-0000-4000-8000-000000000001",
     platform: "X",
-    externalId: "post-1",
-    pageUrl: "https://x.com/example/status/1",
-    investigationState: "INVESTIGATING",
-    status: "PROCESSING",
-    provenance: "SERVER_VERIFIED",
-    pendingClaims: [],
-    confirmedClaims: [],
-    priorInvestigationResult: {
-      oldClaims: claims,
-      sourceInvestigationId: investigationIdSchema.parse("inv-1"),
-    },
+    externalId: "1",
+    pageUrl: "https://x.com/a/status/1",
+  };
+  const parse = (status: object) => {
+    const parsed = extensionPageStatusSchema.parse({ ...base, ...status });
+    if (parsed.kind !== "POST") throw new Error("expected a post status");
+    return parsed;
   };
 
-  assert.deepEqual(extractDisplayClaimsFromStatus(extensionPageStatusSchema.parse(status)), claims);
+  assert.deepEqual(
+    displayClaimsForStatus(
+      parse({
+        investigationState: "INVESTIGATED",
+        investigationId: "i",
+        provenance: "SERVER_VERIFIED",
+        claims,
+      }),
+    ),
+    claims,
+  );
+  assert.deepEqual(
+    displayClaimsForStatus(
+      parse({ investigationState: "NOT_INVESTIGATED", priorInvestigationResult: prior }),
+    ),
+    prior.oldClaims,
+  );
+  assert.deepEqual(
+    displayClaimsForStatus(
+      parse({
+        investigationState: "INVESTIGATING",
+        investigationId: "i",
+        status: "PENDING",
+        provenance: "SERVER_VERIFIED",
+        pendingClaims: [],
+        confirmedClaims: [],
+        priorInvestigationResult: null,
+      }),
+    ),
+    [],
+  );
+  assert.deepEqual(displayClaimsForStatus(parse({ investigationState: "API_ERROR" })), []);
 });

@@ -1,11 +1,14 @@
 import "./prisma-enum-compat.js";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { normalizePgConnectionStringForNode } from "$lib/db/connection-string.js";
-import { PrismaClient } from "$lib/db/prisma-client";
+import { PrismaClient, type Prisma } from "$lib/db/prisma-client";
 import { getEnv } from "$lib/config/env.js";
 import { Pool } from "pg";
 
 export type { PrismaClient } from "$lib/db/prisma-client";
+
+/** Either the root client or an interactive-transaction client. */
+export type DbClient = PrismaClient | Prisma.TransactionClient;
 
 declare global {
   // Reused across HMR reloads in development.

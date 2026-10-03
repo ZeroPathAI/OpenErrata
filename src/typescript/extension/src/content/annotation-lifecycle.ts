@@ -1,5 +1,4 @@
-import type { InvestigationClaim, ViewPostOutput } from "@openerrata/shared";
-import type { ParsedExtensionPageStatus } from "./sync";
+import type { ExtensionPostStatus, InvestigationClaim } from "@openerrata/shared";
 
 export function areClaimsEqual(left: InvestigationClaim[], right: InvestigationClaim[]): boolean {
   if (left.length !== right.length) return false;
@@ -35,29 +34,22 @@ export function areClaimsEqual(left: InvestigationClaim[], right: InvestigationC
   return true;
 }
 
-export function extractDisplayClaimsFromViewPost(viewPost: ViewPostOutput): InvestigationClaim[] {
-  if (viewPost.investigationState === "INVESTIGATED") {
-    return viewPost.claims;
+/**
+ * Claims to highlight for a post status: the investigation's own claims once
+ * it is complete; while the current version is not (yet) investigated, the
+ * claims the API carried forward from another version because the text they
+ * correct is still on the page (spec §2.8 "Interim carry-forward"); nothing
+ * when there is no usable result.
+ */
+export function displayClaimsForStatus(status: ExtensionPostStatus): InvestigationClaim[] {
+  switch (status.investigationState) {
+    case "INVESTIGATED":
+      return status.claims;
+    case "INVESTIGATING":
+    case "NOT_INVESTIGATED":
+      return status.priorInvestigationResult?.oldClaims ?? [];
+    case "FAILED":
+    case "API_ERROR":
+      return [];
   }
-  if (viewPost.priorInvestigationResult !== null) {
-    return viewPost.priorInvestigationResult.oldClaims;
-  }
-  return [];
-}
-
-export function extractDisplayClaimsFromStatus(
-  status: ParsedExtensionPageStatus,
-): InvestigationClaim[] | null {
-  if (status.kind !== "POST") return null;
-  if (status.investigationState === "INVESTIGATED") {
-    return status.claims;
-  }
-  if (
-    (status.investigationState === "INVESTIGATING" ||
-      status.investigationState === "NOT_INVESTIGATED") &&
-    status.priorInvestigationResult !== null
-  ) {
-    return status.priorInvestigationResult.oldClaims;
-  }
-  return null;
 }

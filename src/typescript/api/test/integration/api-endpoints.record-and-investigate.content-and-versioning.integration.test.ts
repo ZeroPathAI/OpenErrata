@@ -4,7 +4,6 @@ import {
   INTEGRATION_LESSWRONG_FIXTURE_KEYS,
   InvestigatorExecutionError,
   MINIMUM_SUPPORTED_EXTENSION_VERSION,
-  OpenAIInvestigator,
   WORD_COUNT_LIMIT,
   appRouter,
   assert,
@@ -13,13 +12,13 @@ import {
   buildHealthResponse,
   buildLesswrongViewInput,
   buildSucceededAttemptAudit,
+  buildSucceededInvestigatorOutput,
   buildXViewInput,
   closeQueueUtils,
   createCaller,
   createContext,
   createDeterministicRandom,
   createMockRequestEvent,
-  ensureInvestigationQueued,
   ensurePostVersionForSeed,
   errorHasOpenErrataCode,
   getPrisma,
@@ -55,6 +54,10 @@ import {
   withIntegrationPrefix,
   withMockLesswrongCanonicalHtml,
   withMockLesswrongFetch,
+  LESSWRONG_MOCK_SERVER_AUTHOR_NAME,
+  LESSWRONG_MOCK_SERVER_AUTHOR_SLUG,
+  LESSWRONG_MOCK_SERVER_SLUG,
+  LESSWRONG_MOCK_SERVER_TITLE,
 } from "./api-endpoints.integration.shared.js";
 import { createInvestigateNowFuzzRoundScenario } from "./helpers/investigate-now-scenario-dsl.js";
 
@@ -64,7 +67,6 @@ void [
   INTEGRATION_LESSWRONG_FIXTURE_KEYS,
   InvestigatorExecutionError,
   MINIMUM_SUPPORTED_EXTENSION_VERSION,
-  OpenAIInvestigator,
   WORD_COUNT_LIMIT,
   appRouter,
   assert,
@@ -73,13 +75,13 @@ void [
   buildHealthResponse,
   buildLesswrongViewInput,
   buildSucceededAttemptAudit,
+  buildSucceededInvestigatorOutput,
   buildXViewInput,
   closeQueueUtils,
   createCaller,
   createContext,
   createDeterministicRandom,
   createMockRequestEvent,
-  ensureInvestigationQueued,
   ensurePostVersionForSeed,
   errorHasOpenErrataCode,
   getPrisma,
@@ -289,6 +291,7 @@ void test("post.registerObservedVersion corrects Wikipedia identity to server-ve
     return new Response(
       JSON.stringify({
         parse: {
+          title: "OpenErrata",
           text: "<div class='mw-parser-output'><p>Server canonical article text.</p></div>",
           pageid: 99999,
           revid: 67890,
@@ -413,6 +416,7 @@ void test("post.registerObservedVersion enriches existing Wikipedia version html
     return new Response(
       JSON.stringify({
         parse: {
+          title: "OpenErrata",
           text: canonicalHtml,
           pageid: Number(pageId),
           revid: 888888,
@@ -470,7 +474,13 @@ void test("post.registerObservedVersion keeps LessWrong mutable version metadata
   });
   const firstInput = {
     ...firstInputBase,
-    observedImageUrls: ["https://images.example.test/lesswrong-old.png"],
+    observedImageOccurrences: [
+      {
+        originalIndex: 0,
+        normalizedTextOffset: 0,
+        sourceUrl: "https://images.example.test/lesswrong.png",
+      },
+    ],
     metadata: {
       ...firstInputBase.metadata,
       slug: `${firstInputBase.externalId}-old-slug`,
@@ -493,7 +503,13 @@ void test("post.registerObservedVersion keeps LessWrong mutable version metadata
   });
   const secondInput = {
     ...secondInputBase,
-    observedImageUrls: ["https://images.example.test/lesswrong-new.png"],
+    observedImageOccurrences: [
+      {
+        originalIndex: 0,
+        normalizedTextOffset: 0,
+        sourceUrl: "https://images.example.test/lesswrong.png",
+      },
+    ],
     metadata: {
       ...secondInputBase.metadata,
       slug: `${secondInputBase.externalId}-new-slug`,
@@ -532,12 +548,17 @@ void test("post.registerObservedVersion keeps LessWrong mutable version metadata
   });
   assert.ok(meta);
   assert.equal(meta.slug, secondInput.metadata.slug);
-  assert.equal(meta.title, secondInput.metadata.title);
-  assert.equal(meta.authorName, secondInput.metadata.authorName);
-  assert.equal(meta.authorSlug, secondInput.metadata.authorSlug);
+  // Server-verified posts take title and author from LessWrong, not the client.
+  assert.equal(meta.title, LESSWRONG_MOCK_SERVER_TITLE);
+  assert.equal(meta.authorName, LESSWRONG_MOCK_SERVER_AUTHOR_NAME);
+  assert.equal(meta.authorSlug, LESSWRONG_MOCK_SERVER_AUTHOR_SLUG);
   assert.deepEqual(meta.tags, secondInput.metadata.tags);
   assert.equal(meta.publishedAt?.toISOString(), "2026-02-21T00:00:00.000Z");
-  assert.deepEqual(meta.imageUrls, secondInput.observedImageUrls);
+  // Image URLs are derived from the version's image occurrences.
+  assert.deepEqual(
+    meta.imageUrls,
+    secondInput.observedImageOccurrences.map((occurrence) => occurrence.sourceUrl),
+  );
   assert.equal(meta.serverHtmlBlob?.htmlContent, canonicalHtml);
   // Client HTML remains first-write-wins.
   assert.equal(meta.clientHtmlBlob?.htmlContent ?? null, firstClientHtml);
@@ -555,7 +576,13 @@ void test("post.registerObservedVersion keeps Substack mutable version metadata 
     externalId,
     url: "https://openerrata-integration.substack.com/p/mutable-version-meta",
     observedContentText: stableContent,
-    observedImageUrls: ["https://images.example.test/substack-old.png"],
+    observedImageOccurrences: [
+      {
+        originalIndex: 0,
+        normalizedTextOffset: 0,
+        sourceUrl: "https://images.example.test/substack.png",
+      },
+    ],
     metadata: {
       substackPostId: "40001",
       publicationSubdomain: "openerrata-integration",
@@ -579,7 +606,13 @@ void test("post.registerObservedVersion keeps Substack mutable version metadata 
     externalId,
     url: "https://openerrata-integration.substack.com/p/mutable-version-meta",
     observedContentText: stableContent,
-    observedImageUrls: ["https://images.example.test/substack-new.png"],
+    observedImageOccurrences: [
+      {
+        originalIndex: 0,
+        normalizedTextOffset: 0,
+        sourceUrl: "https://images.example.test/substack.png",
+      },
+    ],
     metadata: {
       substackPostId: "40001",
       publicationSubdomain: "openerrata-updated",
@@ -615,7 +648,6 @@ void test("post.registerObservedVersion keeps Substack mutable version metadata 
       likeCount: true,
       commentCount: true,
       imageUrls: true,
-      serverHtmlBlob: { select: { htmlContent: true } },
       clientHtmlBlob: { select: { htmlContent: true } },
     },
   });
@@ -629,8 +661,11 @@ void test("post.registerObservedVersion keeps Substack mutable version metadata 
   assert.equal(meta.publishedAt?.toISOString(), "2026-02-11T00:00:00.000Z");
   assert.equal(meta.likeCount, secondInput.metadata.likeCount);
   assert.equal(meta.commentCount, secondInput.metadata.commentCount);
-  assert.deepEqual(meta.imageUrls, secondInput.observedImageUrls);
-  assert.equal(meta.serverHtmlBlob?.htmlContent ?? null, null);
+  // Image URLs are derived from the version's image occurrences.
+  assert.deepEqual(
+    meta.imageUrls,
+    secondInput.observedImageOccurrences.map((occurrence) => occurrence.sourceUrl),
+  );
   // Client HTML remains first-write-wins.
   assert.equal(meta.clientHtmlBlob?.htmlContent ?? null, firstClientHtml);
 });
@@ -646,7 +681,13 @@ void test("post.registerObservedVersion updates Wikipedia revision metadata for 
     platform: "WIKIPEDIA" as const,
     url,
     observedContentText: normalizeContent("Stable article text."),
-    observedImageUrls: ["https://images.example.test/wiki-old.png"],
+    observedImageOccurrences: [
+      {
+        originalIndex: 0,
+        normalizedTextOffset: 0,
+        sourceUrl: "https://images.example.test/wiki.png",
+      },
+    ],
     metadata: {
       language: "en",
       title: "OpenErrata_revision_meta_sync",
@@ -673,6 +714,7 @@ void test("post.registerObservedVersion updates Wikipedia revision metadata for 
     return new Response(
       JSON.stringify({
         parse: {
+          title: "OpenErrata",
           text: canonicalHtml,
           pageid: Number(pageId),
           revid: 10001,
@@ -698,7 +740,13 @@ void test("post.registerObservedVersion updates Wikipedia revision metadata for 
     platform: "WIKIPEDIA" as const,
     url,
     observedContentText: normalizeContent("Stable article text."),
-    observedImageUrls: ["https://images.example.test/wiki-new.png"],
+    observedImageOccurrences: [
+      {
+        originalIndex: 0,
+        normalizedTextOffset: 0,
+        sourceUrl: "https://images.example.test/wiki.png",
+      },
+    ],
     metadata: {
       language: "en",
       title: "OpenErrata_revision_meta_sync_v2",
@@ -723,6 +771,7 @@ void test("post.registerObservedVersion updates Wikipedia revision metadata for 
     return new Response(
       JSON.stringify({
         parse: {
+          title: "OpenErrata",
           text: canonicalHtml,
           pageid: Number(pageId),
           revid: 10002,
@@ -767,7 +816,11 @@ void test("post.registerObservedVersion updates Wikipedia revision metadata for 
   assert.equal(meta.displayTitle, secondInput.metadata.displayTitle);
   assert.equal(meta.revisionId, secondInput.metadata.revisionId);
   assert.equal(meta.lastModifiedAt?.toISOString(), "2026-02-26T00:00:00.000Z");
-  assert.deepEqual(meta.imageUrls, secondInput.observedImageUrls);
+  // Image URLs are derived from the version's image occurrences.
+  assert.deepEqual(
+    meta.imageUrls,
+    secondInput.observedImageOccurrences.map((occurrence) => occurrence.sourceUrl),
+  );
   assert.equal(meta.serverHtmlBlob?.htmlContent, canonicalHtml);
   // Client HTML remains first-write-wins.
   assert.equal(meta.clientHtmlBlob?.htmlContent ?? null, firstClientHtml);
@@ -876,4 +929,98 @@ void test("post.recordViewAndGetStatus deduplicates unique-view credit for repea
     where: { postId: post.id },
   });
   assert.equal(creditCount, 1);
+});
+
+void test("post.registerObservedVersion binds LessWrong URL and author to the server's answer", async () => {
+  const caller = createCaller();
+  const html = "<p>Identity-bound LessWrong post body.</p>";
+  const baseInput = buildLesswrongViewInput({
+    externalId: "identity-binding-lw-1",
+    htmlContent: html,
+  });
+  const verifiedInput = {
+    ...baseInput,
+    metadata: {
+      ...baseInput.metadata,
+      authorName: "Client Claimed Author",
+      authorSlug: withIntegrationPrefix("client-claimed-author"),
+    },
+  };
+
+  await withMockLesswrongCanonicalHtml(html, () =>
+    caller.post.registerObservedVersion(verifiedInput),
+  );
+
+  const loadPost = () =>
+    prisma.post.findUniqueOrThrow({
+      where: {
+        platform_externalId: { platform: "LESSWRONG", externalId: verifiedInput.externalId },
+      },
+      select: {
+        url: true,
+        identityVerifiedAt: true,
+        author: { select: { platformUserId: true, displayName: true } },
+      },
+    });
+  const verified = await loadPost();
+  const serverUrl = `https://www.lesswrong.com/posts/${verifiedInput.externalId}/${LESSWRONG_MOCK_SERVER_SLUG}`;
+  assert.equal(verified.url, serverUrl);
+  assert.notEqual(verified.identityVerifiedAt, null);
+  assert.deepEqual(verified.author, {
+    platformUserId: LESSWRONG_MOCK_SERVER_AUTHOR_SLUG,
+    displayName: LESSWRONG_MOCK_SERVER_AUTHOR_NAME,
+  });
+
+  // A later registration that falls back to client data (LessWrong unreachable)
+  // must not overwrite the verified identity.
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (fetchInput, fetchInit) => {
+    const url =
+      typeof fetchInput === "string"
+        ? fetchInput
+        : fetchInput instanceof URL
+          ? fetchInput.toString()
+          : fetchInput.url;
+    if (url === "https://www.lesswrong.com/graphql") {
+      return new Response("unavailable", { status: 503 });
+    }
+    return originalFetch(fetchInput, fetchInit);
+  };
+  try {
+    const fallback = await caller.post.registerObservedVersion({
+      ...verifiedInput,
+      url: `https://www.lesswrong.com/posts/${verifiedInput.externalId}/spoofed-slug`,
+      metadata: {
+        ...verifiedInput.metadata,
+        htmlContent: "<p>Different client-observed body.</p>",
+        authorName: "Spoofed Author",
+        authorSlug: withIntegrationPrefix("spoofed-author"),
+      },
+    });
+    assert.equal(fallback.provenance, "CLIENT_FALLBACK");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.deepEqual(await loadPost(), verified);
+});
+
+void test("post.registerObservedVersion rejects post URLs that are not https on the platform's host", async () => {
+  const caller = createCaller();
+  const base = buildXViewInput({
+    externalId: "observed-url-validation-1",
+    observedContentText: "URL validation guards what the public site links to.",
+  });
+  for (const url of [
+    ["javascript", "alert(document.cookie)"].join(":"),
+    `http://x.com/openerrata/status/${base.externalId}`,
+    `https://evil.example/openerrata/status/${base.externalId}`,
+    "https://x.com/openerrata/status/some-other-post",
+  ]) {
+    await assert.rejects(
+      caller.post.registerObservedVersion({ ...base, url }),
+      /Invalid X post URL/,
+      url,
+    );
+  }
 });

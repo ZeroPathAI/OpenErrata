@@ -1,456 +1,255 @@
 import OpenAI from "openai";
 import pLimit from "p-limit";
-import {
-  DEFAULT_INVESTIGATION_MODEL,
-  DEFAULT_INVESTIGATION_PROVIDER,
-  investigationResultSchema,
-  isNonNullObject,
-  type InvestigationResult,
-} from "@openerrata/shared";
+import type { InvestigationClaimPayload } from "@openerrata/shared";
 import { getEnv } from "$lib/config/env.js";
-import { fetchUrlToolDefinition } from "./fetch-url-tool.js";
+import {
+  InvestigatorExecutionError,
+  InvestigatorIncompleteResponseError,
+  InvestigatorStructuredOutputError,
+} from "./errors.js";
 import type {
-  InvestigationProgressCallbacks,
+  InvestigateOptions,
   Investigator,
-  InvestigatorAttemptAudit,
   InvestigatorInput,
   InvestigatorOutput,
+  InvestigatorRequestAudit,
 } from "./interface.js";
-import { InvestigatorStructuredOutputError } from "./openai-errors.js";
+import {
+  parseRetainCorrectionArguments,
+  parseSubmitCorrectionArguments,
+} from "./openai-claim-tools.js";
+import { createClaimValidationScheduler } from "./openai-claim-validation-scheduler.js";
+import {
+  MAX_PER_CLAIM_VALIDATION_CONCURRENCY,
+  validateClaim,
+  type ClaimValidationResult,
+} from "./openai-claim-validator.js";
+import { buildInitialInput, buildValidationImageContextNotes } from "./openai-input-builder.js";
+import {
+  createInvestigationRunState,
+  getConfirmedClaims,
+} from "./openai-investigation-run-state.js";
+import {
+  buildFactCheckTools,
+  INVESTIGATION_REQUEST_CONFIG,
+  type InvestigationRequestConfig,
+} from "./openai-request-config.js";
+import { buildErrorAudit } from "./openai-response-audit.js";
+import {
+  buildFunctionCallOutput,
+  dispatchFunctionToolCalls,
+  executeFunctionToolCall,
+  type FunctionCallOutput,
+  type PendingFunctionToolCall,
+} from "./openai-tool-dispatch.js";
+import { runToolLoop } from "./openai-tool-loop.js";
 import {
   INVESTIGATION_SYSTEM_PROMPT,
   INVESTIGATION_UPDATE_SYSTEM_PROMPT,
   buildUserPrompt,
 } from "./prompt.js";
-import { providerStructuredInvestigationClaimPayloadSchema } from "./openai-schemas.js";
-import { buildInitialInput, buildValidationImageContextNotes } from "./openai-input-builder.js";
-import { readIncompleteReason, mergeResponseAudits } from "./openai-response-audit.js";
-import {
-  RETAIN_CORRECTION_TOOL_NAME,
-  SUBMIT_CORRECTION_TOOL_NAME,
-  buildFunctionCallOutput,
-  buildRetainCorrectionToolDefinition,
-  deduplicateFunctionToolCalls,
-  executeFunctionToolCall,
-  extractPendingFunctionToolCalls,
-  type FunctionCallOutput,
-  type PendingFunctionToolCall,
-  submitCorrectionToolDefinition,
-} from "./openai-tool-dispatch.js";
-import {
-  InvestigatorIncompleteResponseError,
-  MAX_PER_CLAIM_VALIDATION_CONCURRENCY,
-  type PerClaimValidationResult,
-  validateClaim,
-} from "./openai-claim-validator.js";
-import {
-  createClaimValidationScheduler,
-  type ClaimValidationScheduler,
-} from "./openai-claim-validation-scheduler.js";
-import {
-  createInvestigationRunState,
-  getConfirmedClaims,
-} from "./openai-investigation-run-state.js";
-import { runToolLoop, ToolLoopExecutionError } from "./openai-tool-loop.js";
-import {
-  buildFailedAttemptAudit,
-  buildFullAttemptResponseAudit,
-  buildSuccessfulAttemptAudit,
-  createStageOneAttemptAuditBase,
-  createStageTwoAttemptAuditBase,
-} from "./openai-attempt-audit-builder.js";
 
-const isRecord = isNonNullObject;
-
-const DEFAULT_REASONING_EFFORT = "medium";
-const DEFAULT_REASONING_SUMMARY = "detailed";
-export { InvestigatorStructuredOutputError } from "./openai-errors.js";
-
-function getOpenAiModelId(): string {
-  return getEnv().OPENAI_MODEL_ID;
+interface OpenAIInvestigatorConfig {
+  client: OpenAI;
+  requestConfig: InvestigationRequestConfig;
+  /** Upper bound on stage-1 fact-check rounds (provider requests); at least 1. */
+  maxToolRounds: number;
 }
 
-function getMaxResponseToolRounds(): number {
-  return getEnv().OPENAI_MAX_RESPONSE_TOOL_ROUNDS;
-}
+const ACKNOWLEDGED_OUTPUT = JSON.stringify({ acknowledged: true });
 
-export class InvestigatorExecutionError extends Error {
-  readonly attemptAudit: InvestigatorAttemptAudit;
-  override readonly cause: unknown;
-
-  constructor(message: string, attemptAudit: InvestigatorAttemptAudit, cause?: unknown) {
-    super(message);
-    this.name = "InvestigatorExecutionError";
-    this.attemptAudit = attemptAudit;
-    this.cause = cause;
+function nonEmptyClaimIds(input: InvestigatorInput): readonly [string, ...string[]] | null {
+  if (input.isUpdate !== true) {
+    return null;
   }
+  const [firstClaim, ...remainingClaims] = input.oldClaims;
+  return firstClaim === undefined
+    ? null
+    : [firstClaim.id, ...remainingClaims.map((claim) => claim.id)];
 }
 
-type StageOneClaim = InvestigationResult["claims"][number];
-
+/**
+ * Two-stage OpenAI investigation (SPEC §2.4): a stage-1 fact-check tool loop
+ * in which the model submits candidate claims, and a stage-2 validation call
+ * per candidate, started as each claim is submitted.
+ */
 export class OpenAIInvestigator implements Investigator {
-  readonly provider = DEFAULT_INVESTIGATION_PROVIDER;
-  readonly model = DEFAULT_INVESTIGATION_MODEL;
+  private readonly config: OpenAIInvestigatorConfig;
 
-  private client: OpenAI;
-  private readonly overrideModelId: string | undefined;
-  private readonly overrideMaxToolRounds: number | undefined;
-
-  constructor(
-    apiKey: string,
-    overrides?: { client?: OpenAI; modelId?: string; maxToolRounds?: number },
-  ) {
-    this.client = overrides?.client ?? new OpenAI({ apiKey });
-    this.overrideModelId = overrides?.modelId;
-    this.overrideMaxToolRounds = overrides?.maxToolRounds;
+  constructor(config: OpenAIInvestigatorConfig) {
+    if (!Number.isInteger(config.maxToolRounds) || config.maxToolRounds < 1) {
+      throw new Error(
+        `maxToolRounds must be a positive integer (got ${config.maxToolRounds.toString()})`,
+      );
+    }
+    this.config = config;
   }
 
   async investigate(
     input: InvestigatorInput,
-    callbacks?: InvestigationProgressCallbacks,
+    options: InvestigateOptions,
   ): Promise<InvestigatorOutput> {
-    const openAiModelId = this.overrideModelId ?? getOpenAiModelId();
-    const maxResponseToolRounds = this.overrideMaxToolRounds ?? getMaxResponseToolRounds();
-    const systemPrompt =
-      input.isUpdate === true ? INVESTIGATION_UPDATE_SYSTEM_PROMPT : INVESTIGATION_SYSTEM_PROMPT;
-    const userPromptResult = buildUserPrompt({
-      contentText: input.contentText,
-      ...(input.contentMarkdown !== undefined && { contentMarkdown: input.contentMarkdown }),
-      platform: input.platform,
-      url: input.url,
-      ...(input.authorName !== undefined && { authorName: input.authorName }),
-      ...(input.postPublishedAt !== undefined && { postPublishedAt: input.postPublishedAt }),
-      ...(input.hasVideo !== undefined && { hasVideo: input.hasVideo }),
-      ...(input.isUpdate
-        ? {
-            isUpdate: true as const,
-            oldClaims: input.oldClaims,
-            ...(input.contentDiff !== undefined && { contentDiff: input.contentDiff }),
-          }
-        : {}),
-    });
+    const { client, requestConfig } = this.config;
+    const { signal } = options;
+    const startedAt = new Date();
+
+    const userPrompt = buildUserPrompt(input);
     const initialInput = buildInitialInput(
-      userPromptResult.prompt,
-      userPromptResult.contentString,
-      userPromptResult.contentOffset,
+      userPrompt.prompt,
+      userPrompt.contentString,
+      userPrompt.contentOffset,
       input.imageOccurrences,
       input.imagePlaceholders,
     );
     const validationImageContextNotes = buildValidationImageContextNotes(input.imageOccurrences);
-    const client = this.client;
-
-    // ── Build tool set ────────────────────────────────────────────────
-    const nonEmptyOldClaimIds: [string, ...string[]] | null = (() => {
-      if (input.isUpdate !== true) {
-        return null;
-      }
-      const [firstClaim, ...remainingClaims] = input.oldClaims;
-      if (firstClaim === undefined) {
-        return null;
-      }
-      return [firstClaim.id, ...remainingClaims.map((claim) => claim.id)];
-    })();
-
-    const requestedTools = [
-      { type: "web_search_preview" as const },
-      fetchUrlToolDefinition,
-      submitCorrectionToolDefinition,
-      ...(nonEmptyOldClaimIds !== null
-        ? [buildRetainCorrectionToolDefinition(nonEmptyOldClaimIds)]
-        : []),
-    ];
-
-    const requestReasoning = {
-      effort: DEFAULT_REASONING_EFFORT as "low" | "medium" | "high",
-      summary: DEFAULT_REASONING_SUMMARY as "auto" | "concise" | "detailed",
-    };
-
-    const baseResponseRequest = {
-      model: openAiModelId,
-      stream: false as const,
-      instructions: systemPrompt,
-      tools: requestedTools,
-      reasoning: requestReasoning,
-    };
-
-    const startedAt = new Date().toISOString();
-    const stageOneAttemptAuditBase = createStageOneAttemptAuditBase({
-      startedAt,
-      openAiModelId,
-      systemPrompt,
-      userPrompt: userPromptResult.prompt,
-      requestReasoning,
-      requestedTools,
-    });
+    const retainableClaimIds = nonEmptyClaimIds(input);
 
     const validationLimiter = pLimit(MAX_PER_CLAIM_VALIDATION_CONCURRENCY);
-    const validationScheduler: ClaimValidationScheduler = createClaimValidationScheduler({
+    const validations = createClaimValidationScheduler({
       initialState: createInvestigationRunState(
         input.isUpdate === true ? { oldClaims: input.oldClaims } : {},
       ),
       validationLimiter,
       runValidation: (claimIndex, claim) =>
-        validateClaim(
+        validateClaim({
           client,
-          openAiModelId,
+          requestConfig,
           claimIndex,
           claim,
-          input.contentText,
-          validationImageContextNotes,
-          requestReasoning,
-        ),
-      ...(callbacks === undefined ? {} : { callbacks }),
+          contentText: input.contentText,
+          imageContextNotes: validationImageContextNotes,
+          signal,
+        }),
+      ...(options.callbacks === undefined ? {} : { callbacks: options.callbacks }),
     });
 
-    const handleSubmittedClaims = (calls: PendingFunctionToolCall[]): FunctionCallOutput[] => {
-      const outputs: FunctionCallOutput[] = [];
-      for (const call of calls) {
-        let claim: StageOneClaim;
-        try {
-          claim = providerStructuredInvestigationClaimPayloadSchema.parse(
-            JSON.parse(call.argumentsJson),
-          );
-        } catch (error) {
-          console.warn(
-            `Malformed ${SUBMIT_CORRECTION_TOOL_NAME} tool call (call_id=${call.callId}):`,
-            error instanceof Error ? error.message : error,
-          );
-          outputs.push(
-            buildFunctionCallOutput(
-              call.callId,
-              JSON.stringify({ error: "Invalid claim payload" }),
-            ),
-          );
-          continue;
-        }
-
-        validationScheduler.scheduleClaimValidation(claim);
-        outputs.push(buildFunctionCallOutput(call.callId, '{"acknowledged":true}'));
+    const submitCorrection = (call: PendingFunctionToolCall): FunctionCallOutput => {
+      const claim = parseSubmitCorrectionArguments(call.argumentsJson);
+      if (claim.kind === "invalid") {
+        return buildFunctionCallOutput(
+          call.callId,
+          JSON.stringify({ error: `Invalid claim, not recorded: ${claim.error}` }),
+        );
       }
-      return outputs;
+      validations.scheduleClaimValidation(claim.value);
+      return buildFunctionCallOutput(call.callId, ACKNOWLEDGED_OUTPUT);
     };
 
-    const handleRetainedClaims = (calls: PendingFunctionToolCall[]): FunctionCallOutput[] => {
-      const outputs: FunctionCallOutput[] = [];
-      for (const call of calls) {
-        let retainId: string;
-        try {
-          const raw: unknown = JSON.parse(call.argumentsJson);
-          if (!isRecord(raw) || typeof raw["id"] !== "string") {
-            outputs.push(
-              buildFunctionCallOutput(
-                call.callId,
-                JSON.stringify({ error: "Invalid retain arguments: missing id" }),
-              ),
-            );
-            continue;
-          }
-          retainId = raw["id"];
-        } catch (error) {
-          console.warn(
-            `Malformed ${RETAIN_CORRECTION_TOOL_NAME} tool call (call_id=${call.callId}):`,
-            error instanceof Error ? error.message : error,
-          );
-          outputs.push(
-            buildFunctionCallOutput(
-              call.callId,
-              JSON.stringify({ error: "Invalid retain arguments" }),
-            ),
-          );
-          continue;
-        }
-
-        const retained = validationScheduler.retainClaimById(retainId);
-        if (retained.kind === "error") {
-          outputs.push(
-            buildFunctionCallOutput(call.callId, JSON.stringify({ error: retained.errorMessage })),
-          );
-          continue;
-        }
-
-        outputs.push(buildFunctionCallOutput(call.callId, '{"acknowledged":true}'));
+    const retainCorrection = (call: PendingFunctionToolCall): FunctionCallOutput => {
+      if (retainableClaimIds === null) {
+        return buildFunctionCallOutput(
+          call.callId,
+          JSON.stringify({ error: "There are no prior claims to retain" }),
+        );
       }
-      return outputs;
+      const claimId = parseRetainCorrectionArguments(call.argumentsJson, retainableClaimIds);
+      if (claimId.kind === "invalid") {
+        return buildFunctionCallOutput(
+          call.callId,
+          JSON.stringify({ error: `Invalid retain arguments: ${claimId.error}` }),
+        );
+      }
+      const retained = validations.retainClaimById(claimId.value);
+      return buildFunctionCallOutput(
+        call.callId,
+        retained.kind === "error"
+          ? JSON.stringify({ error: retained.errorMessage })
+          : ACKNOWLEDGED_OUTPUT,
+      );
     };
 
-    let loopResult: Awaited<ReturnType<typeof runToolLoop>>;
-    try {
-      loopResult = await runToolLoop({
-        client,
-        maxResponseToolRounds,
-        baseResponseRequest,
-        initialInput,
-        handleSubmittedClaims,
-        handleRetainedClaims,
-        handleResearchCalls: (calls) =>
-          Promise.all(calls.map((call) => executeFunctionToolCall(call))),
-      });
-    } catch (error) {
-      await validationScheduler.settleAllValidations();
-
-      if (error instanceof ToolLoopExecutionError) {
-        const responseAuditSnapshot = [...error.responseAudits];
-        const attemptAudit = buildFailedAttemptAudit({
-          base: stageOneAttemptAuditBase,
-          response:
-            responseAuditSnapshot.length > 0 ? mergeResponseAudits(responseAuditSnapshot) : null,
-          error: error.cause ?? error,
-        });
-        throw new InvestigatorExecutionError(error.message, attemptAudit, error.cause ?? error);
-      }
-
-      throw error;
-    }
-
-    const { latestResponseRecord, responseAudits } = loopResult;
-
-    if (latestResponseRecord === null || responseAudits.length === 0) {
-      const cause = new InvestigatorStructuredOutputError("Model returned no response payload");
-      throw new InvestigatorExecutionError(
-        cause.message,
-        buildFailedAttemptAudit({
-          base: stageOneAttemptAuditBase,
-          response: null,
-          error: cause,
+    const loop = await runToolLoop({
+      client,
+      requestConfig,
+      maxRounds: this.config.maxToolRounds,
+      instructions:
+        input.isUpdate === true ? INVESTIGATION_UPDATE_SYSTEM_PROMPT : INVESTIGATION_SYSTEM_PROMPT,
+      tools: buildFactCheckTools(retainableClaimIds),
+      initialInput,
+      signal,
+      handleFunctionCalls: (calls) =>
+        dispatchFunctionToolCalls(calls, {
+          submitCorrection,
+          retainCorrection,
+          research: (call) => executeFunctionToolCall(call, signal),
         }),
-        cause,
-      );
-    }
-
-    const unfinishedToolCalls = deduplicateFunctionToolCalls(
-      extractPendingFunctionToolCalls(latestResponseRecord),
-    );
-    if (unfinishedToolCalls.length > 0) {
-      await validationScheduler.settleAllValidations();
-      const cause = new InvestigatorStructuredOutputError(
-        `Model exceeded tool call round limit (${maxResponseToolRounds.toString()})`,
-      );
-      throw new InvestigatorExecutionError(
-        cause.message,
-        buildFailedAttemptAudit({
-          base: stageOneAttemptAuditBase,
-          response: mergeResponseAudits(responseAudits),
-          error: cause,
-        }),
-        cause,
-      );
-    }
-
-    const factCheckResponseAudit = mergeResponseAudits(responseAudits);
-    if (factCheckResponseAudit.responseStatus === null) {
-      console.warn(
-        `OpenAI response had null status (responseId=${factCheckResponseAudit.responseId ?? "unknown"}); treating as completed`,
-      );
-    }
-    if (
-      factCheckResponseAudit.responseStatus !== "completed" &&
-      factCheckResponseAudit.responseStatus !== null
-    ) {
-      await validationScheduler.settleAllValidations();
-      const incompleteReason = readIncompleteReason(latestResponseRecord);
-      const cause = new InvestigatorIncompleteResponseError({
-        responseStatus: factCheckResponseAudit.responseStatus,
-        responseId: factCheckResponseAudit.responseId,
-        incompleteReason,
-        outputTextLength: factCheckResponseAudit.responseOutputText?.length ?? 0,
-      });
-      throw new InvestigatorExecutionError(
-        "OpenAI response was incomplete",
-        buildFailedAttemptAudit({
-          base: stageOneAttemptAuditBase,
-          response: factCheckResponseAudit,
-          error: cause,
-        }),
-        cause,
-      );
-    }
-
-    const validationResults = await validationScheduler.awaitAllValidations();
-    const confirmedClaims = getConfirmedClaims(validationScheduler.getState());
-
-    const validationInputSummary = validationResults
-      .map(
-        (result) =>
-          `Claim ${result.claimIndex.toString()}: ${result.approved ? "approved" : "rejected"}`,
-      )
-      .join("\n");
-    const stageTwoInputSummary =
-      validationImageContextNotes === undefined
-        ? validationInputSummary
-        : `${validationInputSummary}\n\nImage context notes:\n${validationImageContextNotes}`;
-
-    const stageTwoAttemptAuditBase = createStageTwoAttemptAuditBase({
-      stageOneBase: stageOneAttemptAuditBase,
-      userPrompt: userPromptResult.prompt,
-      validationInputSummary: stageTwoInputSummary,
     });
 
-    type FailedValidation = Extract<PerClaimValidationResult, { error: Error }>;
-    type SuccessfulValidation = Extract<PerClaimValidationResult, { error: null }>;
+    // Validations already scheduled run to completion on every path, so the
+    // attempt audit records each request that was made.
+    const validationResults = await validations.awaitAllValidations();
+    const requests: InvestigatorRequestAudit[] = [
+      ...loop.rounds,
+      ...validationResults.map((validation) => validation.request),
+    ];
+    const fail = (message: string, cause: unknown): InvestigatorExecutionError =>
+      new InvestigatorExecutionError(
+        message,
+        {
+          outcome: "FAILED",
+          startedAt,
+          completedAt: new Date(),
+          requests,
+          error: buildErrorAudit(cause),
+        },
+        cause,
+      );
+
+    switch (loop.kind) {
+      case "failed":
+        throw fail("OpenAI fact-check round failed", loop.error);
+      case "round_limit":
+        throw fail(
+          "Fact-check exceeded its tool round limit",
+          new InvestigatorStructuredOutputError(
+            `Model exceeded tool call round limit (${this.config.maxToolRounds.toString()})`,
+          ),
+        );
+      case "response_not_completed":
+        throw fail(
+          "OpenAI fact-check response was incomplete",
+          new InvestigatorIncompleteResponseError({
+            responseStatus: loop.response.status ?? null,
+            responseId: loop.response.id,
+            incompleteReason: loop.response.incomplete_details?.reason ?? null,
+          }),
+        );
+      case "completed":
+        break;
+    }
 
     const failedValidations = validationResults.filter(
-      (result): result is FailedValidation => result.error !== null,
+      (validation): validation is Extract<ClaimValidationResult, { kind: "failed" }> =>
+        validation.kind === "failed",
     );
-    const successfulValidations = validationResults.filter(
-      (result): result is SuccessfulValidation => result.error === null,
-    );
-    const validationFailureResponseAudits = failedValidations.flatMap((result) =>
-      result.responseAudit === null ? [] : [result.responseAudit],
-    );
-
-    const fullAttemptResponseAudit = buildFullAttemptResponseAudit({
-      factCheckResponseAudit,
-      successfulValidationResponseAudits: successfulValidations.map(
-        (result) => result.responseAudit,
-      ),
-      failedValidationResponseAudits: validationFailureResponseAudits,
-    });
-
-    if (failedValidations.length > 0) {
-      const firstFailure = failedValidations[0];
-      if (!firstFailure) {
-        throw new Error("Invariant violation: failed validations must include at least one item");
-      }
-
-      const failedClaimIndicesLabel = failedValidations
-        .map((failure) => failure.claimIndex.toString())
+    const [firstFailedValidation] = failedValidations;
+    if (firstFailedValidation !== undefined) {
+      const failedClaimIndices = failedValidations
+        .map((validation) => validation.claimIndex.toString())
         .join(", ");
-
-      throw new InvestigatorExecutionError(
-        `Per-claim validation failed for claim indices: ${failedClaimIndicesLabel}`,
-        buildFailedAttemptAudit({
-          base: stageTwoAttemptAuditBase,
-          response: fullAttemptResponseAudit,
-          error: firstFailure.error,
-        }),
-        firstFailure.error,
+      throw fail(
+        `Per-claim validation failed for claim indices: ${failedClaimIndices}`,
+        firstFailedValidation.error,
       );
     }
 
-    let result: InvestigationResult;
-    try {
-      result = investigationResultSchema.parse({ claims: confirmedClaims });
-    } catch (error) {
-      throw new InvestigatorExecutionError(
-        "Final investigation result failed schema validation",
-        buildFailedAttemptAudit({
-          base: stageTwoAttemptAuditBase,
-          response: fullAttemptResponseAudit,
-          error,
-        }),
-        error,
-      );
-    }
-
+    // Submitted claims were validated against the shared claim payload schema
+    // on submission; retained claims are prior investigations' persisted claims.
+    const claims: InvestigationClaimPayload[] = getConfirmedClaims(validations.getState());
     return {
-      result,
-      attemptAudit: buildSuccessfulAttemptAudit({
-        base: stageTwoAttemptAuditBase,
-        response: fullAttemptResponseAudit,
-      }),
-      ...(fullAttemptResponseAudit.responseModelVersion != null && {
-        modelVersion: fullAttemptResponseAudit.responseModelVersion,
-      }),
+      result: { claims },
+      attemptAudit: { outcome: "SUCCEEDED", startedAt, completedAt: new Date(), requests },
+      model: requestConfig.model,
+      modelVersion: loop.finalResponse.model,
     };
   }
+}
+
+/** The production investigator factory: gpt-6.1-sol with the deployment's tool-round budget. */
+export function createOpenAIInvestigator(apiKey: string): Investigator {
+  return new OpenAIInvestigator({
+    client: new OpenAI({ apiKey }),
+    requestConfig: INVESTIGATION_REQUEST_CONFIG,
+    maxToolRounds: getEnv().OPENAI_MAX_RESPONSE_TOOL_ROUNDS,
+  });
 }

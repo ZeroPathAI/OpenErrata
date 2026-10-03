@@ -1,6 +1,7 @@
 import { run } from "graphile-worker";
 import { getEnv } from "$lib/config/env.js";
 import { normalizePgConnectionStringForNode } from "$lib/db/connection-string.js";
+import { createOpenAIInvestigator } from "$lib/investigators/openai.js";
 import { orchestrateInvestigation } from "./orchestrator.js";
 
 function isInvestigatePayload(payload: unknown): payload is { investigationId: string } {
@@ -23,6 +24,7 @@ export async function startWorker(): Promise<void> {
 
         await orchestrateInvestigation(payload.investigationId, helpers.logger, {
           workerIdentity: `worker-job-${helpers.job.id}`,
+          createInvestigator: createOpenAIInvestigator,
         });
       },
     },

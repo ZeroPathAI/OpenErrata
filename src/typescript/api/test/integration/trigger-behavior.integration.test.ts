@@ -124,6 +124,9 @@ async function createInvestigation(
       markdownSource: "NONE",
       markdown: null,
       markdownRendererVersion: null,
+      imagePlaceholderSourceUrls: [],
+      postUrl: "https://example.com/trigger-test-post",
+      hasVideo: false,
     },
   });
 
@@ -137,7 +140,9 @@ async function createInvestigation(
       status,
       promptId,
       provider: "OPENAI",
-      model: "OPENAI_GPT_5",
+      model: status === "COMPLETE" ? "gpt-6.1-sol" : null,
+      origin: "INSTANCE_REQUEST",
+      admittedAt: new Date(),
       checkedAt: options?.checkedAt ?? (status === "COMPLETE" ? new Date() : null),
     },
   });
@@ -603,5 +608,127 @@ describe("Investigation parent semantics trigger", () => {
     });
 
     assert.equal(child.parentInvestigationId, parent.id);
+  });
+});
+
+// ── Lease row ⇔ PROCESSING ──────────────────────────────────────────────
+
+function leaseRow(investigationId: string) {
+  const now = new Date();
+  return {
+    investigationId,
+    leaseOwner: uniqueId("worker"),
+    leaseExpiresAt: new Date(now.getTime() + 60_000),
+    startedAt: now,
+    heartbeatAt: now,
+  };
+}
+
+describe("Investigation lease invariant triggers", () => {
+  test("PENDING → PROCESSING with a lease in one transaction succeeds", async () => {
+    const post = await createTestPost("X");
+    const pv = await createPostVersion(post.id);
+    const investigation = await createInvestigation(pv.id, { status: "PENDING" });
+
+    await prisma.$transaction(async (tx) => {
+      await tx.investigation.update({
+        where: { id: investigation.id },
+        data: { status: "PROCESSING" },
+      });
+      await tx.investigationLease.create({ data: leaseRow(investigation.id) });
+    });
+
+    const stored = await prisma.investigation.findUniqueOrThrow({
+      where: { id: investigation.id },
+      select: { status: true, lease: { select: { investigationId: true } } },
+    });
+    assert.equal(stored.status, "PROCESSING");
+    assert.ok(stored.lease);
+  });
+
+  test("PROCESSING without a lease is rejected at commit", async () => {
+    const post = await createTestPost("X");
+    const pv = await createPostVersion(post.id);
+    const investigation = await createInvestigation(pv.id, { status: "PENDING" });
+
+    await assert.rejects(
+      prisma.investigation.update({
+        where: { id: investigation.id },
+        data: { status: "PROCESSING" },
+      }),
+      /lease row must exist iff status = PROCESSING/,
+    );
+  });
+
+  test("a lease on a non-PROCESSING investigation is rejected at commit", async () => {
+    const post = await createTestPost("X");
+    const pv = await createPostVersion(post.id);
+    const investigation = await createInvestigation(pv.id, { status: "PENDING" });
+
+    await assert.rejects(
+      prisma.investigationLease.create({ data: leaseRow(investigation.id) }),
+      /lease row must exist iff status = PROCESSING/,
+    );
+  });
+
+  test("leaving PROCESSING without deleting the lease is rejected", async () => {
+    const post = await createTestPost("X");
+    const pv = await createPostVersion(post.id);
+    const investigation = await createInvestigation(pv.id, { status: "PENDING" });
+    await prisma.$transaction(async (tx) => {
+      await tx.investigation.update({
+        where: { id: investigation.id },
+        data: { status: "PROCESSING" },
+      });
+      await tx.investigationLease.create({ data: leaseRow(investigation.id) });
+    });
+
+    await assert.rejects(
+      prisma.investigation.update({
+        where: { id: investigation.id },
+        data: { status: "PENDING" },
+      }),
+      /lease row must exist iff status = PROCESSING/,
+    );
+  });
+});
+
+// ── Post identity latch ─────────────────────────────────────────────────
+
+describe("Post.identityVerifiedAt latch trigger", () => {
+  test("null → timestamp and timestamp → later timestamp succeed", async () => {
+    const post = await createTestPost("LESSWRONG");
+    await prisma.post.update({
+      where: { id: post.id },
+      data: { identityVerifiedAt: new Date("2026-01-01T00:00:00.000Z") },
+    });
+    await prisma.post.update({
+      where: { id: post.id },
+      data: { identityVerifiedAt: new Date("2026-02-01T00:00:00.000Z") },
+    });
+  });
+
+  test("timestamp → null is rejected", async () => {
+    const post = await createTestPost("LESSWRONG");
+    await prisma.post.update({
+      where: { id: post.id },
+      data: { identityVerifiedAt: new Date() },
+    });
+    await assert.rejects(
+      prisma.post.update({ where: { id: post.id }, data: { identityVerifiedAt: null } }),
+      /identityVerifiedAt cannot be cleared/,
+    );
+  });
+});
+
+// ── Substack has no server verification ─────────────────────────────────
+
+describe("Server-verified HTML snapshot trigger", () => {
+  test("a server-verified Substack version is rejected", async () => {
+    const post = await createTestPost("SUBSTACK");
+    await assert.rejects(
+      createPostVersion(post.id, { serverVerifiedAt: new Date() }),
+      /Substack posts have no server-side verification/,
+    );
   });
 });

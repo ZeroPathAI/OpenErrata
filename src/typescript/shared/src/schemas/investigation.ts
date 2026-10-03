@@ -19,7 +19,9 @@ import {
 const versionedPostInputSharedSchema = z
   .object({
     url: z.url(),
-    observedImageUrls: z.array(z.url()).optional(),
+    // Every image the client observed, in page order. This is the only image
+    // representation on the wire; the unique image URL list is derived from it
+    // (`observedImageUrlsFromOccurrences`). Omitted means no images were observed.
     observedImageOccurrences: observedImageOccurrencesSchema.optional(),
   })
   .strict();
@@ -134,17 +136,19 @@ const investigationStatusInvestigatedSchema = z
   })
   .strict();
 
+/**
+ * Status of the investigation (if any) for one post version, as returned by
+ * `recordViewAndGetStatus`. Every variant that refers to an existing
+ * investigation carries its id, so a client that did not start the
+ * investigation itself can still poll `getInvestigation` for progress.
+ */
 export const viewPostOutputSchema = z.discriminatedUnion("investigationState", [
   investigationStatusNotInvestigatedSchema,
-  investigationStatusInvestigatingSchema,
-  investigationStatusInvestigatedSchema,
-]);
-
-export const investigationStatusOutputSchema = z.discriminatedUnion("investigationState", [
-  investigationStatusNotInvestigatedSchema,
-  investigationStatusInvestigatingSchema,
-  investigationStatusFailedSchema,
-  investigationStatusInvestigatedSchema,
+  investigationStatusInvestigatingSchema
+    .extend({ investigationId: investigationIdSchema })
+    .strict(),
+  investigationStatusFailedSchema.extend({ investigationId: investigationIdSchema }).strict(),
+  investigationStatusInvestigatedSchema.extend({ investigationId: investigationIdSchema }).strict(),
 ]);
 
 export const getInvestigationInputSchema = z
@@ -153,22 +157,12 @@ export const getInvestigationInputSchema = z
   })
   .strict();
 
+// `checkedAt` is set iff an investigation is COMPLETE (DB invariant
+// INV-INV-CHECKED-AT-CONSISTENCY), so only the INVESTIGATED variant carries it.
 export const getInvestigationOutputSchema = z.discriminatedUnion("investigationState", [
-  investigationStatusNotInvestigatedSchema
-    .extend({
-      checkedAt: z.iso.datetime().optional(),
-    })
-    .strict(),
-  investigationStatusInvestigatingSchema
-    .extend({
-      checkedAt: z.iso.datetime().optional(),
-    })
-    .strict(),
-  investigationStatusFailedSchema
-    .extend({
-      checkedAt: z.iso.datetime().optional(),
-    })
-    .strict(),
+  investigationStatusNotInvestigatedSchema,
+  investigationStatusInvestigatingSchema,
+  investigationStatusFailedSchema,
   investigationStatusInvestigatedSchema
     .extend({
       checkedAt: z.iso.datetime(),

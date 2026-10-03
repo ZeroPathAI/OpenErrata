@@ -1,20 +1,18 @@
 <script lang="ts">
-  import {
-    EXTENSION_MESSAGE_PROTOCOL_VERSION,
-    annotationVisibilityResponseSchema,
-    extensionPageStatusSchema,
-    extensionRuntimeErrorResponseSchema,
-    focusClaimResponseSchema,
-    requestInvestigateResponseSchema,
+  import type {
+    ClaimId,
+    ContentRequestPayload,
+    ContentRequestType,
+    ContentResponse,
+    ExtensionSkippedReason,
   } from "@openerrata/shared";
-  import type { ClaimId, ExtensionMessage, ExtensionSkippedReason } from "@openerrata/shared";
   import browser from "webextension-polyfill";
   import { describeError } from "../lib/describe-error";
-  import { parseSupportedPageIdentity } from "../lib/post-identity";
+  import { sendBackgroundRequest, sendContentRequest, type TabDelivery } from "../lib/messaging";
   import { computePostView, type PostPopupView } from "./post-view";
-  import { isSubstackPostPathUrl, statusMatchesIdentity } from "./status-identity";
-  import { loadExtensionSettings } from "../lib/settings";
-  import { UPGRADE_REQUIRED_STORAGE_KEY } from "../lib/runtime-error";
+  import { isPossiblySupportedPage, statusDescribesTabPage } from "./status-identity";
+  import { SETTINGS_KEYS, loadExtensionSettings } from "../lib/settings";
+  import { UPGRADE_REQUIRED_STORAGE_KEY, tabStatusStorageKey } from "../lib/storage-keys";
 
   // ── View model ────────────────────────────────────────────────────────────
   //
@@ -26,6 +24,7 @@
   type PopupView =
     | { kind: "loading" }
     | { kind: "error"; message: string }
+    | { kind: "settings_invalid"; message: string }
     | { kind: "upgrade_required"; message: string }
     | { kind: "unsupported" }
     | { kind: "awaiting_status" }
@@ -45,46 +44,41 @@
   }
 
   function skippedReasonMessage(reason: ExtensionSkippedReason): string {
-    if (reason === "has_video") {
-      return "This post contains video. Video analysis is not supported yet.";
+    switch (reason) {
+      case "has_video":
+        return "This post contains video. Video analysis is not supported yet.";
+      case "word_count":
+        return "This post is too long and is not eligible for investigation.";
+      case "no_text":
+        return "This post has no extractable text. Textless/image-only fact-check UX is not supported yet.";
+      case "private_or_gated":
+        return "This post appears to be private or subscriber-only. OpenErrata skipped sending it for investigation.";
+      case "unsupported_content":
+        return "OpenErrata could not extract this post. Try reloading the page or opening the canonical post URL.";
     }
-    if (reason === "word_count") {
-      return "This post is too long and is not eligible for investigation.";
-    }
-    if (reason === "no_text") {
-      return "This post has no extractable text. Textless/image-only fact-check UX is not supported yet.";
-    }
-    if (reason === "private_or_gated") {
-      return "This post appears to be private or subscriber-only. OpenErrata skipped sending it for investigation.";
-    }
-    if (reason === "unsupported_content") {
-      return "OpenErrata could not extract this post. Try reloading the page or opening the canonical post URL.";
-    }
-    return "This post is not eligible for investigation.";
   }
 
-  type PopupContentControlMessage = Extract<
-    ExtensionMessage,
-    {
-      type:
-        | "REQUEST_INVESTIGATE"
-        | "SHOW_ANNOTATIONS"
-        | "HIDE_ANNOTATIONS"
-        | "GET_ANNOTATION_VISIBILITY"
-        | "FOCUS_CLAIM";
-    }
-  >;
-
-  async function withActiveTab<T>(run: (tabId: number) => Promise<T>): Promise<T | null> {
+  async function activeTab(): Promise<{
+    id: number;
+    url: string;
+    title: string | undefined;
+  } | null> {
     const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.id) return null;
-    return run(tab.id);
+    if (tab?.id === undefined) return null;
+    return { id: tab.id, url: tab.url ?? "", title: tab.title };
   }
 
-  async function sendContentControlMessage(
-    message: PopupContentControlMessage,
-  ): Promise<unknown | null> {
-    return withActiveTab((tabId) => browser.tabs.sendMessage(tabId, message));
+  async function sendToActiveTab<Type extends ContentRequestType>(
+    type: Type,
+    payload: ContentRequestPayload<Type>,
+  ): Promise<TabDelivery<ContentResponse<Type>> | null> {
+    const tab = await activeTab();
+    if (tab === null) return null;
+    return sendContentRequest(
+      (message) => browser.tabs.sendMessage(tab.id, message, { frameId: 0 }),
+      type,
+      payload,
+    );
   }
 
   // ── Reactive state ────────────────────────────────────────────────────────
@@ -92,6 +86,8 @@
   let view = $state<PopupView>({ kind: "loading" });
   let pageTitle = $state<string | null>(null);
   let showHighlights = $state(true);
+  // The tab whose cached status changes should refresh the view.
+  let watchedTabId: number | null = null;
 
   const showFooter = $derived(
     view.kind === "found_claims" ||
@@ -103,53 +99,55 @@
 
   // ── Async operations ──────────────────────────────────────────────────────
 
+  async function computeView(): Promise<{ view: PopupView; title: string | null }> {
+    const tab = await activeTab();
+    if (tab === null) {
+      return { view: { kind: "unsupported" }, title: null };
+    }
+    watchedTabId = tab.id;
+    const title = extractPageTitle(tab.title, tab.url);
+
+    const settings = await loadExtensionSettings();
+    if (settings.kind === "INVALID") {
+      return { view: { kind: "settings_invalid", message: settings.problem }, title };
+    }
+    const canRequest =
+      settings.settings.apiKey.length > 0 || settings.settings.openaiApiKey.length > 0;
+
+    const response = await sendBackgroundRequest(
+      (message) => browser.runtime.sendMessage(message),
+      "GET_TAB_STATUS",
+      { tabId: tab.id },
+    );
+    if (response.kind === "UPGRADE_REQUIRED") {
+      return { view: { kind: "upgrade_required", message: response.message }, title };
+    }
+
+    const status =
+      response.status !== null && statusDescribesTabPage(response.status, tab.url)
+        ? response.status
+        : null;
+    if (status === null) {
+      return {
+        view: isPossiblySupportedPage(tab.url)
+          ? { kind: "awaiting_status" }
+          : { kind: "unsupported" },
+        title,
+      };
+    }
+    if (status.kind === "SKIPPED") {
+      return { view: { kind: "skipped", message: skippedReasonMessage(status.reason) }, title };
+    }
+    return { view: computePostView(status, canRequest), title };
+  }
+
   async function loadStatus() {
     try {
-      const settings = await loadExtensionSettings();
-      const canRequest =
-        settings.apiKey.trim().length > 0 || settings.openaiApiKey.trim().length > 0;
-
-      const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
-      const tabUrl = tab?.url ?? "";
-      const title = extractPageTitle(tab?.title, tabUrl);
-
-      const supportedIdentity = parseSupportedPageIdentity(tabUrl);
-      const onSupportedPage = supportedIdentity !== null || isSubstackPostPathUrl(tabUrl);
-
-      const response = await browser.runtime.sendMessage({
-        v: EXTENSION_MESSAGE_PROTOCOL_VERSION,
-        type: "GET_CACHED",
-      });
-      const runtimeError = extensionRuntimeErrorResponseSchema.safeParse(response);
-      if (runtimeError.success) {
-        if (runtimeError.data.errorCode === "UPGRADE_REQUIRED") {
-          pageTitle = title;
-          view = {
-            kind: "upgrade_required",
-            message: runtimeError.data.error,
-          };
-          return;
-        }
-        throw new Error(runtimeError.data.error);
-      }
-      const parsed = extensionPageStatusSchema.safeParse(response);
-      const status = parsed.success ? parsed.data : null;
-      const matched = statusMatchesIdentity(status, supportedIdentity, tabUrl) ? status : null;
-
-      let newView: PopupView;
-      if (matched === null) {
-        newView = onSupportedPage ? { kind: "awaiting_status" } : { kind: "unsupported" };
-      } else if (matched.kind === "SKIPPED") {
-        newView = { kind: "skipped", message: skippedReasonMessage(matched.reason) };
-      } else {
-        newView = computePostView(matched, canRequest);
-      }
-
+      const next = await computeView();
       // Set all display state in one synchronous block so the template never
       // sees a half-updated combination of page title and view.
-      pageTitle = title;
-      view = newView;
-
+      pageTitle = next.title;
+      view = next.view;
       await syncHighlightVisibility();
     } catch (loadError) {
       console.error("Failed to load popup status:", loadError);
@@ -158,18 +156,9 @@
   }
 
   async function syncHighlightVisibility() {
-    try {
-      const response = await sendContentControlMessage({
-        v: EXTENSION_MESSAGE_PROTOCOL_VERSION,
-        type: "GET_ANNOTATION_VISIBILITY",
-      });
-      if (response === null) return;
-      const parsed = annotationVisibilityResponseSchema.safeParse(response);
-      if (parsed.success) {
-        showHighlights = parsed.data.visible;
-      }
-    } catch {
-      // Tab may not have an active content script. Keep current local value.
+    const delivery = await sendToActiveTab("GET_VISIBILITY", null);
+    if (delivery?.kind === "DELIVERED") {
+      showHighlights = delivery.value.visible;
     }
   }
 
@@ -178,21 +167,12 @@
     view = { kind: "investigating", pendingClaims: [], confirmedClaims: [] };
 
     try {
-      const response = await sendContentControlMessage({
-        v: EXTENSION_MESSAGE_PROTOCOL_VERSION,
-        type: "REQUEST_INVESTIGATE",
-      });
-      if (response === null) {
-        view = { kind: "error", message: "No active tab available" };
+      const delivery = await sendToActiveTab("REQUEST_INVESTIGATE", null);
+      if (delivery === null || delivery.kind === "NO_RECEIVER") {
+        view = { kind: "error", message: "Could not reach this page. Try reloading it." };
         return;
       }
-      const parsedResponse = requestInvestigateResponseSchema.safeParse(response);
-      if (!parsedResponse.success) {
-        view = { kind: "error", message: "Could not start investigation" };
-        console.error("REQUEST_INVESTIGATE returned an invalid payload.");
-        return;
-      }
-      if (!parsedResponse.data.ok) {
+      if (!delivery.value.ok) {
         view = {
           kind: "error",
           message: "This post is not ready yet. Wait a moment and try again.",
@@ -201,21 +181,20 @@
       }
       await loadStatus();
     } catch (requestError) {
-      console.error(`Could not reach content script: ${describeError(requestError)}`);
-      view = { kind: "error", message: "Could not reach content script" };
+      console.error(`Could not start investigation: ${describeError(requestError)}`);
+      view = { kind: "error", message: "Could not start investigation" };
     }
   }
 
   async function toggleHighlights() {
-    const nextVisibility = !showHighlights;
-
     try {
-      const response = await sendContentControlMessage({
-        v: EXTENSION_MESSAGE_PROTOCOL_VERSION,
-        type: nextVisibility ? "SHOW_ANNOTATIONS" : "HIDE_ANNOTATIONS",
-      });
-      if (response === null) return;
-      showHighlights = nextVisibility;
+      const delivery = await sendToActiveTab(
+        showHighlights ? "HIDE_ANNOTATIONS" : "SHOW_ANNOTATIONS",
+        null,
+      );
+      if (delivery?.kind === "DELIVERED") {
+        showHighlights = delivery.value.visible;
+      }
     } catch (toggleError) {
       console.error(`Could not update highlights: ${describeError(toggleError)}`);
       view = { kind: "error", message: "Could not update highlights" };
@@ -224,38 +203,15 @@
 
   async function focusClaim(claimId: ClaimId) {
     try {
-      const response = await sendContentControlMessage({
-        v: EXTENSION_MESSAGE_PROTOCOL_VERSION,
-        type: "FOCUS_CLAIM",
-        payload: { claimId },
-      });
-      if (response === null) {
-        view = { kind: "error", message: "No active tab available" };
+      const delivery = await sendToActiveTab("FOCUS_CLAIM", { claimId });
+      if (delivery?.kind === "DELIVERED" && delivery.value.ok) {
+        window.close();
         return;
       }
-
-      const runtimeError = extensionRuntimeErrorResponseSchema.safeParse(response);
-      if (runtimeError.success) {
-        console.warn(`FOCUS_CLAIM runtime error: ${runtimeError.data.error}`);
-        await loadStatus();
-        return;
-      }
-
-      const parsed = focusClaimResponseSchema.safeParse(response);
-      if (!parsed.success) {
-        console.warn("FOCUS_CLAIM returned an invalid payload.", response);
-        await loadStatus();
-        return;
-      }
-      if (!parsed.data.ok) {
-        await loadStatus();
-        return;
-      }
-
-      window.close();
+      await loadStatus();
     } catch (focusError) {
       console.error(`Could not focus claim: ${describeError(focusError)}`);
-      view = { kind: "error", message: "Could not reach content script" };
+      view = { kind: "error", message: "Could not reach this page" };
     }
   }
 
@@ -272,21 +228,19 @@
       changes,
       areaName,
     ) => {
-      if (areaName !== "local") return;
-      if (
-        !Object.keys(changes).some(
-          (key) =>
-            key.startsWith("tab:") ||
-            key === UPGRADE_REQUIRED_STORAGE_KEY ||
-            key === "apiBaseUrl" ||
-            key === "apiKey" ||
-            key === "openaiApiKey" ||
-            key === "autoInvestigate",
-        )
-      ) {
-        return;
+      const changedKeys = Object.keys(changes);
+      const relevant =
+        areaName === "session"
+          ? watchedTabId !== null && changedKeys.includes(tabStatusStorageKey(watchedTabId))
+          : areaName === "local" &&
+            changedKeys.some(
+              (key) =>
+                key === UPGRADE_REQUIRED_STORAGE_KEY ||
+                SETTINGS_KEYS.some((settingsKey) => settingsKey === key),
+            );
+      if (relevant) {
+        void loadStatus();
       }
-      void loadStatus();
     };
 
     browser.storage.onChanged.addListener(onStorageChanged);
@@ -334,6 +288,12 @@
           <span class="spinner"></span>
           <p class="state-title">Checking This Page</p>
           <p class="state-subtitle">Checking this page&apos;s investigation status...</p>
+        </section>
+      {:else if view.kind === "settings_invalid"}
+        <section class="state-panel error-panel">
+          <p class="state-title">Settings Need Attention</p>
+          <p class="state-subtitle">{view.message}</p>
+          <button class="btn" onclick={openSettings}>Open Settings</button>
         </section>
       {:else if view.kind === "upgrade_required"}
         <section class="state-panel error-panel">

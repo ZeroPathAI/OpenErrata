@@ -1,12 +1,11 @@
 import { router } from "./init.js";
 import { postRouter } from "./routes/post.js";
-import { publicRouter } from "./routes/public.js";
 import type { EXTENSION_TRPC_PATH, ExtensionApiProcedureContract } from "@openerrata/shared";
 import type { inferRouterInputs, inferRouterOutputs } from "@trpc/server";
 
+/** Extension-facing RPC. Public read access is GraphQL only (SPEC §3.4). */
 export const appRouter = router({
   post: postRouter,
-  public: publicRouter,
 });
 
 type IsExactly<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;

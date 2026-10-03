@@ -5,7 +5,6 @@ export interface ExtensionSettings {
   apiKey: string;
   openaiApiKey: string;
   autoInvestigate: boolean;
-  hmacSecret: string;
 }
 
 const LOCAL_DEV_HOSTNAMES = new Set(["localhost", "host.docker.internal"]);
@@ -13,23 +12,22 @@ const LOCAL_DEV_HOSTNAMES = new Set(["localhost", "host.docker.internal"]);
 export const API_BASE_URL_REQUIREMENTS_MESSAGE =
   "API Server URL must use HTTPS. HTTP is allowed only for localhost and private-network development addresses.";
 
-export const DEFAULT_EXTENSION_SETTINGS: ExtensionSettings = {
-  apiBaseUrl: "https://api.openerrata.com",
-  apiKey: "",
-  openaiApiKey: "",
-  autoInvestigate: false,
-  hmacSecret: "",
-};
+/** The hosted API, used when the user never configured an API Server URL. */
+export const DEFAULT_API_BASE_URL = "https://api.openerrata.com";
 
-export const SETTINGS_KEYS = [
-  "apiBaseUrl",
-  "apiKey",
-  "openaiApiKey",
-  "autoInvestigate",
-  "hmacSecret",
-] as const;
+export const SETTINGS_KEYS = ["apiBaseUrl", "apiKey", "openaiApiKey", "autoInvestigate"] as const;
 
 export type StoredSettings = Partial<Record<(typeof SETTINGS_KEYS)[number], unknown>>;
+
+/**
+ * Settings as read from storage. Unset values take their documented defaults;
+ * a value that is set but unusable (e.g. an API URL that fails validation) is
+ * an error the user must fix — never silently replaced by a default, which
+ * would e.g. send a self-hoster's page content to the hosted API.
+ */
+export type SettingsLoadResult =
+  | { kind: "VALID"; settings: ExtensionSettings }
+  | { kind: "INVALID"; problem: string };
 
 function normalizeIpLiteralHost(hostname: string): string {
   const unwrapped =
@@ -105,43 +103,69 @@ export function normalizeApiBaseUrl(value: unknown): string | null {
   }
 }
 
-function normalizeApiKey(value: unknown): string {
-  if (typeof value !== "string") return "";
+type SettingRead<Value> = { ok: true; value: Value } | { ok: false; problem: string };
+
+function readOptionalString(
+  stored: StoredSettings,
+  key: "apiKey" | "openaiApiKey",
+): SettingRead<string> {
+  const value = stored[key];
+  if (value === undefined) return { ok: true, value: "" };
+  if (typeof value !== "string") {
+    return { ok: false, problem: `Stored setting "${key}" is not a string.` };
+  }
+  return { ok: true, value: value.trim() };
+}
+
+function readAutoInvestigate(stored: StoredSettings): SettingRead<boolean> {
+  const value = stored.autoInvestigate;
+  if (value === undefined) return { ok: true, value: false };
+  if (typeof value !== "boolean") {
+    return { ok: false, problem: 'Stored setting "autoInvestigate" is not a boolean.' };
+  }
+  return { ok: true, value };
+}
+
+function readApiBaseUrl(stored: StoredSettings): SettingRead<string> {
+  const value = stored.apiBaseUrl;
+  if (value === undefined) return { ok: true, value: DEFAULT_API_BASE_URL };
+  const normalized = normalizeApiBaseUrl(value);
+  if (normalized === null) {
+    return {
+      ok: false,
+      problem: `Stored API Server URL ${JSON.stringify(value)} is invalid. ${API_BASE_URL_REQUIREMENTS_MESSAGE}`,
+    };
+  }
+  return { ok: true, value: normalized };
+}
+
+export function normalizeOpenaiApiKey(value: string): string {
   return value.trim();
 }
 
-export function normalizeOpenaiApiKey(value: unknown): string {
-  if (typeof value !== "string") return "";
-  return value.trim();
-}
-
-function normalizeAutoInvestigate(value: unknown): boolean {
-  return value === true;
-}
-
-function normalizeHmacSecret(value: unknown): string {
-  if (typeof value !== "string") return "";
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : "";
-}
-
-export function normalizeExtensionSettings(stored: StoredSettings): ExtensionSettings {
+export function parseStoredSettings(stored: StoredSettings): SettingsLoadResult {
+  const apiBaseUrl = readApiBaseUrl(stored);
+  const apiKey = readOptionalString(stored, "apiKey");
+  const openaiApiKey = readOptionalString(stored, "openaiApiKey");
+  const autoInvestigate = readAutoInvestigate(stored);
+  if (!apiBaseUrl.ok) return { kind: "INVALID", problem: apiBaseUrl.problem };
+  if (!apiKey.ok) return { kind: "INVALID", problem: apiKey.problem };
+  if (!openaiApiKey.ok) return { kind: "INVALID", problem: openaiApiKey.problem };
+  if (!autoInvestigate.ok) return { kind: "INVALID", problem: autoInvestigate.problem };
   return {
-    apiBaseUrl: normalizeApiBaseUrl(stored.apiBaseUrl) ?? DEFAULT_EXTENSION_SETTINGS.apiBaseUrl,
-    apiKey: normalizeApiKey(stored.apiKey),
-    openaiApiKey: normalizeOpenaiApiKey(stored.openaiApiKey),
-    autoInvestigate: normalizeAutoInvestigate(stored.autoInvestigate),
-    hmacSecret: normalizeHmacSecret(stored.hmacSecret),
+    kind: "VALID",
+    settings: {
+      apiBaseUrl: apiBaseUrl.value,
+      apiKey: apiKey.value,
+      openaiApiKey: openaiApiKey.value,
+      autoInvestigate: autoInvestigate.value,
+    },
   };
 }
 
 export function apiHostPermissionFor(apiBaseUrl: string): string {
   const parsed = new URL(apiBaseUrl);
   return `${parsed.protocol}//${parsed.host}/*`;
-}
-
-export function normalizeConfiguredApiBaseUrl(value: unknown): string {
-  return normalizeApiBaseUrl(value) ?? DEFAULT_EXTENSION_SETTINGS.apiBaseUrl;
 }
 
 export function apiEndpointUrl(apiBaseUrl: string, endpointPath: string): string {

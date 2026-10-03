@@ -3,14 +3,26 @@ const WIKIPEDIA_ARTICLE_PATH_PREFIX = "/wiki/";
 const WIKIPEDIA_INDEX_PATH_REGEX = /^\/w\/index\.php(?:[/?#]|$)/i;
 const WIKIPEDIA_PAGE_ID_REGEX = /^\d+$/;
 
-const NON_ARTICLE_NAMESPACE_PREFIXES = new Set([
+/**
+ * Canonical (English) names of MediaWiki's non-article namespaces. MediaWiki
+ * accepts these canonical names on every language edition, so they are
+ * recognized regardless of host language. Localized namespace names (e.g.
+ * German "Diskussion:") cannot be enumerated here; URL-level parsing therefore
+ * only rules out *known* non-article pages, and callers with access to the
+ * page itself must treat MediaWiki's `wgNamespaceNumber` as authoritative.
+ */
+const CANONICAL_NON_ARTICLE_NAMESPACE_PREFIXES = new Set([
   "talk",
   "user",
   "user talk",
   "wikipedia",
   "wikipedia talk",
+  "project",
+  "project talk",
   "file",
   "file talk",
+  "image",
+  "image talk",
   "mediawiki",
   "mediawiki talk",
   "template",
@@ -83,7 +95,7 @@ function isArticleNamespace(title: string): boolean {
   }
 
   const namespacePrefix = title.slice(0, separator).replace(/_/g, " ").trim().toLowerCase();
-  return !NON_ARTICLE_NAMESPACE_PREFIXES.has(namespacePrefix);
+  return !CANONICAL_NON_ARTICLE_NAMESPACE_PREFIXES.has(namespacePrefix);
 }
 
 function normalizeWikipediaPageIdToken(rawToken: string | null): string | null {
@@ -102,27 +114,31 @@ function readWikipediaPageIdFromQuery(parsedUrl: URL): string | null {
   return normalizeWikipediaPageIdToken(parsedUrl.searchParams.get("pageid"));
 }
 
-function wikipediaExternalIdFromTitle(language: string, title: string): string {
-  return `${language}:${title}`;
-}
-
+/**
+ * The stored external ID of a Wikipedia article. It is always derived from the
+ * numeric page ID (never the title), because titles change on page moves while
+ * page IDs do not.
+ */
 export function wikipediaExternalIdFromPageId(language: string, pageId: string): string {
   return `${language}:${pageId}`;
 }
 
-interface ParsedWikipediaIdentity {
-  language: string;
-  title: string | null;
-  pageId: string | null;
-  identityKind: "TITLE" | "PAGE_ID";
-  externalId: string;
-}
+/**
+ * What a Wikipedia URL alone says about which article it shows. A URL either
+ * names the article by numeric page ID (`?curid=` / `?pageid=`, possibly
+ * alongside a title) or only by title; a title-only URL cannot yield the
+ * external ID, which needs the page ID from the page itself.
+ */
+export type WikipediaUrlIdentity =
+  | { kind: "PAGE_ID"; language: string; pageId: string; title: string | null }
+  | { kind: "TITLE"; language: string; title: string };
 
 /**
- * Parse canonical Wikipedia page identity from URL for both extension and API.
- * This function excludes non-article namespaces (e.g. Talk:, File:).
+ * Parse Wikipedia article identity from a URL, for both extension and API.
+ * Returns null for non-Wikipedia URLs and for titles in known non-article
+ * namespaces (see `CANONICAL_NON_ARTICLE_NAMESPACE_PREFIXES`).
  */
-export function parseWikipediaIdentity(url: string): ParsedWikipediaIdentity | null {
+export function parseWikipediaUrlIdentity(url: string): WikipediaUrlIdentity | null {
   let parsedUrl: URL;
   try {
     parsedUrl = new URL(url);
@@ -150,28 +166,11 @@ export function parseWikipediaIdentity(url: string): ParsedWikipediaIdentity | n
   if (title !== null && !isArticleNamespace(title)) {
     return null;
   }
-  if (title === null && pageId === null) {
-    return null;
-  }
-
   if (pageId !== null) {
-    return {
-      language,
-      title,
-      pageId,
-      identityKind: "PAGE_ID",
-      externalId: wikipediaExternalIdFromPageId(language, pageId),
-    };
+    return { kind: "PAGE_ID", language, pageId, title };
   }
-  if (title === null) {
-    return null;
+  if (title !== null) {
+    return { kind: "TITLE", language, title };
   }
-
-  return {
-    language,
-    title,
-    pageId: null,
-    identityKind: "TITLE",
-    externalId: wikipediaExternalIdFromTitle(language, title),
-  };
+  return null;
 }

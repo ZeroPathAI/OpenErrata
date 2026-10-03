@@ -3,15 +3,15 @@ import {
   effectiveHeadingText,
   headingLevelFromTag,
   isExcludedWikipediaSectionTitle,
-  normalizeWikipediaSectionTitle,
   shouldExcludeWikipediaElement,
   type WikipediaHeadingLevelDescriptor,
   type WikipediaNodeDescriptor,
 } from "@openerrata/shared";
 import { parseFragment, serialize, type DefaultTreeAdapterMap } from "parse5";
 
-export type Parse5Node = DefaultTreeAdapterMap["node"];
-export type Parse5NodeFilter = (node: Parse5Node) => "include" | "skip";
+type Parse5Node = DefaultTreeAdapterMap["node"];
+/** Decides, per node of a fragment visited in document order, whether its subtree is kept. */
+export type Parse5NodeFilter = (node: DefaultTreeAdapterMap["childNode"]) => "include" | "skip";
 
 export function isElementNode(node: Parse5Node): node is DefaultTreeAdapterMap["element"] {
   return "tagName" in node;
@@ -103,55 +103,71 @@ function shouldSkipWikipediaElement(node: DefaultTreeAdapterMap["element"]): boo
   return shouldExcludeWikipediaElement({
     tagName: node.tagName,
     classTokens: classTokens(node),
+    role: attrValue(node, "role"),
   });
 }
 
 /**
- * Creates a stateful node filter for Wikipedia content extraction and rendering.
+ * Creates a stateful node filter for Wikipedia content extraction and rendering,
+ * for nodes visited in document order (pre-order, skipped subtrees not entered).
  *
  * This handles:
- * - section-level exclusion (e.g. "References", "External links")
- * - element-level exclusion (e.g. citation superscripts, edit links)
- * - text-node suppression while inside an excluded section
+ * - element-level exclusion (e.g. citation superscripts, edit links, navboxes)
+ * - section-level exclusion (e.g. "References", "External links"): an excluded
+ *   heading (or its Parsoid `div.mw-heading` wrapper) and its following
+ *   siblings, up to the next sibling heading of the same or a higher level —
+ *   the extension's rule too (`sectionElements` in its Wikipedia adapter).
+ *   Being sibling-based, it holds for flat Parse API output and for read views
+ *   that nest each section in a `<section>` element alike.
  */
 export function createWikipediaNodeFilter(): Parse5NodeFilter {
-  let skipSectionLevel: number | null = null;
+  let excludedSection: {
+    parent: DefaultTreeAdapterMap["parentNode"] | null;
+    level: number;
+  } | null = null;
 
-  return (node: Parse5Node): "include" | "skip" => {
-    if (isElementNode(node)) {
-      const classTokenValues = classTokens(node);
-      const firstChildHeadingNode = firstDirectChildHeadingNode(node);
-      const nodeHeadingLevel = effectiveHeadingLevel(
-        toHeadingLevelDescriptor(node, classTokenValues, firstChildHeadingNode),
-      );
-      if (nodeHeadingLevel !== null) {
-        if (skipSectionLevel !== null && nodeHeadingLevel <= skipSectionLevel) {
-          skipSectionLevel = null;
-        }
+  return (node) => {
+    // Pre-order traversal reaches a node outside the section's parent only
+    // once it has left that parent for good.
+    if (excludedSection !== null && node.parentNode !== excludedSection.parent) {
+      excludedSection = null;
+    }
 
-        const headingText = normalizeWikipediaSectionTitle(
-          effectiveHeadingText(toNodeDescriptor(node, classTokenValues, firstChildHeadingNode)),
-        );
-        if (isExcludedWikipediaSectionTitle(headingText)) {
-          skipSectionLevel = nodeHeadingLevel;
-          return "skip";
-        }
-      }
-
-      if (skipSectionLevel !== null || shouldSkipWikipediaElement(node)) {
+    const headingLevel = isElementNode(node) ? headingLevelOf(node) : null;
+    if (excludedSection !== null) {
+      if (headingLevel === null || headingLevel > excludedSection.level) {
         return "skip";
       }
+      excludedSection = null;
+    }
 
+    if (!isElementNode(node)) {
       return "include";
     }
-
-    // Text nodes: suppress when inside an excluded section.
-    if (skipSectionLevel !== null) {
+    if (shouldSkipWikipediaElement(node)) {
       return "skip";
     }
-
+    if (headingLevel !== null && hasExcludedSectionTitle(node)) {
+      excludedSection = { parent: node.parentNode, level: headingLevel };
+      return "skip";
+    }
     return "include";
   };
+}
+
+/** The level of the section `node` opens (a heading or Parsoid heading wrapper), or null. */
+function headingLevelOf(node: DefaultTreeAdapterMap["element"]): number | null {
+  return effectiveHeadingLevel(
+    toHeadingLevelDescriptor(node, classTokens(node), firstDirectChildHeadingNode(node)),
+  );
+}
+
+/** Whether the heading (or heading wrapper) `node` titles an excluded section. */
+function hasExcludedSectionTitle(node: DefaultTreeAdapterMap["element"]): boolean {
+  const headingText = effectiveHeadingText(
+    toNodeDescriptor(node, classTokens(node), firstDirectChildHeadingNode(node)),
+  );
+  return isExcludedWikipediaSectionTitle(headingText);
 }
 
 /**

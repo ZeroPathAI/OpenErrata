@@ -1,13 +1,4 @@
-import { z } from "zod";
-import type {
-  InvestigationModel,
-  InvestigationProvider,
-  InvestigationResult,
-  InvestigationClaim,
-  Platform,
-} from "@openerrata/shared";
-
-const isoDateTimeSchema = z.iso.datetime();
+import type { InvestigationClaim, InvestigationResult, Platform } from "@openerrata/shared";
 
 export type InvestigatorJsonValue =
   | string
@@ -17,20 +8,7 @@ export type InvestigatorJsonValue =
   | InvestigatorJsonValue[]
   | { [key: string]: InvestigatorJsonValue };
 
-const investigatorJsonValueSchema: z.ZodType<InvestigatorJsonValue> = z.lazy(() =>
-  z.union([
-    z.string(),
-    z.number(),
-    z.boolean(),
-    z.null(),
-    z.array(investigatorJsonValueSchema),
-    z.record(z.string(), investigatorJsonValueSchema),
-  ]),
-);
-const investigatorJsonRecordSchema: z.ZodType<Record<string, InvestigatorJsonValue>> = z.record(
-  z.string(),
-  investigatorJsonValueSchema,
-);
+export type InvestigatorJsonRecord = Record<string, InvestigatorJsonValue>;
 
 export type InvestigatorImageOccurrence =
   | {
@@ -86,154 +64,116 @@ export type InvestigatorInput =
       oldClaims: InvestigationClaim[];
     });
 
-export const investigatorRequestedToolAuditSchema = z.object({
-  requestOrder: z.number().int().nonnegative(),
-  toolType: z.string().min(1),
-  rawDefinition: investigatorJsonRecordSchema,
-});
+// ── Attempt audit (SPEC §2.12) ──────────────────────────────────────────────
+// Mirrors the persisted tree: InvestigationAttempt → InvestigationAttemptRequest
+// (one per provider request) → InvestigationAttemptResponse → output items.
+// Every positional index (request order of tools, output index, part index,
+// annotation index, summary index) is the element's position in its array.
 
-export const investigatorOutputItemAuditSchema = z
-  .object({
-    outputIndex: z.number().int().nonnegative(),
-    providerItemId: z.string().nullable(),
-    itemType: z.string().min(1),
-    itemStatus: z.string().nullable(),
-  })
-  .superRefine((audit, context) => {
-    const providerItemIdMissing = audit.providerItemId === null;
-    const itemStatusMissing = audit.itemStatus === null;
-    if (providerItemIdMissing !== itemStatusMissing) {
-      context.addIssue({
-        code: "custom",
-        path: ["providerItemId"],
-        message: "providerItemId and itemStatus must be either both present or both null",
-      });
-    }
-  });
+/** Which provider request of the attempt this was. */
+export type InvestigatorRequestSubject =
+  | { kind: "FACT_CHECK_ROUND"; round: number }
+  | { kind: "CLAIM_VALIDATION"; claimIndex: number };
 
-export const investigatorOutputTextPartAuditSchema = z.object({
-  outputIndex: z.number().int().nonnegative(),
-  partIndex: z.number().int().nonnegative(),
-  partType: z.string().min(1),
-  text: z.string(),
-});
-
-export const investigatorOutputTextAnnotationAuditSchema = z.object({
-  outputIndex: z.number().int().nonnegative(),
-  partIndex: z.number().int().nonnegative(),
-  annotationIndex: z.number().int().nonnegative(),
-  annotationType: z.string().min(1),
-  characterPosition: z
-    .object({
-      start: z.number().int(),
-      end: z.number().int(),
-    })
-    .optional(),
-  url: z.string().nullable(),
-  title: z.string().nullable(),
-  fileId: z.string().nullable(),
-});
-
-export const investigatorReasoningSummaryAuditSchema = z.object({
-  outputIndex: z.number().int().nonnegative(),
-  summaryIndex: z.number().int().nonnegative(),
-  text: z.string(),
-});
-
-export const investigatorToolCallAuditSchema = z
-  .object({
-    outputIndex: z.number().int().nonnegative(),
-    providerToolCallId: z.string().nullable(),
-    toolType: z.string().min(1),
-    status: z.string().nullable(),
-    rawPayload: investigatorJsonRecordSchema,
-    capturedAt: isoDateTimeSchema,
-    providerStartedAt: isoDateTimeSchema.nullable(),
-    providerCompletedAt: isoDateTimeSchema.nullable(),
-  })
-  .superRefine((toolCall, context) => {
-    const providerToolCallIdMissing = toolCall.providerToolCallId === null;
-    const statusMissing = toolCall.status === null;
-    if (providerToolCallIdMissing !== statusMissing) {
-      context.addIssue({
-        code: "custom",
-        path: ["providerToolCallId"],
-        message: "providerToolCallId and status must be either both present or both null",
-      });
-    }
-  });
-
-export const investigatorUsageAuditSchema = z.object({
-  inputTokens: z.number().int().nonnegative(),
-  outputTokens: z.number().int().nonnegative(),
-  totalTokens: z.number().int().nonnegative(),
-  cachedInputTokens: z.number().int().nonnegative().nullable(),
-  reasoningOutputTokens: z.number().int().nonnegative().nullable(),
-});
-
-export const investigatorResponseAuditSchema = z.object({
-  responseId: z.string().nullable(),
-  responseStatus: z.string().nullable(),
-  responseModelVersion: z.string().nullable(),
-  responseOutputText: z.string().nullable(),
-  outputItems: z.array(investigatorOutputItemAuditSchema),
-  outputTextParts: z.array(investigatorOutputTextPartAuditSchema),
-  outputTextAnnotations: z.array(investigatorOutputTextAnnotationAuditSchema),
-  reasoningSummaries: z.array(investigatorReasoningSummaryAuditSchema),
-  toolCalls: z.array(investigatorToolCallAuditSchema),
-  usage: investigatorUsageAuditSchema.nullable(),
-});
-
-export const investigatorErrorAuditSchema = z.object({
-  errorName: z.string().min(1),
-  errorMessage: z.string(),
-  statusCode: z.number().int().nullable(),
-});
-
-const investigatorAttemptAuditBaseSchema = z.object({
-  startedAt: isoDateTimeSchema,
-  completedAt: isoDateTimeSchema.nullable(),
-  requestModel: z.string().min(1),
-  requestInstructions: z.string(),
-  requestInput: z.string(),
-  requestReasoningEffort: z.string().nullable(),
-  requestReasoningSummary: z.string().nullable(),
-  requestedTools: z.array(investigatorRequestedToolAuditSchema),
-});
-
-const investigatorAttemptSucceededAuditSchema = investigatorAttemptAuditBaseSchema.extend({
-  response: investigatorResponseAuditSchema,
-  error: z.null(),
-});
-
-const investigatorAttemptFailedAuditSchema = investigatorAttemptAuditBaseSchema.extend({
-  response: investigatorResponseAuditSchema.nullable(),
-  error: investigatorErrorAuditSchema,
-});
-
-export const investigatorAttemptAuditSchema = z.union([
-  investigatorAttemptSucceededAuditSchema,
-  investigatorAttemptFailedAuditSchema,
-]);
-
-export type InvestigatorRequestedToolAudit = z.infer<typeof investigatorRequestedToolAuditSchema>;
-export type InvestigatorOutputItemAudit = z.infer<typeof investigatorOutputItemAuditSchema>;
-export type InvestigatorOutputTextPartAudit = z.infer<typeof investigatorOutputTextPartAuditSchema>;
-export type InvestigatorOutputTextAnnotationAudit = z.infer<
-  typeof investigatorOutputTextAnnotationAuditSchema
->;
-export type InvestigatorReasoningSummaryAudit = z.infer<
-  typeof investigatorReasoningSummaryAuditSchema
->;
-export type InvestigatorToolCallAudit = z.infer<typeof investigatorToolCallAuditSchema>;
-export type InvestigatorUsageAudit = z.infer<typeof investigatorUsageAuditSchema>;
-export type InvestigatorResponseAudit = z.infer<typeof investigatorResponseAuditSchema>;
-export type InvestigatorErrorAudit = z.infer<typeof investigatorErrorAuditSchema>;
-export type InvestigatorAttemptAudit = z.infer<typeof investigatorAttemptAuditSchema>;
-
-export function parseInvestigatorAttemptAudit(value: unknown): InvestigatorAttemptAudit {
-  return investigatorAttemptAuditSchema.parse(value);
+export interface InvestigatorRequestedToolAudit {
+  toolType: string;
+  rawDefinition: InvestigatorJsonRecord;
 }
+
+export interface InvestigatorOutputTextAnnotationAudit {
+  annotationType: string;
+  startIndex: number | null;
+  endIndex: number | null;
+  url: string | null;
+  title: string | null;
+  fileId: string | null;
+}
+
+export interface InvestigatorOutputTextPartAudit {
+  partType: "output_text" | "refusal";
+  text: string;
+  annotations: InvestigatorOutputTextAnnotationAudit[];
+}
+
+export type InvestigatorOutputItemContentAudit =
+  | { kind: "MESSAGE"; textParts: InvestigatorOutputTextPartAudit[] }
+  | { kind: "REASONING"; summaries: string[] }
+  | {
+      kind: "TOOL_CALL";
+      /** Full provider output item, as received. */
+      rawPayload: InvestigatorJsonRecord;
+    };
+
+export interface InvestigatorOutputItemAudit {
+  providerItemId: string | null;
+  itemType: string;
+  itemStatus: string | null;
+  content: InvestigatorOutputItemContentAudit;
+}
+
+export interface InvestigatorUsageAudit {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cachedInputTokens: number;
+  reasoningOutputTokens: number;
+}
+
+export interface InvestigatorResponseAudit {
+  providerResponseId: string;
+  /** Provider-reported status; null when the provider omitted it. */
+  status: string | null;
+  modelVersion: string;
+  receivedAt: Date;
+  outputItems: InvestigatorOutputItemAudit[];
+  usage: InvestigatorUsageAudit | null;
+}
+
+export interface InvestigatorRequestAudit {
+  subject: InvestigatorRequestSubject;
+  model: string;
+  instructions: string;
+  /**
+   * The request's `input` parameter as sent, except that image parts carry
+   * `imageContentHash` (the stored ImageBlob's content hash) instead of the
+   * inline data URI.
+   */
+  input: string | InvestigatorJsonRecord[];
+  previousResponseId: string | null;
+  reasoningEffort: string | null;
+  reasoningSummary: string | null;
+  include: string[];
+  tools: InvestigatorRequestedToolAudit[];
+  /** Null when the request failed before the provider returned a response. */
+  response: InvestigatorResponseAudit | null;
+}
+
+export interface InvestigatorErrorAudit {
+  errorName: string;
+  errorMessage: string;
+  statusCode: number | null;
+}
+
+interface InvestigatorAttemptAuditBase {
+  startedAt: Date;
+  completedAt: Date;
+  requests: InvestigatorRequestAudit[];
+}
+
+export type InvestigatorSucceededAttemptAudit = InvestigatorAttemptAuditBase & {
+  outcome: "SUCCEEDED";
+};
+
+export type InvestigatorFailedAttemptAudit = InvestigatorAttemptAuditBase & {
+  outcome: "FAILED";
+  error: InvestigatorErrorAudit;
+};
+
+export type InvestigatorAttemptAudit =
+  | InvestigatorSucceededAttemptAudit
+  | InvestigatorFailedAttemptAudit;
+
+// ── Investigator contract ───────────────────────────────────────────────────
 
 export interface InvestigationProgressCallbacks {
   onProgressUpdate: (
@@ -242,17 +182,30 @@ export interface InvestigationProgressCallbacks {
   ) => void;
 }
 
-export interface InvestigatorOutput {
-  result: InvestigationResult;
-  attemptAudit: InvestigatorAttemptAudit;
-  modelVersion?: string;
+export interface InvestigateOptions {
+  /** Aborts every provider request and tool fetch when the run must stop. */
+  signal: AbortSignal;
+  callbacks?: InvestigationProgressCallbacks;
 }
 
-export interface Investigator {
-  investigate(
-    input: InvestigatorInput,
-    callbacks?: InvestigationProgressCallbacks,
-  ): Promise<InvestigatorOutput>;
-  readonly provider: InvestigationProvider;
-  readonly model: InvestigationModel;
+export interface InvestigatorOutput {
+  result: InvestigationResult;
+  attemptAudit: InvestigatorSucceededAttemptAudit;
+  /** Provider model id the stage-1 fact-check requests were sent to. */
+  model: string;
+  /** Provider-reported model revision of the final stage-1 fact-check response. */
+  modelVersion: string;
 }
+
+/**
+ * Runs one investigation attempt. Failures reject with
+ * `InvestigatorExecutionError` (carrying the failed attempt's audit) once a
+ * provider request has been made, or with `InvestigatorInputError` when the
+ * input itself violates this contract.
+ */
+export interface Investigator {
+  investigate(input: InvestigatorInput, options: InvestigateOptions): Promise<InvestigatorOutput>;
+}
+
+/** Builds an investigator that authenticates to the provider with `apiKey`. */
+export type InvestigatorFactory = (apiKey: string) => Investigator;

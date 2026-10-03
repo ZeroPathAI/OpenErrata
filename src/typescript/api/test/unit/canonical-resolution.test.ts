@@ -6,7 +6,17 @@ import {
   resolveCanonicalContentVersion,
   type ServerVerifiedContentMismatch,
 } from "../../src/lib/services/canonical-resolution.js";
-import type { CanonicalFetchInput } from "../../src/lib/services/content-fetcher.js";
+import type {
+  CanonicalFetchInput,
+  CanonicalIdentity,
+} from "../../src/lib/services/content-fetcher.js";
+
+const SERVER_IDENTITY: CanonicalIdentity = {
+  platform: "LESSWRONG",
+  url: "https://www.lesswrong.com/posts/unit-test-post-lw-1/openerrata",
+  title: "OpenErrata",
+  author: null,
+};
 
 function buildXViewInput(observedContentText: string): Extract<ViewPostInput, { platform: "X" }> {
   return viewPostInputSchema.parse({
@@ -92,7 +102,7 @@ test("resolveCanonicalContentVersion returns server-verified canonical content",
         contentText: "Server canonical text",
         contentHash: "server-hash",
         sourceHtml: "<p>Server canonical text</p>",
-        canonicalIdentity: null,
+        canonicalIdentity: SERVER_IDENTITY,
       };
     },
   });
@@ -107,7 +117,7 @@ test("resolveCanonicalContentVersion returns server-verified canonical content",
     contentText: "Server canonical text",
     contentHash: "server-hash",
     sourceHtml: "<p>Server canonical text</p>",
-    canonicalIdentity: null,
+    canonicalIdentity: SERVER_IDENTITY,
   });
 });
 
@@ -130,7 +140,7 @@ test("resolveCanonicalContentVersion uses server content even when client hash d
       contentText: "Server canonical text",
       contentHash: "server-hash",
       sourceHtml: "<p>Server canonical text</p>",
-      canonicalIdentity: null,
+      canonicalIdentity: SERVER_IDENTITY,
     }),
   });
 
@@ -139,7 +149,7 @@ test("resolveCanonicalContentVersion uses server content even when client hash d
     contentText: "Server canonical text",
     contentHash: "server-hash",
     sourceHtml: "<p>Server canonical text</p>",
-    canonicalIdentity: null,
+    canonicalIdentity: SERVER_IDENTITY,
   });
 });
 
@@ -167,7 +177,7 @@ test("resolveCanonicalContentVersion reports mismatches for all server-verified 
         contentText: "Server canonical text",
         contentHash: "server-hash",
         sourceHtml: "<p>Server canonical text</p>",
-        canonicalIdentity: null,
+        canonicalIdentity: SERVER_IDENTITY,
       }),
       onServerVerifiedContentMismatch: (mismatch) => {
         capturedMismatch = mismatch;
@@ -286,7 +296,7 @@ test("resolveCanonicalContentVersion does not call onClientFallback on successfu
       contentText: "Observed text",
       contentHash: "observed-hash",
       sourceHtml: "<p>Observed text</p>",
-      canonicalIdentity: null,
+      canonicalIdentity: SERVER_IDENTITY,
     }),
     onClientFallback: () => {
       callbackCalled = true;

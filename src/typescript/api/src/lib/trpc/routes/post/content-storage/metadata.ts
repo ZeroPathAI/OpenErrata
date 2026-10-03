@@ -1,5 +1,5 @@
 import type { ViewPostInput } from "@openerrata/shared";
-import { trimToOptionalNonEmpty } from "@openerrata/shared";
+import { observedImageUrlsFromOccurrences, trimToOptionalNonEmpty } from "@openerrata/shared";
 import { TRPCError } from "@trpc/server";
 import { toOptionalDate } from "$lib/date.js";
 import type { Prisma } from "$lib/db/prisma-client";
@@ -8,10 +8,37 @@ import { createOrFindByUniqueConstraint, type DbClient } from "./shared.js";
 import { getOrCreateHtmlBlob } from "./blobs.js";
 import type { PreparedViewPostInput } from "../wikipedia.js";
 
-export async function createPlatformVersionMetadataIfMissing(
+/**
+ * LessWrong title/author for version metadata: the server's when it verified
+ * the post (identity binding, SPEC §2.9), otherwise what the client reported.
+ */
+function lesswrongDisplayMetadata(
+  metadata: Extract<PreparedViewPostInput, { platform: "LESSWRONG" }>["metadata"],
+  canonical: CanonicalContentVersion,
+): { title: string | undefined; authorName: string | undefined; authorSlug: string | undefined } {
+  if (
+    canonical.provenance === "SERVER_VERIFIED" &&
+    canonical.canonicalIdentity.platform === "LESSWRONG"
+  ) {
+    const { title, author } = canonical.canonicalIdentity;
+    return { title, authorName: author?.displayName, authorSlug: author?.slug };
+  }
+  return {
+    title: trimToOptionalNonEmpty(metadata.title),
+    authorName: trimToOptionalNonEmpty(metadata.authorName),
+    authorSlug: trimToOptionalNonEmpty(metadata.authorSlug),
+  };
+}
+
+/**
+ * Create the version's platform metadata row, or update its mutable fields
+ * (latest wins) when it already exists; client HTML is first-write-wins.
+ */
+export async function upsertPlatformVersionMetadata(
   prisma: DbClient,
   input: {
     preparedInput: PreparedViewPostInput;
+    canonical: CanonicalContentVersion;
     postVersionId: string;
     htmlBlobIds: {
       serverHtmlBlobId: string | null;
@@ -19,6 +46,7 @@ export async function createPlatformVersionMetadataIfMissing(
     };
   },
 ): Promise<void> {
+  const imageUrls = observedImageUrlsFromOccurrences(input.preparedInput.observedImageOccurrences);
   switch (input.preparedInput.platform) {
     case "LESSWRONG": {
       const metadata = input.preparedInput.metadata;
@@ -29,9 +57,7 @@ export async function createPlatformVersionMetadataIfMissing(
           message: `LessWrong version requires at least one HTML snapshot (postVersionId=${input.postVersionId})`,
         });
       }
-      const title = trimToOptionalNonEmpty(metadata.title);
-      const authorName = trimToOptionalNonEmpty(metadata.authorName);
-      const authorSlug = trimToOptionalNonEmpty(metadata.authorSlug);
+      const { title, authorName, authorSlug } = lesswrongDisplayMetadata(metadata, input.canonical);
 
       const existingOrCreated = await createOrFindByUniqueConstraint({
         findExisting: () =>
@@ -49,7 +75,7 @@ export async function createPlatformVersionMetadataIfMissing(
               ...(title !== undefined && { title }),
               ...(serverHtmlBlobId !== null && { serverHtmlBlobId }),
               ...(clientHtmlBlobId !== null && { clientHtmlBlobId }),
-              imageUrls: input.preparedInput.observedImageUrls ?? [],
+              imageUrls,
               ...(authorName !== undefined && { authorName }),
               ...(authorSlug !== undefined && { authorSlug }),
               tags: metadata.tags,
@@ -73,7 +99,7 @@ export async function createPlatformVersionMetadataIfMissing(
         slug: metadata.slug,
         title: title ?? null,
         ...(serverHtmlBlobId !== null && { serverHtmlBlobId }),
-        imageUrls: input.preparedInput.observedImageUrls ?? [],
+        imageUrls,
         authorName: authorName ?? null,
         authorSlug: authorSlug ?? null,
         tags: metadata.tags,
@@ -136,6 +162,12 @@ export async function createPlatformVersionMetadataIfMissing(
     case "SUBSTACK": {
       const metadata = input.preparedInput.metadata;
       const { serverHtmlBlobId, clientHtmlBlobId } = input.htmlBlobIds;
+      if (serverHtmlBlobId !== null) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: `Substack has no server-side fetch, yet server HTML was stored (postVersionId=${input.postVersionId})`,
+        });
+      }
       const authorSubstackHandle = trimToOptionalNonEmpty(metadata.authorSubstackHandle);
 
       const existingOrCreated = await createOrFindByUniqueConstraint({
@@ -156,9 +188,8 @@ export async function createPlatformVersionMetadataIfMissing(
               slug: metadata.slug,
               title: metadata.title,
               subtitle: metadata.subtitle ?? null,
-              ...(serverHtmlBlobId !== null && { serverHtmlBlobId }),
               ...(clientHtmlBlobId !== null && { clientHtmlBlobId }),
-              imageUrls: input.preparedInput.observedImageUrls ?? [],
+              imageUrls,
               authorName: metadata.authorName,
               authorSubstackHandle: authorSubstackHandle ?? null,
               publishedAt: toOptionalDate(metadata.publishedAt),
@@ -184,8 +215,7 @@ export async function createPlatformVersionMetadataIfMissing(
         slug: metadata.slug,
         title: metadata.title,
         subtitle: metadata.subtitle ?? null,
-        ...(serverHtmlBlobId !== null && { serverHtmlBlobId }),
-        imageUrls: input.preparedInput.observedImageUrls ?? [],
+        imageUrls,
         authorName: metadata.authorName,
         authorSubstackHandle: authorSubstackHandle ?? null,
         publishedAt: toOptionalDate(metadata.publishedAt),
@@ -233,7 +263,7 @@ export async function createPlatformVersionMetadataIfMissing(
               ...(clientHtmlBlobId !== null && { clientHtmlBlobId }),
               revisionId: metadata.revisionId,
               lastModifiedAt: toOptionalDate(metadata.lastModifiedAt),
-              imageUrls: input.preparedInput.observedImageUrls ?? [],
+              imageUrls,
             },
             select: {
               pageId: true,
@@ -256,7 +286,7 @@ export async function createPlatformVersionMetadataIfMissing(
         ...(serverHtmlBlobId !== null && { serverHtmlBlobId }),
         revisionId: metadata.revisionId,
         lastModifiedAt: toOptionalDate(metadata.lastModifiedAt),
-        imageUrls: input.preparedInput.observedImageUrls ?? [],
+        imageUrls,
       } satisfies Prisma.WikipediaVersionMetaUpdateInput;
 
       await Promise.all([

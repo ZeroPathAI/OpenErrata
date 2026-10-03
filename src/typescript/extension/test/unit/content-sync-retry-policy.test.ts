@@ -1,79 +1,52 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { ExtensionRuntimeError } from "../../src/lib/runtime-error.js";
 import {
-  createInitialSyncRetryState,
+  NO_SYNC_RETRY,
   hasPendingRetryForSession,
-  resolveSyncTrackedSnapshotErrorPolicy,
   scheduleSyncRetry,
-  type SyncTrackedSnapshotErrorPolicy,
+  syncFailureAction,
 } from "../../src/content/sync-retry-policy.js";
 
-test("scheduleSyncRetry sets pending session and exponentially increases delay", () => {
-  const initial = createInitialSyncRetryState(1_000);
-  const first = scheduleSyncRetry(initial, "session-1", 30_000);
-  const second = scheduleSyncRetry(first.nextState, "session-1", 30_000);
+const DELAYS = { initialDelayMs: 1_000, maxDelayMs: 30_000 };
 
-  assert.equal(first.delayMs, 1_000);
-  assert.equal(first.nextState.pendingSessionKey, "session-1");
-  assert.equal(first.nextState.nextDelayMs, 2_000);
-
-  assert.equal(second.delayMs, 2_000);
-  assert.equal(second.nextState.nextDelayMs, 4_000);
+test("retries for a session back off exponentially up to the cap", () => {
+  const delays: number[] = [];
+  let state = NO_SYNC_RETRY;
+  for (let attempt = 0; attempt < 7; attempt += 1) {
+    const scheduled = scheduleSyncRetry(state, "session-1", DELAYS);
+    delays.push(scheduled.delayMs);
+    state = scheduled.nextState;
+  }
+  assert.deepEqual(delays, [1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000]);
 });
 
-test("scheduleSyncRetry caps delay at the configured max", () => {
-  const nearMax = {
-    pendingSessionKey: null,
-    nextDelayMs: 25_000,
-  };
-
-  const scheduled = scheduleSyncRetry(nearMax, "session-1", 30_000);
-  assert.equal(scheduled.delayMs, 25_000);
-  assert.equal(scheduled.nextState.nextDelayMs, 30_000);
-
-  const capped = scheduleSyncRetry(scheduled.nextState, "session-1", 30_000);
-  assert.equal(capped.delayMs, 30_000);
-  assert.equal(capped.nextState.nextDelayMs, 30_000);
+test("a retry for another session starts the backoff over", () => {
+  const first = scheduleSyncRetry(NO_SYNC_RETRY, "session-1", DELAYS);
+  const second = scheduleSyncRetry(first.nextState, "session-1", DELAYS);
+  const other = scheduleSyncRetry(second.nextState, "session-2", DELAYS);
+  assert.equal(other.delayMs, 1_000);
+  assert.equal(hasPendingRetryForSession(other.nextState, "session-2"), true);
+  assert.equal(hasPendingRetryForSession(other.nextState, "session-1"), false);
+  assert.equal(hasPendingRetryForSession(NO_SYNC_RETRY, null), false);
 });
 
-test("hasPendingRetryForSession only returns true for matching session key", () => {
-  const state = {
-    pendingSessionKey: "session-1",
-    nextDelayMs: 2_000,
-  };
-
-  assert.equal(hasPendingRetryForSession(state, "session-1"), true);
-  assert.equal(hasPendingRetryForSession(state, "session-2"), false);
-  assert.equal(hasPendingRetryForSession(state, null), false);
-});
-
-test("createInitialSyncRetryState clears pending session and restores initial delay", () => {
-  assert.deepEqual(createInitialSyncRetryState(1_000), {
-    pendingSessionKey: null,
-    nextDelayMs: 1_000,
+test("sync failures are retried unless retrying cannot help", () => {
+  assert.deepEqual(syncFailureAction(new Error("network")), { kind: "RETRY" });
+  assert.deepEqual(
+    syncFailureAction(new Error("Could not establish connection. Receiving end does not exist.")),
+    { kind: "RETRY" },
+  );
+  assert.deepEqual(syncFailureAction(new Error("Extension context invalidated.")), {
+    kind: "SHUT_DOWN",
   });
-});
-
-test("resolveSyncTrackedSnapshotErrorPolicy picks first matching policy", () => {
-  const error = new Error("boom");
-  const policies: readonly SyncTrackedSnapshotErrorPolicy[] = [
-    {
-      matches: (candidate) => candidate === error,
-      action: "RESET_ONLY",
-    },
-    {
-      matches: () => true,
-      action: "RESET_AND_SYNC_CACHED_FAILURE",
-      warningMessage: "fallback",
-    },
-  ];
-
-  const resolved = resolveSyncTrackedSnapshotErrorPolicy(error, policies);
-  assert.notEqual(resolved, null);
-  assert.equal(resolved?.action, "RESET_ONLY");
-});
-
-test("resolveSyncTrackedSnapshotErrorPolicy returns null when unmatched", () => {
-  const resolved = resolveSyncTrackedSnapshotErrorPolicy(new Error("boom"), []);
-  assert.equal(resolved, null);
+  for (const code of [
+    "PAYLOAD_TOO_LARGE",
+    "UPGRADE_REQUIRED",
+    "MALFORMED_EXTENSION_VERSION",
+    "INVALID_EXTENSION_MESSAGE",
+    "INVALID_EXTENSION_SETTINGS",
+  ] as const) {
+    assert.deepEqual(syncFailureAction(new ExtensionRuntimeError("no", code)), { kind: "GIVE_UP" });
+  }
 });

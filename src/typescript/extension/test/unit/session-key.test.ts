@@ -1,21 +1,32 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { PlatformContent } from "@openerrata/shared";
-import { pageSessionKeyFor } from "../../src/content/session-key.js";
+import { xExternalIdSchema, type PlatformContent } from "@openerrata/shared";
+import type { PlatformAdapter } from "../../src/content/adapters/index.js";
+import { excludeNothing } from "../../src/content/adapters/model.js";
 
-function buildXContent(input?: {
+const STUB_ADAPTER: PlatformAdapter = {
+  platformKey: "LESSWRONG",
+  matches: () => true,
+  pageLocator: () => null,
+  extract: () => ({ kind: "not_ready", reason: "hydrating" }),
+  getContentRoot: () => null,
+  contentExclusionFilter: excludeNothing,
+};
+import { pageLocatorFor } from "../../src/lib/page-locator.js";
+import { sessionKeyFor } from "../../src/content/session-key.js";
+import type { PageSnapshot } from "../../src/content/session-state.js";
+
+function xContent(input?: {
   contentText?: string;
   imageOccurrences?: PlatformContent["imageOccurrences"];
-  mediaState?: PlatformContent["mediaState"];
 }): PlatformContent {
   return {
     platform: "X",
-    externalId: "1900000000000000000",
+    externalId: xExternalIdSchema.parse("1900000000000000000"),
     url: "https://x.com/example/status/1900000000000000000",
     contentText: input?.contentText ?? "Alpha beta gamma",
-    mediaState: input?.mediaState ?? "has_images",
-    imageUrls: [],
-    ...(input?.imageOccurrences === undefined ? {} : { imageOccurrences: input.imageOccurrences }),
+    hasVideo: false,
+    imageOccurrences: input?.imageOccurrences ?? [],
     metadata: {
       authorHandle: "example",
       text: input?.contentText ?? "Alpha beta gamma",
@@ -24,67 +35,71 @@ function buildXContent(input?: {
   };
 }
 
-test("pageSessionKeyFor changes when only image occurrence data changes", () => {
-  const withFirstImage = buildXContent({
-    imageOccurrences: [
-      {
-        originalIndex: 0,
-        normalizedTextOffset: 6,
-        sourceUrl: "https://example.com/a.png",
-      },
-    ],
-  });
-  const withSecondImage = buildXContent({
-    imageOccurrences: [
-      {
-        originalIndex: 0,
-        normalizedTextOffset: 6,
-        sourceUrl: "https://example.com/b.png",
-      },
-    ],
-  });
+function tracked(content: PlatformContent): PageSnapshot {
+  return { kind: "TRACKED_POST", adapter: STUB_ADAPTER, content };
+}
 
-  assert.notEqual(pageSessionKeyFor(withFirstImage), pageSessionKeyFor(withSecondImage));
+function pageSkip(url: string, reason: "private_or_gated" | "unsupported_content"): PageSnapshot {
+  const locator = pageLocatorFor("SUBSTACK", url);
+  if (locator === null) throw new Error("expected a Substack locator");
+  return {
+    kind: "SKIPPED",
+    platform: "SUBSTACK",
+    pageUrl: url,
+    reason,
+    basis: { kind: "PAGE", locator },
+  };
+}
+
+test("snapshots that are not page sessions have no key", () => {
+  assert.equal(sessionKeyFor({ kind: "NONE" }), null);
+  assert.equal(sessionKeyFor({ kind: "PENDING" }), null);
 });
 
-test("pageSessionKeyFor canonicalizes image occurrence ordering", () => {
-  const ordered = buildXContent({
-    imageOccurrences: [
-      {
-        originalIndex: 0,
-        normalizedTextOffset: 6,
-        sourceUrl: "https://example.com/a.png",
-      },
-      {
-        originalIndex: 1,
-        normalizedTextOffset: 12,
-        sourceUrl: "https://example.com/b.png",
-      },
-    ],
-  });
-  const reversedArray = buildXContent({
-    imageOccurrences: [
-      {
-        originalIndex: 1,
-        normalizedTextOffset: 12,
-        sourceUrl: "https://example.com/b.png",
-      },
-      {
-        originalIndex: 0,
-        normalizedTextOffset: 6,
-        sourceUrl: "https://example.com/a.png",
-      },
-    ],
-  });
-
-  assert.equal(pageSessionKeyFor(ordered), pageSessionKeyFor(reversedArray));
+test("an edit to the observed content or its images starts a new session", () => {
+  const base = sessionKeyFor(tracked(xContent()));
+  assert.notEqual(sessionKeyFor(tracked(xContent({ contentText: "Alpha beta delta" }))), base);
+  assert.notEqual(
+    sessionKeyFor(
+      tracked(
+        xContent({
+          imageOccurrences: [
+            { originalIndex: 0, normalizedTextOffset: 6, sourceUrl: "https://example.com/a.png" },
+          ],
+        }),
+      ),
+    ),
+    base,
+  );
+  assert.equal(sessionKeyFor(tracked(xContent())), base);
 });
 
-test("pageSessionKeyFor treats undefined and empty image occurrences equally", () => {
-  const withoutOccurrences = buildXContent();
-  const withEmptyOccurrences = buildXContent({
-    imageOccurrences: [],
-  });
+test("page-derived skips are keyed by page and reason, so another page or reason is a new session", () => {
+  const alpha = sessionKeyFor(
+    pageSkip("https://alpha.substack.com/p/paid-post", "private_or_gated"),
+  );
+  assert.equal(
+    sessionKeyFor(pageSkip("https://alpha.substack.com/p/paid-post?ref=x", "private_or_gated")),
+    alpha,
+  );
+  assert.notEqual(
+    sessionKeyFor(pageSkip("https://beta.substack.com/p/paid-post", "private_or_gated")),
+    alpha,
+  );
+  assert.notEqual(
+    sessionKeyFor(pageSkip("https://alpha.substack.com/p/paid-post", "unsupported_content")),
+    alpha,
+  );
+});
 
-  assert.equal(pageSessionKeyFor(withoutOccurrences), pageSessionKeyFor(withEmptyOccurrences));
+test("a content-derived skip and a tracked post never share a session key", () => {
+  const content = xContent();
+  const skipped: PageSnapshot = {
+    kind: "SKIPPED",
+    platform: "X",
+    pageUrl: content.url,
+    reason: "word_count",
+    basis: { kind: "CONTENT", content },
+  };
+  assert.notEqual(sessionKeyFor(skipped), sessionKeyFor(tracked(content)));
 });

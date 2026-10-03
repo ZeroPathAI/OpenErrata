@@ -15,7 +15,7 @@ export type CanonicalContentVersion =
       provenance: "SERVER_VERIFIED";
       /** HTML fetched from the canonical source API (Parse API, LessWrong GraphQL). */
       sourceHtml: string;
-      canonicalIdentity: CanonicalIdentity | null;
+      canonicalIdentity: CanonicalIdentity;
     })
   | (ObservedContentVersion & {
       provenance: "CLIENT_FALLBACK";

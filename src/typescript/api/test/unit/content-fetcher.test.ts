@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  CONTENT_BLOCK_SEPARATOR_TAGS,
+  WORD_SEPARATOR_TAGS,
   WIKIPEDIA_EXCLUDED_SECTION_TITLES,
   hashContent,
 } from "@openerrata/shared";
@@ -21,6 +21,16 @@ test("lesswrongHtmlToNormalizedText preserves malformed literal less-than text",
   const html = "<p>1 < 2</p>";
 
   assert.equal(lesswrongHtmlToNormalizedText(html), "1 < 2");
+});
+
+test("lesswrongHtmlToNormalizedText separates the words either side of a line break", () => {
+  const html =
+    "<p>See steg-reasoning-is-hard.<br>This work extends it.</p><p>A stanza<br/>in two lines</p>";
+
+  assert.equal(
+    lesswrongHtmlToNormalizedText(html),
+    "See steg-reasoning-is-hard. This work extends it. A stanza in two lines",
+  );
 });
 
 test("lesswrongHtmlToNormalizedText removes HTML comments", () => {
@@ -102,6 +112,7 @@ function makeWikipediaParseResponse(): Response {
   return new Response(
     JSON.stringify({
       parse: {
+        title: "OpenErrata",
         text: "<div class='mw-parser-output'><p>Server article text.</p></div>",
         pageid: 99999,
         revid: 67890,
@@ -227,6 +238,7 @@ test("fetchCanonicalContent returns SERVER_VERIFIED Wikipedia content and canoni
       new Response(
         JSON.stringify({
           parse: {
+            title: "Who Framed Roger Rabbit?",
             text: "<div class='mw-parser-output'><p>Server article text.</p></div>",
             pageid: 99999,
             revid: 67890,
@@ -259,11 +271,103 @@ test("fetchCanonicalContent returns SERVER_VERIFIED Wikipedia content and canoni
       sourceHtml: "<div class='mw-parser-output'><p>Server article text.</p></div>",
       canonicalIdentity: {
         platform: "WIKIPEDIA",
+        url: "https://en.wikipedia.org/wiki/Who_Framed_Roger_Rabbit%3F",
         language: "en",
         pageId: "99999",
         revisionId: "67890",
       },
     });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+function makeLesswrongPostResponse(result: Record<string, unknown>): Response {
+  return new Response(JSON.stringify({ data: { post: { result } } }), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+const LESSWRONG_FETCH_INPUT = {
+  platform: "LESSWRONG" as const,
+  url: "https://www.lesswrong.com/posts/abc123/client-supplied-slug",
+  externalId: "abc123",
+};
+
+test("fetchCanonicalContent takes LessWrong URL, title and author from the server response", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (): Promise<Response> =>
+      makeLesswrongPostResponse({
+        _id: "abc123",
+        slug: "server-slug",
+        title: "Server Title",
+        contents: { html: "<p>Server body.</p>" },
+        user: { slug: "server-author", displayName: "Server Author" },
+      });
+
+    const result = await fetchCanonicalContent(LESSWRONG_FETCH_INPUT);
+    assert.equal(result.provenance, "SERVER_VERIFIED");
+    assert.equal(result.contentText, "Server body.");
+    assert.deepEqual(result.canonicalIdentity, {
+      platform: "LESSWRONG",
+      url: "https://www.lesswrong.com/posts/abc123/server-slug",
+      title: "Server Title",
+      author: { slug: "server-author", displayName: "Server Author" },
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("fetchCanonicalContent falls back when LessWrong returns a different post", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (): Promise<Response> =>
+      makeLesswrongPostResponse({
+        _id: "someOtherPost",
+        slug: "s",
+        title: "T",
+        contents: { html: "<p>Body.</p>" },
+        user: null,
+      });
+
+    const result = await fetchCanonicalContent(LESSWRONG_FETCH_INPUT);
+    assert.equal(result.provenance, "CLIENT_FALLBACK");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("fetchCanonicalContent falls back instead of reading an oversized canonical response", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (): Promise<Response> =>
+      new Response("{}", {
+        status: 200,
+        headers: { "content-type": "application/json", "content-length": "52428800" },
+      });
+
+    const result = await fetchCanonicalContent(WIKIPEDIA_FETCH_INPUT);
+    assert.equal(result.provenance, "CLIENT_FALLBACK");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("fetchCanonicalContent passes an abort deadline to every fetch attempt", async () => {
+  const originalFetch = globalThis.fetch;
+  const signals: (AbortSignal | null | undefined)[] = [];
+  try {
+    globalThis.fetch = async (_input, init): Promise<Response> => {
+      signals.push(init?.signal);
+      return makeWikipediaParseResponse();
+    };
+
+    await fetchCanonicalContent(WIKIPEDIA_FETCH_INPUT);
+    assert.equal(signals.length, 1);
+    assert.ok(signals[0] instanceof AbortSignal);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -391,6 +495,33 @@ test("wikipediaHtmlToNormalizedText handles Parsoid h3 sub-section exclusion und
   assert.equal(wikipediaHtmlToNormalizedText(html), "Main content.");
 });
 
+test("wikipediaHtmlToNormalizedText excludes the same sections when each sits in its own <section> element", () => {
+  // Parsoid read views (fr.wikipedia, 2026-10) nest every section, with its
+  // subsections, in a <section>; the Parse API returns the same article flat.
+  const section = (level: 2 | 3, title: string, body: string, nested = ""): string =>
+    `<section><div class="mw-heading mw-heading${level.toString()}"><h${level.toString()}>${title}</h${level.toString()}></div>${body}${nested}</section>`;
+  const heading = (level: 2 | 3, title: string): string =>
+    `<div class="mw-heading mw-heading${level.toString()}"><h${level.toString()}>${title}</h${level.toString()}></div>`;
+  const sectioned = `<div class="mw-parser-output">
+    <section><p>Lead.</p></section>
+    ${section(2, "Biographie", "<p>Life.</p>")}
+    ${section(2, "Notes et références", "<p>Cited source.</p>")}
+    ${section(2, "Voir aussi", "", section(3, "Bibliographie", "<p>A book.</p>") + section(3, "Articles connexes", "<p>Radium</p>"))}
+  </div>`;
+  const flat = `<div class="mw-parser-output">
+    <p>Lead.</p>
+    ${heading(2, "Biographie")}<p>Life.</p>
+    ${heading(2, "Notes et références")}<p>Cited source.</p>
+    ${heading(2, "Voir aussi")}
+    ${heading(3, "Bibliographie")}<p>A book.</p>
+    ${heading(3, "Articles connexes")}<p>Radium</p>
+  </div>`;
+
+  const expected = "Lead. Biographie Life. Voir aussi Articles connexes Radium";
+  assert.equal(wikipediaHtmlToNormalizedText(sectioned), expected);
+  assert.equal(wikipediaHtmlToNormalizedText(flat), expected);
+});
+
 test("wikipediaHtmlToNormalizedText treats div.mw-heading as a section boundary only with a direct heading child", () => {
   const html = `
     <div class="mw-parser-output">
@@ -409,25 +540,28 @@ test("wikipediaHtmlToNormalizedText treats div.mw-heading as a section boundary 
   assert.equal(wikipediaHtmlToNormalizedText(html), "Lead paragraph. History Kept paragraph.");
 });
 
-// ── Block separator exhaustiveness ────────────────────────────────────────────
-// Every tag in CONTENT_BLOCK_SEPARATOR_TAGS must produce word-separated output
+// ── Word separator exhaustiveness ─────────────────────────────────────────────
+// Every tag in WORD_SEPARATOR_TAGS must produce word-separated output
 // when adjacent elements have no whitespace text node between them.  Both
 // extractors (lesswrong / wikipedia) are tested because they use different
 // internal traversal implementations that must stay in sync.
 //
 // Table-related tags (<tr>, <td>, <th>) cannot contain text as direct children
 // in valid HTML — parse5 foster-parents text nodes outside the element when no
-// table context exists, which defeats the block-separator check.  The map below
-// provides minimal valid table structures that exercise each tag as a separator.
-const TABLE_BLOCK_SEPARATOR_HTML: Record<string, string> = {
+// table context exists, which defeats the separator check; void elements
+// (<br>, <hr>) hold no text and separate the text around them.  The map below
+// provides minimal valid structures that exercise each such tag as a separator.
+const SEPARATOR_HTML_OVERRIDES: Record<string, string> = {
   tr: "<table><tbody><tr><td>Word1</td></tr><tr><td>Word2</td></tr></tbody></table>",
   td: "<table><tbody><tr><td>Word1</td><td>Word2</td></tr></tbody></table>",
   th: "<table><thead><tr><th>Word1</th><th>Word2</th></tr></thead></table>",
+  br: "<p>Word1<br>Word2</p>",
+  hr: "Word1<hr>Word2",
 };
 
-test("lesswrongHtmlToNormalizedText separates text across adjacent CONTENT_BLOCK_SEPARATOR_TAGS elements", () => {
-  for (const tag of CONTENT_BLOCK_SEPARATOR_TAGS) {
-    const html = TABLE_BLOCK_SEPARATOR_HTML[tag] ?? `<${tag}>Word1</${tag}><${tag}>Word2</${tag}>`;
+test("lesswrongHtmlToNormalizedText separates text across adjacent WORD_SEPARATOR_TAGS elements", () => {
+  for (const tag of WORD_SEPARATOR_TAGS) {
+    const html = SEPARATOR_HTML_OVERRIDES[tag] ?? `<${tag}>Word1</${tag}><${tag}>Word2</${tag}>`;
     assert.equal(
       lesswrongHtmlToNormalizedText(html),
       "Word1 Word2",
@@ -436,9 +570,9 @@ test("lesswrongHtmlToNormalizedText separates text across adjacent CONTENT_BLOCK
   }
 });
 
-test("wikipediaHtmlToNormalizedText separates text across adjacent CONTENT_BLOCK_SEPARATOR_TAGS elements", () => {
-  for (const tag of CONTENT_BLOCK_SEPARATOR_TAGS) {
-    const inner = TABLE_BLOCK_SEPARATOR_HTML[tag] ?? `<${tag}>Word1</${tag}><${tag}>Word2</${tag}>`;
+test("wikipediaHtmlToNormalizedText separates text across adjacent WORD_SEPARATOR_TAGS elements", () => {
+  for (const tag of WORD_SEPARATOR_TAGS) {
+    const inner = SEPARATOR_HTML_OVERRIDES[tag] ?? `<${tag}>Word1</${tag}><${tag}>Word2</${tag}>`;
     assert.equal(
       wikipediaHtmlToNormalizedText(`<div class="mw-parser-output">${inner}</div>`),
       "Word1 Word2",
