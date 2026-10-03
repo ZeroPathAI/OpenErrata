@@ -1,6 +1,7 @@
 services:
   postgres:
-    image: postgres:16
+    # Same major version as CI.
+    image: postgres:17
     environment:
       POSTGRES_USER: openerrata
       POSTGRES_PASSWORD: openerrata_dev
@@ -8,34 +9,31 @@ services:
     ports:
       - "5433:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # Postgres 17 cannot open the Postgres 16 data directory of the old
+      # `pgdata` volume; this one starts empty (re-run `pnpm db:migrate`).
+      - pgdata-17:/var/lib/postgresql/data
 
-  minio:
-    image: minio/minio:latest
-    command: server /data --console-address ":9001"
+  # S3-compatible blob storage (Versity S3 Gateway) for the API's image
+  # uploads. Its posix backend serves each top-level directory of /data as a
+  # bucket, so creating the directory creates the bucket api/.env names.
+  blob-storage:
+    image: versity/versitygw:v1.8.0@sha256:30292fc2eeacc67a36993b01f7a7a5e3361a19cced0e80c1d71cfa2a4b0a2499
+    entrypoint:
+      - /bin/sh
+      - -c
+      - mkdir -p /data/openerrata-images && exec versitygw posix /data
     environment:
-      MINIO_ROOT_USER: openerrata_minio
-      MINIO_ROOT_PASSWORD: openerrata_minio_secret
+      ROOT_ACCESS_KEY_ID: openerrata_blob
+      ROOT_SECRET_ACCESS_KEY: openerrata_blob_secret
+      VGW_REGION: us-east-1
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "7070:7070"
     volumes:
-      - minio-data:/data
-
-  minio-init:
-    image: minio/mc:latest
-    depends_on:
-      - minio
-    restart: "no"
-    entrypoint: >
-      /bin/sh -c "
-      until mc alias set local http://minio:9000 openerrata_minio openerrata_minio_secret >/dev/null 2>&1; do
-        sleep 1;
-      done;
-      mc mb --ignore-existing local/openerrata-images;
-      mc anonymous set download local/openerrata-images;
-      "
+      # Replaces MinIO, whose images are no longer anonymously pullable.
+      # Nothing reads stored images back, so the old `minio-data` volume can
+      # be deleted rather than migrated.
+      - blob-storage-data:/data
 
 volumes:
-  pgdata:
-  minio-data:
+  pgdata-17:
+  blob-storage-data:

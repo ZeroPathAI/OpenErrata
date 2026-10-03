@@ -2,6 +2,7 @@
   "name": "openerrata",
   "type": "module",
   "private": true,
+  "packageManager": "pnpm@10.24.0",
   "scripts": {
     "dev:api": "pnpm --filter @openerrata/api dev",
     "dev:ext": "pnpm --filter @openerrata/extension dev",

@@ -10,17 +10,22 @@ behavior.
 
 ```
 src/
+├── aws/ci-iam/              # Bootstrap of the IAM role hosted deploys assume (GitHub OIDC)
 ├── helm/openerrata/         # Helm chart (single deployment artifact for on-prem + hosted)
+├── kubernetes/ci-rbac/      # RBAC for the hosted deploy role's Kubernetes group
 └── typescript/
     ├── shared/              # @openerrata/shared — types, Zod schemas, normalization
     ├── api/                 # @openerrata/api — SvelteKit + tRPC backend, Prisma, job queue
     ├── extension/           # @openerrata/extension — Chrome MV3 browser extension
+    ├── frontend/            # @openerrata/frontend — public SvelteKit website (reads the public GraphQL API)
     └── pulumi/              # @openerrata/pulumi — deploys the Helm chart for hosted env
 ```
 
-The monorepo uses pnpm workspaces. Dependencies flow: `shared` → `api` and
-`shared` → `extension`. The extension imports the API's `AppRouter` type (type-only,
-no runtime code) for tRPC client typing.
+The monorepo uses pnpm workspaces. Dependencies flow: `shared` → `api`,
+`shared` → `extension` and `shared` → `frontend`. The extension does not import
+API code: its tRPC calls are typed by the shared `ExtensionApiProcedureContract`
+(which the API asserts its routes against) and validated with the shared output
+schemas.
 
 ## Key Files
 
@@ -48,7 +53,7 @@ these ways.
 Always take the time to introduce new features and fix bugs in the codebase in
 the most complete, ideal, and maintainable way, even if it means modifying more
 than your user initially expects. Feel free to perform refactors of bad code
-not originally mentioned in your prompt. 
+not originally mentioned in your prompt.
 
 **The underlying driving spec behind the software you're tasked with writing
 should be clearly understandable just by reading your code.** This is the most
@@ -94,6 +99,7 @@ var asyncLoadedDataError: str | undefined = undefined
 ```
 
 Better:
+
 ```
 type StreetLightStatus = enum {
   RED
@@ -125,22 +131,23 @@ When key assumptions that your code relies upon to work appear to be broken,
 and you cannot use the type system or good architectural design to remove the
 possibility of errors entirely (which is always the first preference), fail
 early and visibly, rather than attempting to patch things up. In particular:
-* Lean towards propagating errors up to callers, instead of silently "warning"
+
+- Lean towards propagating errors up to callers, instead of silently "warning"
   about them inside of try/catch blocks.
-* Push error handling to type systems where possible by specifying stricter
+- Push error handling to type systems where possible by specifying stricter
   input & output types instead of attempting to throw errors or create
   fallbacks
-* If you are fairly certain data should always exist, assume it does, rather
+- If you are fairly certain data should always exist, assume it does, rather
   than producing code with unnecessary guardrails or existence checks (esp. if
   such checks might mislead other programmers)
-* Avoid the use of hasattr/getattr (or non-python equivalents) when accessing
+- Avoid the use of hasattr/getattr (or non-python equivalents) when accessing
   attributes and fields that should always exist.
-* Never produce knowingly incorrect 'defaults' as a result of errors or missing
+- Never produce knowingly incorrect 'defaults' as a result of errors or missing
   data, either for users, or downstream callers.
 
 Do not assume your user has context about system architecture, files, line
 numbers, or programming concepts. Re-explain these details as necessary if they
-have not already come up. This is also helpful for verifying that *you*
+have not already come up. This is also helpful for verifying that _you_
 understand what's going on.
 
 ## Testing Philosophy
@@ -148,15 +155,17 @@ understand what's going on.
 The purpose of tests is to automate the collection of evidence that the
 explicit + implicit spec is being adhered to. This can be accomplished at
 multiple levels:
+
 - Unit tests of individual or groups of functions that are required to operate
   correctly in order for the program to work well, like an `assert text ==
-  decompress(compress(text))` test of a compression lib
+decompress(compress(text))` test of a compression lib
 - Mocks of components that have individual properties that we want to verify,
   like a guard that panics() on invalid SQL statements sent to the DB
 - Integreation tests of direct components of the SPEC.md
 - End to end tests of browser functionality on previously downloaded pages
 
 Our primary test suite should be:
+
 - Fast, easy to run
 - Produce few false negatives as possible (i.e., fail the code when it's behaving poorly)
 - Produce as few false positives as possible (i.e., fail the code when it complies with the spec). This can happen because either:
@@ -174,8 +183,10 @@ test coverage of the code high.
 ## Dev Environment
 
 ```bash
-# Start local Postgres (port 5433) + MinIO S3-compatible storage (9000 API / 9001 console)
+# Start local Postgres (port 5433) + S3-compatible blob storage (port 7070)
 docker compose up -d
+# API/worker/selector configuration; dotenv reads it from the api package directory
+cp src/typescript/api/.env.example src/typescript/api/.env
 ```
 
 For more information about how to run and manage the typescript extensions, see ./src/typescript/AGENTS.md
