@@ -3,25 +3,23 @@ interface RequestIdentityInput {
   userAgent: string;
   instanceApiKey: string | null | undefined;
   userOpenAiApiKey: string | null | undefined;
-  attestationSignature: string | null | undefined;
-  attestationBody: string | null;
 }
 
 interface RequestIdentityDependencies {
   hashContent: (value: string) => Promise<string>;
   findActiveInstanceApiKeyHash: (apiKey: string) => Promise<string | null>;
   deriveIpRangePrefix: (ipAddress: string) => string;
-  verifyHmac: (body: string, signature: string) => Promise<boolean>;
 }
 
 interface RequestIdentity {
-  authenticatedApiKeyHash: string | null;
+  /** Stable hashed viewer: the instance API key when authenticated, else address + user agent. */
   viewerKey: string;
+  /** Stable hashed /24 (IPv4) or /48 (IPv6) of the client address. */
   ipRangeKey: string;
-  userOpenAiApiKey: string | null;
+  /** Whether the request carries an active instance API key. */
   isAuthenticated: boolean;
-  canInvestigate: boolean;
-  hasValidAttestation: boolean;
+  /** The request-scoped user OpenAI key, as sent; unverified. */
+  userOpenAiApiKey: string | null;
 }
 
 function trimToOptional(value: string | null | undefined): string | null {
@@ -29,84 +27,28 @@ function trimToOptional(value: string | null | undefined): string | null {
   return trimmed !== undefined && trimmed.length > 0 ? trimmed : null;
 }
 
-async function resolveAuthenticatedApiKeyHash(input: {
-  instanceApiKey: string | null;
-  findActiveInstanceApiKeyHash: RequestIdentityDependencies["findActiveInstanceApiKeyHash"];
-}): Promise<string | null> {
-  if (input.instanceApiKey === null) {
-    return null;
-  }
-  return input.findActiveInstanceApiKeyHash(input.instanceApiKey);
-}
-
-async function resolveViewerKey(input: {
-  authenticatedApiKeyHash: string | null;
-  clientAddress: string;
-  userAgent: string;
-  hashContent: RequestIdentityDependencies["hashContent"];
-}): Promise<string> {
-  if (input.authenticatedApiKeyHash !== null) {
-    return input.hashContent(`apikey:${input.authenticatedApiKeyHash}`);
-  }
-  return input.hashContent(`anon:${input.clientAddress}:${input.userAgent}`);
-}
-
-async function resolveHasValidAttestation(input: {
-  attestationSignature: string | null;
-  attestationBody: string | null;
-  verifyHmac: RequestIdentityDependencies["verifyHmac"];
-}): Promise<boolean> {
-  if (
-    input.attestationSignature === null ||
-    input.attestationBody === null ||
-    input.attestationBody.length === 0
-  ) {
-    return false;
-  }
-
-  try {
-    return await input.verifyHmac(input.attestationBody, input.attestationSignature);
-  } catch {
-    return false;
-  }
-}
-
 export async function deriveRequestIdentity(
   input: RequestIdentityInput,
   dependencies: RequestIdentityDependencies,
 ): Promise<RequestIdentity> {
   const instanceApiKey = trimToOptional(input.instanceApiKey);
-  const userOpenAiApiKey = trimToOptional(input.userOpenAiApiKey);
-  const attestationSignature = trimToOptional(input.attestationSignature);
+  const authenticatedApiKeyHash =
+    instanceApiKey === null
+      ? null
+      : await dependencies.findActiveInstanceApiKeyHash(instanceApiKey);
 
-  const authenticatedApiKeyHash = await resolveAuthenticatedApiKeyHash({
-    instanceApiKey,
-    findActiveInstanceApiKeyHash: dependencies.findActiveInstanceApiKeyHash,
-  });
-  const viewerKey = await resolveViewerKey({
-    authenticatedApiKeyHash,
-    clientAddress: input.clientAddress,
-    userAgent: input.userAgent,
-    hashContent: dependencies.hashContent,
-  });
+  const viewerKey = await dependencies.hashContent(
+    authenticatedApiKeyHash === null
+      ? `anon:${input.clientAddress}:${input.userAgent}`
+      : `apikey:${authenticatedApiKeyHash}`,
+  );
   const ipRangePrefix = dependencies.deriveIpRangePrefix(input.clientAddress);
   const ipRangeKey = await dependencies.hashContent(`iprange:${ipRangePrefix}`);
-  const hasValidAttestation = await resolveHasValidAttestation({
-    attestationSignature,
-    attestationBody: input.attestationBody,
-    verifyHmac: dependencies.verifyHmac,
-  });
-
-  const isAuthenticated = authenticatedApiKeyHash !== null;
-  const canInvestigate = isAuthenticated || userOpenAiApiKey !== null;
 
   return {
-    authenticatedApiKeyHash,
     viewerKey,
     ipRangeKey,
-    userOpenAiApiKey,
-    isAuthenticated,
-    canInvestigate,
-    hasValidAttestation,
+    isAuthenticated: authenticatedApiKeyHash !== null,
+    userOpenAiApiKey: trimToOptional(input.userOpenAiApiKey),
   };
 }

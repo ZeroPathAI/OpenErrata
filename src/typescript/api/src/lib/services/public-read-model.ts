@@ -1,10 +1,12 @@
 import { Prisma, type PrismaClient } from "$lib/db/prisma-client";
-import { platformSchema, type Platform } from "@openerrata/shared";
+import type { ContentProvenance, InvestigationProvider, Platform } from "@openerrata/shared";
 
-interface PublicInvestigationOrigin {
-  provenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK";
-  serverVerifiedAt: Date | null;
-}
+// A SERVER_VERIFIED investigation ran on verified content, so its post
+// version's verification latch is always set; a CLIENT_FALLBACK one's may be
+// set later by a subsequent server fetch of the same content.
+type PublicInvestigationOrigin =
+  | { provenance: Extract<ContentProvenance, "SERVER_VERIFIED">; serverVerifiedAt: Date }
+  | { provenance: Extract<ContentProvenance, "CLIENT_FALLBACK">; serverVerifiedAt: Date | null };
 
 interface PublicTrustSignals {
   origin: PublicInvestigationOrigin;
@@ -30,7 +32,7 @@ type PublicInvestigation = PublicTrustSignals & {
   id: string;
   checkedAt: Date;
   promptVersion: string;
-  provider: string;
+  provider: InvestigationProvider;
   model: string;
 };
 
@@ -87,7 +89,8 @@ interface SearchInvestigationPageRow {
 interface PublicMetricsResult {
   totalInvestigatedPosts: number;
   investigatedPostsWithFlags: number;
-  factCheckIncidence: number;
+  /** investigatedPostsWithFlags / totalInvestigatedPosts; null when nothing was investigated. */
+  factCheckIncidence: number | null;
 }
 
 interface PublicMetricsInput {
@@ -105,10 +108,6 @@ interface PublicSearchInvestigationsInput {
   offset: number;
 }
 
-function parsePlatform(value: string): Platform {
-  return platformSchema.parse(value);
-}
-
 function escapeLikePattern(query: string): string {
   return query.replace(/[\\%_]/g, (char) => `\\${char}`);
 }
@@ -124,28 +123,6 @@ function invariantViolation(message: string): never {
   throw new PublicReadModelInvariantError(`Public read-model invariant violation: ${message}`);
 }
 
-function parsePublicOrigin(input: {
-  investigationId: string;
-  provenance: string | undefined;
-  serverVerifiedAt: Date | null;
-}): PublicInvestigationOrigin {
-  // provenance lives on InvestigationInput (1:1); older investigations may lack it.
-  if (input.provenance === undefined) {
-    invariantViolation(
-      `Investigation ${input.investigationId} has no InvestigationInput (missing provenance)`,
-    );
-  }
-  if (input.provenance !== "SERVER_VERIFIED" && input.provenance !== "CLIENT_FALLBACK") {
-    invariantViolation(
-      `Investigation ${input.investigationId} has invalid provenance "${input.provenance}"`,
-    );
-  }
-  return {
-    provenance: input.provenance,
-    serverVerifiedAt: input.serverVerifiedAt,
-  };
-}
-
 function requireCompleteCheckedAt(input: {
   investigationId: string;
   checkedAt: Date | null;
@@ -156,26 +133,44 @@ function requireCompleteCheckedAt(input: {
   return input.checkedAt;
 }
 
-function parsePublicLifecycle(input: {
-  investigationId: string;
-  provenance: string | undefined;
-  serverVerifiedAt: Date | null;
+function requireCompleteModel(input: { investigationId: string; model: string | null }): string {
+  if (input.model === null) {
+    invariantViolation(`Investigation ${input.investigationId} is COMPLETE with null model`);
+  }
+  return input.model;
+}
+
+function publicOrigin(investigation: {
+  id: string;
+  input: { provenance: ContentProvenance };
+  postVersion: { serverVerifiedAt: Date | null };
+}): PublicInvestigationOrigin {
+  const { serverVerifiedAt } = investigation.postVersion;
+  switch (investigation.input.provenance) {
+    case "SERVER_VERIFIED":
+      if (serverVerifiedAt === null) {
+        invariantViolation(
+          `Investigation ${investigation.id} is SERVER_VERIFIED but its post version has no serverVerifiedAt`,
+        );
+      }
+      return { provenance: "SERVER_VERIFIED", serverVerifiedAt };
+    case "CLIENT_FALLBACK":
+      return { provenance: "CLIENT_FALLBACK", serverVerifiedAt };
+  }
+}
+
+function publicLifecycle(investigation: {
+  id: string;
+  input: { provenance: ContentProvenance };
+  postVersion: { serverVerifiedAt: Date | null };
   checkedAt: Date | null;
 }): { origin: PublicInvestigationOrigin; checkedAt: Date } {
-  const origin = parsePublicOrigin({
-    investigationId: input.investigationId,
-    provenance: input.provenance,
-    serverVerifiedAt: input.serverVerifiedAt,
-  });
-
-  const checkedAt = requireCompleteCheckedAt({
-    investigationId: input.investigationId,
-    checkedAt: input.checkedAt,
-  });
-
   return {
-    origin,
-    checkedAt,
+    origin: publicOrigin(investigation),
+    checkedAt: requireCompleteCheckedAt({
+      investigationId: investigation.id,
+      checkedAt: investigation.checkedAt,
+    }),
   };
 }
 
@@ -259,12 +254,7 @@ export async function getPublicInvestigationById(
     return null;
   }
 
-  const lifecycle = parsePublicLifecycle({
-    investigationId: investigation.id,
-    provenance: investigation.input.provenance,
-    serverVerifiedAt: investigation.postVersion.serverVerifiedAt,
-    checkedAt: investigation.checkedAt,
-  });
+  const lifecycle = publicLifecycle(investigation);
 
   return {
     investigation: {
@@ -274,10 +264,13 @@ export async function getPublicInvestigationById(
       checkedAt: lifecycle.checkedAt,
       promptVersion: investigation.prompt.version,
       provider: investigation.provider,
-      model: investigation.model,
+      model: requireCompleteModel({
+        investigationId: investigation.id,
+        model: investigation.model,
+      }),
     },
     post: {
-      platform: parsePlatform(investigation.postVersion.post.platform),
+      platform: investigation.postVersion.post.platform,
       externalId: investigation.postVersion.post.externalId,
       url: investigation.postVersion.post.url,
     },
@@ -361,17 +354,12 @@ export async function getPublicPostInvestigations(
 
   return {
     post: {
-      platform: parsePlatform(post.platform),
+      platform: post.platform,
       externalId: post.externalId,
       url: post.url,
     },
     investigations: investigations.map((investigation) => {
-      const lifecycle = parsePublicLifecycle({
-        investigationId: investigation.id,
-        provenance: investigation.input.provenance,
-        serverVerifiedAt: investigation.postVersion.serverVerifiedAt,
-        checkedAt: investigation.checkedAt,
-      });
+      const lifecycle = publicLifecycle(investigation);
       return {
         id: investigation.id,
         contentHash: investigation.postVersion.contentBlob.contentHash,
@@ -459,17 +447,12 @@ export async function searchPublicInvestigations(
         );
       }
 
-      const lifecycle = parsePublicLifecycle({
-        investigationId: investigation.id,
-        provenance: investigation.input.provenance,
-        serverVerifiedAt: investigation.postVersion.serverVerifiedAt,
-        checkedAt: investigation.checkedAt,
-      });
+      const lifecycle = publicLifecycle(investigation);
       return {
         id: investigation.id,
         contentHash: investigation.postVersion.contentBlob.contentHash,
         checkedAt: lifecycle.checkedAt,
-        platform: parsePlatform(investigation.postVersion.post.platform),
+        platform: investigation.postVersion.post.platform,
         externalId: investigation.postVersion.post.externalId,
         url: investigation.postVersion.post.url,
         origin: lifecycle.origin,
@@ -509,14 +492,15 @@ export async function getPublicMetrics(
     WHERE ${Prisma.join(conditions, " AND ")}
   `;
 
-  const { total_investigated, with_flags } = result[0] ?? {
-    total_investigated: 0,
-    with_flags: 0,
-  };
+  const [counts] = result;
+  if (counts === undefined) {
+    invariantViolation("public metrics aggregate query returned no row");
+  }
+  const { total_investigated, with_flags } = counts;
 
   return {
     totalInvestigatedPosts: total_investigated,
     investigatedPostsWithFlags: with_flags,
-    factCheckIncidence: total_investigated > 0 ? with_flags / total_investigated : 0,
+    factCheckIncidence: total_investigated > 0 ? with_flags / total_investigated : null,
   };
 }

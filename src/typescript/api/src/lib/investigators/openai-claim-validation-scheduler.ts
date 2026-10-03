@@ -9,18 +9,18 @@ import {
   settlePendingValidation,
   type InvestigationRunState,
 } from "./openai-investigation-run-state.js";
-import type { PerClaimValidationResult } from "./openai-claim-validator.js";
+import type { ClaimValidationResult } from "./openai-claim-validator.js";
 
 type StageOneClaim = InvestigationResult["claims"][number];
 
 type ValidationLimiter = (
-  task: () => Promise<PerClaimValidationResult>,
-) => Promise<PerClaimValidationResult>;
+  task: () => Promise<ClaimValidationResult>,
+) => Promise<ClaimValidationResult>;
 
 type ValidationRunner = (
   claimIndex: number,
   claim: StageOneClaim,
-) => Promise<PerClaimValidationResult>;
+) => Promise<ClaimValidationResult>;
 
 type RetainClaimResult =
   | {
@@ -31,21 +31,12 @@ type RetainClaimResult =
       errorMessage: string;
     };
 
-export interface ClaimValidationScheduler {
+interface ClaimValidationScheduler {
   getState: () => InvestigationRunState;
   scheduleClaimValidation: (claim: StageOneClaim) => void;
   retainClaimById: (claimId: string) => RetainClaimResult;
-  awaitAllValidations: () => Promise<PerClaimValidationResult[]>;
-  settleAllValidations: () => Promise<void>;
-}
-
-function toValidationErrorResult(claimIndex: number, error: unknown): PerClaimValidationResult {
-  return {
-    claimIndex,
-    approved: false,
-    responseAudit: null,
-    error: error instanceof Error ? error : new Error(String(error)),
-  };
+  /** Every scheduled validation's result, in scheduling order, once all have settled. */
+  awaitAllValidations: () => Promise<ClaimValidationResult[]>;
 }
 
 export function createClaimValidationScheduler(input: {
@@ -60,7 +51,7 @@ export function createClaimValidationScheduler(input: {
     input.callbacks?.onProgressUpdate(getPendingClaims(state), getConfirmedClaims(state));
   };
 
-  const settleValidation = (pendingIndex: number, result: PerClaimValidationResult): void => {
+  const settleValidation = (pendingIndex: number, result: ClaimValidationResult): void => {
     state = settlePendingValidation(state, {
       pendingIndex,
       result,
@@ -70,9 +61,8 @@ export function createClaimValidationScheduler(input: {
 
   const scheduleClaimValidation = (claim: StageOneClaim): void => {
     const claimIndex = state.nextClaimIndex;
-    const promise = input
-      .validationLimiter(() => input.runValidation(claimIndex, claim))
-      .catch((error: unknown) => toValidationErrorResult(claimIndex, error));
+    // runValidation reports failures as results, never as rejections.
+    const promise = input.validationLimiter(() => input.runValidation(claimIndex, claim));
 
     const queued = enqueuePendingValidation(state, {
       claim,
@@ -109,8 +99,5 @@ export function createClaimValidationScheduler(input: {
     scheduleClaimValidation,
     retainClaimById,
     awaitAllValidations: async () => Promise.all(getPendingValidationPromises(state)),
-    settleAllValidations: async () => {
-      await Promise.allSettled(getPendingValidationPromises(state));
-    },
   };
 }

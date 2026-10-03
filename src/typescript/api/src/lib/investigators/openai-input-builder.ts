@@ -1,11 +1,25 @@
 import type { ResponseInput } from "openai/resources/responses/responses";
 import { validateAndSortImageOccurrences } from "@openerrata/shared";
-import { InvestigatorStructuredOutputError } from "./openai-errors.js";
-import type { InvestigatorImageOccurrence, ImagePlaceholder } from "./interface.js";
+import { InvestigatorInputError } from "./errors.js";
+import type {
+  InvestigatorImageOccurrence,
+  ImagePlaceholder,
+  InvestigatorJsonRecord,
+} from "./interface.js";
+
+/**
+ * The stage-1 request's `input`, alongside the form recorded in the attempt
+ * audit, where each image part carries the image's content hash (its
+ * ImageBlob) instead of the inline data URI that was sent.
+ */
+export interface AuditedRequestInput {
+  request: string | ResponseInput;
+  audit: string | InvestigatorJsonRecord[];
+}
 
 type ContentInputPart =
   | { type: "input_text"; text: string }
-  | { type: "input_image"; detail: "auto"; image_url: string };
+  | { type: "input_image"; dataUri: string; contentHash: string };
 
 function appendTextInputPart(contentParts: ContentInputPart[], text: string): void {
   if (text.length === 0) return;
@@ -13,6 +27,31 @@ function appendTextInputPart(contentParts: ContentInputPart[], text: string): vo
     type: "input_text",
     text,
   });
+}
+
+function toAuditedUserMessage(contentParts: ContentInputPart[]): AuditedRequestInput {
+  return {
+    request: [
+      {
+        role: "user",
+        content: contentParts.map((part) =>
+          part.type === "input_text"
+            ? part
+            : { type: "input_image" as const, detail: "auto" as const, image_url: part.dataUri },
+        ),
+      },
+    ],
+    audit: [
+      {
+        role: "user",
+        content: contentParts.map((part) =>
+          part.type === "input_text"
+            ? { type: part.type, text: part.text }
+            : { type: part.type, detail: "auto", imageContentHash: part.contentHash },
+        ),
+      },
+    ],
+  };
 }
 
 function requirePromptContentBounds(
@@ -27,7 +66,7 @@ function requirePromptContentBounds(
     contentEnd > userPrompt.length ||
     userPrompt.slice(contentStart, contentEnd) !== contentString
   ) {
-    throw new InvestigatorStructuredOutputError(
+    throw new InvestigatorInputError(
       "contentOffset does not point to contentString within the stage-1 user prompt",
     );
   }
@@ -43,15 +82,13 @@ function normalizeImageOccurrences(
     onValidationIssue: (issue): never => {
       switch (issue.code) {
         case "NON_CONTIGUOUS_ORIGINAL_INDEX":
-          throw new InvestigatorStructuredOutputError(
+          throw new InvestigatorInputError(
             "Image occurrences must use contiguous originalIndex values starting at 0",
           );
         case "OFFSET_EXCEEDS_CONTENT_LENGTH":
-          throw new InvestigatorStructuredOutputError(
-            "Image occurrence offset exceeds contentText length",
-          );
+          throw new InvestigatorInputError("Image occurrence offset exceeds contentText length");
         case "DECREASING_NORMALIZED_TEXT_OFFSET":
-          throw new InvestigatorStructuredOutputError(
+          throw new InvestigatorInputError(
             "Image occurrences must be non-decreasing by normalizedTextOffset",
           );
       }
@@ -93,7 +130,7 @@ function buildInputUsingTextOffsets(input: {
   contentString: string;
   contentOffset: number;
   normalizedOccurrences: InvestigatorImageOccurrence[];
-}): ResponseInput {
+}): AuditedRequestInput {
   const { contentStart, contentEnd } = requirePromptContentBounds(
     input.userPrompt,
     input.contentString,
@@ -126,8 +163,8 @@ function buildInputUsingTextOffsets(input: {
       seenResolvedContentHashes.add(occurrence.contentHash);
       contentParts.push({
         type: "input_image",
-        detail: "auto",
-        image_url: occurrence.imageDataUri,
+        dataUri: occurrence.imageDataUri,
+        contentHash: occurrence.contentHash,
       });
       continue;
     }
@@ -156,12 +193,7 @@ function buildInputUsingTextOffsets(input: {
   }
   appendTextInputPart(contentParts, input.userPrompt.slice(contentEnd));
 
-  return [
-    {
-      role: "user",
-      content: contentParts,
-    },
-  ];
+  return toAuditedUserMessage(contentParts);
 }
 
 /**
@@ -204,7 +236,7 @@ export function buildInitialInput(
   contentOffset: number,
   imageOccurrences: InvestigatorImageOccurrence[] | undefined,
   imagePlaceholders: ImagePlaceholder[] | undefined,
-): string | ResponseInput {
+): AuditedRequestInput {
   const shouldUsePlaceholderInterleaving =
     imagePlaceholders !== undefined && imagePlaceholders.length > 0;
   const normalizedOccurrences = normalizeImageOccurrences(
@@ -212,7 +244,7 @@ export function buildInitialInput(
     shouldUsePlaceholderInterleaving ? undefined : contentString,
   );
   if (normalizedOccurrences.length === 0) {
-    return userPrompt;
+    return { request: userPrompt, audit: userPrompt };
   }
 
   // No markdown placeholders available (e.g. markdownSource=NONE): interleave
@@ -238,7 +270,7 @@ export function buildInitialInput(
   const seenResolvedContentHashes = new Set<string>();
 
   // Split content at [IMAGE:N] patterns
-  const placeholderPattern = /\[IMAGE:(\d+)\]/g;
+  const placeholderPattern = /\[IMAGE:\d+\]/g;
   const contentParts: ContentInputPart[] = [];
 
   // Text before the content section
@@ -249,7 +281,7 @@ export function buildInitialInput(
   let match: RegExpExecArray | null;
 
   while ((match = placeholderPattern.exec(contentString)) !== null) {
-    const placeholderIndex = parseInt(match[1] ?? "0", 10);
+    const placeholderIndex = Number.parseInt(match[0].slice("[IMAGE:".length, -"]".length), 10);
     const placeholder = imagePlaceholders.find((p) => p.index === placeholderIndex);
 
     // Text between last position and this placeholder
@@ -274,8 +306,8 @@ export function buildInitialInput(
       consumedUrls.add(occurrence.sourceUrl);
       contentParts.push({
         type: "input_image",
-        detail: "auto",
-        image_url: occurrence.imageDataUri,
+        dataUri: occurrence.imageDataUri,
+        contentHash: occurrence.contentHash,
       });
       continue;
     }
@@ -314,21 +346,5 @@ export function buildInitialInput(
   // Text after the content section
   appendTextInputPart(contentParts, userPrompt.slice(contentEnd));
 
-  return [
-    {
-      role: "user",
-      content: contentParts,
-    },
-  ];
-}
-
-export function buildTwoStepRequestInputAudit(
-  userPrompt: string,
-  validationPrompt: string,
-): string {
-  return `=== Stage 1: Fact-check input ===
-${userPrompt}
-
-=== Stage 2: Validation input ===
-${validationPrompt}`;
+  return toAuditedUserMessage(contentParts);
 }

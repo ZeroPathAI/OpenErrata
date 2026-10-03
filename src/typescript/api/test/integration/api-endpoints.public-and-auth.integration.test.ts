@@ -5,7 +5,6 @@ import {
   INTEGRATION_LESSWRONG_FIXTURE_KEYS,
   InvestigatorExecutionError,
   MINIMUM_SUPPORTED_EXTENSION_VERSION,
-  OpenAIInvestigator,
   WORD_COUNT_LIMIT,
   appRouter,
   assert,
@@ -13,13 +12,13 @@ import {
   buildFailedAttemptAudit,
   buildLesswrongViewInput,
   buildSucceededAttemptAudit,
+  buildSucceededInvestigatorOutput,
   buildXViewInput,
   closeQueueUtils,
   createCaller,
   createContext,
   createDeterministicRandom,
   createMockRequestEvent,
-  ensureInvestigationQueued,
   ensurePostVersionForSeed,
   errorHasOpenErrataCode,
   getPrisma,
@@ -66,7 +65,6 @@ void [
   INTEGRATION_LESSWRONG_FIXTURE_KEYS,
   InvestigatorExecutionError,
   MINIMUM_SUPPORTED_EXTENSION_VERSION,
-  OpenAIInvestigator,
   WORD_COUNT_LIMIT,
   appRouter,
   assert,
@@ -74,13 +72,13 @@ void [
   buildFailedAttemptAudit,
   buildLesswrongViewInput,
   buildSucceededAttemptAudit,
+  buildSucceededInvestigatorOutput,
   buildXViewInput,
   closeQueueUtils,
   createCaller,
   createContext,
   createDeterministicRandom,
   createMockRequestEvent,
-  ensureInvestigationQueued,
   ensurePostVersionForSeed,
   errorHasOpenErrataCode,
   getPrisma,
@@ -145,11 +143,11 @@ void test("post.investigateNow allows user OpenAI key callers and returns inline
   assert.equal(result.claims.length, 1);
 });
 
-void test("post.investigateNow requeues existing failed investigations as PENDING", async () => {
+void test("post.investigateNow returns existing FAILED investigations unchanged", async () => {
   const caller = createCaller({ isAuthenticated: true });
   const input = buildXViewInput({
-    externalId: "investigate-now-requeue-failed-1",
-    observedContentText: "Canonical content should be retried after FAILED state.",
+    externalId: "investigate-now-failed-terminal-1",
+    observedContentText: "FAILED is terminal for this content version.",
   });
   const seeded = await seedInvestigationForXViewInput({
     viewInput: input,
@@ -160,67 +158,94 @@ void test("post.investigateNow requeues existing failed investigations as PENDIN
   const result = await caller.post.investigateNow(input);
 
   assert.equal(result.investigationId, seeded.investigationId);
-  assert.equal(result.status, "PENDING");
+  assert.equal(result.status, "FAILED");
   assert.equal(result.provenance, "CLIENT_FALLBACK");
 
-  const stored = await prisma.investigation.findUnique({
+  const stored = await prisma.investigation.findUniqueOrThrow({
     where: { id: seeded.investigationId },
-    select: { status: true, checkedAt: true },
+    select: { status: true },
   });
-  assert.ok(stored);
-  assert.equal(stored.status, "PENDING");
-  assert.equal(stored.checkedAt, null);
+  assert.equal(stored.status, "FAILED");
 });
 
-void test("post.investigateNow attaches first user key source while investigation is PENDING", async () => {
+void test("post.investigateNow attaches a user key only to the investigation its request creates", async () => {
   const firstCaller = createCaller({
-    userOpenAiApiKey: "sk-test-user-key-first",
+    userOpenAiApiKey: "sk-test-user-key-first-0123456789",
   });
   const secondCaller = createCaller({
-    userOpenAiApiKey: "sk-test-user-key-second",
+    userOpenAiApiKey: "sk-test-user-key-second-0123456789",
   });
   const input = buildXViewInput({
     externalId: "investigate-now-user-key-first-wins-1",
-    observedContentText: "Pending investigation should keep the first user key source.",
+    observedContentText: "The creating request's key funds the investigation.",
+  });
+
+  const firstResult = await firstCaller.post.investigateNow(input);
+  assert.equal(firstResult.status, "PENDING");
+  const created = await prisma.investigation.findUniqueOrThrow({
+    where: { id: firstResult.investigationId },
+    select: {
+      origin: true,
+      openAiKeySource: { select: { ciphertext: true, iv: true, authTag: true, keyId: true } },
+    },
+  });
+  assert.equal(created.origin, "USER_KEY_REQUEST");
+  assert.ok(created.openAiKeySource);
+
+  const secondResult = await secondCaller.post.investigateNow(input);
+  assert.equal(secondResult.investigationId, firstResult.investigationId);
+  const afterSecond = await prisma.investigationOpenAiKeySource.findUniqueOrThrow({
+    where: { investigationId: firstResult.investigationId },
+    select: { ciphertext: true, iv: true, authTag: true, keyId: true },
+  });
+  assert.deepEqual(afterSecond, created.openAiKeySource);
+});
+
+void test("post.investigateNow never attaches a user key to an investigation the server is paying for", async () => {
+  const caller = createCaller({ userOpenAiApiKey: "sk-test-user-key-late-0123456789" });
+  const input = buildXViewInput({
+    externalId: "investigate-now-user-key-no-takeover-1",
+    observedContentText: "A selector-admitted investigation keeps its server funding.",
   });
   const seeded = await seedInvestigationForXViewInput({
     viewInput: input,
     status: "PENDING",
     provenance: "CLIENT_FALLBACK",
   });
-
-  const firstResult = await firstCaller.post.investigateNow(input);
-  assert.equal(firstResult.investigationId, seeded.investigationId);
-  assert.equal(firstResult.status, "PENDING");
-
-  const storedAfterFirst = await prisma.investigationOpenAiKeySource.findUnique({
-    where: { investigationId: seeded.investigationId },
-    select: {
-      ciphertext: true,
-      iv: true,
-      authTag: true,
-      keyId: true,
-      expiresAt: true,
-    },
+  await prisma.investigation.update({
+    where: { id: seeded.investigationId },
+    data: { origin: "SELECTOR" },
   });
-  assert.ok(storedAfterFirst);
 
-  const secondResult = await secondCaller.post.investigateNow(input);
-  assert.equal(secondResult.investigationId, seeded.investigationId);
-  assert.equal(secondResult.status, "PENDING");
+  const result = await caller.post.investigateNow(input);
 
-  const storedAfterSecond = await prisma.investigationOpenAiKeySource.findUnique({
-    where: { investigationId: seeded.investigationId },
-    select: {
-      ciphertext: true,
-      iv: true,
-      authTag: true,
-      keyId: true,
-      expiresAt: true,
-    },
+  assert.equal(result.investigationId, seeded.investigationId);
+  assert.equal(result.status, "PENDING");
+  const stored = await prisma.investigation.findUniqueOrThrow({
+    where: { id: seeded.investigationId },
+    select: { origin: true, openAiKeySource: { select: { investigationId: true } } },
   });
-  assert.ok(storedAfterSecond);
-  assert.deepEqual(storedAfterSecond, storedAfterFirst);
+  assert.equal(stored.origin, "SELECTOR");
+  assert.equal(stored.openAiKeySource, null);
+});
+
+void test("post.investigateNow rejects a user key OpenAI refuses before creating anything", async () => {
+  const caller = createCaller({ userOpenAiApiKey: "sk-test-rejected-user-key" });
+  const input = buildXViewInput({
+    externalId: "investigate-now-user-key-rejected-1",
+    observedContentText: "A refused key must not create an investigation.",
+  });
+
+  await assert.rejects(caller.post.investigateNow(input), /x-openai-api-key was rejected/);
+
+  const registered = await prisma.post.findUniqueOrThrow({
+    where: { platform_externalId: { platform: "X", externalId: input.externalId } },
+    select: { versions: { select: { investigation: { select: { id: true } } } } },
+  });
+  assert.deepEqual(
+    registered.versions.map((version) => version.investigation),
+    [null],
+  );
 });
 
 void test("post.investigateNow recovers stale PROCESSING investigations to PENDING", async () => {
@@ -332,8 +357,9 @@ void test("selector recovers stale PROCESSING investigations using shared lifecy
     heartbeatAt: new Date(Date.now() - 5 * 60_000),
   });
 
-  const enqueued = await runSelector();
-  assert.ok(enqueued >= 1);
+  const summary = await runSelector({ dailyBudget: 0 });
+  assert.ok(summary.recovered >= 1);
+  assert.deepEqual(summary.failures, []);
 
   const stored = await prisma.investigation.findUnique({
     where: { id: processingInvestigation.id },
@@ -351,6 +377,104 @@ void test("selector recovers stale PROCESSING investigations using shared lifecy
     where: { investigationId: processingInvestigation.id },
   });
   assert.equal(storedLease, null);
+});
+
+async function selectorAdmissionsToday(): Promise<number> {
+  const dayStart = new Date();
+  dayStart.setUTCHours(0, 0, 0, 0);
+  return prisma.investigation.count({
+    where: { origin: "SELECTOR", admittedAt: { gte: dayStart } },
+  });
+}
+
+async function seedTopScoredPost(externalId: string, uniqueViewScore: number) {
+  const post = await seedPost({
+    platform: "X",
+    externalId,
+    url: `https://x.com/openerrata/status/${withIntegrationPrefix(externalId)}`,
+    contentText: `Selector admission candidate ${externalId}.`,
+  });
+  await prisma.post.update({ where: { id: post.id }, data: { uniqueViewScore } });
+  return post;
+}
+
+void test("selector admits at most its daily budget of new investigations per UTC day", async () => {
+  const post = await seedTopScoredPost("selector-daily-budget-1", 2_000_000_000);
+  const dailyBudget = (await selectorAdmissionsToday()) + 1;
+
+  const first = await runSelector({ dailyBudget });
+  assert.equal(first.admitted, 1);
+  assert.equal(first.budgetRemaining, 0);
+  assert.deepEqual(first.failures, []);
+  const admitted = await prisma.investigation.findUniqueOrThrow({
+    where: { postVersionId: post.postVersionId },
+    select: {
+      status: true,
+      origin: true,
+      input: { select: { postUrl: true } },
+    },
+  });
+  assert.deepEqual(admitted, {
+    status: "PENDING",
+    origin: "SELECTOR",
+    input: { postUrl: post.url },
+  });
+
+  // Running again the same day admits nothing more, however often it runs.
+  await seedTopScoredPost("selector-daily-budget-2", 2_000_000_001);
+  const second = await runSelector({ dailyBudget });
+  assert.equal(second.admitted, 0);
+  assert.equal(second.budgetRemaining, 0);
+});
+
+void test("selector funds an investigation whose user key was dropped, within its budget", async () => {
+  const post = await seedTopScoredPost("selector-adopts-unfunded-1", 2_000_000_010);
+  const unfunded = await seedPendingInvestigation({
+    postId: post.id,
+    contentHash: post.contentHash,
+    contentText: post.contentText,
+    provenance: "CLIENT_FALLBACK",
+  });
+  await prisma.investigation.update({
+    where: { id: unfunded.id },
+    data: { origin: "USER_KEY_REQUEST" },
+  });
+
+  const summary = await runSelector({ dailyBudget: (await selectorAdmissionsToday()) + 1 });
+
+  assert.equal(summary.admitted, 1);
+  const stored = await prisma.investigation.findUniqueOrThrow({
+    where: { id: unfunded.id },
+    select: { origin: true, status: true },
+  });
+  assert.deepEqual(stored, { origin: "SELECTOR", status: "PENDING" });
+});
+
+void test("selector-created investigations of edited posts get update lineage", async () => {
+  const post = await seedTopScoredPost("selector-update-lineage-1", 2_000_000_020);
+  const parent = await seedCompleteInvestigation({
+    postId: post.id,
+    contentHash: post.contentHash,
+    contentText: post.contentText,
+    provenance: "SERVER_VERIFIED",
+  });
+  const editedText = normalizeContent(`${post.contentText} An edited sentence.`);
+  const editedVersion = await ensurePostVersionForSeed({
+    postId: post.id,
+    contentHash: await hashContent(editedText),
+    contentText: editedText,
+    provenance: "CLIENT_FALLBACK",
+  });
+
+  const summary = await runSelector({ dailyBudget: (await selectorAdmissionsToday()) + 1 });
+
+  assert.equal(summary.admitted, 1);
+  const update = await prisma.investigation.findUniqueOrThrow({
+    where: { postVersionId: editedVersion.id },
+    select: { parentInvestigationId: true, contentDiff: true },
+  });
+  assert.equal(update.parentInvestigationId, parent.id);
+  assert.match(update.contentDiff ?? "", /An edited sentence\./);
 });
 
 void test("post.investigateNow rejects unauthenticated callers", async () => {
@@ -457,8 +581,108 @@ void test("post.batchStatus returns investigation state and incorrect claim coun
   assert.equal(notInvestigated.incorrectClaimCount, 0);
 });
 
-void test("public.getInvestigation hides non-COMPLETE investigations", async () => {
-  const caller = createCaller();
+interface GraphqlOrigin {
+  provenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK";
+  serverVerifiedAt: string | null;
+}
+
+async function queryPublicInvestigation(investigationId: string) {
+  const result = await queryPublicGraphql<{
+    publicInvestigation: {
+      investigation: { id: string; origin: GraphqlOrigin; corroborationCount: number };
+      post: { platform: Platform; externalId: string; url: string };
+      claims: { id: string }[];
+    } | null;
+  }>(
+    `
+      query PublicInvestigation($investigationId: ID!) {
+        publicInvestigation(investigationId: $investigationId) {
+          investigation {
+            id
+            origin {
+              provenance
+              serverVerifiedAt
+            }
+            corroborationCount
+          }
+          post {
+            platform
+            externalId
+            url
+          }
+          claims {
+            id
+          }
+        }
+      }
+    `,
+    { investigationId },
+  );
+  return result.publicInvestigation;
+}
+
+async function querySearchInvestigations(variables: {
+  query?: string;
+  platform?: Platform;
+  minClaimCount?: number;
+}): Promise<{ id: string; platform: Platform; origin: GraphqlOrigin }[]> {
+  const result = await queryPublicGraphql<{
+    searchInvestigations: {
+      investigations: { id: string; platform: Platform; origin: GraphqlOrigin }[];
+    };
+  }>(
+    `
+      query SearchInvestigations($query: String, $platform: Platform, $minClaimCount: Int) {
+        searchInvestigations(
+          query: $query
+          platform: $platform
+          minClaimCount: $minClaimCount
+          limit: 20
+          offset: 0
+        ) {
+          investigations {
+            id
+            platform
+            origin {
+              provenance
+              serverVerifiedAt
+            }
+          }
+        }
+      }
+    `,
+    variables,
+  );
+  return result.searchInvestigations.investigations;
+}
+
+async function queryPublicMetrics(variables: {
+  windowStart: string;
+  windowEnd: string;
+  platform?: Platform;
+}) {
+  const result = await queryPublicGraphql<{
+    publicMetrics: {
+      totalInvestigatedPosts: number;
+      investigatedPostsWithFlags: number;
+      factCheckIncidence: number | null;
+    };
+  }>(
+    `
+      query PublicMetrics($windowStart: DateTime, $windowEnd: DateTime, $platform: Platform) {
+        publicMetrics(windowStart: $windowStart, windowEnd: $windowEnd, platform: $platform) {
+          totalInvestigatedPosts
+          investigatedPostsWithFlags
+          factCheckIncidence
+        }
+      }
+    `,
+    variables,
+  );
+  return result.publicMetrics;
+}
+
+void test("publicInvestigation hides non-COMPLETE investigations", async () => {
   const post = await seedPost({
     platform: "LESSWRONG",
     externalId: "public-investigation-non-complete-hidden-1",
@@ -484,35 +708,11 @@ void test("public.getInvestigation hides non-COMPLETE investigations", async () 
   });
 
   for (const investigationId of [pending.id, failed.id]) {
-    const trpcResult = await caller.public.getInvestigation({
-      investigationId,
-    });
-    assert.equal(trpcResult, null);
-
-    const graphqlResult = await queryPublicGraphql<{
-      publicInvestigation: {
-        investigation: {
-          id: string;
-        };
-      } | null;
-    }>(
-      `
-        query PublicInvestigation($investigationId: ID!) {
-          publicInvestigation(investigationId: $investigationId) {
-            investigation {
-              id
-            }
-          }
-        }
-      `,
-      { investigationId },
-    );
-    assert.equal(graphqlResult.publicInvestigation, null);
+    assert.equal(await queryPublicInvestigation(investigationId), null);
   }
 });
 
-void test("public.getInvestigation returns complete investigation and trust signals", async () => {
-  const caller = createCaller();
+void test("publicInvestigation returns complete investigation and trust signals", async () => {
   const post = await seedPost({
     platform: "LESSWRONG",
     externalId: "public-investigation-1",
@@ -528,70 +728,18 @@ void test("public.getInvestigation returns complete investigation and trust sign
   });
   await seedClaimWithSource(investigation.id, 1);
 
-  const result = await caller.public.getInvestigation({
-    investigationId: investigation.id,
-  });
-
+  const result = await queryPublicInvestigation(investigation.id);
   assert.ok(result);
   assert.equal(result.investigation.id, investigation.id);
   assert.equal(result.investigation.origin.provenance, "SERVER_VERIFIED");
   assert.equal(result.investigation.corroborationCount, 0);
-  assert.equal(typeof result.investigation.origin.serverVerifiedAt, "string");
+  assert.notEqual(result.investigation.origin.serverVerifiedAt, null);
   assert.equal(result.post.platform, post.platform);
   assert.equal(result.post.externalId, post.externalId);
   assert.equal(result.claims.length, 1);
-
-  const graphqlResult = await queryPublicGraphql<{
-    publicInvestigation: {
-      investigation: {
-        id: string;
-        origin: {
-          provenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK";
-          serverVerifiedAt: string | null;
-        };
-        corroborationCount: number;
-      };
-      post: {
-        platform: Platform;
-        externalId: string;
-      };
-      claims: { id: string }[];
-    } | null;
-  }>(
-    `
-      query PublicInvestigation($investigationId: ID!) {
-        publicInvestigation(investigationId: $investigationId) {
-          investigation {
-            id
-            origin {
-              provenance
-              serverVerifiedAt
-            }
-            corroborationCount
-          }
-          post {
-            platform
-            externalId
-          }
-          claims {
-            id
-          }
-        }
-      }
-    `,
-    { investigationId: investigation.id },
-  );
-
-  assert.ok(graphqlResult.publicInvestigation);
-  const graphqlInvestigation = graphqlResult.publicInvestigation.investigation;
-  assert.equal(graphqlInvestigation.id, investigation.id);
-  assert.equal(graphqlInvestigation.origin.provenance, "SERVER_VERIFIED");
-  assert.equal(graphqlInvestigation.corroborationCount, 0);
-  assert.notEqual(graphqlInvestigation.origin.serverVerifiedAt, null);
 });
 
-void test("public.getInvestigation returns CLIENT_FALLBACK without corroboration", async () => {
-  const caller = createCaller();
+void test("publicInvestigation returns CLIENT_FALLBACK without corroboration", async () => {
   const post = await seedPost({
     platform: "LESSWRONG",
     externalId: "public-investigation-fallback-1",
@@ -605,54 +753,14 @@ void test("public.getInvestigation returns CLIENT_FALLBACK without corroboration
     provenance: "CLIENT_FALLBACK",
   });
 
-  const result = await caller.public.getInvestigation({
-    investigationId: investigation.id,
-  });
-
+  const result = await queryPublicInvestigation(investigation.id);
   assert.ok(result);
-  assert.equal(result.investigation.id, investigation.id);
   assert.equal(result.investigation.origin.provenance, "CLIENT_FALLBACK");
   assert.equal(result.investigation.corroborationCount, 0);
-  assert.equal(result.investigation.origin.serverVerifiedAt, undefined);
-
-  const graphqlResult = await queryPublicGraphql<{
-    publicInvestigation: {
-      investigation: {
-        origin: {
-          provenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK";
-          serverVerifiedAt: string | null;
-        };
-        corroborationCount: number;
-      };
-    } | null;
-  }>(
-    `
-      query PublicInvestigation($investigationId: ID!) {
-        publicInvestigation(investigationId: $investigationId) {
-          investigation {
-            origin {
-              provenance
-              serverVerifiedAt
-            }
-            corroborationCount
-          }
-        }
-      }
-    `,
-    { investigationId: investigation.id },
-  );
-
-  assert.ok(graphqlResult.publicInvestigation);
-  assert.equal(
-    graphqlResult.publicInvestigation.investigation.origin.provenance,
-    "CLIENT_FALLBACK",
-  );
-  assert.equal(graphqlResult.publicInvestigation.investigation.corroborationCount, 0);
-  assert.equal(graphqlResult.publicInvestigation.investigation.origin.serverVerifiedAt, null);
+  assert.equal(result.investigation.origin.serverVerifiedAt, null);
 });
 
-void test("public.getInvestigation reports corroborationCount for CLIENT_FALLBACK investigations", async () => {
-  const caller = createCaller();
+void test("publicInvestigation reports corroborationCount for CLIENT_FALLBACK investigations", async () => {
   const post = await seedPost({
     platform: "LESSWRONG",
     externalId: "public-investigation-corroborated-1",
@@ -668,10 +776,7 @@ void test("public.getInvestigation reports corroborationCount for CLIENT_FALLBAC
   await seedClaimWithSource(investigation.id, 1);
   await seedCorroborationCredits(investigation.id, 3);
 
-  const result = await caller.public.getInvestigation({
-    investigationId: investigation.id,
-  });
-
+  const result = await queryPublicInvestigation(investigation.id);
   assert.ok(result);
   assert.equal(result.investigation.id, investigation.id);
   assert.equal(result.investigation.origin.provenance, "CLIENT_FALLBACK");
@@ -679,8 +784,7 @@ void test("public.getInvestigation reports corroborationCount for CLIENT_FALLBAC
   assert.equal(result.claims.length, 1);
 });
 
-void test("public.getPostInvestigations lists all complete investigations for a post", async () => {
-  const caller = createCaller();
+void test("postInvestigations lists all complete investigations for a post", async () => {
   const post = await seedPost({
     platform: "LESSWRONG",
     externalId: "public-post-investigations-all-complete-1",
@@ -706,44 +810,24 @@ void test("public.getPostInvestigations lists all complete investigations for a 
   });
   await seedClaimWithSource(serverVerifiedInvestigation.id, 1);
 
-  const result = await caller.public.getPostInvestigations({
-    platform: post.platform,
-    externalId: post.externalId,
-  });
-
-  assert.ok(result.post);
-  assert.equal(result.post.platform, post.platform);
-  assert.equal(result.post.externalId, post.externalId);
-  assert.equal(result.investigations.length, 2);
-
-  const byId = new Map<string, (typeof result.investigations)[number]>(
-    result.investigations.map((item) => [item.id, item]),
-  );
-  const fallback = byId.get(fallbackInvestigation.id);
-  assert.ok(fallback);
-  assert.equal(fallback.origin.provenance, "CLIENT_FALLBACK");
-  assert.equal(fallback.corroborationCount, 2);
-
-  const serverVerified = byId.get(serverVerifiedInvestigation.id);
-  assert.ok(serverVerified);
-  assert.equal(serverVerified.origin.provenance, "SERVER_VERIFIED");
-  assert.equal(serverVerified.claimCount, 1);
-
-  const graphqlResult = await queryPublicGraphql<{
+  const result = await queryPublicGraphql<{
     postInvestigations: {
+      post: { platform: Platform; externalId: string } | null;
       investigations: {
         id: string;
-        origin: {
-          provenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK";
-          serverVerifiedAt: string | null;
-        };
+        origin: GraphqlOrigin;
         corroborationCount: number;
+        claimCount: number;
       }[];
     };
   }>(
     `
       query PostInvestigations($platform: Platform!, $externalId: String!) {
         postInvestigations(platform: $platform, externalId: $externalId) {
+          post {
+            platform
+            externalId
+          }
           investigations {
             id
             origin {
@@ -751,6 +835,7 @@ void test("public.getPostInvestigations lists all complete investigations for a 
               serverVerifiedAt
             }
             corroborationCount
+            claimCount
           }
         }
       }
@@ -761,12 +846,25 @@ void test("public.getPostInvestigations lists all complete investigations for a 
     },
   );
 
-  assert.equal(graphqlResult.postInvestigations.investigations.length, 2);
+  assert.deepEqual(result.postInvestigations.post, {
+    platform: post.platform,
+    externalId: post.externalId,
+  });
+  const byId = new Map(result.postInvestigations.investigations.map((item) => [item.id, item]));
+  assert.equal(byId.size, 2);
+
+  const fallback = byId.get(fallbackInvestigation.id);
+  assert.ok(fallback);
+  assert.equal(fallback.origin.provenance, "CLIENT_FALLBACK");
+  assert.equal(fallback.corroborationCount, 2);
+
+  const serverVerified = byId.get(serverVerifiedInvestigation.id);
+  assert.ok(serverVerified);
+  assert.equal(serverVerified.origin.provenance, "SERVER_VERIFIED");
+  assert.equal(serverVerified.claimCount, 1);
 });
 
-void test("public.searchInvestigations filters by query/platform and includes fallback matches", async () => {
-  const caller = createCaller();
-
+void test("searchInvestigations filters by query/platform and includes fallback matches", async () => {
   const moonMarker = "graphql-search-marker-astronomy-moon";
   const moonPost = await seedPost({
     platform: "LESSWRONG",
@@ -823,121 +921,33 @@ void test("public.searchInvestigations filters by query/platform and includes fa
     provenance: "CLIENT_FALLBACK",
   });
 
-  const queryResult = await caller.public.searchInvestigations({
-    query: moonMarker,
-    limit: 20,
-    offset: 0,
-  });
-
-  const queryIds = new Set<string>(queryResult.investigations.map((item) => item.id));
+  const queryResult = await querySearchInvestigations({ query: moonMarker });
+  const queryIds = new Set(queryResult.map((item) => item.id));
   assert.equal(queryIds.has(moonInvestigation.id), true);
   assert.equal(queryIds.has(multiClaimMoonInvestigation.id), true);
   assert.equal(queryIds.has(fallbackMoonInvestigation.id), true);
   assert.equal(
-    queryResult.investigations.every((item) => item.platform === "LESSWRONG"),
+    queryResult.every((item) => item.platform === "LESSWRONG"),
     true,
   );
 
-  const minClaimCountResult = await caller.public.searchInvestigations({
+  const minClaimCountResult = await querySearchInvestigations({
     query: moonMarker,
     minClaimCount: 2,
-    limit: 20,
-    offset: 0,
   });
-
   assert.deepEqual(
-    minClaimCountResult.investigations.map((item) => item.id),
+    minClaimCountResult.map((item) => item.id),
     [multiClaimMoonInvestigation.id],
   );
 
-  const platformResult = await caller.public.searchInvestigations({
-    platform: "X",
-    limit: 20,
-    offset: 0,
-  });
-
-  const platformIds = new Set<string>(platformResult.investigations.map((item) => item.id));
+  const platformIds = new Set(
+    (await querySearchInvestigations({ platform: "X" })).map((item) => item.id),
+  );
   assert.equal(platformIds.has(xInvestigation.id), true);
   assert.equal(platformIds.has(moonInvestigation.id), false);
-
-  const graphqlResult = await queryPublicGraphql<{
-    searchInvestigations: {
-      investigations: {
-        id: string;
-        origin: {
-          provenance: "SERVER_VERIFIED" | "CLIENT_FALLBACK";
-          serverVerifiedAt: string | null;
-        };
-      }[];
-    };
-  }>(
-    `
-      query SearchInvestigations($query: String!, $limit: Int!, $offset: Int!) {
-        searchInvestigations(query: $query, limit: $limit, offset: $offset) {
-          investigations {
-            id
-            origin {
-              provenance
-              serverVerifiedAt
-            }
-          }
-        }
-      }
-    `,
-    {
-      query: moonMarker,
-      limit: 20,
-      offset: 0,
-    },
-  );
-  const graphqlIds = new Set(
-    graphqlResult.searchInvestigations.investigations.map((item) => item.id),
-  );
-  assert.equal(graphqlIds.has(moonInvestigation.id), true);
-  assert.equal(graphqlIds.has(multiClaimMoonInvestigation.id), true);
-  assert.equal(graphqlIds.has(fallbackMoonInvestigation.id), true);
-
-  const minClaimCountGraphqlResult = await queryPublicGraphql<{
-    searchInvestigations: {
-      investigations: {
-        id: string;
-      }[];
-    };
-  }>(
-    `
-      query SearchInvestigationsWithMinClaimCount(
-        $query: String!
-        $minClaimCount: Int!
-        $limit: Int!
-        $offset: Int!
-      ) {
-        searchInvestigations(
-          query: $query
-          minClaimCount: $minClaimCount
-          limit: $limit
-          offset: $offset
-        ) {
-          investigations {
-            id
-          }
-        }
-      }
-    `,
-    {
-      query: moonMarker,
-      minClaimCount: 2,
-      limit: 20,
-      offset: 0,
-    },
-  );
-  assert.deepEqual(
-    minClaimCountGraphqlResult.searchInvestigations.investigations.map((item) => item.id),
-    [multiClaimMoonInvestigation.id],
-  );
 });
 
-void test("public.getMetrics counts all complete investigations and honors filters", async () => {
-  const caller = createCaller();
+void test("publicMetrics counts all complete investigations and honors filters", async () => {
   const metricsWindowStart = "2026-02-23T00:00:00.000Z";
   const metricsWindowEnd = "2026-02-23T23:59:59.999Z";
 
@@ -985,56 +995,26 @@ void test("public.getMetrics counts all complete investigations and honors filte
   });
   await seedCorroborationCredits(fallbackInvestigation.id, 1);
 
-  const allMetrics = await caller.public.getMetrics({
-    windowStart: metricsWindowStart,
-    windowEnd: metricsWindowEnd,
-  });
-  assert.equal(allMetrics.totalInvestigatedPosts, 3);
-  assert.equal(allMetrics.investigatedPostsWithFlags, 1);
-  assert.equal(allMetrics.factCheckIncidence, 1 / 3);
-
-  const xMetrics = await caller.public.getMetrics({
-    platform: "X",
-    windowStart: metricsWindowStart,
-    windowEnd: metricsWindowEnd,
-  });
-  assert.equal(xMetrics.totalInvestigatedPosts, 2);
-  assert.equal(xMetrics.investigatedPostsWithFlags, 1);
-  assert.equal(xMetrics.factCheckIncidence, 0.5);
-
-  const emptyWindowMetrics = await caller.public.getMetrics({
-    windowStart: "2026-02-24T00:00:00.000Z",
-    windowEnd: "2026-02-24T23:59:59.999Z",
-  });
-  assert.equal(emptyWindowMetrics.totalInvestigatedPosts, 0);
-  assert.equal(emptyWindowMetrics.investigatedPostsWithFlags, 0);
-  assert.equal(emptyWindowMetrics.factCheckIncidence, 0);
-
-  const graphqlResult = await queryPublicGraphql<{
-    publicMetrics: {
-      totalInvestigatedPosts: number;
-      investigatedPostsWithFlags: number;
-      factCheckIncidence: number;
-    };
-  }>(
-    `
-      query PublicMetrics($windowStart: DateTime, $windowEnd: DateTime, $platform: Platform) {
-        publicMetrics(windowStart: $windowStart, windowEnd: $windowEnd, platform: $platform) {
-          totalInvestigatedPosts
-          investigatedPostsWithFlags
-          factCheckIncidence
-        }
-      }
-    `,
-    {
+  assert.deepEqual(
+    await queryPublicMetrics({ windowStart: metricsWindowStart, windowEnd: metricsWindowEnd }),
+    { totalInvestigatedPosts: 3, investigatedPostsWithFlags: 1, factCheckIncidence: 1 / 3 },
+  );
+  assert.deepEqual(
+    await queryPublicMetrics({
       windowStart: metricsWindowStart,
       windowEnd: metricsWindowEnd,
       platform: "X",
-    },
+    }),
+    { totalInvestigatedPosts: 2, investigatedPostsWithFlags: 1, factCheckIncidence: 0.5 },
   );
-  assert.equal(graphqlResult.publicMetrics.totalInvestigatedPosts, 2);
-  assert.equal(graphqlResult.publicMetrics.investigatedPostsWithFlags, 1);
-  assert.equal(graphqlResult.publicMetrics.factCheckIncidence, 0.5);
+  // No investigations in the window: incidence is undefined, not 0.
+  assert.deepEqual(
+    await queryPublicMetrics({
+      windowStart: "2026-02-24T00:00:00.000Z",
+      windowEnd: "2026-02-24T23:59:59.999Z",
+    }),
+    { totalInvestigatedPosts: 0, investigatedPostsWithFlags: 0, factCheckIncidence: null },
+  );
 });
 
 void test("post.validateSettings reports instance api-key acceptance", async () => {
@@ -1065,7 +1045,6 @@ void test("createContext authenticates active instance API keys from database", 
   );
 
   assert.equal(context.isAuthenticated, true);
-  assert.equal(context.canInvestigate, true);
 });
 
 void test("createContext rejects unknown and revoked instance API keys", async () => {
@@ -1097,11 +1076,6 @@ void test("createContext rejects unknown and revoked instance API keys", async (
       context.isAuthenticated,
       false,
       `Expected unauthenticated context for ${rejectedKeyCase.label}`,
-    );
-    assert.equal(
-      context.canInvestigate,
-      false,
-      `Expected non-investigating context for ${rejectedKeyCase.label}`,
     );
   }
 });

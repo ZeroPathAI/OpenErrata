@@ -89,7 +89,7 @@ test("buildInitialInput interleaves images at [IMAGE:N] placeholders with duplic
   ];
 
   const contentOffset = userPrompt.indexOf(contentString);
-  const input = buildInitialInput(
+  const { request: input } = buildInitialInput(
     userPrompt,
     contentString,
     contentOffset,
@@ -152,7 +152,7 @@ test("buildInitialInput falls back to text-offset interleaving when placeholders
   ];
 
   const contentOffset = userPrompt.indexOf(contentString);
-  const input = buildInitialInput(
+  const { request: input } = buildInitialInput(
     userPrompt,
     contentString,
     contentOffset,
@@ -242,6 +242,61 @@ test("buildInitialInput yields equivalent multimodal payload on retry placeholde
     firstAttemptInput,
     "Retry reconstruction should preserve semantic multimodal input",
   );
+});
+
+test("buildInitialInput audits image parts by content hash instead of data URI", () => {
+  const contentString = "Alpha Beta";
+  const userPrompt = `prefix\n${contentString}\nsuffix`;
+  const imageOccurrences: InvestigatorImageOccurrence[] = [
+    {
+      originalIndex: 0,
+      normalizedTextOffset: 6,
+      sourceUrl: "https://example.com/a.png",
+      resolution: "resolved",
+      imageDataUri: "data:image/png;base64,AAA",
+      contentHash: "hash-a",
+    },
+  ];
+
+  const { request, audit } = buildInitialInput(
+    userPrompt,
+    contentString,
+    userPrompt.indexOf(contentString),
+    imageOccurrences,
+    undefined,
+  );
+
+  assert.deepEqual(request, [
+    {
+      role: "user",
+      content: [
+        { type: "input_text", text: "prefix\n" },
+        { type: "input_text", text: "Alpha " },
+        { type: "input_image", detail: "auto", image_url: "data:image/png;base64,AAA" },
+        { type: "input_text", text: "Beta" },
+        { type: "input_text", text: "\nsuffix" },
+      ],
+    },
+  ]);
+  assert.deepEqual(audit, [
+    {
+      role: "user",
+      content: [
+        { type: "input_text", text: "prefix\n" },
+        { type: "input_text", text: "Alpha " },
+        { type: "input_image", detail: "auto", imageContentHash: "hash-a" },
+        { type: "input_text", text: "Beta" },
+        { type: "input_text", text: "\nsuffix" },
+      ],
+    },
+  ]);
+});
+
+test("buildInitialInput sends and audits the plain prompt when there are no images", () => {
+  assert.deepEqual(buildInitialInput("prompt with content", "content", 12, [], undefined), {
+    request: "prompt with content",
+    audit: "prompt with content",
+  });
 });
 
 test("buildValidationImageContextNotes describes resolved duplicates distinctly", () => {

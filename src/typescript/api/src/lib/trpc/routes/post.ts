@@ -20,46 +20,31 @@ import {
   batchStatusInputSchema,
   batchStatusOutputSchema,
   settingsValidationOutputSchema,
-  contentProvenanceSchema,
   isExtensionVersionAtLeast,
-  type ContentProvenance,
   type ExtensionRuntimeErrorCode,
   type Platform,
 } from "@openerrata/shared";
 import { getOrCreateCurrentPrompt } from "$lib/services/prompt.js";
 import { TRPCError } from "@trpc/server";
-
-/** Parse provenance from required InvestigationInput snapshots. */
-function parseProvenance(input: {
-  investigationId: string;
-  snapshot: { provenance: string } | null;
-}): ContentProvenance {
-  if (input.snapshot === null) {
-    throw new TRPCError({
-      code: "INTERNAL_SERVER_ERROR",
-      message: `Investigation ${input.investigationId} has no InvestigationInput snapshot`,
-    });
-  }
-  return contentProvenanceSchema.parse(input.snapshot.provenance);
-}
-import { InvestigationWordLimitError } from "$lib/services/investigation-lifecycle.js";
+import {
+  InvestigationWordLimitError,
+  requestInvestigation,
+  UserOpenAiKeyRejectedError,
+  type InvestigationRequester,
+} from "$lib/services/investigate-now.js";
 import { maybeIncrementUniqueViewScore } from "$lib/services/view-credit.js";
-import { attachOpenAiKeySourceIfPending } from "$lib/services/user-key-source.js";
 import { validateOpenAiApiKeyForSettings } from "$lib/services/openai-key-validation.js";
 import { registerObservedVersion, findPostVersionById } from "./post/content-storage.js";
 import {
   loadInvestigationWithClaims,
-  findCompletedInvestigationByPostVersionId,
-  findLatestServerVerifiedCompleteInvestigationForPost,
-  selectSourceInvestigationForUpdate,
-  toPriorInvestigationResult,
+  findCarriedForwardClaims,
   formatClaims,
-  ensureInvestigationsWithUpdateMetadata,
   maybeRecordCorroboration,
   unreachableInvestigationStatus,
   requireCompleteCheckedAtIso,
   prismaInvestigationRepository,
   parseProgressClaims,
+  type InvestigationRepository,
 } from "./post/investigation-queries.js";
 
 // ---------------------------------------------------------------------------
@@ -124,6 +109,107 @@ function assertSupportedExtensionVersion(input: {
 }
 
 // ---------------------------------------------------------------------------
+// investigateNow funding
+// ---------------------------------------------------------------------------
+
+/**
+ * Who would pay for a run this investigateNow admits: the request's own
+ * OpenAI key when it sends one, otherwise the instance key it authenticated
+ * with. Requests with neither cannot ask for investigations.
+ */
+function investigationRequester(ctx: {
+  isAuthenticated: boolean;
+  userOpenAiApiKey: string | null;
+}): InvestigationRequester {
+  if (ctx.userOpenAiApiKey !== null) {
+    return { kind: "USER_OPENAI_KEY", apiKey: ctx.userOpenAiApiKey };
+  }
+  if (ctx.isAuthenticated) {
+    return { kind: "INSTANCE_API_KEY" };
+  }
+  throw new TRPCError({
+    code: "UNAUTHORIZED",
+    message: "Valid API key or x-openai-api-key required for investigateNow",
+  });
+}
+
+function userOpenAiKeyRejectedError(error: UserOpenAiKeyRejectedError): TRPCError {
+  const { outcome } = error;
+  switch (outcome.openaiApiKeyStatus) {
+    case "missing":
+      return new TRPCError({ code: "UNAUTHORIZED", message: "x-openai-api-key is empty" });
+    case "format_invalid":
+    case "invalid":
+      return new TRPCError({
+        code: "UNAUTHORIZED",
+        message: `x-openai-api-key was rejected: ${outcome.openaiApiKeyMessage}`,
+      });
+    case "authenticated_restricted":
+      return new TRPCError({
+        code: "FORBIDDEN",
+        message: `x-openai-api-key cannot run investigations: ${outcome.openaiApiKeyMessage}`,
+      });
+    case "error":
+      return new TRPCError({
+        code: "BAD_GATEWAY",
+        message: `Could not verify x-openai-api-key with OpenAI: ${outcome.openaiApiKeyMessage}`,
+      });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Investigation status projection
+// ---------------------------------------------------------------------------
+
+type LoadedInvestigation = NonNullable<Awaited<ReturnType<typeof loadInvestigationWithClaims>>>;
+
+/**
+ * Client-facing status of one investigation. Shared by `recordViewAndGetStatus`
+ * (lookup by post version) and `getInvestigation` (lookup by id) so a viewer
+ * sees the same projection — including live progress claims and the interim
+ * claims carried forward to the version (spec §2.8) — however the
+ * investigation was found.
+ */
+async function projectInvestigationStatus(
+  repo: InvestigationRepository,
+  investigation: LoadedInvestigation,
+) {
+  const provenance = investigation.input.provenance;
+
+  switch (investigation.status) {
+    case "COMPLETE":
+      return {
+        investigationState: "INVESTIGATED" as const,
+        provenance,
+        claims: formatClaims(investigation.claims),
+      };
+    case "PENDING":
+    case "PROCESSING": {
+      const progress = parseProgressClaims(investigation.lease?.progressClaims ?? null);
+      return {
+        investigationState: "INVESTIGATING" as const,
+        status: investigation.status,
+        provenance,
+        pendingClaims: progress.pendingClaims,
+        confirmedClaims: progress.confirmedClaims,
+        priorInvestigationResult: await findCarriedForwardClaims(repo, {
+          id: investigation.postVersion.id,
+          postId: investigation.postVersion.postId,
+          contentText: investigation.postVersion.contentBlob.contentText,
+        }),
+      };
+    }
+    case "FAILED":
+      return {
+        investigationState: "FAILED" as const,
+        provenance,
+      };
+    default:
+      return unreachableInvestigationStatus(investigation.status);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
@@ -154,10 +240,10 @@ export const postRouter = router({
     .mutation(async ({ input, ctx }) => {
       const postVersion = await findPostVersionById(ctx.prisma, input.postVersionId);
       if (postVersion === null) {
-        return {
-          investigationState: "NOT_INVESTIGATED" as const,
-          priorInvestigationResult: null,
-        };
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Unknown post version",
+        });
       }
 
       await ctx.prisma.post.update({
@@ -175,42 +261,32 @@ export const postRouter = router({
         ctx.ipRangeKey,
       );
 
-      await maybeRecordCorroboration(
-        prismaInvestigationRepository(ctx.prisma),
-        postVersion.id,
-        ctx.viewerKey,
-        ctx.isAuthenticated,
-      );
+      const repo = prismaInvestigationRepository(ctx.prisma);
+      await maybeRecordCorroboration(repo, postVersion.id, ctx.viewerKey, ctx.isAuthenticated);
 
-      const complete = await findCompletedInvestigationByPostVersionId(
-        prismaInvestigationRepository(ctx.prisma),
-        postVersion.id,
-      );
-
-      if (complete) {
+      // At most one investigation exists per post version (spec §3.5). If it
+      // exists in any state, report that state with its id: a viewer of a post
+      // someone else (or the selector) queued must be able to poll it.
+      const existing = await ctx.prisma.investigation.findUnique({
+        where: { postVersionId: postVersion.id },
+        select: { id: true },
+      });
+      const investigation =
+        existing === null ? null : await loadInvestigationWithClaims(repo, existing.id);
+      if (investigation !== null) {
         return {
-          investigationState: "INVESTIGATED" as const,
-          provenance: parseProvenance({
-            investigationId: complete.id,
-            snapshot: complete.input,
-          }),
-          claims: formatClaims(complete.claims),
+          investigationId: investigation.id,
+          ...(await projectInvestigationStatus(repo, investigation)),
         };
       }
 
-      const latestServerVerifiedSource = await findLatestServerVerifiedCompleteInvestigationForPost(
-        prismaInvestigationRepository(ctx.prisma),
-        postVersion.post.id,
-      );
-
-      const sourceInvestigation = selectSourceInvestigationForUpdate(
-        latestServerVerifiedSource,
-        postVersion.id,
-      );
-
       return {
         investigationState: "NOT_INVESTIGATED" as const,
-        priorInvestigationResult: toPriorInvestigationResult(sourceInvestigation),
+        priorInvestigationResult: await findCarriedForwardClaims(repo, {
+          id: postVersion.id,
+          postId: postVersion.post.id,
+          contentText: postVersion.contentBlob.contentText,
+        }),
       };
     }),
 
@@ -218,10 +294,8 @@ export const postRouter = router({
     .input(getInvestigationInputSchema)
     .output(getInvestigationOutputSchema)
     .query(async ({ input, ctx }) => {
-      const investigation = await loadInvestigationWithClaims(
-        prismaInvestigationRepository(ctx.prisma),
-        input.investigationId,
-      );
+      const repo = prismaInvestigationRepository(ctx.prisma);
+      const investigation = await loadInvestigationWithClaims(repo, input.investigationId);
 
       if (!investigation) {
         return {
@@ -230,60 +304,21 @@ export const postRouter = router({
         };
       }
 
-      const provenance = parseProvenance({
-        investigationId: investigation.id,
-        snapshot: investigation.input,
-      });
-
-      switch (investigation.status) {
-        case "COMPLETE":
-          return {
-            investigationState: "INVESTIGATED" as const,
-            provenance,
-            claims: formatClaims(investigation.claims),
-            checkedAt: requireCompleteCheckedAtIso(investigation.id, investigation.checkedAt),
-          };
-        case "PENDING":
-        case "PROCESSING": {
-          const progress = parseProgressClaims(investigation.lease?.progressClaims ?? null);
-          return {
-            investigationState: "INVESTIGATING" as const,
-            status: investigation.status,
-            provenance,
-            pendingClaims: progress.pendingClaims,
-            confirmedClaims: progress.confirmedClaims,
-            priorInvestigationResult:
-              investigation.parentInvestigation !== null &&
-              investigation.parentInvestigation.status === "COMPLETE"
-                ? {
-                    oldClaims: formatClaims(investigation.parentInvestigation.claims),
-                    sourceInvestigationId: investigation.parentInvestigation.id,
-                  }
-                : null,
-            checkedAt: investigation.checkedAt?.toISOString(),
-          };
-        }
-        case "FAILED":
-          return {
-            investigationState: "FAILED" as const,
-            provenance,
-            checkedAt: investigation.checkedAt?.toISOString(),
-          };
-        default:
-          return unreachableInvestigationStatus(investigation.status);
+      const status = await projectInvestigationStatus(repo, investigation);
+      if (status.investigationState === "INVESTIGATED") {
+        return {
+          ...status,
+          checkedAt: requireCompleteCheckedAtIso(investigation.id, investigation.checkedAt),
+        };
       }
+      return status;
     }),
 
   investigateNow: extensionProcedure
     .input(investigateNowInputSchema)
     .output(investigateNowOutputSchema)
     .mutation(async ({ input, ctx }) => {
-      if (!ctx.canInvestigate) {
-        throw new TRPCError({
-          code: "UNAUTHORIZED",
-          message: "Valid API key or x-openai-api-key required for investigateNow",
-        });
-      }
+      const requester = investigationRequester(ctx);
 
       const postVersion = await findPostVersionById(ctx.prisma, input.postVersionId);
       if (postVersion === null) {
@@ -293,84 +328,14 @@ export const postRouter = router({
         });
       }
 
-      const complete = await findCompletedInvestigationByPostVersionId(
-        prismaInvestigationRepository(ctx.prisma),
-        postVersion.id,
-      );
-      if (complete) {
-        return {
-          investigationId: complete.id,
-          status: complete.status,
-          provenance: parseProvenance({
-            investigationId: complete.id,
-            snapshot: complete.input,
-          }),
-          claims: formatClaims(complete.claims),
-        };
-      }
-
-      const latestServerVerifiedSource = await findLatestServerVerifiedCompleteInvestigationForPost(
-        prismaInvestigationRepository(ctx.prisma),
-        postVersion.post.id,
-      );
-
-      const sourceInvestigation = selectSourceInvestigationForUpdate(
-        latestServerVerifiedSource,
-        postVersion.id,
-      );
-
       const prompt = await getOrCreateCurrentPrompt();
+      let investigationId: string;
       try {
-        const { investigation } = await ensureInvestigationsWithUpdateMetadata({
-          prisma: ctx.prisma,
+        ({ investigationId } = await requestInvestigation(ctx.prisma, {
           postVersion,
           promptId: prompt.id,
-          sourceInvestigation,
-          onPendingInvestigation: async ({ prisma, investigation: pendingInvestigation }) => {
-            if (ctx.userOpenAiApiKey === null) return;
-            await attachOpenAiKeySourceIfPending(prisma, {
-              investigationId: pendingInvestigation.id,
-              openAiApiKey: ctx.userOpenAiApiKey,
-            });
-          },
-        });
-
-        const loadedInvestigation = await loadInvestigationWithClaims(
-          prismaInvestigationRepository(ctx.prisma),
-          investigation.id,
-        );
-        if (!loadedInvestigation) {
-          throw new TRPCError({
-            code: "INTERNAL_SERVER_ERROR",
-            message: `Investigation ${investigation.id} disappeared after ensureInvestigationsWithUpdateMetadata`,
-          });
-        }
-
-        const provenance = parseProvenance({
-          investigationId: loadedInvestigation.id,
-          snapshot: loadedInvestigation.input,
-        });
-
-        switch (loadedInvestigation.status) {
-          case "COMPLETE": {
-            return {
-              investigationId: loadedInvestigation.id,
-              status: loadedInvestigation.status,
-              provenance,
-              claims: formatClaims(loadedInvestigation.claims),
-            };
-          }
-          case "PENDING":
-          case "PROCESSING":
-          case "FAILED":
-            return {
-              investigationId: loadedInvestigation.id,
-              status: loadedInvestigation.status,
-              provenance,
-            };
-          default:
-            return unreachableInvestigationStatus(loadedInvestigation.status);
-        }
+          requester,
+        }));
       } catch (error) {
         if (error instanceof InvestigationWordLimitError) {
           throw new TRPCError({
@@ -378,7 +343,42 @@ export const postRouter = router({
             message: error.message,
           });
         }
+        if (error instanceof UserOpenAiKeyRejectedError) {
+          throw userOpenAiKeyRejectedError(error);
+        }
         throw error;
+      }
+
+      const investigation = await loadInvestigationWithClaims(
+        prismaInvestigationRepository(ctx.prisma),
+        investigationId,
+      );
+      if (!investigation) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: `Investigation ${investigationId} disappeared after investigateNow`,
+        });
+      }
+
+      const provenance = investigation.input.provenance;
+      switch (investigation.status) {
+        case "COMPLETE":
+          return {
+            investigationId: investigation.id,
+            status: investigation.status,
+            provenance,
+            claims: formatClaims(investigation.claims),
+          };
+        case "PENDING":
+        case "PROCESSING":
+        case "FAILED":
+          return {
+            investigationId: investigation.id,
+            status: investigation.status,
+            provenance,
+          };
+        default:
+          return unreachableInvestigationStatus(investigation.status);
       }
     }),
 
@@ -400,39 +400,37 @@ export const postRouter = router({
       const lookupKey = (platform: Platform, externalId: string, versionHash: string): string =>
         `${platform}:${externalId}:${versionHash}`;
 
-      const versions =
-        input.posts.length === 0
-          ? []
-          : await ctx.prisma.postVersion.findMany({
-              where: {
-                OR: input.posts.map((post) => ({
-                  versionHash: post.versionHash,
-                  post: {
-                    platform: post.platform,
-                    externalId: post.externalId,
-                  },
-                })),
-              },
-              select: {
-                versionHash: true,
-                post: {
-                  select: {
-                    platform: true,
-                    externalId: true,
-                  },
-                },
-                investigation: {
-                  select: {
-                    status: true,
-                    _count: {
-                      select: {
-                        claims: true,
-                      },
-                    },
-                  },
+      // batchStatusInputSchema requires at least one post.
+      const versions = await ctx.prisma.postVersion.findMany({
+        where: {
+          OR: input.posts.map((post) => ({
+            versionHash: post.versionHash,
+            post: {
+              platform: post.platform,
+              externalId: post.externalId,
+            },
+          })),
+        },
+        select: {
+          versionHash: true,
+          post: {
+            select: {
+              platform: true,
+              externalId: true,
+            },
+          },
+          investigation: {
+            select: {
+              status: true,
+              _count: {
+                select: {
+                  claims: true,
                 },
               },
-            });
+            },
+          },
+        },
+      });
 
       const byLookupKey = new Map<string, (typeof versions)[number]>();
       for (const version of versions) {

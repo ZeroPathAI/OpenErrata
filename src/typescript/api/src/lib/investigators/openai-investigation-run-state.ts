@@ -1,6 +1,6 @@
 import type { InvestigationResult } from "@openerrata/shared";
 import type { InvestigatorInput } from "./interface.js";
-import type { PerClaimValidationResult } from "./openai-claim-validator.js";
+import type { ClaimValidationResult } from "./openai-claim-validator.js";
 
 type StageOneClaim = InvestigationResult["claims"][number];
 type OldClaim = Extract<InvestigatorInput, { isUpdate: true }>["oldClaims"][number];
@@ -9,7 +9,7 @@ export interface PendingValidationEntry {
   claim: StageOneClaim;
   claimIndex: number;
   submissionOrder: number;
-  promise: Promise<PerClaimValidationResult>;
+  promise: Promise<ClaimValidationResult>;
   settled: boolean;
 }
 
@@ -60,7 +60,7 @@ export function enqueuePendingValidation(
   state: InvestigationRunState,
   input: {
     claim: StageOneClaim;
-    promise: Promise<PerClaimValidationResult>;
+    promise: Promise<ClaimValidationResult>;
   },
 ): {
   nextState: InvestigationRunState;
@@ -94,7 +94,7 @@ export function settlePendingValidation(
   state: InvestigationRunState,
   input: {
     pendingIndex: number;
-    result: PerClaimValidationResult;
+    result: ClaimValidationResult;
   },
 ): InvestigationRunState {
   const pending = state.pendingValidations[input.pendingIndex];
@@ -103,7 +103,7 @@ export function settlePendingValidation(
   }
 
   if (pending.settled) {
-    return state;
+    throw new Error(`Pending validation already settled: ${input.pendingIndex.toString()}`);
   }
 
   const pendingValidations = state.pendingValidations.map((entry, index) =>
@@ -111,7 +111,7 @@ export function settlePendingValidation(
   );
 
   const confirmedClaims =
-    input.result.error === null && input.result.approved
+    input.result.kind === "approved"
       ? [
           ...state.confirmedClaims,
           {
@@ -182,6 +182,6 @@ export function getConfirmedClaims(state: InvestigationRunState): StageOneClaim[
 
 export function getPendingValidationPromises(
   state: InvestigationRunState,
-): Promise<PerClaimValidationResult>[] {
+): Promise<ClaimValidationResult>[] {
   return state.pendingValidations.map((entry) => entry.promise);
 }

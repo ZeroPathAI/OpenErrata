@@ -18,3 +18,10 @@ export function toOptionalDate(
   }
   return parsed;
 }
+
+/** Midnight UTC at the start of the day containing `date`. */
+export function startOfUtcDay(date: Date): Date {
+  const dayStart = new Date(date);
+  dayStart.setUTCHours(0, 0, 0, 0);
+  return dayStart;
+}

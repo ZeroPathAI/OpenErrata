@@ -1,7 +1,8 @@
 import { getEnv } from "./env.js";
 
-export function getSelectorBudget(): number {
-  return getEnv().SELECTOR_BUDGET;
+/** Maximum SELECTOR admissions per UTC day (SPEC §2.10). */
+export function getSelectorDailyBudget(): number {
+  return getEnv().SELECTOR_DAILY_BUDGET;
 }
 
 export function getIpRangeCreditCap(): number {

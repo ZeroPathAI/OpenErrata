@@ -37,6 +37,8 @@ interface LesswrongFixtureDefinition {
   fixtureKey: string;
   externalId: string;
   postUrl: string;
+  /** The post's author on LessWrong; the live canary checks identity extraction against it. */
+  author: { slug: string; displayName: string };
 }
 
 const INTEGRATION_LESSWRONG_FIXTURE_DEFINITIONS: Record<
@@ -48,6 +50,7 @@ const INTEGRATION_LESSWRONG_FIXTURE_DEFINITIONS: Record<
     externalId: "ioZxrP7BhS5ArK59w",
     postUrl:
       "https://www.lesswrong.com/posts/ioZxrP7BhS5ArK59w/did-claude-3-opus-align-itself-via-gradient-hacking",
+    author: { slug: "fiora-starlight", displayName: "Fiora Starlight" },
   },
 };
 

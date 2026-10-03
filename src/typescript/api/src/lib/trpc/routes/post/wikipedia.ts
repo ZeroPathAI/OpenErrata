@@ -8,7 +8,7 @@
 
 import {
   normalizeWikipediaTitleToken,
-  parseWikipediaIdentity,
+  parseWikipediaUrlIdentity,
   wikipediaExternalIdFromPageId,
   type ViewPostInput,
 } from "@openerrata/shared";
@@ -49,10 +49,15 @@ function canonicalizeWikipediaMetadata(
   };
 }
 
+/**
+ * The stored external ID is always `{language}:{pageId}` from metadata. The
+ * submitted URL must be consistent with that metadata: same language, and the
+ * same page — by page ID when the URL carries one, otherwise by title.
+ */
 function deriveWikipediaExternalId(
   input: Pick<WikipediaViewInput, "url"> & { metadata: WikipediaViewInput["metadata"] },
 ): string {
-  const urlIdentity = parseWikipediaIdentity(input.url);
+  const urlIdentity = parseWikipediaUrlIdentity(input.url);
   if (urlIdentity === null) {
     throw new TRPCError({
       code: "BAD_REQUEST",
@@ -67,22 +72,23 @@ function deriveWikipediaExternalId(
     });
   }
 
-  if (urlIdentity.pageId !== null && urlIdentity.pageId !== input.metadata.pageId) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: "Wikipedia metadata.pageId does not match URL page ID",
-    });
-  }
-
-  if (
-    urlIdentity.pageId === null &&
-    urlIdentity.title !== null &&
-    urlIdentity.title !== input.metadata.title
-  ) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: "Wikipedia metadata.title does not match URL article title",
-    });
+  switch (urlIdentity.kind) {
+    case "PAGE_ID":
+      if (urlIdentity.pageId !== input.metadata.pageId) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Wikipedia metadata.pageId does not match URL page ID",
+        });
+      }
+      break;
+    case "TITLE":
+      if (urlIdentity.title !== input.metadata.title) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Wikipedia metadata.title does not match URL article title",
+        });
+      }
+      break;
   }
 
   return wikipediaExternalIdFromPageId(input.metadata.language, input.metadata.pageId);

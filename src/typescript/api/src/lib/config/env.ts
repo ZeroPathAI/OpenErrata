@@ -7,7 +7,7 @@ import { z } from "zod";
  * the API changes in a way that breaks older extensions, bump this constant
  * alongside that change.
  */
-export const MINIMUM_SUPPORTED_EXTENSION_VERSION = "0.2.0";
+export const MINIMUM_SUPPORTED_EXTENSION_VERSION = "0.4.0";
 
 const positiveIntegerFromEnv = z.preprocess((value) => {
   if (value === undefined || value === null || value === "") return undefined;
@@ -42,16 +42,14 @@ const baseEnvironmentSchema = z.object({
       "DATABASE_URL must use postgres:// or postgresql://",
     ),
   OPENAI_API_KEY: z.string().trim().min(1).optional(),
-  OPENAI_MODEL_ID: z.string().trim().min(1).default("gpt-5.4"),
-  OPENAI_MAX_RESPONSE_TOOL_ROUNDS: positiveIntegerFromEnv.default(150),
-  WORKER_CONCURRENCY: positiveIntegerFromEnv.default(250),
-  HMAC_SECRET: z.string().trim().min(1, "HMAC_SECRET is required"),
-  SELECTOR_BUDGET: positiveIntegerFromEnv.default(100),
-  IP_RANGE_CREDIT_CAP: positiveIntegerFromEnv.default(10),
+  OPENAI_MAX_RESPONSE_TOOL_ROUNDS: positiveIntegerFromEnv,
+  WORKER_CONCURRENCY: positiveIntegerFromEnv,
+  /** Maximum investigations the selector admits per UTC day. */
+  SELECTOR_DAILY_BUDGET: positiveIntegerFromEnv,
+  IP_RANGE_CREDIT_CAP: positiveIntegerFromEnv,
   BLOB_STORAGE_BUCKET: requiredNonEmptyStringFromEnv,
   BLOB_STORAGE_ACCESS_KEY_ID: requiredNonEmptyStringFromEnv,
   BLOB_STORAGE_SECRET_ACCESS_KEY: requiredNonEmptyStringFromEnv,
-  BLOB_STORAGE_PUBLIC_URL_PREFIX: requiredNonEmptyStringFromEnv,
   DATABASE_ENCRYPTION_KEY: requiredNonEmptyStringFromEnv,
   DATABASE_ENCRYPTION_KEY_ID: optionalNonEmptyStringFromEnv.default("primary"),
 });

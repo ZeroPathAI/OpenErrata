@@ -4,7 +4,6 @@ import {
   INTEGRATION_LESSWRONG_FIXTURE_KEYS,
   InvestigatorExecutionError,
   MINIMUM_SUPPORTED_EXTENSION_VERSION,
-  OpenAIInvestigator,
   WORD_COUNT_LIMIT,
   appRouter,
   assert,
@@ -12,13 +11,13 @@ import {
   buildFailedAttemptAudit,
   buildLesswrongViewInput,
   buildSucceededAttemptAudit,
+  buildSucceededInvestigatorOutput,
   buildXViewInput,
   closeQueueUtils,
   createCaller,
   createContext,
   createDeterministicRandom,
   createMockRequestEvent,
-  ensureInvestigationQueued,
   ensurePostVersionForSeed,
   errorHasOpenErrataCode,
   getPrisma,
@@ -56,6 +55,10 @@ import {
   withMockLesswrongFetch,
 } from "./api-endpoints.integration.shared.js";
 import { createInvestigateNowFuzzRoundScenario } from "./helpers/investigate-now-scenario-dsl.js";
+import {
+  findCarriedForwardClaims,
+  prismaInvestigationRepository,
+} from "../../src/lib/trpc/routes/post/investigation-queries.js";
 
 void [
   EMPTY_IMAGE_OCCURRENCES_HASH,
@@ -63,7 +66,6 @@ void [
   INTEGRATION_LESSWRONG_FIXTURE_KEYS,
   InvestigatorExecutionError,
   MINIMUM_SUPPORTED_EXTENSION_VERSION,
-  OpenAIInvestigator,
   WORD_COUNT_LIMIT,
   appRouter,
   assert,
@@ -71,13 +73,13 @@ void [
   buildFailedAttemptAudit,
   buildLesswrongViewInput,
   buildSucceededAttemptAudit,
+  buildSucceededInvestigatorOutput,
   buildXViewInput,
   closeQueueUtils,
   createCaller,
   createContext,
   createDeterministicRandom,
   createMockRequestEvent,
-  ensureInvestigationQueued,
   ensurePostVersionForSeed,
   errorHasOpenErrataCode,
   getPrisma,
@@ -115,7 +117,7 @@ void [
   withMockLesswrongFetch,
   createInvestigateNowFuzzRoundScenario,
 ];
-void test("post.recordViewAndGetStatus returns interim old claims from latest complete server-verified investigation without queueing", async () => {
+void test("post.recordViewAndGetStatus carries forward only the server-verified claims whose text is still on the page, without queueing", async () => {
   const caller = createCaller();
   const externalId = "view-post-update-interim-1";
   const previousHtml = "<article><p>The moon is made of green cheese.</p></article>";
@@ -147,8 +149,11 @@ void test("post.recordViewAndGetStatus returns interim old claims from latest co
     contentText: previousCanonicalText,
     provenance: "SERVER_VERIFIED",
   });
-  await seedClaimWithSource(sourceInvestigation.id, 1);
-  await seedClaimWithSource(sourceInvestigation.id, 2);
+  const survivingClaim = await seedClaimWithSource(sourceInvestigation.id, 1, {
+    text: "The moon is made of",
+  });
+  // The edit removed the text this claim corrects, so it no longer applies.
+  await seedClaimWithSource(sourceInvestigation.id, 2, { text: "made of green cheese" });
 
   const currentInput = buildLesswrongViewInput({
     externalId,
@@ -163,7 +168,10 @@ void test("post.recordViewAndGetStatus returns interim old claims from latest co
   assert.notEqual(interimResult, null);
   assert.ok(interimResult);
   assert.equal(interimResult.sourceInvestigationId, sourceInvestigation.id);
-  assert.equal(interimResult.oldClaims.length, 2);
+  assert.deepEqual(
+    interimResult.oldClaims.map((claim) => claim.id),
+    [survivingClaim.id],
+  );
 
   const currentCanonicalText = lesswrongHtmlToNormalizedText(currentHtml);
   const currentCanonicalHash = await hashContent(currentCanonicalText);
@@ -208,7 +216,7 @@ void test("post.recordViewAndGetStatus returns interim old claims from latest co
   );
 });
 
-void test("post.recordViewAndGetStatus does not reuse CLIENT_FALLBACK investigations as interim update claims", async () => {
+void test("post.recordViewAndGetStatus carries forward CLIENT_FALLBACK investigations as interim claims", async () => {
   const caller = createCaller();
   const externalId = "view-post-update-interim-fallback-source-1";
   const previousHtml = "<article><p>Venus has one moon.</p></article>";
@@ -231,7 +239,9 @@ void test("post.recordViewAndGetStatus does not reuse CLIENT_FALLBACK investigat
     contentText: previousCanonicalText,
     provenance: "CLIENT_FALLBACK",
   });
-  await seedClaimWithSource(fallbackOnlySource.id, 11);
+  const survivingClaim = await seedClaimWithSource(fallbackOnlySource.id, 11, {
+    text: "Venus has",
+  });
 
   const currentInput = buildLesswrongViewInput({
     externalId,
@@ -242,10 +252,15 @@ void test("post.recordViewAndGetStatus does not reuse CLIENT_FALLBACK investigat
   );
 
   assert.equal(result.investigationState, "NOT_INVESTIGATED");
-  assert.equal(result.priorInvestigationResult, null);
+  assert.ok(result.priorInvestigationResult);
+  assert.equal(result.priorInvestigationResult.sourceInvestigationId, fallbackOnlySource.id);
+  assert.deepEqual(
+    result.priorInvestigationResult.oldClaims.map((claim) => claim.id),
+    [survivingClaim.id],
+  );
 });
 
-void test("post.recordViewAndGetStatus reuses latest complete SERVER_VERIFIED interim claims when canonical provenance is CLIENT_FALLBACK", async () => {
+void test("post.recordViewAndGetStatus carries forward SERVER_VERIFIED claims to a CLIENT_FALLBACK version", async () => {
   const caller = createCaller();
   const externalId = "view-post-update-interim-client-fallback-canonical-1";
   const previousInput = buildXViewInput({
@@ -273,7 +288,7 @@ void test("post.recordViewAndGetStatus reuses latest complete SERVER_VERIFIED in
     contentText: previousCanonicalText,
     provenance: "SERVER_VERIFIED",
   });
-  await seedClaimWithSource(sourceInvestigation.id, 41);
+  await seedClaimWithSource(sourceInvestigation.id, 41, { text: "Mercury has" });
 
   const currentInput = buildXViewInput({
     externalId,
@@ -287,10 +302,10 @@ void test("post.recordViewAndGetStatus reuses latest complete SERVER_VERIFIED in
   assert.ok(interimResult);
   assert.equal(interimResult.sourceInvestigationId, sourceInvestigation.id);
   assert.equal(interimResult.oldClaims.length, 1);
-  assert.equal(interimResult.oldClaims[0]?.text, "Claim 41");
+  assert.equal(interimResult.oldClaims[0]?.text, "Mercury has");
 });
 
-void test("post.recordViewAndGetStatus uses newest complete SERVER_VERIFIED investigation as interim source", async () => {
+void test("post.recordViewAndGetStatus takes interim claims from the newest complete investigation of any provenance", async () => {
   const caller = createCaller();
   const externalId = "view-post-update-interim-newest-source-1";
   const baselineHtml = "<article><p>Jupiter has 79 moons.</p></article>";
@@ -323,7 +338,7 @@ void test("post.recordViewAndGetStatus uses newest complete SERVER_VERIFIED inve
     provenance: "SERVER_VERIFIED",
     checkedAt: new Date("2026-02-01T00:00:00.000Z"),
   });
-  await seedClaimWithSource(olderSource.id, 21);
+  await seedClaimWithSource(olderSource.id, 21, { text: "Jupiter has" });
 
   const newerSourceText = normalizeContent("Jupiter has exactly 92 moons.");
   const newerSourceHash = await hashContent(newerSourceText);
@@ -331,10 +346,10 @@ void test("post.recordViewAndGetStatus uses newest complete SERVER_VERIFIED inve
     postId: post.id,
     contentHash: newerSourceHash,
     contentText: newerSourceText,
-    provenance: "SERVER_VERIFIED",
+    provenance: "CLIENT_FALLBACK",
     checkedAt: new Date("2026-02-20T00:00:00.000Z"),
   });
-  await seedClaimWithSource(newerSource.id, 22);
+  await seedClaimWithSource(newerSource.id, 22, { text: "Jupiter has" });
 
   const currentInput = buildLesswrongViewInput({
     externalId,
@@ -350,7 +365,7 @@ void test("post.recordViewAndGetStatus uses newest complete SERVER_VERIFIED inve
   assert.ok(newestInterimResult);
   assert.equal(newestInterimResult.sourceInvestigationId, newerSource.id);
   assert.equal(newestInterimResult.oldClaims.length, 1);
-  assert.equal(newestInterimResult.oldClaims[0]?.text, "Claim 22");
+  assert.equal(newestInterimResult.oldClaims[0]?.text, "Jupiter has");
 });
 
 void test("post.recordViewAndGetStatus returns INVESTIGATED for current-version complete result even when an older interim source exists", async () => {
@@ -407,4 +422,81 @@ void test("post.recordViewAndGetStatus returns INVESTIGATED for current-version 
   assert.equal(result.provenance, "SERVER_VERIFIED");
   assert.equal(result.claims.length, 1);
   assert.equal(result.claims[0]?.text, "Claim 32");
+});
+
+void test("post.recordViewAndGetStatus reports no interim claims when none of the source's claims is still on the page", async () => {
+  const caller = createCaller();
+  const externalId = "view-post-update-interim-none-surviving-1";
+  const previousInput = buildXViewInput({
+    externalId,
+    observedContentText: "Neptune has sixteen moons.",
+  });
+  await caller.post.recordViewAndGetStatus(previousInput);
+  const post = await prisma.post.findUniqueOrThrow({
+    where: {
+      platform_externalId: {
+        platform: previousInput.platform,
+        externalId: previousInput.externalId,
+      },
+    },
+    select: { id: true },
+  });
+  const previousText = normalizeContent(previousInput.observedContentText);
+  const source = await seedCompleteInvestigation({
+    postId: post.id,
+    contentHash: await hashContent(previousText),
+    contentText: previousText,
+    provenance: "CLIENT_FALLBACK",
+  });
+  await seedClaimWithSource(source.id, 51, { text: "Neptune has sixteen moons." });
+
+  const result = await caller.post.recordViewAndGetStatus(
+    buildXViewInput({
+      externalId,
+      observedContentText: "Neptune's moons are still being counted.",
+    }),
+  );
+
+  assert.equal(result.investigationState, "NOT_INVESTIGATED");
+  assert.equal(result.priorInvestigationResult, null);
+});
+
+void test("findCarriedForwardClaims never uses the requested version's own investigation as its prior", async () => {
+  const post = await seedPost({
+    platform: "X",
+    externalId: "interim-never-self-1",
+    url: "https://x.com/openerrata/status/interim-never-self-1",
+    contentText: "Uranus has 28 moons.",
+  });
+  const olderText = normalizeContent("Uranus has 27 moons.");
+  const olderSource = await seedCompleteInvestigation({
+    postId: post.id,
+    contentHash: await hashContent(olderText),
+    contentText: olderText,
+    provenance: "SERVER_VERIFIED",
+    checkedAt: new Date("2026-02-01T00:00:00.000Z"),
+  });
+  const olderClaim = await seedClaimWithSource(olderSource.id, 61, { text: "Uranus has" });
+  // The requested version's own investigation is the post's newest complete one.
+  const ownInvestigation = await seedCompleteInvestigation({
+    postId: post.id,
+    contentHash: post.contentHash,
+    contentText: post.contentText,
+    provenance: "SERVER_VERIFIED",
+    checkedAt: new Date("2026-03-01T00:00:00.000Z"),
+  });
+  await seedClaimWithSource(ownInvestigation.id, 62, { text: "Uranus has 28 moons." });
+
+  const carried = await findCarriedForwardClaims(prismaInvestigationRepository(prisma), {
+    id: post.postVersionId,
+    postId: post.id,
+    contentText: post.contentText,
+  });
+
+  assert.ok(carried);
+  assert.equal(carried.sourceInvestigationId, olderSource.id);
+  assert.deepEqual(
+    carried.oldClaims.map((claim) => claim.id),
+    [olderClaim.id],
+  );
 });

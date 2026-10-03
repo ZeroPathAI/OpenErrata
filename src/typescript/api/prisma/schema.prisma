@@ -30,13 +30,6 @@ enum InvestigationProvider {
   ANTHROPIC
 }
 
-enum InvestigationModel {
-  OPENAI_GPT_5
-  OPENAI_GPT_5_MINI
-  ANTHROPIC_CLAUDE_SONNET
-  ANTHROPIC_CLAUDE_OPUS
-}
-
 enum ContentProvenance {
   SERVER_VERIFIED
   CLIENT_FALLBACK
@@ -53,22 +46,53 @@ enum InvestigationAttemptOutcome {
   FAILED
 }
 
+enum InvestigationAttemptRequestKind {
+  // One round of the stage-1 fact-check tool loop.
+  FACT_CHECK_ROUND
+  // One stage-2 per-claim validation call.
+  CLAIM_VALIDATION
+  // Pre-2026-10 merged audit: attempts recorded before per-request auditing
+  // squashed every provider request of the attempt into one record (request
+  // fields of stage 1 with stage-2 text appended, output items of all
+  // responses, summed usage). Migrated as-is; never written by current code.
+  LEGACY_COMBINED
+}
+
+// Who admitted an investigation for execution, which also fixes who pays for
+// its runs (SPEC §3.7):
+//   SELECTOR         — background selection; server key; counts against the
+//                      selector's per-UTC-day budget (SELECTOR_DAILY_BUDGET).
+//   INSTANCE_REQUEST — investigateNow from an instance-API-key client; server key.
+//   USER_KEY_REQUEST — investigateNow funded by the requester's OpenAI key
+//                      (InvestigationOpenAiKeySource). If that key is dropped
+//                      (unusable or rejected by OpenAI) the investigation is
+//                      unfunded until the selector or a new request admits it.
+enum InvestigationOrigin {
+  SELECTOR
+  INSTANCE_REQUEST
+  USER_KEY_REQUEST
+}
+
 // ─── Models ──────────────────────────────────────────────────────────
 
 model Post {
-  id              String           @id @default(cuid())
-  platform        Platform
-  externalId      String
-  url             String
-  authorId        String?
-  author          Author?          @relation(fields: [authorId], references: [id])
-  viewCount       Int              @default(0)
-  uniqueViewScore Int              @default(0)
-  lastViewedAt    DateTime?
-  versions        PostVersion[]
-  viewCredits     PostViewCredit[]
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
+  id                 String           @id @default(cuid())
+  platform           Platform
+  externalId         String
+  // url and author are identity-bound (SPEC §2.9): when a server fetch verifies
+  // the post they come from the platform response and identityVerifiedAt is
+  // set; once set, unverified client data never overwrites them.
+  url                String
+  authorId           String?
+  author             Author?          @relation(fields: [authorId], references: [id])
+  identityVerifiedAt DateTime?
+  viewCount          Int              @default(0)
+  uniqueViewScore    Int              @default(0)
+  lastViewedAt       DateTime?
+  versions           PostVersion[]
+  viewCredits        PostViewCredit[]
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
 
   @@unique([platform, externalId])
   @@index([viewCount])
@@ -132,7 +156,6 @@ model HtmlBlob {
 
   lesswrongServerVersionMetas LesswrongVersionMeta[] @relation("LesswrongServerHtml")
   lesswrongClientVersionMetas LesswrongVersionMeta[] @relation("LesswrongClientHtml")
-  substackServerVersionMetas  SubstackVersionMeta[]  @relation("SubstackServerHtml")
   substackClientVersionMetas  SubstackVersionMeta[]  @relation("SubstackClientHtml")
   wikipediaServerVersionMetas WikipediaVersionMeta[] @relation("WikipediaServerHtml")
   wikipediaClientVersionMetas WikipediaVersionMeta[] @relation("WikipediaClientHtml")
@@ -232,8 +255,7 @@ model SubstackVersionMeta {
   slug                 String
   title                String
   subtitle             String?
-  serverHtmlBlobId     String?
-  serverHtmlBlob       HtmlBlob?   @relation("SubstackServerHtml", fields: [serverHtmlBlobId], references: [id], onDelete: Restrict)
+  // Substack has no server-side canonical fetch, so only client HTML exists.
   clientHtmlBlobId     String?
   clientHtmlBlob       HtmlBlob?   @relation("SubstackClientHtml", fields: [clientHtmlBlobId], references: [id], onDelete: Restrict)
   imageUrls            String[]
@@ -300,23 +322,32 @@ model Investigation {
   promptId              String
   prompt                Prompt                 @relation(fields: [promptId], references: [id])
   provider              InvestigationProvider
-  model                 InvestigationModel
+  // Provider model id the stage-1 fact-check requests were sent to (e.g.
+  // "gpt-6.1-sol"), recorded when the investigation completes.
+  // INV-INV-MODEL-AT-COMPLETION: model is set iff status = COMPLETE.
+  // Enforced by CHECK constraint "Investigation_model_consistency_check".
+  model                 String?
+  // Provider-reported model revision of the final stage-1 fact-check response.
   modelVersion          String?
   // INV-INV-CHECKED-AT-CONSISTENCY: checkedAt is set iff status = COMPLETE.
   // Enforced by CHECK constraint "Investigation_checked_at_consistency_check".
   checkedAt             DateTime?
   queuedAt              DateTime               @default(now())
-  // Monotonically increasing attempt counter. Incremented atomically when a
-  // worker claims the lease. Gives each retry a distinct attemptNumber for
-  // the InvestigationAttempt audit trail.
+  origin                InvestigationOrigin
+  // When the current origin admitted (agreed to fund) the investigation. The
+  // selector's daily budget counts SELECTOR admissions per UTC day.
+  admittedAt            DateTime
+  // Monotonically increasing attempt counter, never reset. Incremented
+  // atomically when a worker claims the lease, so every attempt gets a distinct
+  // attemptNumber in the InvestigationAttempt audit trail.
   attemptCount          Int                    @default(0)
   // Set on transient-failure reclaim with exponential backoff. The selector
   // skips PENDING investigations where retryAfter > now, preventing immediate
   // re-enqueue from defeating the backoff delay. Cleared on lease claim.
   retryAfter            DateTime?
-  // INV-LEASE: The InvestigationLease row exists iff the investigation is
-  // PROCESSING and has an active lease holder. Structurally prevents
-  // leaseOwner/leaseExpiresAt without PROCESSING, and vice versa.
+  // INV-LEASE: an InvestigationLease row exists iff status = PROCESSING.
+  // Enforced at commit by the deferred constraint triggers
+  // "enforce_lease_status_on_*_trigger".
   lease                 InvestigationLease?
   openAiKeySource       InvestigationOpenAiKeySource?
   attempts              InvestigationAttempt[]
@@ -330,14 +361,14 @@ model Investigation {
   @@unique([postVersionId])
   @@index([parentInvestigationId])
   @@index([status])
+  @@index([origin, admittedAt])
 }
 
-// INV-LEASE: The existence of an InvestigationLease row means "this
-// investigation is PROCESSING and has an active lease holder". All fields
+// INV-LEASE: an InvestigationLease row exists iff its investigation is
+// PROCESSING (deferred constraint triggers check this at commit). All fields
 // are NOT NULL — structurally prevents partial lease states. The row is
-// deleted on every terminal transition (COMPLETE, FAILED) and on lease
-// release (transient failure → PENDING), so progressClaims is automatically
-// cleaned up without needing CLEARED_PROGRESS_CLAIMS sentinel values.
+// deleted on every transition out of PROCESSING (COMPLETE, FAILED, release to
+// PENDING, expired-lease recovery), so progressClaims is cleaned up with it.
 model InvestigationLease {
   investigationId String        @id
   investigation   Investigation @relation(fields: [investigationId], references: [id], onDelete: Cascade)
@@ -351,16 +382,26 @@ model InvestigationLease {
   @@index([leaseExpiresAt])
 }
 
+// Everything the worker feeds the investigator that could change after queue
+// time, captured once when the investigation is created so every attempt sees
+// the same input (SPEC §2.4.4, §2.12).
 model InvestigationInput {
-  investigationId         String   @id
-  investigation           Investigation? @relation("InvestigationInputOwner")
+  investigationId            String            @id
+  investigation              Investigation?    @relation("InvestigationInputOwner")
   // Immutable after insert; enforced by trigger "reject_investigation_input_updates_trigger".
-  provenance              ContentProvenance
-  contentHash             String
-  markdownSource          MarkdownSource
-  markdown                String? // null iff markdownSource = NONE
-  markdownRendererVersion String? // null iff markdownSource = NONE
-  createdAt               DateTime @default(now())
+  provenance                 ContentProvenance
+  contentHash                String
+  markdownSource             MarkdownSource
+  markdown                   String? // null iff markdownSource = NONE
+  markdownRendererVersion    String? // null iff markdownSource = NONE
+  // Source URL of the image behind each `[IMAGE:N]` placeholder in markdown,
+  // indexed by N. Empty when markdownSource = NONE.
+  imagePlaceholderSourceUrls String[]
+  postUrl                    String
+  authorName                 String?
+  postPublishedAt            DateTime?
+  hasVideo                   Boolean
+  createdAt                  DateTime          @default(now())
 }
 
 model InvestigationOpenAiKeySource {
@@ -402,63 +443,103 @@ model InvestigationImage {
   @@index([imageBlobId])
 }
 
+// One row per worker execution of an investigation (SPEC §2.12). Rows are
+// insert-only: attemptNumber strictly increases per investigation, so each
+// attempt's audit is written exactly once, at its terminal transition.
 model InvestigationAttempt {
-  id                      String                              @id @default(cuid())
-  investigationId         String
-  investigation           Investigation                       @relation(fields: [investigationId], references: [id], onDelete: Cascade)
-  attemptNumber           Int
-  outcome                 InvestigationAttemptOutcome
-  requestModel            String
-  requestInstructions     String
-  requestInput            String
-  requestReasoningEffort  String?
-  requestReasoningSummary String?
-  responseId              String?
-  responseStatus          String?
-  responseModelVersion    String?
-  responseOutputText      String?
-  startedAt               DateTime
-  completedAt             DateTime?
-  requestedTools          InvestigationAttemptRequestedTool[]
-  outputItems             InvestigationAttemptOutputItem[]
-  toolCalls               InvestigationAttemptToolCall[]
-  usage                   InvestigationAttemptUsage?
-  error                   InvestigationAttemptError?
-  createdAt               DateTime                            @default(now())
-  updatedAt               DateTime                            @updatedAt
+  id              String                        @id @default(cuid())
+  investigationId String
+  investigation   Investigation                 @relation(fields: [investigationId], references: [id], onDelete: Cascade)
+  attemptNumber   Int
+  outcome         InvestigationAttemptOutcome
+  startedAt       DateTime
+  completedAt     DateTime?
+  requests        InvestigationAttemptRequest[]
+  error           InvestigationAttemptError?
+  createdAt       DateTime                      @default(now())
+  updatedAt       DateTime                      @updatedAt
 
   @@unique([investigationId, attemptNumber])
   @@index([investigationId, startedAt])
 }
 
+// One provider request made during an attempt, exactly as sent.
+model InvestigationAttemptRequest {
+  id                 String                              @id @default(cuid())
+  attemptId          String
+  attempt            InvestigationAttempt                @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  kind               InvestigationAttemptRequestKind
+  // INV-ATTEMPT-REQUEST-SUBJECT: factCheckRound is set iff kind = FACT_CHECK_ROUND;
+  // claimIndex is set iff kind = CLAIM_VALIDATION.
+  // Enforced by CHECK constraint "InvestigationAttemptRequest_subject_check".
+  factCheckRound     Int?
+  claimIndex         Int?
+  model              String
+  instructions       String
+  // The request's `input` parameter. Image parts carry `imageContentHash`
+  // (ImageBlob.contentHash) in place of the inline data URI that was sent.
+  input              Json
+  previousResponseId String?
+  reasoningEffort    String?
+  reasoningSummary   String?
+  include            String[]
+  requestedTools     InvestigationAttemptRequestedTool[]
+  // Absent when the request failed before the provider returned a response.
+  response           InvestigationAttemptResponse?
+  createdAt          DateTime                            @default(now())
+
+  @@unique([attemptId, factCheckRound])
+  @@unique([attemptId, claimIndex])
+  @@index([attemptId])
+}
+
 model InvestigationAttemptRequestedTool {
-  id            String               @id @default(cuid())
-  attemptId     String
-  attempt       InvestigationAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  id            String                      @id @default(cuid())
+  requestId     String
+  request       InvestigationAttemptRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
   requestOrder  Int
   toolType      String
   rawDefinition Json
-  createdAt     DateTime             @default(now())
+  createdAt     DateTime                    @default(now())
 
-  @@unique([attemptId, requestOrder])
-  @@index([attemptId])
+  @@unique([requestId, requestOrder])
+  @@index([requestId])
+}
+
+model InvestigationAttemptResponse {
+  id                 String                           @id @default(cuid())
+  requestId          String                           @unique
+  request            InvestigationAttemptRequest      @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  providerResponseId String
+  // Provider-reported response status; null when the provider omitted it
+  // (the attempt then fails).
+  status             String?
+  modelVersion       String
+  // When the response was received. Null only on LEGACY_COMBINED requests,
+  // which merged responses received at different times.
+  receivedAt         DateTime?
+  outputItems        InvestigationAttemptOutputItem[]
+  usage              InvestigationAttemptUsage?
+  createdAt          DateTime                         @default(now())
 }
 
 model InvestigationAttemptOutputItem {
   id                 String                                 @id @default(cuid())
-  attemptId          String
-  attempt            InvestigationAttempt                   @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  responseId         String
+  response           InvestigationAttemptResponse           @relation(fields: [responseId], references: [id], onDelete: Cascade)
   outputIndex        Int
   providerItemId     String?
   itemType           String
   itemStatus         String?
+  // Exactly one of the following is populated, by itemType: textParts for
+  // "message", reasoningSummaries for "reasoning", toolCall for anything else.
   textParts          InvestigationAttemptOutputTextPart[]
   reasoningSummaries InvestigationAttemptReasoningSummary[]
   toolCall           InvestigationAttemptToolCall?
   createdAt          DateTime                               @default(now())
 
-  @@unique([attemptId, outputIndex])
-  @@index([attemptId])
+  @@unique([responseId, outputIndex])
+  @@index([responseId])
 }
 
 model InvestigationAttemptOutputTextPart {
@@ -505,36 +586,24 @@ model InvestigationAttemptReasoningSummary {
 }
 
 model InvestigationAttemptToolCall {
-  id                  String                         @id @default(cuid())
-  attemptId           String
-  attempt             InvestigationAttempt           @relation(fields: [attemptId], references: [id], onDelete: Cascade)
-  outputItemId        String
-  outputItem          InvestigationAttemptOutputItem @relation(fields: [outputItemId], references: [id], onDelete: Cascade)
-  outputIndex         Int
-  providerToolCallId  String?
-  toolType            String
-  status              String?
-  rawPayload          Json
-  capturedAt          DateTime
-  providerStartedAt   DateTime?
-  providerCompletedAt DateTime?
-  createdAt           DateTime                       @default(now())
-
-  @@unique([attemptId, outputIndex])
-  @@unique([outputItemId])
-  @@index([attemptId])
+  id           String                         @id @default(cuid())
+  outputItemId String                         @unique
+  outputItem   InvestigationAttemptOutputItem @relation(fields: [outputItemId], references: [id], onDelete: Cascade)
+  // Full provider output item, as received.
+  rawPayload   Json
+  createdAt    DateTime                       @default(now())
 }
 
 model InvestigationAttemptUsage {
-  id                    String               @id @default(cuid())
-  attemptId             String               @unique
-  attempt               InvestigationAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  id                    String                       @id @default(cuid())
+  responseId            String                       @unique
+  response              InvestigationAttemptResponse @relation(fields: [responseId], references: [id], onDelete: Cascade)
   inputTokens           Int
   outputTokens          Int
   totalTokens           Int
   cachedInputTokens     Int?
   reasoningOutputTokens Int?
-  createdAt             DateTime             @default(now())
+  createdAt             DateTime                     @default(now())
 }
 
 model InvestigationAttemptError {
@@ -574,15 +643,12 @@ model Claim {
 }
 
 model Source {
-  id           String   @id @default(cuid())
-  claimId      String
-  claim        Claim    @relation(fields: [claimId], references: [id], onDelete: Cascade)
-  url          String
-  title        String
-  snippet      String
-  snapshotText String?
-  snapshotHash String?
-  retrievedAt  DateTime
+  id      String @id @default(cuid())
+  claimId String
+  claim   Claim  @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  url     String
+  title   String
+  snippet String
 
   @@index([claimId])
 }

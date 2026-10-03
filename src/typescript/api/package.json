@@ -14,6 +14,7 @@
     "worker": "tsx --tsconfig tsconfig.runtime.json src/lib/services/worker-entrypoint.ts",
     "selector": "tsx --tsconfig tsconfig.runtime.json src/lib/services/selector-entrypoint.ts",
     "instance-api-key": "tsx --tsconfig tsconfig.runtime.json src/lib/services/instance-api-key-entrypoint.ts",
+    "smoke:openai": "tsx --tsconfig tsconfig.runtime.json scripts/openai-live-smoke.ts",
     "prisma:generate": "svelte-kit sync && prisma generate",
     "prisma:migrate:dev": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",
@@ -44,6 +45,7 @@
     "parse5": "^8.0.0",
     "pg": "^8.18.0",
     "turndown": "^7.2.2",
+    "undici": "^7.22.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {

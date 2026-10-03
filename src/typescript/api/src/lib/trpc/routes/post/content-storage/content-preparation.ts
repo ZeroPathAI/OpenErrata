@@ -26,7 +26,7 @@ export function applyServerVerifiedWikipediaIdentity(input: {
   if (
     input.preparedInput.platform !== "WIKIPEDIA" ||
     input.canonical.provenance !== "SERVER_VERIFIED" ||
-    input.canonical.canonicalIdentity?.platform !== "WIKIPEDIA"
+    input.canonical.canonicalIdentity.platform !== "WIKIPEDIA"
   ) {
     return input.preparedInput;
   }

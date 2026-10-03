@@ -1,12 +1,14 @@
 import {
-  CONTENT_BLOCK_SEPARATOR_TAGS,
   NON_CONTENT_TAGS,
+  WORD_SEPARATOR_TAGS,
   hashContent,
   isNonNullObject,
   normalizeContent,
   WIKIPEDIA_LANGUAGE_CODE_REGEX,
 } from "@openerrata/shared";
+import { setTimeout as sleep } from "node:timers/promises";
 import { parseFragment, type DefaultTreeAdapterMap } from "parse5";
+import { z } from "zod";
 import {
   createWikipediaNodeFilter,
   hasChildren,
@@ -21,19 +23,33 @@ type ServerFetchResult =
       contentText: string;
       contentHash: string;
       sourceHtml: string;
-      canonicalIdentity: CanonicalIdentity | null;
+      canonicalIdentity: CanonicalIdentity;
     }
   | {
       success: false;
       failureReason: string;
     };
 
-export interface CanonicalIdentity {
-  platform: "WIKIPEDIA";
-  language: string;
-  pageId: string;
-  revisionId: string;
-}
+/**
+ * Post identity as reported by the platform itself. Identity-bound fields
+ * (post URL, author, Wikipedia page/revision) come from here whenever the
+ * server fetch succeeds, never from the client (SPEC §2.9).
+ */
+export type CanonicalIdentity =
+  | {
+      platform: "LESSWRONG";
+      url: string;
+      title: string;
+      /** Null when LessWrong reports no user for the post (e.g. deleted account). */
+      author: { slug: string; displayName: string } | null;
+    }
+  | {
+      platform: "WIKIPEDIA";
+      url: string;
+      language: string;
+      pageId: string;
+      revisionId: string;
+    };
 
 export type CanonicalContentFetchResult =
   | {
@@ -41,7 +57,7 @@ export type CanonicalContentFetchResult =
       contentText: string;
       contentHash: string;
       sourceHtml: string;
-      canonicalIdentity: CanonicalIdentity | null;
+      canonicalIdentity: CanonicalIdentity;
     }
   | {
       provenance: "CLIENT_FALLBACK";
@@ -83,6 +99,8 @@ export type CanonicalFetchInput =
     }
   | WikipediaCanonicalFetchInput;
 
+const LESSWRONG_GRAPHQL_URL = "https://www.lesswrong.com/graphql";
+
 function describeFetchError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -98,52 +116,70 @@ function isTransientHttpStatus(status: number): boolean {
 const TRANSIENT_RETRY_DELAYS_MS = [200, 400, 800] as const;
 
 /**
+ * Wall-clock budget for one canonical fetch, retries included. The fetch runs
+ * synchronously inside registerObservedVersion, so a slow or hanging platform
+ * must degrade to CLIENT_FALLBACK quickly rather than hold the request open.
+ */
+const CANONICAL_FETCH_DEADLINE_MS = 10_000;
+
+/** Largest canonical response body we will read (large Wikipedia articles are a few MB). */
+const MAX_CANONICAL_RESPONSE_BYTES = 10 * 1024 * 1024;
+
+/**
  * Fetch wrapper that retries on transient failures (network errors, HTTP 429,
- * HTTP 5xx) with exponential backoff. Non-transient errors (4xx except 429,
- * parse failures) propagate immediately.
+ * HTTP 5xx) with exponential backoff, all within one deadline signal.
+ * Non-transient errors (4xx except 429) are returned immediately.
  *
- * Returns the successful Response, or throws the last error / returns the
- * last non-ok Response if all attempts fail.
+ * Returns the first non-transient Response or the last transient one once
+ * retries are exhausted; throws the last network error, or the abort reason
+ * once the deadline passes.
  */
 async function fetchWithTransientRetry(
-  input: string | URL | Request,
-  init?: RequestInit,
+  input: string | URL,
+  init: RequestInit & { signal: AbortSignal },
 ): Promise<Response> {
-  let lastError: unknown;
-  for (let attempt = 0; attempt <= TRANSIENT_RETRY_DELAYS_MS.length; attempt += 1) {
+  for (let attempt = 0; ; attempt += 1) {
+    const retryDelayMs = TRANSIENT_RETRY_DELAYS_MS[attempt];
     try {
       const response = await fetch(input, init);
-      if (response.ok || !isTransientHttpStatus(response.status)) {
+      if (response.ok || !isTransientHttpStatus(response.status) || retryDelayMs === undefined) {
         return response;
       }
-      // Transient HTTP error — retry if attempts remain.
-      lastError = new Error(`HTTP ${response.status.toString()}`);
-      if (attempt < TRANSIENT_RETRY_DELAYS_MS.length) {
-        const delayMs = TRANSIENT_RETRY_DELAYS_MS[attempt];
-        if (delayMs !== undefined) {
-          await new Promise<void>((resolve) => {
-            setTimeout(resolve, delayMs);
-          });
-        }
-        continue;
-      }
-      return response;
+      await response.body?.cancel();
     } catch (error) {
-      // Network error — retry if attempts remain.
-      lastError = error;
-      if (attempt < TRANSIENT_RETRY_DELAYS_MS.length) {
-        const delayMs = TRANSIENT_RETRY_DELAYS_MS[attempt];
-        if (delayMs !== undefined) {
-          await new Promise<void>((resolve) => {
-            setTimeout(resolve, delayMs);
-          });
-        }
-        continue;
+      if (init.signal.aborted || retryDelayMs === undefined) {
+        throw error;
       }
-      throw error;
     }
+    await sleep(retryDelayMs, undefined, { signal: init.signal });
   }
-  throw lastError;
+}
+
+/** Read and JSON-parse a response body, refusing bodies over MAX_CANONICAL_RESPONSE_BYTES. */
+async function readJsonWithinLimit(response: Response): Promise<unknown> {
+  const contentLength = Number.parseInt(response.headers.get("content-length") ?? "", 10);
+  if (Number.isFinite(contentLength) && contentLength > MAX_CANONICAL_RESPONSE_BYTES) {
+    await response.body?.cancel();
+    throw new Error(`response is ${contentLength.toString()} bytes, over the size limit`);
+  }
+  if (response.body === null) {
+    throw new Error("response has no body");
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    totalBytes += value.byteLength;
+    if (totalBytes > MAX_CANONICAL_RESPONSE_BYTES) {
+      await reader.cancel("Canonical response exceeds size limit");
+      throw new Error("response body exceeds the size limit");
+    }
+    chunks.push(value);
+  }
+  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
 function parseNonNegativeIntegerId(value: unknown): string | null {
@@ -157,36 +193,32 @@ function parseNonNegativeIntegerId(value: unknown): string | null {
 }
 
 /**
- * Extract the full HTML body from a LessWrong GraphQL response.
+ * The parts of a LessWrong GraphQL `post` response we rely on.
  *
- * We use the `html` field rather than `plaintextMainText` because the latter
- * is truncated to 2000 characters by LessWrong's API, which would cause a
+ * We use `contents.html` rather than `plaintextMainText` because the latter is
+ * truncated to 2000 characters by LessWrong's API, which would cause a
  * canonicalization mismatch for any post longer than that.
  */
-function extractLesswrongHtml(value: unknown): string | null {
-  if (!isNonNullObject(value)) return null;
-
-  const data = value["data"];
-  if (!isNonNullObject(data)) return null;
-
-  const post = data["post"];
-  if (!isNonNullObject(post)) return null;
-
-  const result = post["result"];
-  if (!isNonNullObject(result)) return null;
-
-  const contents = result["contents"];
-  if (!isNonNullObject(contents)) return null;
-
-  const html = contents["html"];
-  return typeof html === "string" ? html : null;
-}
+const lesswrongPostResponseSchema = z.object({
+  data: z.object({
+    post: z.object({
+      result: z.object({
+        _id: z.string().min(1),
+        slug: z.string().min(1),
+        title: z.string().min(1),
+        contents: z.object({ html: z.string().min(1) }),
+        user: z.object({ slug: z.string().min(1), displayName: z.string().min(1) }).nullable(),
+      }),
+    }),
+  }),
+});
 
 /**
  * Shared parse5 HTML-to-text traversal used by all platform extractors.
  *
  * Performs a stack-based DFS over the parse5 fragment tree, collecting text
- * node values and injecting word-boundary separators at block element edges.
+ * node values and injecting word-boundary separators at the edges of
+ * `WORD_SEPARATOR_TAGS` elements (blocks and line breaks).
  *
  * Built-in behavior (unconditional):
  *   - `NON_CONTENT_TAGS` (script, style, noscript) are always excluded.
@@ -197,7 +229,7 @@ function extractLesswrongHtml(value: unknown): string | null {
  */
 function parse5HtmlToTextContent(html: string, nodeFilter?: Parse5NodeFilter): string {
   const fragment = parseFragment(html);
-  const stack: { node: DefaultTreeAdapterMap["node"]; phase: "enter" | "exit" }[] = [];
+  const stack: { node: DefaultTreeAdapterMap["childNode"]; phase: "enter" | "exit" }[] = [];
   for (let index = fragment.childNodes.length - 1; index >= 0; index -= 1) {
     const child = fragment.childNodes[index];
     if (child !== undefined) {
@@ -213,7 +245,7 @@ function parse5HtmlToTextContent(html: string, nodeFilter?: Parse5NodeFilter): s
     const { node, phase } = current;
 
     if (phase === "exit") {
-      if (isElementNode(node) && CONTENT_BLOCK_SEPARATOR_TAGS.has(node.tagName.toLowerCase())) {
+      if (isElementNode(node) && WORD_SEPARATOR_TAGS.has(node.tagName.toLowerCase())) {
         chunks.push(" ");
       }
       continue;
@@ -238,7 +270,7 @@ function parse5HtmlToTextContent(html: string, nodeFilter?: Parse5NodeFilter): s
       continue;
     }
 
-    if (isElementNode(node) && CONTENT_BLOCK_SEPARATOR_TAGS.has(node.tagName.toLowerCase())) {
+    if (isElementNode(node) && WORD_SEPARATOR_TAGS.has(node.tagName.toLowerCase())) {
       chunks.push(" ");
     }
 
@@ -304,9 +336,10 @@ async function fetchLesswrongContent(
   input: Extract<CanonicalFetchInput, { platform: "LESSWRONG" }>,
 ): Promise<ServerFetchResult> {
   const postId = input.externalId;
-  let response: Response;
+  const deadline = AbortSignal.timeout(CANONICAL_FETCH_DEADLINE_MS);
+  let data: unknown;
   try {
-    response = await fetchWithTransientRetry("https://www.lesswrong.com/graphql", {
+    const response = await fetchWithTransientRetry(LESSWRONG_GRAPHQL_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -314,6 +347,7 @@ async function fetchLesswrongContent(
           post(input: { selector: { _id: $id } }) {
             result {
               _id
+              slug
               title
               contents {
                 html
@@ -327,7 +361,13 @@ async function fetchLesswrongContent(
         }`,
         variables: { id: postId },
       }),
+      signal: deadline,
     });
+    if (!response.ok) {
+      await response.body?.cancel();
+      return { success: false, failureReason: `LW API returned ${response.status.toString()}` };
+    }
+    data = await readJsonWithinLimit(response);
   } catch (error) {
     return {
       success: false,
@@ -335,30 +375,51 @@ async function fetchLesswrongContent(
     };
   }
 
-  if (!response.ok) {
-    return { success: false, failureReason: `LW API returned ${response.status}` };
-  }
-
-  let data: unknown;
-  try {
-    data = await response.json();
-  } catch (error) {
+  const parsed = lesswrongPostResponseSchema.safeParse(data);
+  if (!parsed.success) {
     return {
       success: false,
-      failureReason: `LW API returned invalid JSON: ${describeFetchError(error)}`,
+      failureReason: "Could not extract post content and identity from LW API response",
     };
   }
-  const html = extractLesswrongHtml(data);
-  if (html === null || html.length === 0) {
+  const post = parsed.data.data.post.result;
+  if (post._id !== postId) {
     return {
       success: false,
-      failureReason: "Could not extract HTML from LW API response",
+      failureReason: `LW API returned post ${post._id} for requested post ${postId}`,
     };
   }
 
-  const contentText = lesswrongHtmlToNormalizedText(html);
+  const contentText = lesswrongHtmlToNormalizedText(post.contents.html);
   const contentHash = await hashContent(contentText);
-  return { success: true, contentText, contentHash, sourceHtml: html, canonicalIdentity: null };
+  return {
+    success: true,
+    contentText,
+    contentHash,
+    sourceHtml: post.contents.html,
+    canonicalIdentity: {
+      platform: "LESSWRONG",
+      url: lesswrongPostUrl(post._id, post.slug),
+      title: post.title,
+      author: post.user,
+    },
+  };
+}
+
+function lesswrongPostUrl(postId: string, slug: string): string {
+  return `https://www.lesswrong.com/posts/${encodeURIComponent(postId)}/${encodeURIComponent(slug)}`;
+}
+
+/**
+ * Article URL for a Wikipedia title as returned by the parse API (spaces, not
+ * underscores). Slashes and colons stay literal so subpages and namespaces
+ * read naturally; everything else is percent-encoded.
+ */
+function wikipediaArticleUrl(language: string, title: string): string {
+  const encodedTitle = encodeURIComponent(title.replace(/ /g, "_"))
+    .replace(/%2F/g, "/")
+    .replace(/%3A/g, ":");
+  return `https://${language}.wikipedia.org/wiki/${encodedTitle}`;
 }
 
 function wikipediaHtmlToTextContent(html: string): string {
@@ -371,6 +432,7 @@ export function wikipediaHtmlToNormalizedText(html: string): string {
 
 function extractWikipediaParsePayload(value: unknown): {
   html: string;
+  title: string;
   pageId: string;
   revisionId: string;
 } | null {
@@ -379,15 +441,17 @@ function extractWikipediaParsePayload(value: unknown): {
   if (!isNonNullObject(parse)) return null;
 
   const text = parse["text"];
+  const title = parse["title"];
   const revisionId = parseNonNegativeIntegerId(parse["revid"]);
   const pageId = parseNonNegativeIntegerId(parse["pageid"]);
-  if (typeof text !== "string") return null;
+  if (typeof text !== "string" || typeof title !== "string" || title.length === 0) return null;
   if (revisionId === null || pageId === null) {
     return null;
   }
 
   return {
     html: text,
+    title,
     pageId,
     revisionId,
   };
@@ -421,29 +485,22 @@ async function fetchWikipediaContent(
   endpoint.searchParams.set("prop", "text|revid");
   endpoint.searchParams.set("oldid", revisionId);
 
-  let response: Response;
+  const deadline = AbortSignal.timeout(CANONICAL_FETCH_DEADLINE_MS);
+  let data: unknown;
   try {
-    response = await fetchWithTransientRetry(endpoint);
+    const response = await fetchWithTransientRetry(endpoint, { signal: deadline });
+    if (!response.ok) {
+      await response.body?.cancel();
+      return {
+        success: false,
+        failureReason: `Wikipedia parse API returned ${response.status.toString()}`,
+      };
+    }
+    data = await readJsonWithinLimit(response);
   } catch (error) {
     return {
       success: false,
       failureReason: `Wikipedia parse request failed: ${describeFetchError(error)}`,
-    };
-  }
-  if (!response.ok) {
-    return {
-      success: false,
-      failureReason: `Wikipedia parse API returned ${response.status}`,
-    };
-  }
-
-  let data: unknown;
-  try {
-    data = await response.json();
-  } catch (error) {
-    return {
-      success: false,
-      failureReason: `Wikipedia parse API returned invalid JSON: ${describeFetchError(error)}`,
     };
   }
   const payload = extractWikipediaParsePayload(data);
@@ -470,6 +527,7 @@ async function fetchWikipediaContent(
     sourceHtml: payload.html,
     canonicalIdentity: {
       platform: "WIKIPEDIA",
+      url: wikipediaArticleUrl(language, payload.title),
       language,
       pageId: payload.pageId,
       revisionId: payload.revisionId,

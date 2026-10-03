@@ -1,21 +1,14 @@
-import { normalizeContent } from "@openerrata/shared";
+import { httpUrlSchema, normalizeContent } from "@openerrata/shared";
 import { decodeHTML } from "entities";
 import { z } from "zod";
-import { isBlockedHost } from "$lib/network/host-safety.js";
-import { isRedirectStatus } from "$lib/network/http-status.js";
+import { fetchPublicHttp, readBodyPrefix } from "$lib/network/public-http-fetch.js";
 
 const MAX_FETCH_URL_BYTES = 1_000_000;
 const MAX_FETCH_URL_TEXT_LENGTH = 20_000;
 const FETCH_URL_TIMEOUT_MS = 15_000;
-const MAX_REDIRECT_HOPS = 5;
 
 const fetchUrlToolArgumentsSchema = z.object({
-  url: z.preprocess(
-    (value) => (typeof value === "string" ? value.trim() : value),
-    z
-      .url("url must be a valid URL")
-      .refine((value) => /^https?:\/\//i.test(value), "url must use http:// or https://"),
-  ),
+  url: z.preprocess((value) => (typeof value === "string" ? value.trim() : value), httpUrlSchema),
 });
 
 interface FetchUrlToolSuccess {
@@ -103,10 +96,6 @@ function parseContentType(contentTypeHeader: string | null): string {
   return contentTypeHeader.split(";")[0]?.trim().toLowerCase() ?? "";
 }
 
-function hasEmbeddedCredentials(url: URL): boolean {
-  return url.username.length > 0 || url.password.length > 0;
-}
-
 function extractContentText(
   contentType: string,
   rawBody: string,
@@ -142,7 +131,16 @@ function extractContentText(
   };
 }
 
-export async function executeFetchUrlTool(rawArguments: string): Promise<FetchUrlToolOutput> {
+/**
+ * Run the `fetch_url` tool: GET a public URL chosen by the model and return
+ * its normalized text. Untrusted URLs go through the SSRF-safe public fetcher;
+ * bodies are read up to MAX_FETCH_URL_BYTES. Aborting `signal` (e.g. the run
+ * lost its lease) aborts the request.
+ */
+export async function executeFetchUrlTool(
+  rawArguments: string,
+  signal: AbortSignal,
+): Promise<FetchUrlToolOutput> {
   let parsedArguments: z.infer<typeof fetchUrlToolArgumentsSchema>;
   try {
     parsedArguments = fetchUrlToolArgumentsSchema.parse(JSON.parse(rawArguments));
@@ -157,140 +155,37 @@ export async function executeFetchUrlTool(rawArguments: string): Promise<FetchUr
 
   const requestedUrl = parsedArguments.url;
 
-  let parsedUrl: URL;
   try {
-    parsedUrl = new URL(requestedUrl);
-  } catch {
-    return {
-      ok: false,
-      errorKind: "FETCH_FAILED",
-      requestedUrl,
-      error: "Invalid URL",
-    };
-  }
+    const { finalUrl, response } = await fetchPublicHttp({
+      url: new URL(requestedUrl),
+      headers: {
+        "User-Agent": "OpenErrataInvestigator/1.0 (+https://openerrata.com)",
+        Accept: "text/html,application/json,text/plain;q=0.9,*/*;q=0.5",
+      },
+      signal: AbortSignal.any([signal, AbortSignal.timeout(FETCH_URL_TIMEOUT_MS)]),
+    });
 
-  if (hasEmbeddedCredentials(parsedUrl)) {
-    return {
-      ok: false,
-      errorKind: "FETCH_FAILED",
-      requestedUrl,
-      error: "URLs with embedded credentials are not allowed",
-    };
-  }
-
-  try {
-    let currentUrl = parsedUrl;
-    let response: Response | null = null;
-
-    for (let redirectHop = 0; redirectHop <= MAX_REDIRECT_HOPS; redirectHop += 1) {
-      if (currentUrl.protocol !== "http:" && currentUrl.protocol !== "https:") {
-        return {
-          ok: false,
-          errorKind: "FETCH_FAILED",
-          requestedUrl,
-          error: "Only HTTP(S) URLs are allowed",
-        };
-      }
-
-      const blockedHost = await isBlockedHost(currentUrl.hostname);
-      if (blockedHost) {
-        return {
-          ok: false,
-          errorKind: "FETCH_FAILED",
-          requestedUrl,
-          error: "Blocked host",
-        };
-      }
-
-      const currentResponse = await fetch(currentUrl, {
-        method: "GET",
-        redirect: "manual",
-        signal: AbortSignal.timeout(FETCH_URL_TIMEOUT_MS),
-        headers: {
-          "User-Agent": "OpenErrataInvestigator/1.0 (+https://openerrata.com)",
-          Accept: "text/html,application/json,text/plain;q=0.9,*/*;q=0.5",
-        },
-      });
-
-      if (isRedirectStatus(currentResponse.status)) {
-        const location = currentResponse.headers.get("location");
-        if (location === null || location.length === 0) {
-          return {
-            ok: false,
-            errorKind: "FETCH_FAILED",
-            requestedUrl,
-            error: "Redirect response missing Location header",
-          };
-        }
-
-        const redirectedUrl = new URL(location, currentUrl);
-        if (hasEmbeddedCredentials(redirectedUrl)) {
-          return {
-            ok: false,
-            errorKind: "FETCH_FAILED",
-            requestedUrl,
-            error: "Redirected URL contains embedded credentials",
-          };
-        }
-        currentUrl = redirectedUrl;
-        continue;
-      }
-
-      // Re-validate after request to reduce DNS-rebinding exposure windows.
-      const becameBlocked = await isBlockedHost(currentUrl.hostname);
-      if (becameBlocked) {
-        return {
-          ok: false,
-          errorKind: "FETCH_FAILED",
-          requestedUrl,
-          error: "Blocked host",
-        };
-      }
-
-      response = currentResponse;
-      break;
-    }
-
-    if (!response) {
-      return {
-        ok: false,
-        errorKind: "FETCH_FAILED",
-        requestedUrl,
-        error: "Too many redirects",
-      };
-    }
-
-    const contentLengthHeader = response.headers.get("content-length");
-    if (contentLengthHeader !== null && contentLengthHeader.length > 0) {
-      const contentLength = Number.parseInt(contentLengthHeader, 10);
-      if (Number.isFinite(contentLength) && contentLength > MAX_FETCH_URL_BYTES) {
-        return {
-          ok: false,
-          errorKind: "FETCH_FAILED",
-          requestedUrl,
-          error: `Response too large (${contentLength.toString()} bytes)`,
-        };
-      }
-    }
-
-    const rawBody = await response.text();
-    const byteTruncation = truncateUtf8(rawBody, MAX_FETCH_URL_BYTES);
+    const body = await readBodyPrefix(response, MAX_FETCH_URL_BYTES);
+    const rawBody = new TextDecoder().decode(body.bytes);
     const normalizedContentType = parseContentType(response.headers.get("content-type"));
-    const extracted = extractContentText(normalizedContentType, byteTruncation.value);
+    const extracted = extractContentText(normalizedContentType, rawBody);
     const textTruncation = truncateUtf8(extracted.contentText, MAX_FETCH_URL_TEXT_LENGTH);
 
     return {
       ok: true,
       requestedUrl,
-      finalUrl: currentUrl.toString(),
+      finalUrl: finalUrl.toString(),
       status: response.status,
       contentType: normalizedContentType.length > 0 ? normalizedContentType : null,
       title: extracted.title,
       contentText: textTruncation.value,
-      truncated: byteTruncation.truncated || textTruncation.truncated,
+      truncated: body.truncated || textTruncation.truncated,
       retrievedAt: new Date().toISOString(),
     };
   } catch (error) {
+    if (signal.aborted) {
+      throw error;
+    }
     return {
       ok: false,
       errorKind: "FETCH_FAILED",

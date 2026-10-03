@@ -7,12 +7,10 @@ import {
 import { getPrisma } from "$lib/db/client.js";
 import { isUniqueConstraintError } from "$lib/db/errors.js";
 import type { ImageBlob } from "$lib/db/prisma-client";
-import { hasAddressIntersection, resolvePublicHostAddresses } from "$lib/network/host-safety.js";
-import { isRedirectStatus } from "$lib/network/http-status.js";
+import { fetchPublicHttp, readBodyPrefix } from "$lib/network/public-http-fetch.js";
 import { uploadImage } from "./blob-storage.js";
 
 const IMAGE_DOWNLOAD_TIMEOUT_MS = 15_000;
-const MAX_REDIRECT_HOPS = 5;
 
 const SUPPORTED_MIME_TYPE_SET: ReadonlySet<string> = new Set(SUPPORTED_IMAGE_MIME_TYPE_VALUES);
 
@@ -29,142 +27,39 @@ export function parseImageContentType(
   return normalized;
 }
 
-function uniqueImageUrls(urls: string[]): string[] {
-  const unique = new Set<string>();
-
-  for (const url of urls) {
-    const trimmed = url.trim();
-    if (trimmed.length === 0) continue;
-    try {
-      const parsed = new URL(trimmed);
-      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") continue;
-      if (parsed.username.length > 0 || parsed.password.length > 0) continue;
-      unique.add(parsed.toString());
-    } catch {
-      // Ignore malformed image URLs to keep investigation flow robust.
-    }
-  }
-
-  return Array.from(unique);
-}
-
-async function readResponseBytesWithinLimit(
-  response: Response,
-  maxBytes: number,
-): Promise<Uint8Array | null> {
-  if (!response.body) {
-    return null;
-  }
-
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let totalBytes = 0;
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      totalBytes += value.byteLength;
-      if (totalBytes > maxBytes) {
-        await reader.cancel("Image exceeds maximum byte limit");
-        return null;
-      }
-      chunks.push(value);
-    }
-  } catch {
-    await reader.cancel();
-    return null;
-  } finally {
-    reader.releaseLock();
-  }
-
-  const bytes = new Uint8Array(totalBytes);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-
-  return bytes;
-}
-
+/**
+ * Download one image from the public internet (SSRF-safe; see
+ * public-http-fetch.ts). Returns null when the image is unreachable, blocked,
+ * not a supported image type, or over MAX_IMAGE_BYTES; a single bad image
+ * never fails the investigation. Aborting `signal` aborts the download.
+ */
 async function downloadImage(
   url: string,
+  signal: AbortSignal,
 ): Promise<{ bytes: Uint8Array; mimeType: SupportedImageMimeType } | null> {
   try {
-    let currentUrl = new URL(url);
+    const { response } = await fetchPublicHttp({
+      url: new URL(url),
+      headers: {
+        "User-Agent": "OpenErrataImageDownloader/1.0 (+https://openerrata.com)",
+        Accept: "image/*",
+      },
+      signal: AbortSignal.any([signal, AbortSignal.timeout(IMAGE_DOWNLOAD_TIMEOUT_MS)]),
+    });
 
-    for (let redirectHop = 0; redirectHop <= MAX_REDIRECT_HOPS; redirectHop += 1) {
-      if (currentUrl.protocol !== "http:" && currentUrl.protocol !== "https:") {
-        return null;
-      }
-      const resolvedBeforeRequest = await resolvePublicHostAddresses(currentUrl.hostname);
-      if (!resolvedBeforeRequest) {
-        return null;
-      }
-
-      const response = await fetch(currentUrl, {
-        method: "GET",
-        redirect: "manual",
-        signal: AbortSignal.timeout(IMAGE_DOWNLOAD_TIMEOUT_MS),
-        headers: {
-          "User-Agent": "OpenErrataImageDownloader/1.0 (+https://openerrata.com)",
-          Accept: "image/*",
-        },
-      });
-
-      if (isRedirectStatus(response.status)) {
-        const location = response.headers.get("location");
-        if (location === null || location.length === 0) {
-          return null;
-        }
-
-        currentUrl = new URL(location, currentUrl);
-        continue;
-      }
-
-      if (!response.ok) {
-        return null;
-      }
-
-      // Re-resolve and require overlap with pre-request answers. This narrows
-      // DNS rebinding windows by rejecting responses when hostname resolution
-      // shifts to a disjoint address set during request handling.
-      const resolvedAfterRequest = await resolvePublicHostAddresses(currentUrl.hostname);
-      if (
-        !resolvedAfterRequest ||
-        !hasAddressIntersection(resolvedBeforeRequest, resolvedAfterRequest)
-      ) {
-        return null;
-      }
-
-      const contentType = parseImageContentType(response.headers.get("content-type"));
-      if (contentType === null || contentType.length === 0) {
-        return null;
-      }
-
-      const contentLengthHeader = response.headers.get("content-length");
-      if (contentLengthHeader !== null && contentLengthHeader.length > 0) {
-        const contentLength = Number.parseInt(contentLengthHeader, 10);
-        if (Number.isFinite(contentLength) && contentLength > MAX_IMAGE_BYTES) {
-          return null;
-        }
-      }
-
-      const bytes = await readResponseBytesWithinLimit(response, MAX_IMAGE_BYTES);
-      if (bytes === null) {
-        return null;
-      }
-
-      return {
-        bytes,
-        mimeType: contentType,
-      };
+    const contentType = parseImageContentType(response.headers.get("content-type"));
+    if (!response.ok || contentType === null) {
+      await response.body?.cancel();
+      return null;
     }
 
-    return null;
-  } catch {
+    const { bytes, truncated } = await readBodyPrefix(response, MAX_IMAGE_BYTES);
+    if (truncated) {
+      return null;
+    }
+    return { bytes, mimeType: contentType };
+  } catch (error) {
+    if (signal.aborted) throw error;
     return null;
   }
 }
@@ -225,20 +120,20 @@ type ImageDownloadResolution =
       status: "failed";
     };
 
+/**
+ * Download each URL, dedupe by content hash, and store new images in blob
+ * storage. Results are reported per input URL, in order. Throws only when
+ * `signal` aborts (the run lost its lease) or storage fails.
+ */
 export async function downloadAndStoreImages(
   urls: string[],
-  maxCount: number,
+  signal: AbortSignal,
 ): Promise<ImageDownloadResolution[]> {
-  const uniqueUrls = uniqueImageUrls(urls).slice(0, maxCount);
-  if (uniqueUrls.length === 0) {
-    return [];
-  }
-
   const resolutions: ImageDownloadResolution[] = [];
   const resolvedByContentHash = new Map<string, ResolvedDownloadedImage>();
 
-  for (const imageUrl of uniqueUrls) {
-    const downloaded = await downloadImage(imageUrl);
+  for (const imageUrl of urls) {
+    const downloaded = await downloadImage(imageUrl, signal);
     if (!downloaded) {
       resolutions.push({
         sourceUrl: imageUrl,

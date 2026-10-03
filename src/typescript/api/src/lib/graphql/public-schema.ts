@@ -83,7 +83,7 @@ const typeDefs = /* GraphQL */ `
     """
     provider: String!
     """
-    LLM model used (e.g. "GPT4O").
+    Provider model id the investigation ran on (e.g. "gpt-6.1-sol").
     """
     model: String!
   }
@@ -282,9 +282,9 @@ const typeDefs = /* GraphQL */ `
     """
     investigatedPostsWithFlags: Int!
     """
-    Ratio of posts with flags to total investigated posts (investigatedPostsWithFlags / totalInvestigatedPosts).
+    Ratio of posts with flags to total investigated posts (investigatedPostsWithFlags / totalInvestigatedPosts). Null when no posts match the filter.
     """
-    factCheckIncidence: Float!
+    factCheckIncidence: Float
   }
 
   type Query {

@@ -9,7 +9,8 @@ import {
   retainOldClaim,
   settlePendingValidation,
 } from "../../src/lib/investigators/openai-investigation-run-state.js";
-import type { PerClaimValidationResult } from "../../src/lib/investigators/openai-claim-validator.js";
+import type { ClaimValidationResult } from "../../src/lib/investigators/openai-claim-validator.js";
+import { makeValidationRequestAudit } from "../helpers/fake-openai.js";
 
 function makeClaim(label: string): InvestigationResult["claims"][number] {
   return {
@@ -30,23 +31,11 @@ function makeClaim(label: string): InvestigationResult["claims"][number] {
 function makeValidationResult(input: {
   claimIndex: number;
   approved: boolean;
-}): PerClaimValidationResult {
+}): ClaimValidationResult {
   return {
+    kind: input.approved ? "approved" : "rejected",
     claimIndex: input.claimIndex,
-    approved: input.approved,
-    responseAudit: {
-      responseId: "resp-1",
-      responseStatus: "completed",
-      responseModelVersion: "test-model",
-      responseOutputText: JSON.stringify({ approved: input.approved }),
-      outputItems: [],
-      outputTextParts: [],
-      outputTextAnnotations: [],
-      reasoningSummaries: [],
-      toolCalls: [],
-      usage: null,
-    },
-    error: null,
+    request: makeValidationRequestAudit(input.claimIndex),
   };
 }
 
@@ -118,4 +107,24 @@ test("retainOldClaim validates claim id and deduplicates retention", () => {
     kind: "error",
     reason: "unknown_id",
   });
+});
+
+test("settlePendingValidation rejects settling the same validation twice", () => {
+  const queued = enqueuePendingValidation(createInvestigationRunState({}), {
+    claim: makeClaim("alpha"),
+    promise: Promise.resolve(makeValidationResult({ claimIndex: 0, approved: true })),
+  });
+  const settled = settlePendingValidation(queued.nextState, {
+    pendingIndex: queued.pendingIndex,
+    result: makeValidationResult({ claimIndex: 0, approved: true }),
+  });
+
+  assert.throws(
+    () =>
+      settlePendingValidation(settled, {
+        pendingIndex: queued.pendingIndex,
+        result: makeValidationResult({ claimIndex: 0, approved: false }),
+      }),
+    /already settled/,
+  );
 });

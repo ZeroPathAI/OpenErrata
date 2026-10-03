@@ -4,7 +4,6 @@ import {
   INTEGRATION_LESSWRONG_FIXTURE_KEYS,
   InvestigatorExecutionError,
   MINIMUM_SUPPORTED_EXTENSION_VERSION,
-  OpenAIInvestigator,
   WORD_COUNT_LIMIT,
   appRouter,
   assert,
@@ -12,13 +11,13 @@ import {
   buildFailedAttemptAudit,
   buildLesswrongViewInput,
   buildSucceededAttemptAudit,
+  buildSucceededInvestigatorOutput,
   buildXViewInput,
   closeQueueUtils,
   createCaller,
   createContext,
   createDeterministicRandom,
   createMockRequestEvent,
-  ensureInvestigationQueued,
   ensurePostVersionForSeed,
   errorHasOpenErrataCode,
   getPrisma,
@@ -63,7 +62,6 @@ void [
   INTEGRATION_LESSWRONG_FIXTURE_KEYS,
   InvestigatorExecutionError,
   MINIMUM_SUPPORTED_EXTENSION_VERSION,
-  OpenAIInvestigator,
   WORD_COUNT_LIMIT,
   appRouter,
   assert,
@@ -71,13 +69,13 @@ void [
   buildFailedAttemptAudit,
   buildLesswrongViewInput,
   buildSucceededAttemptAudit,
+  buildSucceededInvestigatorOutput,
   buildXViewInput,
   closeQueueUtils,
   createCaller,
   createContext,
   createDeterministicRandom,
   createMockRequestEvent,
-  ensureInvestigationQueued,
   ensurePostVersionForSeed,
   errorHasOpenErrataCode,
   getPrisma,
@@ -142,7 +140,7 @@ void test("post.getInvestigation returns complete investigation with claims", as
   assert.equal(result.checkedAt, "2026-02-19T00:00:00.000Z");
 });
 
-void test("post.getInvestigation returns priorInvestigationResult for update investigations and null for non-updates", async () => {
+void test("post.getInvestigation reports the claims carried forward to an investigating version, and none when no claim still applies", async () => {
   const caller = createCaller();
   const post = await seedPost({
     platform: "X",
@@ -156,7 +154,7 @@ void test("post.getInvestigation returns priorInvestigationResult for update inv
     contentText: post.contentText,
     provenance: "SERVER_VERIFIED",
   });
-  await seedClaimWithSource(parent.id, 1);
+  await seedClaimWithSource(parent.id, 1, { text: "Initial content" });
 
   const updateContentText = normalizeContent(
     "Initial content for update projection coverage. Edited sentence.",
@@ -173,6 +171,7 @@ void test("post.getInvestigation returns priorInvestigationResult for update inv
     contentDiff: "Diff summary (line context):\n- Removed lines:\nOld\n+ Added lines:\nNew",
   });
 
+  // A version that no longer contains the passage the earlier claim quoted.
   const nonUpdateContentText = normalizeContent(
     "Fresh pending investigation that is not an update.",
   );

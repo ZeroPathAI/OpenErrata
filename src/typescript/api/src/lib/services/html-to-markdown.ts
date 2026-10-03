@@ -17,12 +17,12 @@
 
 import { NON_CONTENT_TAGS } from "@openerrata/shared";
 import TurndownService from "turndown";
-import type { ImagePlaceholder } from "$lib/investigators/interface.js";
 import { preFilterWikipediaHtml } from "./wikipedia-content-filter.js";
 
 interface HtmlToMarkdownResult {
   markdown: string;
-  imagePlaceholders: ImagePlaceholder[];
+  /** Absolute source URL of the image behind `[IMAGE:N]`, indexed by N. */
+  imageSourceUrls: string[];
 }
 
 /**
@@ -30,7 +30,26 @@ interface HtmlToMarkdownResult {
  * or image placeholder format changes — ensures InvestigationInput snapshots
  * record which renderer produced the stored markdown.
  */
-export const MARKDOWN_RENDERER_VERSION = "1.2.0";
+export const MARKDOWN_RENDERER_VERSION = "1.3.0";
+
+/**
+ * Resolve an `<img src>` against the post URL (Wikipedia HTML uses
+ * protocol-relative URLs) into the absolute form image occurrences use.
+ * Returns null for sources that can never be fetched (data:, relative junk,
+ * embedded credentials).
+ */
+function resolveImageSourceUrl(src: string, baseUrl: string): string | null {
+  if (src.length === 0) return null;
+  let resolved: URL;
+  try {
+    resolved = new URL(src, baseUrl);
+  } catch {
+    return null;
+  }
+  if (resolved.protocol !== "http:" && resolved.protocol !== "https:") return null;
+  if (resolved.username.length > 0 || resolved.password.length > 0) return null;
+  return resolved.toString();
+}
 
 // ── Turndown configuration ────────────────────────────────────────────────
 
@@ -43,27 +62,27 @@ const TURNDOWN_OPTIONS: TurndownService.Options = {
 };
 
 /**
- * Convert HTML to markdown with `[IMAGE:N]` placeholders for each `<img>` tag.
+ * Convert HTML to markdown with an `[IMAGE:N]` placeholder for each `<img>`
+ * whose source is a fetchable URL; images without one are dropped.
  *
- * Returns the markdown string and the ordered list of placeholders so the
- * input builder can match placeholders to resolved image occurrences by URL.
+ * Returns the markdown and the source URL behind each placeholder so the
+ * investigation input can match placeholders to downloaded images by URL.
  */
-function htmlToMarkdownWithImages(html: string): HtmlToMarkdownResult {
-  const placeholders: ImagePlaceholder[] = [];
+function htmlToMarkdownWithImages(html: string, baseUrl: string): HtmlToMarkdownResult {
+  const imageSourceUrls: string[] = [];
 
   const service = new TurndownService(TURNDOWN_OPTIONS);
 
   service.addRule("imagePlaceholder", {
     filter: "img",
     replacement: (_content, node) => {
-      const src = node.getAttribute("src")?.trim() ?? "";
-      const index = placeholders.length;
-      if (src.length > 0) {
-        placeholders.push({ index, matchBy: "SOURCE_URL", sourceUrl: src });
-      } else {
-        placeholders.push({ index, matchBy: "ORIGINAL_INDEX" });
+      const sourceUrl = resolveImageSourceUrl(node.getAttribute("src")?.trim() ?? "", baseUrl);
+      if (sourceUrl === null) {
+        return "";
       }
-      return ` [IMAGE:${index}] `;
+      const index = imageSourceUrls.length;
+      imageSourceUrls.push(sourceUrl);
+      return ` [IMAGE:${index.toString()}] `;
     },
   });
 
@@ -71,7 +90,7 @@ function htmlToMarkdownWithImages(html: string): HtmlToMarkdownResult {
   // Substack wrap images in <a href="..."><img/></a> to make them clickable.
   // Turndown's default link rule would produce "[ [IMAGE:0] ](url)" with extra
   // blank lines from inner block containers (div, figure, etc.). The anchor URL
-  // is redundant — the image URL is already captured in imagePlaceholders for
+  // is redundant — the image URL is already captured in imageSourceUrls for
   // matching — so we discard it and return just the placeholder(s).
   service.addRule("imageOnlyLink", {
     filter: (node) =>
@@ -103,19 +122,26 @@ function htmlToMarkdownWithImages(html: string): HtmlToMarkdownResult {
   service.remove((node) => NON_CONTENT_TAGS.has(node.nodeName.toLowerCase()));
 
   const markdown = service.turndown(html);
-  return { markdown, imagePlaceholders: placeholders };
+  return { markdown, imageSourceUrls };
 }
 
 // ── Platform wrappers ────────────────────────────────────────────────────
+// `postUrl` is the base for resolving relative image sources.
 
-export function lesswrongHtmlToContentMarkdown(html: string): HtmlToMarkdownResult {
-  return htmlToMarkdownWithImages(html);
+export function lesswrongHtmlToContentMarkdown(
+  html: string,
+  postUrl: string,
+): HtmlToMarkdownResult {
+  return htmlToMarkdownWithImages(html, postUrl);
 }
 
-export function wikipediaHtmlToContentMarkdown(html: string): HtmlToMarkdownResult {
-  return htmlToMarkdownWithImages(preFilterWikipediaHtml(html));
+export function wikipediaHtmlToContentMarkdown(
+  html: string,
+  postUrl: string,
+): HtmlToMarkdownResult {
+  return htmlToMarkdownWithImages(preFilterWikipediaHtml(html), postUrl);
 }
 
-export function substackHtmlToContentMarkdown(html: string): HtmlToMarkdownResult {
-  return htmlToMarkdownWithImages(html);
+export function substackHtmlToContentMarkdown(html: string, postUrl: string): HtmlToMarkdownResult {
+  return htmlToMarkdownWithImages(html, postUrl);
 }

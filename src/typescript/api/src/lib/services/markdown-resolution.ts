@@ -12,8 +12,6 @@
  */
 
 import type { Platform } from "@openerrata/shared";
-import type { ImagePlaceholder } from "$lib/investigators/interface.js";
-import type { HtmlSnapshots } from "./prompt-context.js";
 import {
   lesswrongHtmlToContentMarkdown,
   substackHtmlToContentMarkdown,
@@ -21,18 +19,24 @@ import {
   MARKDOWN_RENDERER_VERSION,
 } from "./html-to-markdown.js";
 
+/**
+ * Source-scoped HTML snapshots with the serverVerifiedAt latch bundled in.
+ *
+ * The discriminated union encodes the DB invariant:
+ *   serverVerifiedAt IS NOT NULL → serverHtmlBlobId IS NOT NULL
+ * When server-verified, serverHtml is guaranteed non-null at the type level.
+ */
+export type HtmlSnapshots =
+  | { serverVerifiedAt: Date; serverHtml: string; clientHtml: string | null }
+  | { serverVerifiedAt: null; serverHtml: string | null; clientHtml: string | null };
+
 type MarkdownResolution =
   | {
-      source: "SERVER_HTML";
+      source: "SERVER_HTML" | "CLIENT_HTML";
       markdown: string;
       rendererVersion: string;
-      imagePlaceholders: ImagePlaceholder[];
-    }
-  | {
-      source: "CLIENT_HTML";
-      markdown: string;
-      rendererVersion: string;
-      imagePlaceholders: ImagePlaceholder[];
+      /** Source URL of the image behind `[IMAGE:N]`, indexed by N. */
+      imageSourceUrls: string[];
     }
   | { source: "NONE" };
 
@@ -44,34 +48,27 @@ type MarkdownResolution =
  * - serverVerifiedAt non-null branch → serverHtml: string guaranteed by type
  * - serverVerifiedAt null + clientHtml non-null → CLIENT_HTML
  * - otherwise → NONE (X posts, or versions without HTML snapshots)
+ *
+ * `postUrl` is the base for resolving relative image sources.
  */
 export function resolveMarkdownForInvestigation(input: {
   platform: Platform;
   snapshots: HtmlSnapshots;
+  postUrl: string;
 }): MarkdownResolution {
   if (input.snapshots.serverVerifiedAt !== null) {
-    const { markdown, imagePlaceholders } = platformMarkdown(
-      input.platform,
-      input.snapshots.serverHtml,
-    );
     return {
       source: "SERVER_HTML",
-      markdown,
       rendererVersion: MARKDOWN_RENDERER_VERSION,
-      imagePlaceholders,
+      ...platformMarkdown(input.platform, input.snapshots.serverHtml, input.postUrl),
     };
   }
 
   if (input.snapshots.clientHtml !== null) {
-    const { markdown, imagePlaceholders } = platformMarkdown(
-      input.platform,
-      input.snapshots.clientHtml,
-    );
     return {
       source: "CLIENT_HTML",
-      markdown,
       rendererVersion: MARKDOWN_RENDERER_VERSION,
-      imagePlaceholders,
+      ...platformMarkdown(input.platform, input.snapshots.clientHtml, input.postUrl),
     };
   }
 
@@ -81,40 +78,18 @@ export function resolveMarkdownForInvestigation(input: {
 function platformMarkdown(
   platform: Platform,
   html: string,
-): { markdown: string; imagePlaceholders: ImagePlaceholder[] } {
+  postUrl: string,
+): { markdown: string; imageSourceUrls: string[] } {
   switch (platform) {
     case "LESSWRONG":
-      return lesswrongHtmlToContentMarkdown(html);
+      return lesswrongHtmlToContentMarkdown(html, postUrl);
     case "SUBSTACK":
-      return substackHtmlToContentMarkdown(html);
+      return substackHtmlToContentMarkdown(html, postUrl);
     case "WIKIPEDIA":
-      return wikipediaHtmlToContentMarkdown(html);
+      return wikipediaHtmlToContentMarkdown(html, postUrl);
     case "X":
       // X has no HTML; resolveMarkdownForInvestigation returns NONE before
       // reaching here. If this fires, the caller has a bug.
       throw new Error("platformMarkdown called for X, which has no HTML content");
   }
-}
-
-/**
- * Extract image placeholders from stored markdown by parsing `[IMAGE:N]` patterns.
- *
- * Used on retry to reconstruct placeholders from the InvestigationInput snapshot
- * without re-resolving from HTML.
- */
-export function extractImagePlaceholdersFromMarkdown(markdown: string): ImagePlaceholder[] {
-  const placeholders: ImagePlaceholder[] = [];
-  const pattern = /\[IMAGE:(\d+)\]/g;
-  let match: RegExpExecArray | null;
-
-  while ((match = pattern.exec(markdown)) !== null) {
-    placeholders.push({
-      index: parseInt(match[1] ?? "0", 10),
-      // sourceUrl is not recoverable from markdown alone; retries must match
-      // placeholders to image occurrences by originalIndex.
-      matchBy: "ORIGINAL_INDEX",
-    });
-  }
-
-  return placeholders;
 }

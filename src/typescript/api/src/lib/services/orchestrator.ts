@@ -2,12 +2,21 @@ import { getPrisma } from "$lib/db/client";
 import { requireOpenAiApiKey } from "$lib/config/env.js";
 import { isRecordNotFoundError } from "$lib/db/errors.js";
 import { downloadAndStoreImages, type ResolvedDownloadedImage } from "./image-downloader.js";
-import { consumeOpenAiKeySource, resolveInvestigationKey } from "./user-key-source.js";
-import { InvestigatorExecutionError, OpenAIInvestigator } from "$lib/investigators/openai.js";
+import {
+  consumeOpenAiKeySource,
+  ExpiredOpenAiKeySourceError,
+  InvalidOpenAiKeySourceError,
+  resolveInvestigationKey,
+  type InvestigationKeyResolution,
+} from "./user-key-source.js";
+import { InvestigatorExecutionError } from "$lib/investigators/errors.js";
 import type {
+  ImagePlaceholder,
   InvestigationProgressCallbacks,
-  InvestigatorAttemptAudit,
+  InvestigatorFactory,
   InvestigatorImageOccurrence,
+  InvestigatorInput,
+  InvestigatorSucceededAttemptAudit,
 } from "$lib/investigators/interface.js";
 import {
   claimIdSchema,
@@ -16,16 +25,21 @@ import {
   type SupportedImageMimeType,
 } from "@openerrata/shared";
 import type { ImageBlob, Prisma } from "$lib/db/prisma-client";
-import { createHash } from "node:crypto";
 
-import { formatErrorForLog, isNonRetryableProviderError } from "./orchestrator-errors.js";
-import { toPromptPostContext, type PromptImageOccurrence } from "./prompt-context.js";
+import {
+  formatErrorForLog,
+  getErrorStatus,
+  isNonRetryableProviderError,
+} from "./orchestrator-errors.js";
 import {
   tryClaimLease,
   loadClaimedInvestigation,
-  startHeartbeat,
+  startLeaseHeartbeat,
+  releaseLeaseDroppingUserKey,
+  retryBackoffMs,
+  LeaseLostError,
   MAX_INVESTIGATION_ATTEMPTS,
-  BASE_BACKOFF_MS,
+  type InvestigationForRun,
   type Logger,
 } from "./investigation-lease.js";
 import {
@@ -33,31 +47,55 @@ import {
   persistFailedAttemptAndMarkInvestigationFailed,
   persistFailedAttemptAndReleaseLease,
 } from "./attempt-audit.js";
-import { extractImagePlaceholdersFromMarkdown } from "./markdown-resolution.js";
 import { enqueueInvestigation } from "./queue.js";
 
-let serverInvestigator: OpenAIInvestigator | null = null;
+/**
+ * OpenAI statuses that say "this user key cannot pay for this run" rather than
+ * anything about the post: rejected (401), not permitted or no model access
+ * (403, 404), rate-limited or out of quota (429). Retrying on the same key
+ * cannot help, and letting such failures exhaust attempts or mark the
+ * investigation FAILED would let a bad key block a post from ever being
+ * checked — so the key is dropped instead.
+ */
+const USER_KEY_ATTRIBUTABLE_STATUS_CODES: ReadonlySet<number> = new Set([401, 403, 404, 429]);
 
-function getServerInvestigator(): OpenAIInvestigator {
-  if (serverInvestigator) {
-    return serverInvestigator;
+/** Whether `error`, raised while running on `keyType`, means the user key is unusable. */
+function isUserKeyFailure(
+  error: unknown,
+  keyType: InvestigationKeyResolution["type"] | null,
+): boolean {
+  if (
+    error instanceof ExpiredOpenAiKeySourceError ||
+    error instanceof InvalidOpenAiKeySourceError
+  ) {
+    return true;
   }
-
-  serverInvestigator = new OpenAIInvestigator(requireOpenAiApiKey());
-  return serverInvestigator;
+  if (keyType !== "USER_OPENAI_KEY") {
+    return false;
+  }
+  const status = getErrorStatus(error);
+  return status !== null && USER_KEY_ATTRIBUTABLE_STATUS_CODES.has(status);
 }
 
-function hashSnapshotText(snapshotText: string): string {
-  return createHash("sha256").update(snapshotText).digest("hex");
-}
-
+/** Replace the investigation's image set, provided this worker still holds the lease. */
 async function replaceInvestigationImages(
-  investigationId: string,
+  lease: { investigationId: string; workerIdentity: string; leaseLostSignal: AbortSignal },
   imageBlobs: ImageBlob[],
 ): Promise<void> {
+  const { investigationId } = lease;
   const uniqueBlobs = [...new Map(imageBlobs.map((b) => [b.id, b])).values()];
 
+  lease.leaseLostSignal.throwIfAborted();
   await getPrisma().$transaction(async (tx) => {
+    // Lock and verify our lease row so a reclaimed run cannot clobber images.
+    const held = await tx.investigationLease.updateMany({
+      where: { investigationId, leaseOwner: lease.workerIdentity },
+      data: { heartbeatAt: new Date() },
+    });
+    if (held.count === 0) {
+      throw new LeaseLostError(investigationId, "lease not held when writing images");
+    }
+
     await tx.investigationImage.deleteMany({
       where: { investigationId },
     });
@@ -78,35 +116,51 @@ function toDataUri(bytes: Uint8Array, mimeType: SupportedImageMimeType): string 
   return `data:${mimeType};base64,${Buffer.from(bytes).toString("base64")}`;
 }
 
-function uniqueUrlsInOrder(urls: string[]): string[] {
-  const seen = new Set<string>();
-  const unique: string[] = [];
-
-  for (const url of urls) {
-    if (seen.has(url)) continue;
-    seen.add(url);
-    unique.push(url);
+/**
+ * Canonical form of an image URL, shared by image occurrences, markdown
+ * placeholders and downloads so they match each other. Null for URLs that can
+ * never be fetched.
+ */
+function canonicalImageUrl(url: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
   }
+  return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.toString() : null;
+}
 
-  return unique;
+interface StoredImageOccurrence {
+  originalIndex: number;
+  normalizedTextOffset: number;
+  sourceUrl: string;
+  captionText: string | null;
 }
 
 async function resolvePromptImageOccurrences(
-  investigationId: string,
-  imageOccurrences: PromptImageOccurrence[],
+  lease: { investigationId: string; workerIdentity: string; leaseLostSignal: AbortSignal },
+  storedOccurrences: StoredImageOccurrence[],
 ): Promise<InvestigatorImageOccurrence[]> {
-  if (imageOccurrences.length === 0) {
-    await replaceInvestigationImages(investigationId, []);
-    return [];
-  }
+  const imageOccurrences = storedOccurrences.map((occurrence) => ({
+    originalIndex: occurrence.originalIndex,
+    normalizedTextOffset: occurrence.normalizedTextOffset,
+    sourceUrl: canonicalImageUrl(occurrence.sourceUrl) ?? occurrence.sourceUrl,
+    fetchable: canonicalImageUrl(occurrence.sourceUrl) !== null,
+    ...(occurrence.captionText === null ? {} : { captionText: occurrence.captionText }),
+  }));
 
-  const uniqueSourceUrls = uniqueUrlsInOrder(
-    imageOccurrences.map((occurrence) => occurrence.sourceUrl),
-  );
+  const uniqueSourceUrls = [
+    ...new Set(
+      imageOccurrences
+        .filter((occurrence) => occurrence.fetchable)
+        .map((occurrence) => occurrence.sourceUrl),
+    ),
+  ];
   const urlsWithinBudget = uniqueSourceUrls.slice(0, MAX_IMAGES_PER_INVESTIGATION);
   const omittedSourceUrls = new Set(uniqueSourceUrls.slice(MAX_IMAGES_PER_INVESTIGATION));
 
-  const resolutions = await downloadAndStoreImages(urlsWithinBudget, MAX_IMAGES_PER_INVESTIGATION);
+  const resolutions = await downloadAndStoreImages(urlsWithinBudget, lease.leaseLostSignal);
 
   const resolvedBySourceUrl = new Map<string, ResolvedDownloadedImage>();
   const uniqueResolvedBlobs = new Map<string, ResolvedDownloadedImage>();
@@ -118,11 +172,11 @@ async function resolvePromptImageOccurrences(
   }
 
   await replaceInvestigationImages(
-    investigationId,
+    lease,
     Array.from(uniqueResolvedBlobs.values()).map((image) => image.blob),
   );
 
-  return imageOccurrences.map((occurrence) => {
+  return imageOccurrences.map(({ fetchable: _fetchable, ...occurrence }) => {
     if (omittedSourceUrls.has(occurrence.sourceUrl)) {
       return {
         ...occurrence,
@@ -148,6 +202,56 @@ async function resolvePromptImageOccurrences(
 }
 
 /**
+ * Investigator input for a claimed run, built from the immutable
+ * InvestigationInput snapshot plus the version's text and resolved images.
+ */
+function buildInvestigatorInput(
+  investigation: InvestigationForRun,
+  imageOccurrences: InvestigatorImageOccurrence[],
+): InvestigatorInput {
+  const { input } = investigation;
+  const imagePlaceholders: ImagePlaceholder[] = input.imagePlaceholderSourceUrls.map(
+    (sourceUrl, index) => ({ index, matchBy: "SOURCE_URL", sourceUrl }),
+  );
+  const base = {
+    contentText: investigation.postVersion.contentBlob.contentText,
+    ...(input.markdown === null ? {} : { contentMarkdown: input.markdown, imagePlaceholders }),
+    platform: investigation.postVersion.post.platform,
+    url: input.postUrl,
+    ...(input.authorName === null ? {} : { authorName: input.authorName }),
+    ...(input.postPublishedAt === null
+      ? {}
+      : { postPublishedAt: input.postPublishedAt.toISOString() }),
+    imageOccurrences,
+    ...(input.hasVideo ? { hasVideo: true } : {}),
+  };
+
+  if (investigation.parentInvestigationId === null) {
+    return base;
+  }
+  if (investigation.parentInvestigation === null) {
+    throw new Error(`Update investigation ${investigation.id} is missing parent investigation`);
+  }
+  return {
+    ...base,
+    isUpdate: true,
+    ...(investigation.contentDiff === null ? {} : { contentDiff: investigation.contentDiff }),
+    oldClaims: investigation.parentInvestigation.claims.map((claim) => ({
+      id: claimIdSchema.parse(claim.id),
+      text: claim.text,
+      context: claim.context,
+      summary: claim.summary,
+      reasoning: claim.reasoning,
+      sources: claim.sources.map((source) => ({
+        url: source.url,
+        title: source.title,
+        snippet: source.snippet,
+      })),
+    })),
+  };
+}
+
+/**
  * Guard-first persist: atomically transition PROCESSING → COMPLETE.
  *
  * Two-step guard:
@@ -169,8 +273,10 @@ export async function persistCompletedInvestigation(
     workerIdentity: string;
     claims: InvestigationResult["claims"];
     attemptNumber: number;
-    attemptAudit: InvestigatorAttemptAudit;
-    modelVersion: string | null;
+    attemptAudit: InvestigatorSucceededAttemptAudit;
+    /** Provider model id the fact-check ran on (INV-INV-MODEL-AT-COMPLETION). */
+    model: string;
+    modelVersion: string;
   },
 ): Promise<boolean> {
   const released = await tx.investigationLease.deleteMany({
@@ -189,6 +295,7 @@ export async function persistCompletedInvestigation(
     data: {
       status: "COMPLETE",
       checkedAt: new Date(),
+      model: params.model,
       modelVersion: params.modelVersion,
     },
   });
@@ -218,9 +325,6 @@ export async function persistCompletedInvestigation(
             url: s.url,
             title: s.title,
             snippet: s.snippet,
-            snapshotText: s.snippet,
-            snapshotHash: hashSnapshotText(s.snippet),
-            retrievedAt: new Date(),
           })),
         },
       },
@@ -236,6 +340,7 @@ export async function orchestrateInvestigation(
   logger: Logger,
   options: {
     workerIdentity: string;
+    createInvestigator: InvestigatorFactory;
   },
 ): Promise<void> {
   const inFlightProgressWrites = new Set<Promise<void>>();
@@ -256,48 +361,23 @@ export async function orchestrateInvestigation(
   }
 
   const claimResult = await tryClaimLease(investigationId, options.workerIdentity);
-  if (claimResult.outcome === "MISSING") {
-    logger.info(`Investigation ${investigationId} no longer exists; skipping stale job`);
-    return;
-  }
-  if (claimResult.outcome === "TERMINAL") {
-    logger.info(`Investigation ${investigationId} already terminal, skipping`);
-    return;
-  }
-  if (claimResult.outcome === "LEASE_HELD") {
-    logger.info(`Investigation ${investigationId} already leased, skipping`);
-    return;
-  }
-  if (claimResult.outcome === "ATTEMPTS_EXHAUSTED") {
-    logger.error(
-      `Investigation ${investigationId} exhausted ${MAX_INVESTIGATION_ATTEMPTS.toString()} attempts; marking FAILED`,
-    );
-    const prismaForExhausted = getPrisma();
-    await prismaForExhausted.$transaction(async (tx) => {
-      const now = new Date();
-      // Defensive cleanup for stale/expired leases. Active leases are preserved.
-      await tx.investigationLease.deleteMany({
-        where: {
-          investigationId,
-          leaseExpiresAt: { lte: now },
-        },
-      });
-      // Match both PENDING (normal exhaustion path) and PROCESSING with no
-      // active lease row (stale reclaim rollback path). Avoid marking FAILED
-      // while another worker still holds an active lease.
-      const transitioned = await tx.investigation.updateMany({
-        where: {
-          id: investigationId,
-          attemptCount: { gte: MAX_INVESTIGATION_ATTEMPTS },
-          OR: [{ status: "PENDING" }, { status: "PROCESSING", lease: { is: null } }],
-        },
-        data: { status: "FAILED" },
-      });
-      if (transitioned.count > 0) {
-        await consumeOpenAiKeySource(tx, investigationId);
-      }
-    });
-    return;
+  switch (claimResult.outcome) {
+    case "MISSING":
+      logger.info(`Investigation ${investigationId} no longer exists; skipping stale job`);
+      return;
+    case "TERMINAL":
+      logger.info(`Investigation ${investigationId} already terminal, skipping`);
+      return;
+    case "LEASE_HELD":
+      logger.info(`Investigation ${investigationId} already leased, skipping`);
+      return;
+    case "UNFUNDED":
+      logger.info(
+        `Investigation ${investigationId} has no funding since its user key was dropped; skipping`,
+      );
+      return;
+    case "CLAIMED":
+      break;
   }
 
   const { attemptNumber } = claimResult;
@@ -310,39 +390,42 @@ export async function orchestrateInvestigation(
 
   const prisma = getPrisma();
 
-  const heartbeat = startHeartbeat(investigationId, options.workerIdentity, logger);
+  const heartbeat = startLeaseHeartbeat(
+    {
+      investigationId,
+      workerIdentity: options.workerIdentity,
+      leaseExpiresAt: claimResult.leaseExpiresAt,
+    },
+    logger,
+  );
+  // Aborts when this worker loses the lease, which stops every in-flight
+  // provider request, tool fetch and image download of this run.
+  const { leaseLostSignal } = heartbeat;
+  const lease = {
+    investigationId: investigation.id,
+    workerIdentity: options.workerIdentity,
+    leaseLostSignal,
+  };
 
+  let investigationKeyType: InvestigationKeyResolution["type"] | null = null;
   try {
-    const investigationKey = await resolveInvestigationKey(prisma, investigationId);
-    const investigator =
-      investigationKey.type === "SERVER_KEY"
-        ? getServerInvestigator()
-        : new OpenAIInvestigator(investigationKey.apiKey);
-    const promptPostContext = toPromptPostContext(investigation.postVersion);
-
-    // ── Resolve or restore InvestigationInput snapshot ──
-    // All executions (first attempt and retries) must use the immutable
-    // InvestigationInput snapshot persisted at queue-time.
-    const contentMarkdown = investigation.input.markdown ?? undefined;
-    const imagePlaceholders =
-      contentMarkdown !== undefined
-        ? extractImagePlaceholdersFromMarkdown(contentMarkdown)
-        : undefined;
-
-    const resolvedImageOccurrences = await resolvePromptImageOccurrences(
-      investigation.id,
-      promptPostContext.imageOccurrences,
+    // Resolve the key before touching any attacker-chosen image URL: a
+    // user-key run whose key is unusable stops here.
+    const investigationKey = await resolveInvestigationKey(prisma, investigation);
+    investigationKeyType = investigationKey.type;
+    const investigator = options.createInvestigator(
+      investigationKey.type === "SERVER_KEY" ? requireOpenAiApiKey() : investigationKey.apiKey,
     );
 
-    if (
-      investigation.parentInvestigationId !== null &&
-      investigation.parentInvestigation === null
-    ) {
-      throw new Error(`Update investigation ${investigation.id} is missing parent investigation`);
-    }
+    const resolvedImageOccurrences = await resolvePromptImageOccurrences(
+      lease,
+      investigation.postVersion.imageOccurrenceSet.occurrences,
+    );
+    const investigatorInput = buildInvestigatorInput(investigation, resolvedImageOccurrences);
 
     const progressCallbacks: InvestigationProgressCallbacks = {
       onProgressUpdate: (pending, confirmed) => {
+        if (leaseLostSignal.aborted) return;
         // Guard on leaseOwner to avoid writing progressClaims after a
         // terminal transition or lease reclaim (the lease row won't exist).
         const write = prisma.investigationLease
@@ -362,37 +445,15 @@ export async function orchestrateInvestigation(
       },
     };
 
-    const output = await investigator.investigate(
-      {
-        contentText: investigation.postVersion.contentBlob.contentText,
-        ...promptPostContext,
-        ...(contentMarkdown !== undefined && { contentMarkdown }),
-        ...(imagePlaceholders !== undefined && { imagePlaceholders }),
-        imageOccurrences: resolvedImageOccurrences,
-        ...(promptPostContext.hasVideo ? { hasVideo: true } : {}),
-        ...(investigation.parentInvestigation !== null && {
-          isUpdate: true,
-          ...(investigation.contentDiff === null ? {} : { contentDiff: investigation.contentDiff }),
-          oldClaims: investigation.parentInvestigation.claims.map((claim) => ({
-            id: claimIdSchema.parse(claim.id),
-            text: claim.text,
-            context: claim.context,
-            summary: claim.summary,
-            reasoning: claim.reasoning,
-            sources: claim.sources.map((source) => ({
-              url: source.url,
-              title: source.title,
-              snippet: source.snippet,
-            })),
-          })),
-        }),
-      },
-      progressCallbacks,
-    );
+    const output = await investigator.investigate(investigatorInput, {
+      signal: leaseLostSignal,
+      callbacks: progressCallbacks,
+    });
 
     // Ensure all progress writes settle before terminal transition.
     await flushProgressWrites();
 
+    leaseLostSignal.throwIfAborted();
     const completed = await prisma.$transaction((tx) =>
       persistCompletedInvestigation(tx, {
         investigationId: investigation.id,
@@ -400,7 +461,8 @@ export async function orchestrateInvestigation(
         claims: output.result.claims,
         attemptNumber,
         attemptAudit: output.attemptAudit,
-        modelVersion: output.modelVersion ?? null,
+        model: output.model,
+        modelVersion: output.modelVersion,
       }),
     );
 
@@ -417,6 +479,13 @@ export async function orchestrateInvestigation(
     // Drain callback writes so FAILED/lease-release transition is the final state.
     await flushProgressWrites();
 
+    if (leaseLostSignal.aborted || error instanceof LeaseLostError) {
+      logger.warn(
+        `Investigation ${investigation.id} attempt ${attemptNumber.toString()} abandoned: ${formatErrorForLog(leaseLostSignal.aborted ? leaseLostSignal.reason : error)}`,
+      );
+      return;
+    }
+
     if (isRecordNotFoundError(error)) {
       logger.info(
         `Investigation ${investigation.id} disappeared during processing; skipping stale job`,
@@ -425,6 +494,27 @@ export async function orchestrateInvestigation(
     }
 
     const attemptAudit = error instanceof InvestigatorExecutionError ? error.attemptAudit : null;
+
+    // USER KEY UNUSABLE: drop the key; the investigation waits, unfunded, for
+    // the selector or a new request instead of failing.
+    if (isUserKeyFailure(error, investigationKeyType)) {
+      const released = await releaseLeaseDroppingUserKey({
+        investigationId: investigation.id,
+        workerIdentity: options.workerIdentity,
+        attemptNumber,
+        attemptAudit,
+      });
+      if (released) {
+        logger.warn(
+          `Investigation ${investigation.id} dropped its user OpenAI key and is unfunded: ${formatErrorForLog(error)}`,
+        );
+      } else {
+        logger.info(
+          `Investigation ${investigation.id} no longer PROCESSING; ignoring user key failure`,
+        );
+      }
+      return;
+    }
 
     // NON_RETRYABLE: deterministic provider or parsing failures.
     if (isNonRetryableProviderError(error)) {
@@ -469,7 +559,7 @@ export async function orchestrateInvestigation(
 
     // Not last attempt — reclaim to PENDING and explicitly re-enqueue.
     // Do NOT rethrow to graphile-worker — we control retry timing ourselves.
-    const backoffMs = BASE_BACKOFF_MS * Math.pow(2, attemptNumber - 1);
+    const backoffMs = retryBackoffMs(attemptNumber);
     const retryAfter = new Date(Date.now() + backoffMs);
 
     const released = await persistFailedAttemptAndReleaseLease({

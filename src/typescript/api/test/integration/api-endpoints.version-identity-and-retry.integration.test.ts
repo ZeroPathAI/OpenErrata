@@ -1,11 +1,10 @@
 import type { InvestigatorInput } from "../../src/lib/investigators/interface.js";
 import {
   InvestigatorExecutionError,
-  OpenAIInvestigator,
   assert,
   buildFailedAttemptAudit,
   buildLesswrongViewInput,
-  buildSucceededAttemptAudit,
+  buildSucceededInvestigatorOutput,
   buildXViewInput,
   createCaller,
   orchestrateInvestigation,
@@ -23,7 +22,6 @@ void test("investigateNow creates a new version and investigation when only imag
   const firstInput = buildXViewInput({
     externalId: "investigate-now-image-only-version-change-1",
     observedContentText: "The text body is unchanged between views.",
-    observedImageUrls: [firstImageUrl],
     observedImageOccurrences: [
       {
         originalIndex: 0,
@@ -40,7 +38,6 @@ void test("investigateNow creates a new version and investigation when only imag
   const secondInput = buildXViewInput({
     externalId: "investigate-now-image-only-version-change-1",
     observedContentText: "The text body is unchanged between views.",
-    observedImageUrls: [secondImageUrl],
     observedImageOccurrences: [
       {
         originalIndex: 0,
@@ -105,7 +102,6 @@ void test("orchestrateInvestigation retries with identical multimodal snapshot i
       externalId: "orchestrator-retry-multimodal-snapshot-1",
       htmlContent: html,
     }),
-    observedImageUrls: [imageUrl],
     observedImageOccurrences: [
       {
         originalIndex: 0,
@@ -123,52 +119,38 @@ void test("orchestrateInvestigation retries with identical multimodal snapshot i
   const capturedInputs: InvestigatorInput[] = [];
   let invocation = 0;
 
-  const originalInvestigateDescriptor = Object.getOwnPropertyDescriptor(
-    OpenAIInvestigator.prototype,
-    "investigate",
+  const createInvestigator = () => ({
+    investigate: async (input: InvestigatorInput) => {
+      capturedInputs.push(structuredClone(input));
+      invocation += 1;
+      if (invocation === 1) {
+        throw new InvestigatorExecutionError(
+          "simulated transient retry path",
+          buildFailedAttemptAudit("multimodal-retry-first"),
+          new Error("simulated network timeout"),
+        );
+      }
+      return buildSucceededInvestigatorOutput("multimodal-retry-second");
+    },
+  });
+
+  await orchestrateInvestigation(
+    queued.investigationId,
+    { info() {}, warn() {}, error() {} },
+    {
+      workerIdentity: withIntegrationPrefix("worker-retry-snapshot-first"),
+      createInvestigator,
+    },
   );
-  assert.ok(originalInvestigateDescriptor);
-  assert.equal(typeof originalInvestigateDescriptor.value, "function");
-  OpenAIInvestigator.prototype.investigate = async (input: InvestigatorInput) => {
-    capturedInputs.push(structuredClone(input));
-    invocation += 1;
-    if (invocation === 1) {
-      throw new InvestigatorExecutionError(
-        "simulated transient retry path",
-        buildFailedAttemptAudit("multimodal-retry-first"),
-        new Error("simulated network timeout"),
-      );
-    }
-    return {
-      result: { claims: [] },
-      attemptAudit: buildSucceededAttemptAudit("multimodal-retry-second"),
-      modelVersion: "test-model-version",
-    };
-  };
 
-  try {
-    await orchestrateInvestigation(
-      queued.investigationId,
-      { info() {}, warn() {}, error() {} },
-      {
-        workerIdentity: withIntegrationPrefix("worker-retry-snapshot-first"),
-      },
-    );
-
-    await orchestrateInvestigation(
-      queued.investigationId,
-      { info() {}, warn() {}, error() {} },
-      {
-        workerIdentity: withIntegrationPrefix("worker-retry-snapshot-second"),
-      },
-    );
-  } finally {
-    Object.defineProperty(
-      OpenAIInvestigator.prototype,
-      "investigate",
-      originalInvestigateDescriptor,
-    );
-  }
+  await orchestrateInvestigation(
+    queued.investigationId,
+    { info() {}, warn() {}, error() {} },
+    {
+      workerIdentity: withIntegrationPrefix("worker-retry-snapshot-second"),
+      createInvestigator,
+    },
+  );
 
   assert.equal(capturedInputs.length, 2);
   const [firstAttemptInput, secondAttemptInput] = capturedInputs;
@@ -176,5 +158,9 @@ void test("orchestrateInvestigation retries with identical multimodal snapshot i
   assert.ok(secondAttemptInput);
   assert.deepEqual(secondAttemptInput, firstAttemptInput);
   assert.match(firstAttemptInput.contentMarkdown ?? "", /\[IMAGE:0\]/);
-  assert.equal(firstAttemptInput.imagePlaceholders?.[0]?.matchBy, "ORIGINAL_INDEX");
+  // Placeholders carry the image source URL captured at queue time, so the
+  // investigator matches [IMAGE:N] to the downloaded image by URL, never by position.
+  assert.deepEqual(firstAttemptInput.imagePlaceholders, [
+    { index: 0, matchBy: "SOURCE_URL", sourceUrl: imageUrl },
+  ]);
 });

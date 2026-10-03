@@ -7,7 +7,6 @@ interface BlobStorageConfigBase {
   bucket: string;
   accessKeyId: string;
   secretAccessKey: string;
-  publicUrlPrefix: string;
 }
 
 type AwsBlobStorageConfig = BlobStorageConfigBase & {
@@ -24,7 +23,6 @@ type BlobStorageConfig = AwsBlobStorageConfig | S3CompatibleBlobStorageConfig;
 class BlobStorageService {
   private readonly client: S3Client;
   private readonly bucket: string;
-  private readonly publicUrlPrefix: string;
 
   constructor(config: BlobStorageConfig) {
     this.client =
@@ -46,7 +44,6 @@ class BlobStorageService {
             },
           });
     this.bucket = config.bucket;
-    this.publicUrlPrefix = config.publicUrlPrefix.replace(/\/+$/, "");
   }
 
   async uploadImage(bytes: Uint8Array, contentHash: string, mimeType: string): Promise<string> {
@@ -60,10 +57,6 @@ class BlobStorageService {
       }),
     );
     return storageKey;
-  }
-
-  getPublicUrl(storageKey: string): string {
-    return `${this.publicUrlPrefix}/${storageKey}`;
   }
 }
 
@@ -79,7 +72,6 @@ function readBlobStorageConfig(): BlobStorageConfig {
       bucket: env.BLOB_STORAGE_BUCKET,
       accessKeyId: env.BLOB_STORAGE_ACCESS_KEY_ID,
       secretAccessKey: env.BLOB_STORAGE_SECRET_ACCESS_KEY,
-      publicUrlPrefix: env.BLOB_STORAGE_PUBLIC_URL_PREFIX,
     };
   }
 
@@ -90,7 +82,6 @@ function readBlobStorageConfig(): BlobStorageConfig {
     bucket: env.BLOB_STORAGE_BUCKET,
     accessKeyId: env.BLOB_STORAGE_ACCESS_KEY_ID,
     secretAccessKey: env.BLOB_STORAGE_SECRET_ACCESS_KEY,
-    publicUrlPrefix: env.BLOB_STORAGE_PUBLIC_URL_PREFIX,
   };
 }
 

@@ -2,16 +2,18 @@ export const DEFAULT_INTEGRATION_DATABASE_URL =
   "postgresql://openerrata:openerrata_dev@localhost:5433/openerrata";
 
 const INTEGRATION_ENV_OVERRIDES = {
-  HMAC_SECRET: "test-hmac-secret",
   BLOB_STORAGE_PROVIDER: "aws",
   BLOB_STORAGE_REGION: "us-east-1",
   BLOB_STORAGE_ENDPOINT: "",
   BLOB_STORAGE_BUCKET: "test-openerrata-images",
   BLOB_STORAGE_ACCESS_KEY_ID: "test-blob-access-key",
   BLOB_STORAGE_SECRET_ACCESS_KEY: "test-blob-secret",
-  BLOB_STORAGE_PUBLIC_URL_PREFIX: "https://example.test/images",
   DATABASE_ENCRYPTION_KEY: "integration-test-database-encryption-key",
   OPENAI_API_KEY: "sk-test-openai-key",
+  OPENAI_MAX_RESPONSE_TOOL_ROUNDS: "150",
+  WORKER_CONCURRENCY: "250",
+  SELECTOR_DAILY_BUDGET: "100",
+  IP_RANGE_CREDIT_CAP: "10",
 } as const;
 
 interface ApplyIntegrationEnvironmentOptions {

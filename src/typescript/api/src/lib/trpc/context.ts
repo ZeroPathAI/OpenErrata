@@ -1,13 +1,16 @@
 import { getPrisma, type PrismaClient } from "$lib/db/client";
-import { getEnv, MINIMUM_SUPPORTED_EXTENSION_VERSION } from "$lib/config/env.js";
+import { MINIMUM_SUPPORTED_EXTENSION_VERSION } from "$lib/config/env.js";
 import { hashContent, trimToOptionalNonEmpty } from "@openerrata/shared";
-import { verifyHmac } from "$lib/services/hmac.js";
 import { deriveIpRangePrefix } from "$lib/network/ip.js";
 import { findActiveInstanceApiKeyHash } from "$lib/services/instance-api-key.js";
 import { deriveRequestIdentity } from "$lib/services/request-identity.js";
 
 export interface RequestEventLike {
   request: Request;
+  /**
+   * The client's IP address. Behind the chart's ingress this comes from the
+   * proxy header named by ADDRESS_HEADER (see startup checks), not the socket.
+   */
   getClientAddress: () => string;
 }
 
@@ -17,9 +20,8 @@ export interface Context {
   viewerKey: string;
   ipRangeKey: string;
   isAuthenticated: boolean;
-  canInvestigate: boolean;
+  /** Request-scoped user OpenAI key as sent (`x-openai-api-key`); not yet verified. */
   userOpenAiApiKey: string | null;
-  hasValidAttestation: boolean;
   extensionVersion: string | null;
   minimumSupportedExtensionVersion: string;
 }
@@ -32,13 +34,10 @@ export async function createContext(event: RequestEventLike): Promise<Context> {
       userAgent: event.request.headers.get("user-agent") ?? "",
       instanceApiKey: event.request.headers.get("x-api-key"),
       userOpenAiApiKey: event.request.headers.get("x-openai-api-key"),
-      attestationSignature: event.request.headers.get("x-openerrata-signature"),
-      attestationBody: await readRequestBody(event),
     },
     {
       hashContent,
       deriveIpRangePrefix,
-      verifyHmac: (body, signature) => verifyHmac(getEnv().HMAC_SECRET, body, signature),
       findActiveInstanceApiKeyHash: async (apiKey) => findActiveInstanceApiKeyHash(prisma, apiKey),
     },
   );
@@ -49,19 +48,9 @@ export async function createContext(event: RequestEventLike): Promise<Context> {
     viewerKey: identity.viewerKey,
     ipRangeKey: identity.ipRangeKey,
     isAuthenticated: identity.isAuthenticated,
-    canInvestigate: identity.canInvestigate,
     userOpenAiApiKey: identity.userOpenAiApiKey,
-    hasValidAttestation: identity.hasValidAttestation,
     extensionVersion:
       trimToOptionalNonEmpty(event.request.headers.get("x-openerrata-extension-version")) ?? null,
     minimumSupportedExtensionVersion: MINIMUM_SUPPORTED_EXTENSION_VERSION,
   };
-}
-
-async function readRequestBody(event: RequestEventLike): Promise<string | null> {
-  try {
-    return await event.request.clone().text();
-  } catch {
-    return null;
-  }
 }
