@@ -1,4 +1,6 @@
-FROM node:22-slim AS base
+# Keep in step with node-version in .github/actions/setup-typescript-workspace.
+FROM node:22.23.3-slim AS base
+# corepack installs the pnpm version pinned by package.json's packageManager.
 RUN corepack enable
 
 FROM base AS build
@@ -34,6 +36,7 @@ COPY --from=build /app/tsconfig.base.json /app/tsconfig.base.json
 EXPOSE 3000
 ENV PORT=3000
 ENV NODE_ENV=production
+USER node
 
 # Default: run the API server. Override CMD for worker/selector.
 CMD ["node", "build/index.js"]

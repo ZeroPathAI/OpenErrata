@@ -1,6 +1,9 @@
-# CI deploy ServiceAccount with least-privilege RBAC.
+# Least-privilege RBAC for the GitHub Actions deploy job.
 #
-# Grants the GitHub Actions worker permission to:
+# The deploy job authenticates to EKS as the IAM role openerrata-github-actions-deploy
+# (assumed through GitHub OIDC; see src/aws/ci-iam/setup.sh), whose EKS access
+# entry puts it in the Kubernetes group `openerrata-ci` and grants nothing else.
+# This manifest gives that group permission to:
 #   1. Read and update the openerrata-main and openerrata-staging Namespaces
 #      (but NOT create or delete arbitrary namespaces).
 #   2. Fully manage workload resources inside those two namespaces.
@@ -8,25 +11,6 @@
 # Prerequisites: the two target namespaces must already exist before applying
 # this manifest, because the RoleBindings live inside them.  The companion
 # setup.sh script handles ordering automatically.
-
----
-# ── ServiceAccount (lives in kube-system so it survives namespace wipes) ──
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: openerrata-ci
-  namespace: kube-system
-
----
-# ── Long-lived token for kubeconfig generation ──
-apiVersion: v1
-kind: Secret
-metadata:
-  name: openerrata-ci-token
-  namespace: kube-system
-  annotations:
-    kubernetes.io/service-account.name: openerrata-ci
-type: kubernetes.io/service-account-token
 
 ---
 # ── ClusterRole: manage the two specific namespaces ──
@@ -50,14 +34,14 @@ roleRef:
   kind: ClusterRole
   name: openerrata-ci-namespaces
 subjects:
-  - kind: ServiceAccount
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
     name: openerrata-ci
-    namespace: kube-system
 
 ---
 # ── ClusterRole: full control of workload resources (namespace-scoped) ──
 #
-# This ClusterRole defines WHAT the SA can do.  The per-namespace
+# This ClusterRole defines WHAT the group can do.  The per-namespace
 # RoleBindings below restrict WHERE it can do it.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -120,9 +104,9 @@ roleRef:
   kind: ClusterRole
   name: openerrata-ci-workloads
 subjects:
-  - kind: ServiceAccount
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
     name: openerrata-ci
-    namespace: kube-system
 
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -135,6 +119,6 @@ roleRef:
   kind: ClusterRole
   name: openerrata-ci-workloads
 subjects:
-  - kind: ServiceAccount
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
     name: openerrata-ci
-    namespace: kube-system

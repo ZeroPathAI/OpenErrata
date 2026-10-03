@@ -2,10 +2,12 @@ replicaCount:
   api: 2
   worker: 2
 
+# CI publishes `<env>-<git sha>` (immutable) and `<env>-latest` (moved after a
+# successful deploy) tags, e.g. `main-latest`. There is no default version:
+# set image.tag or image.digest.
 image:
-  repository: ghcr.io/zeropathAI/openerrata-api
-  # TODO: Pin an immutable release tag or digest before first production rollout.
-  tag: latest
+  repository: ghcr.io/zeropathai/openerrata-api
+  tag: ""
   # Optional immutable digest (sha256:...). When set, it takes precedence over tag.
   digest: ""
   pullPolicy: Always
@@ -22,8 +24,9 @@ frontend:
   # GraphQL requests (e.g. "https://api.openerrata.com" or a cluster-internal URL).
   apiBaseUrl: ""
   image:
-    repository: ghcr.io/zeropathAI/openerrata-frontend
-    tag: latest
+    repository: ghcr.io/zeropathai/openerrata-frontend
+    # Required when frontend.enabled=true unless digest is set (see image.tag).
+    tag: ""
     digest: ""
     pullPolicy: Always
   service:
@@ -50,8 +53,38 @@ serviceAccount:
     migrate: ""
     frontend: ""
 
+# Applied to every pod. Both images run as their `node` user (uid/gid 1000).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+
+# Container resource requests/limits per component. Empty means the cluster's
+# defaults (LimitRange) apply; size these from observed usage.
+resources:
+  api: {}
+  worker: {}
+  selector: {}
+  migrate: {}
+  frontend: {}
+
 networkPolicy:
   enabled: true
+  # The worker fetches URLs chosen by the LLM and by post content. When enabled,
+  # its egress is limited to DNS and public addresses, which blocks the cloud
+  # metadata endpoint and in-cluster services. Private destinations the worker
+  # needs (e.g. an in-cluster or VPC-internal database) go in allowedCidrs.
+  # Off by default because the database address is deployment-specific.
+  workerEgress:
+    enabled: false
+    allowedCidrs: []
 
 service:
   type: ClusterIP
@@ -73,11 +106,24 @@ ingress:
 
 selector:
   schedule: "*/5 * * * *"
-  budget: "100"
+  # Maximum investigations the selector admits per UTC day, however often the
+  # schedule runs it.
+  dailyBudget: "100"
 
 config:
+  # How the API learns each viewer's IP address (SvelteKit adapter-node
+  # ADDRESS_HEADER / XFF_DEPTH). The defaults match the chart's nginx ingress,
+  # which sets X-Forwarded-For to the address it accepted the connection from,
+  # so the client is the last entry. If another proxy (e.g. Cloudflare) sits in
+  # front of the ingress controller, configure the controller's real-IP
+  # handling (use-forwarded-headers / proxy-real-ip-cidr) so that address is
+  # the viewer's, or every viewer counts against one IP range. The API refuses
+  # to start in production without these.
+  clientAddressHeader: "x-forwarded-for"
+  clientAddressXffDepth: "1"
   ipRangeCreditCap: "10"
   workerConcurrency: "250"
+  openaiMaxResponseToolRounds: "150"
   databaseEncryptionKeyId: "primary"
   # Required: blob storage backend provider ("aws" or "s3_compatible").
   blobStorageProvider: ""
@@ -90,8 +136,6 @@ config:
   blobStorageEndpoint: ""
   # Required: name of the S3/R2 bucket used for investigation image blobs.
   blobStorageBucket: ""
-  # Required: public URL prefix used to serve uploaded blobs.
-  blobStoragePublicUrlPrefix: ""
 
 # Secrets must be provided via --set or external secret manager
 secrets:
@@ -101,8 +145,6 @@ secrets:
   databaseUrl: ""
   # Required: server-side OpenAI key used by worker and selector investigations.
   openaiApiKey: ""
-  # Required: shared secret used to verify request signatures.
-  hmacSecret: ""
   # Required: symmetric key used to encrypt transient DB-stored secrets.
   databaseEncryptionKey: ""
   # Required: credentials for blob storage uploads.

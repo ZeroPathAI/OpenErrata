@@ -22,11 +22,11 @@ jobs:
       has_relevant_changes: ${{ steps.changes.outputs.relevant }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Detect relevant file changes
         id: changes
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3.0.4
         with:
           filters: |
             relevant:
@@ -61,10 +61,13 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Setup Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          # Helm 3, the engine Pulumi's helm.v3.Chart renders the chart with.
+          version: v3.22.0
 
       - name: Lint chart
         shell: bash
@@ -87,7 +90,7 @@ jobs:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Setup TypeScript workspace
         uses: ./.github/actions/setup-typescript-workspace
@@ -109,7 +112,7 @@ jobs:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Setup TypeScript workspace
         uses: ./.github/actions/setup-typescript-workspace
@@ -143,7 +146,7 @@ jobs:
           --health-retries 5
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Setup TypeScript workspace
         uses: ./.github/actions/setup-typescript-workspace
@@ -165,7 +168,7 @@ jobs:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Setup TypeScript workspace
         uses: ./.github/actions/setup-typescript-workspace
@@ -178,7 +181,7 @@ jobs:
         run: tar -C extension -czf "$RUNNER_TEMP/extension-dist.tgz" dist
 
       - name: Upload extension dist artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: extension-dist-${{ github.sha }}
           path: ${{ runner.temp }}/extension-dist.tgz
@@ -189,7 +192,7 @@ jobs:
         run: tar -C frontend -czf "$RUNNER_TEMP/frontend-build.tgz" build
 
       - name: Upload frontend build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: frontend-build-${{ github.sha }}
           path: ${{ runner.temp }}/frontend-build.tgz
@@ -239,7 +242,7 @@ jobs:
         working-directory: src/typescript
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Setup TypeScript workspace
         uses: ./.github/actions/setup-typescript-workspace
@@ -248,7 +251,7 @@ jobs:
           install-playwright-chromium: "true"
 
       - name: Download extension dist artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: extension-dist-${{ github.sha }}
           path: ${{ runner.temp }}
@@ -272,7 +275,7 @@ jobs:
         working-directory: src/typescript
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Setup TypeScript workspace
         uses: ./.github/actions/setup-typescript-workspace
@@ -281,7 +284,7 @@ jobs:
           install-playwright-chromium: "true"
 
       - name: Download frontend build artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: frontend-build-${{ github.sha }}
           path: ${{ runner.temp }}

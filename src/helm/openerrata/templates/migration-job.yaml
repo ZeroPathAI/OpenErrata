@@ -1,3 +1,10 @@
+{{/*
+Helm runs this as a hook before every upgrade and after the first install
+(the chart Secret it reads does not exist before then). Pulumi's Helm support
+ignores hooks and creates the Job alongside the workloads; either way the
+workloads' wait-for-migrations init container keeps new pods off an
+unmigrated schema.
+*/}}
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -22,14 +29,16 @@ spec:
       restartPolicy: Never
       serviceAccountName: {{ include "openerrata.serviceAccountName" (dict "root" . "component" "migrate") }}
       automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: migrate
           image: {{ include "openerrata.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["node", "node_modules/prisma/build/index.js", "migrate", "deploy"]
           env:
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "openerrata.secretName" . }}
-                  key: DATABASE_URL
+            {{- include "openerrata.databaseUrlEnv" . | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources.migrate | nindent 12 }}

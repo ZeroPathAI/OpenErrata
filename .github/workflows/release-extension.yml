@@ -38,7 +38,7 @@ jobs:
           --health-retries 5
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Setup TypeScript workspace
         uses: ./.github/actions/setup-typescript-workspace
@@ -93,7 +93,7 @@ jobs:
         run: npx -y web-ext@8.9.0 lint --source-dir extension/dist/firefox
 
       - name: Upload packaged extension artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: openerrata-extension-packages-${{ steps.version.outputs.version }}
           path: |
@@ -110,13 +110,13 @@ jobs:
       contents: write
     steps:
       - name: Download packaged extension artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: openerrata-extension-packages-${{ needs.build-and-test.outputs.version }}
           path: .
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: |
             openerrata-extension-chrome-${{ needs.build-and-test.outputs.version }}.zip
@@ -131,25 +131,48 @@ jobs:
     timeout-minutes: 20
     environment: extension-store-publish
     steps:
+      # Missing credentials fail the release instead of silently skipping a store.
+      - name: Check store credentials
+        shell: bash
+        env:
+          CHROME_EXTENSION_ID: ${{ secrets.CHROME_EXTENSION_ID }}
+          CHROME_CLIENT_ID: ${{ secrets.CHROME_CLIENT_ID }}
+          CHROME_CLIENT_SECRET: ${{ secrets.CHROME_CLIENT_SECRET }}
+          CHROME_REFRESH_TOKEN: ${{ secrets.CHROME_REFRESH_TOKEN }}
+          FIREFOX_JWT_ISSUER: ${{ secrets.FIREFOX_JWT_ISSUER }}
+          FIREFOX_JWT_SECRET: ${{ secrets.FIREFOX_JWT_SECRET }}
+          PUBLISH_TO_FIREFOX_AMO: ${{ vars.PUBLISH_TO_FIREFOX_AMO }}
+        run: |
+          set -euo pipefail
+          required=(CHROME_EXTENSION_ID CHROME_CLIENT_ID CHROME_CLIENT_SECRET CHROME_REFRESH_TOKEN)
+          if [ "${PUBLISH_TO_FIREFOX_AMO:-}" = "true" ]; then
+            required+=(FIREFOX_JWT_ISSUER FIREFOX_JWT_SECRET)
+          else
+            echo "::notice::Not publishing to Firefox Add-ons (environment variable PUBLISH_TO_FIREFOX_AMO is not true)."
+          fi
+          missing=()
+          for name in "${required[@]}"; do
+            if [ -z "${!name:-}" ]; then missing+=("$name"); fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::Missing extension-store-publish secrets: ${missing[*]}"
+            exit 1
+          fi
+
       - name: Download packaged extension artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: openerrata-extension-packages-${{ needs.build-and-test.outputs.version }}
           path: .
 
       - name: Publish to Chrome Web Store
-        if: >-
-          env.CHROME_EXTENSION_ID != '' &&
-          env.CHROME_CLIENT_ID != '' &&
-          env.CHROME_CLIENT_SECRET != '' &&
-          env.CHROME_REFRESH_TOKEN != ''
         env:
           CHROME_EXTENSION_ID: ${{ secrets.CHROME_EXTENSION_ID }}
           CHROME_CLIENT_ID: ${{ secrets.CHROME_CLIENT_ID }}
           CHROME_CLIENT_SECRET: ${{ secrets.CHROME_CLIENT_SECRET }}
           CHROME_REFRESH_TOKEN: ${{ secrets.CHROME_REFRESH_TOKEN }}
         run: |
-          npx -y chrome-webstore-upload-cli@3 upload \
+          npx -y chrome-webstore-upload-cli@3.5.0 upload \
             --source "openerrata-extension-chrome-${{ needs.build-and-test.outputs.version }}.zip" \
             --extension-id "$CHROME_EXTENSION_ID" \
             --client-id "$CHROME_CLIENT_ID" \
@@ -157,10 +180,10 @@ jobs:
             --refresh-token "$CHROME_REFRESH_TOKEN" \
             --auto-publish
 
+      # The AMO listing is not live yet; set PUBLISH_TO_FIREFOX_AMO=true on the
+      # extension-store-publish environment once it is.
       - name: Publish to Firefox Add-ons
-        if: >-
-          env.FIREFOX_JWT_ISSUER != '' &&
-          env.FIREFOX_JWT_SECRET != ''
+        if: vars.PUBLISH_TO_FIREFOX_AMO == 'true'
         env:
           FIREFOX_JWT_ISSUER: ${{ secrets.FIREFOX_JWT_ISSUER }}
           FIREFOX_JWT_SECRET: ${{ secrets.FIREFOX_JWT_SECRET }}

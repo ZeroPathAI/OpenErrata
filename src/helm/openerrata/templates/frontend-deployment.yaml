@@ -20,6 +20,8 @@ spec:
     spec:
       serviceAccountName: {{ include "openerrata.serviceAccountName" (dict "root" . "component" "frontend") }}
       automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: frontend
           image: {{ include "openerrata.frontendImage" . | quote }}
@@ -31,6 +33,10 @@ spec:
           ports:
             - containerPort: 3000
               protocol: TCP
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources.frontend | nindent 12 }}
           livenessProbe:
             httpGet:
               path: /health
