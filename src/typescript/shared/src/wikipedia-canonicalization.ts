@@ -96,16 +96,112 @@ export function effectiveHeadingText(
   return node.textContent;
 }
 
-export const WIKIPEDIA_EXCLUDED_SECTION_TITLES = [
-  "references",
-  "notes",
-  "further reading",
-  "external links",
-  "bibliography",
-  "sources",
-  "citations",
-] as const;
+/**
+ * Appendix sections that list citations, sources and outbound links rather
+ * than carry article prose, by title (compared after
+ * `normalizeWikipediaSectionTitle`). Section titles are the one signal here
+ * that is per-language: these are the same kinds of section English excludes,
+ * as titled on the largest Wikipedias, taken from the titles those wikis' own
+ * articles use. A title matches on any wiki, since some wikis' articles use
+ * another language's titles. "See also" sections and their equivalents stay:
+ * English keeps them.
+ */
+const WIKIPEDIA_EXCLUDED_SECTION_TITLES_BY_LANGUAGE = {
+  en: [
+    "references",
+    "notes",
+    "further reading",
+    "external links",
+    "bibliography",
+    "sources",
+    "citations",
+  ],
+  de: [
+    "einzelnachweise",
+    "nachweise",
+    "belege",
+    "anmerkungen",
+    "fußnoten",
+    "literatur",
+    "weiterführende literatur",
+    "weblinks",
+    "quellen",
+  ],
+  fr: ["notes et références", "références", "bibliographie", "liens externes", "lien externe"],
+  es: [
+    "referencias",
+    "notas",
+    "bibliografía",
+    "bibliografía consultada",
+    "bibliografía básica",
+    "enlaces externos",
+    "enlace externo",
+    "fuentes",
+    "fuente",
+  ],
+  it: ["note", "bibliografia", "collegamenti esterni", "altri progetti", "fonti"],
+  pt: [
+    "referências",
+    "notas",
+    "notas explicativas",
+    "bibliografia",
+    "leitura adicional",
+    "ligações externas",
+    "links externos",
+    "fontes",
+  ],
+  nl: [
+    "noten",
+    "voetnoten",
+    "referenties",
+    "bronnen",
+    "bronvermelding",
+    "literatuur",
+    "externe links",
+    "externe link",
+  ],
+  pl: ["przypisy", "uwagi", "bibliografia", "dalsza literatura", "linki zewnętrzne"],
+  ru: ["примечания", "комментарии", "литература", "библиография", "источники", "ссылки"],
+  ja: ["脚注", "注釈", "出典", "参考文献", "参考", "読書案内", "外部リンク"],
+  // zh.wikipedia serves each reader their script variant, so both forms occur.
+  zh: [
+    "注释",
+    "註釋",
+    "注解",
+    "註解",
+    "脚注",
+    "腳註",
+    "参考文献",
+    "參考文獻",
+    "参考资料",
+    "參考資料",
+    "参考来源",
+    "參考來源",
+    "参考",
+    "參考",
+    "来源",
+    "來源",
+    "延伸阅读",
+    "延伸閱讀",
+    "扩展阅读",
+    "擴展閱讀",
+    "进阶读物",
+    "進階讀物",
+    "外部链接",
+    "外部鏈接",
+    "外部連結",
+  ],
+} as const satisfies Record<string, readonly string[]>;
 
+export const WIKIPEDIA_EXCLUDED_SECTION_TITLES: readonly string[] = Object.values(
+  WIKIPEDIA_EXCLUDED_SECTION_TITLES_BY_LANGUAGE,
+).flat();
+
+/**
+ * Class tokens of non-prose elements. The conventions MediaWiki and its
+ * communities apply on every wiki come first; the per-wiki tokens after them
+ * cover boxes those conventions miss.
+ */
 const WIKIPEDIA_EXCLUDED_CLASS_TOKENS = [
   // Navigation / metadata
   "mw-editsection",
@@ -119,15 +215,38 @@ const WIKIPEDIA_EXCLUDED_CLASS_TOKENS = [
   "noprint",
   "navbox",
   "vertical-navbox",
+  // Blocks about the article rather than of it: maintenance and quality
+  // banners, sister-project boxes, person-data tables, French "main article"
+  // banners.
+  "metadata",
+  // What Wikimedia's search index leaves out as navigation: hatnotes ("For
+  // other uses, see …"), navboxes, authority-control boxes.
+  "navigation-not-searchable",
+  // Per-wiki boxes that carry neither convention above: fr.wikipedia's portal
+  // bar; nl.wikipedia's appendix box (sources, footnotes and external links
+  // under bold labels rather than section headings) and sister-project boxes.
+  "bandeau-portail",
+  "appendix",
+  "interproject",
+  "interprojecttemplate",
   // Interactive UI injected by Wikipedia's JavaScript — not present in the
   // Wikipedia Parse API response and not article content.
   "mw-collapsible-toggle", // "show"/"hide" toggle buttons on collapsible infobox rows
   "mw-tmh-player", // Video/audio player wrapper added by TimedMediaHandler JS
   // (contains "Duration: N seconds." and time display)
+  "cachelinks", // fr.wikipedia gadget appending "[archive]" (Wikiwix) after external links
 ] as const;
+
+/**
+ * ARIA roles of non-prose landmarks. Navboxes, series sidebars and "main
+ * article" links declare `role="navigation"` on every wiki, whatever their
+ * per-wiki class names.
+ */
+const WIKIPEDIA_EXCLUDED_ROLES = ["navigation"] as const;
 
 const WIKIPEDIA_EXCLUDED_SECTION_TITLE_SET = new Set<string>(WIKIPEDIA_EXCLUDED_SECTION_TITLES);
 const WIKIPEDIA_EXCLUDED_CLASS_TOKEN_SET = new Set<string>(WIKIPEDIA_EXCLUDED_CLASS_TOKENS);
+const WIKIPEDIA_EXCLUDED_ROLE_SET = new Set<string>(WIKIPEDIA_EXCLUDED_ROLES);
 
 export function normalizeWikipediaSectionTitle(value: string): string {
   return normalizeContent(value).toLowerCase();
@@ -152,20 +271,34 @@ function isExcludedWikipediaTag(tagName: string): boolean {
   return NON_CONTENT_TAGS.has(tagName.toLowerCase());
 }
 
+function isExcludedWikipediaRole(role: string | null): boolean {
+  return role !== null && WIKIPEDIA_EXCLUDED_ROLE_SET.has(role.trim().toLowerCase());
+}
+
+/** What the exclusion predicate reads of an element, from a DOM Element or a parse5 node alike. */
+interface WikipediaExclusionDescriptor extends WikipediaElementDescriptor {
+  /** The `role` attribute, or null when the element has none. */
+  role: string | null;
+}
+
 /**
  * Shared Wikipedia element exclusion predicate used by both the browser
  * adapter (DOM traversal) and API canonical fetcher (parse5 traversal).
  * Keeping this centralized prevents client/server canonicalization drift.
+ * It reads only markup the Parse API returns and Wikipedia's scripts leave
+ * alone (tags, classes, roles), never inline styles, which scripts and reader
+ * interaction change on the live page.
  */
-export function shouldExcludeWikipediaElement(input: {
-  tagName: string;
-  classTokens: readonly string[];
-}): boolean {
+export function shouldExcludeWikipediaElement(input: WikipediaExclusionDescriptor): boolean {
   if (isExcludedWikipediaTag(input.tagName)) {
     return true;
   }
 
   if (isReferenceSupNode(input.tagName, input.classTokens)) {
+    return true;
+  }
+
+  if (isExcludedWikipediaRole(input.role)) {
     return true;
   }
 

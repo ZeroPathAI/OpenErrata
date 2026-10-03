@@ -1,9 +1,15 @@
 export {
+  httpUrlSchema,
   platformSchema,
-  contentProvenanceSchema,
   utf8ByteLength,
   investigationIdSchema,
   claimIdSchema,
+  postVersionIdSchema,
+  tabSessionIdSchema,
+  lesswrongExternalIdSchema,
+  xExternalIdSchema,
+  substackExternalIdSchema,
+  wikipediaExternalIdSchema,
   investigationClaimPayloadSchema,
   investigationResultSchema,
   WIKIPEDIA_LANGUAGE_CODE_REGEX,
@@ -13,9 +19,7 @@ export {
   viewPostInputSchema,
   registerObservedVersionInputSchema,
   registerObservedVersionOutputSchema,
-  priorInvestigationResultSchema,
   viewPostOutputSchema,
-  investigationStatusOutputSchema,
   getInvestigationInputSchema,
   getInvestigationOutputSchema,
   recordViewAndGetStatusInputSchema,
@@ -31,16 +35,19 @@ export {
 } from "./schemas/settings.js";
 
 export {
+  platformContentSchema,
   extensionPostStatusSchema,
-  extensionSkippedStatusSchema,
   extensionPageStatusSchema,
-  requestInvestigateResponseSchema,
-  focusClaimResponseSchema,
-  annotationVisibilityResponseSchema,
   extensionRuntimeErrorCodeSchema,
-  extensionRuntimeErrorResponseSchema,
-  contentControlMessageSchema,
-  extensionMessageSchema,
+  BACKGROUND_REQUESTS,
+  CONTENT_REQUESTS,
+  parseBackgroundRequestPayload,
+  parseBackgroundResponseEnvelope,
+  parseContentRequestPayload,
+  parseContentResponseEnvelope,
+  type ExtensionRuntimeErrorResponse,
+  type ProtocolParseResult,
+  type ProtocolResponseEnvelope,
 } from "./schemas/extension-protocol.js";
 
 export {
@@ -49,7 +56,5 @@ export {
   searchInvestigationsInputSchema,
   getMetricsInputSchema,
   publicGetInvestigationOutputSchema,
-  publicGetPostInvestigationsOutputSchema,
   publicSearchInvestigationsOutputSchema,
-  publicGetMetricsOutputSchema,
 } from "./schemas/public-api.js";

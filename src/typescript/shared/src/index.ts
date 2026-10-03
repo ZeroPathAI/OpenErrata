@@ -5,6 +5,7 @@ export * from "./normalize.js";
 export * from "./wikipedia-canonicalization.js";
 export * from "./wikipedia-identity.js";
 export * from "./image-occurrence-validation.js";
+export * from "./observed-images.js";
 export * from "./optional-non-empty.js";
 export * from "./constants.js";
 export * from "./trpc-paths.js";

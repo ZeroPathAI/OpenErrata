@@ -17,32 +17,13 @@ export type InvestigationClaimPayload = z.infer<
 
 export type ClaimId = z.infer<typeof import("./schemas.js").claimIdSchema>;
 
-// ── Platform metadata contracts ───────────────────────────────────────────
-export interface PlatformMetadataByPlatform {
-  LESSWRONG: Extract<
-    z.infer<typeof import("./schemas.js").viewPostInputSchema>,
-    { platform: "LESSWRONG" }
-  >["metadata"];
-  X: Extract<
-    z.infer<typeof import("./schemas.js").viewPostInputSchema>,
-    { platform: "X" }
-  >["metadata"];
-  SUBSTACK: Extract<
-    z.infer<typeof import("./schemas.js").viewPostInputSchema>,
-    { platform: "SUBSTACK" }
-  >["metadata"];
-  WIKIPEDIA: Extract<
-    z.infer<typeof import("./schemas.js").viewPostInputSchema>,
-    { platform: "WIKIPEDIA" }
-  >["metadata"];
-}
+export type InvestigationId = z.infer<typeof import("./schemas.js").investigationIdSchema>;
+
+export type PostId = z.infer<typeof import("./schemas/common.js").postIdSchema>;
 
 // ── Platform adapter (spec §3.8) ──────────────────────────────────────────
 
-export type PlatformContent = Extract<
-  z.infer<typeof import("./schemas.js").extensionMessageSchema>,
-  { type: "PAGE_CONTENT" }
->["payload"]["content"];
+export type PlatformContent = z.infer<typeof import("./schemas.js").platformContentSchema>;
 
 export type ObservedImageOccurrence = NonNullable<
   z.infer<typeof import("./schemas.js").viewPostInputSchema>["observedImageOccurrences"]
@@ -69,10 +50,6 @@ export type RecordViewAndGetStatusInput = z.infer<
 >;
 export type RecordViewAndGetStatusInputWire = z.input<
   typeof import("./schemas.js").recordViewAndGetStatusInputSchema
->;
-
-export type InvestigationStatusOutput = z.infer<
-  typeof import("./schemas.js").investigationStatusOutputSchema
 >;
 
 export type GetInvestigationInput = z.infer<
@@ -160,9 +137,7 @@ export type ExtensionApiInput<P extends ExtensionApiProcedurePath> =
 
 export type ExtensionPostStatus = z.infer<typeof import("./schemas.js").extensionPostStatusSchema>;
 
-export type ExtensionSkippedStatus = z.infer<
-  typeof import("./schemas.js").extensionSkippedStatusSchema
->;
+export type ExtensionSkippedStatus = Extract<ExtensionPageStatus, { kind: "SKIPPED" }>;
 
 export type ExtensionSkippedReason = ExtensionSkippedStatus["reason"];
 
@@ -172,6 +147,23 @@ export type ExtensionRuntimeErrorCode = z.infer<
   typeof import("./schemas.js").extensionRuntimeErrorCodeSchema
 >;
 
-// ── Extension message protocol ────────────────────────────────────────────
+export type TabSessionId = z.infer<typeof import("./schemas.js").tabSessionIdSchema>;
 
-export type ExtensionMessage = z.infer<typeof import("./schemas.js").extensionMessageSchema>;
+// ── Extension message protocol (spec §3.8.1) ──────────────────────────────
+
+type BackgroundRequests = typeof import("./schemas.js").BACKGROUND_REQUESTS;
+type ContentRequests = typeof import("./schemas.js").CONTENT_REQUESTS;
+
+export type BackgroundRequestType = keyof BackgroundRequests;
+export type BackgroundRequestPayload<T extends BackgroundRequestType> = z.infer<
+  BackgroundRequests[T]["payload"]
+>;
+export type BackgroundResponse<T extends BackgroundRequestType> = z.infer<
+  BackgroundRequests[T]["response"]
+>;
+
+export type ContentRequestType = keyof ContentRequests;
+export type ContentRequestPayload<T extends ContentRequestType> = z.infer<
+  ContentRequests[T]["payload"]
+>;
+export type ContentResponse<T extends ContentRequestType> = z.infer<ContentRequests[T]["response"]>;

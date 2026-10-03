@@ -1,6 +1,6 @@
 import { validateAndSortImageOccurrences } from "./image-occurrence-validation.js";
 
-export interface VersionIdentityImageOccurrence {
+interface VersionIdentityImageOccurrence {
   originalIndex: number;
   normalizedTextOffset: number;
   sourceUrl: string;

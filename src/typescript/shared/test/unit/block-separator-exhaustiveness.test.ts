@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CONTENT_BLOCK_SEPARATOR_TAGS } from "../../src/normalize.js";
+import { WORD_SEPARATOR_TAGS } from "../../src/normalize.js";
 
-// ── Block separator tag exhaustiveness ──────────────────────────────────
+// ── Word separator tag exhaustiveness ───────────────────────────────────
 // Every HTML spec block-level element must be either in
-// CONTENT_BLOCK_SEPARATOR_TAGS or in the explicit exclusion list below with
+// WORD_SEPARATOR_TAGS or in the explicit exclusion list below with
 // a documented rationale. This is a "living documentation" test — when new
 // block elements become relevant, the test forces a conscious decision
-// about inclusion or exclusion.
+// about inclusion or exclusion. The only non-block separators are the
+// line-breaking void elements.
 
 /**
  * HTML spec block-level elements. This list covers the elements defined as
@@ -61,7 +62,7 @@ const HTML_BLOCK_LEVEL_ELEMENTS = [
 ] as const;
 
 /**
- * Block-level elements explicitly excluded from CONTENT_BLOCK_SEPARATOR_TAGS
+ * Block-level elements explicitly excluded from WORD_SEPARATOR_TAGS
  * with documented rationale. Each entry must explain why the element does not
  * need a word-boundary separator.
  */
@@ -82,7 +83,6 @@ const EXCLUDED_BLOCK_ELEMENTS: Record<string, string> = {
   form: "Form container; not article prose",
   header: "Page/section header; not article prose",
   hgroup: "Heading group container; child headings already in separator set",
-  hr: "Horizontal rule; void element with no text content",
   main: "Structural container; child block elements provide separators",
   nav: "Navigation container; not article prose",
   ol: "Ordered list container; child li elements already in separator set",
@@ -98,11 +98,17 @@ const EXCLUDED_BLOCK_ELEMENTS: Record<string, string> = {
   caption: "Table caption; rare, and table cell separators handle table content",
 };
 
-test("every HTML block-level element is either in CONTENT_BLOCK_SEPARATOR_TAGS or explicitly excluded", () => {
+/**
+ * Inline-level elements that still separate words: void elements that end the
+ * line, so the text either side of them never reads as one word.
+ */
+const LINE_BREAKING_VOID_ELEMENTS = ["br", "hr"] as const;
+
+test("every HTML block-level element is either in WORD_SEPARATOR_TAGS or explicitly excluded", () => {
   const missingElements: string[] = [];
 
   for (const tag of HTML_BLOCK_LEVEL_ELEMENTS) {
-    if (!CONTENT_BLOCK_SEPARATOR_TAGS.has(tag) && !(tag in EXCLUDED_BLOCK_ELEMENTS)) {
+    if (!WORD_SEPARATOR_TAGS.has(tag) && !(tag in EXCLUDED_BLOCK_ELEMENTS)) {
       missingElements.push(tag);
     }
   }
@@ -110,19 +116,26 @@ test("every HTML block-level element is either in CONTENT_BLOCK_SEPARATOR_TAGS o
   assert.equal(
     missingElements.length,
     0,
-    `Block-level elements missing from both CONTENT_BLOCK_SEPARATOR_TAGS and EXCLUDED_BLOCK_ELEMENTS: ${missingElements.join(", ")}.\n` +
-      `Add each to CONTENT_BLOCK_SEPARATOR_TAGS (if it separates prose words) or to EXCLUDED_BLOCK_ELEMENTS (with rationale).`,
+    `Block-level elements missing from both WORD_SEPARATOR_TAGS and EXCLUDED_BLOCK_ELEMENTS: ${missingElements.join(", ")}.\n` +
+      `Add each to WORD_SEPARATOR_TAGS (if it separates prose words) or to EXCLUDED_BLOCK_ELEMENTS (with rationale).`,
   );
 });
 
-test("CONTENT_BLOCK_SEPARATOR_TAGS contains no unrecognized elements", () => {
+test("line-breaking void elements are word separators", () => {
+  for (const tag of LINE_BREAKING_VOID_ELEMENTS) {
+    assert.ok(WORD_SEPARATOR_TAGS.has(tag), `<${tag}> must separate the words around it`);
+  }
+});
+
+test("WORD_SEPARATOR_TAGS contains no unrecognized elements", () => {
   const allKnown = new Set<string>([
     ...HTML_BLOCK_LEVEL_ELEMENTS,
     ...Object.keys(EXCLUDED_BLOCK_ELEMENTS),
+    ...LINE_BREAKING_VOID_ELEMENTS,
   ]);
 
   const unrecognized: string[] = [];
-  for (const tag of CONTENT_BLOCK_SEPARATOR_TAGS) {
+  for (const tag of WORD_SEPARATOR_TAGS) {
     if (!allKnown.has(tag)) {
       unrecognized.push(tag);
     }
@@ -131,7 +144,7 @@ test("CONTENT_BLOCK_SEPARATOR_TAGS contains no unrecognized elements", () => {
   assert.equal(
     unrecognized.length,
     0,
-    `CONTENT_BLOCK_SEPARATOR_TAGS contains elements not in the HTML block-level list: ${unrecognized.join(", ")}.\n` +
-      `Either add them to HTML_BLOCK_LEVEL_ELEMENTS or remove from CONTENT_BLOCK_SEPARATOR_TAGS.`,
+    `WORD_SEPARATOR_TAGS contains elements that are neither block-level nor line-breaking: ${unrecognized.join(", ")}.\n` +
+      `Either add them to HTML_BLOCK_LEVEL_ELEMENTS / LINE_BREAKING_VOID_ELEMENTS or remove from WORD_SEPARATOR_TAGS.`,
   );
 });
