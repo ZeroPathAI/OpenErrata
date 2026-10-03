@@ -652,3 +652,15 @@ model Source {
 
   @@index([claimId])
 }
+
+// Page views (recordViewAndGetStatus calls) per extension version per UTC day.
+// Deliberately nothing else — no viewer key, IP or post — so a row describes
+// traffic, never a person (PRIVACY.md). Read it to tell when an extension line
+// the API still serves (legacy-extension-v0) has gone quiet.
+model ExtensionVersionDailyCount {
+  day           DateTime @db.Date
+  version       String
+  pageViewCount Int
+
+  @@id([day, version])
+}

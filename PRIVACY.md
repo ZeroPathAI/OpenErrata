@@ -44,12 +44,22 @@ anonymous identifier from a hash of your IP address range (/24 for IPv4, /48
 for IPv6) and User-Agent string. This is used solely for per-day view-credit
 rate limiting. Your full IP address and User-Agent are not stored.
 
+### Extension version counts
+
+For each UTC day, the server counts how many page views each extension version
+reported (for example, "0.4.0: 1,200 views on 2026-11-02"). Only the day, the
+version and the count are stored — no IP address, viewer identifier, post or
+time of day — so a count cannot be linked to you or to what you read. The
+counts tell us when no one uses an old extension version any more, so the
+server can stop supporting it.
+
 ## What Data We Do Not Collect
 
 - Email addresses, real names, or account credentials
 - Browsing history or activity outside of supported platform pages
 - Demographic, location, or device information
-- Analytics, telemetry, or crash reports
+- Analytics, telemetry, or crash reports (beyond the anonymous per-version
+  daily counts above)
 - Cookies or cross-site tracking identifiers
 
 ## How Data Is Used

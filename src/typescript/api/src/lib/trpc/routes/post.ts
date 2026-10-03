@@ -34,6 +34,8 @@ import {
 } from "$lib/services/investigate-now.js";
 import { maybeIncrementUniqueViewScore } from "$lib/services/view-credit.js";
 import { validateOpenAiApiKeyForSettings } from "$lib/services/openai-key-validation.js";
+import { countExtensionVersionPageView } from "$lib/services/extension-version-counts.js";
+import { legacyExtensionV0Adapter } from "../legacy-extension-v0/index.js";
 import { registerObservedVersion, findPostVersionById } from "./post/content-storage.js";
 import {
   loadInvestigationWithClaims,
@@ -213,10 +215,14 @@ async function projectInvestigationStatus(
 // Router
 // ---------------------------------------------------------------------------
 
-const extensionProcedure = publicProcedure.use(async ({ ctx, next }) => {
-  const extensionVersion = assertSupportedExtensionVersion(ctx);
-  return next({ ctx: { extensionVersion } });
-});
+const extensionProcedure = publicProcedure
+  .use(async ({ ctx, next }) => {
+    const extensionVersion = assertSupportedExtensionVersion(ctx);
+    return next({ ctx: { extensionVersion } });
+  })
+  // Serves extensions older than 0.4.0 in their own protocol (time-boxed;
+  // see legacy-extension-v0 for the retirement condition).
+  .concat(legacyExtensionV0Adapter);
 
 export const postRouter = router({
   registerObservedVersion: extensionProcedure
@@ -253,6 +259,7 @@ export const postRouter = router({
           lastViewedAt: new Date(),
         },
       });
+      await countExtensionVersionPageView(ctx.prisma, ctx.extensionVersion);
 
       await maybeIncrementUniqueViewScore(
         ctx.prisma,

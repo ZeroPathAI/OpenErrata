@@ -6,8 +6,12 @@ import { z } from "zod";
  * receive UPGRADE_REQUIRED errors. This is a property of the API code — when
  * the API changes in a way that breaks older extensions, bump this constant
  * alongside that change.
+ *
+ * Versions from here up to (not including) 0.4.0 speak the legacy v0 protocol
+ * and are served through the time-boxed adapter in
+ * `$lib/trpc/legacy-extension-v0`; this becomes "0.4.0" when it is retired.
  */
-export const MINIMUM_SUPPORTED_EXTENSION_VERSION = "0.4.0";
+export const MINIMUM_SUPPORTED_EXTENSION_VERSION = "0.2.0";
 
 const positiveIntegerFromEnv = z.preprocess((value) => {
   if (value === undefined || value === null || value === "") return undefined;
