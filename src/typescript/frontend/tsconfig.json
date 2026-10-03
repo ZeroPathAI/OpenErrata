@@ -20,5 +20,6 @@
     "noUnusedParameters": true,
     "lib": ["ES2022", "DOM", "DOM.Iterable"]
   },
-  "include": ["src"]
+  // The ambient files declare SvelteKit's virtual modules (e.g. $env/dynamic/private).
+  "include": ["src", ".svelte-kit/ambient.d.ts", ".svelte-kit/non-ambient.d.ts"]
 }

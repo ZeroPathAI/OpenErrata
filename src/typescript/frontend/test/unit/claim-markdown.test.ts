@@ -21,4 +21,20 @@ describe("renderClaimReasoningHtml", () => {
     assert.equal(html.includes("<script>"), false);
     assert.equal(html.includes("&lt;script&gt;alert"), true);
   });
+
+  it("drops script-scheme link targets", () => {
+    const html = renderClaimReasoningHtml(
+      "[click](javascript:alert(1)) [data](data:text/html,<b>x</b>) [ok](https://example.com)",
+    );
+
+    assert.doesNotMatch(html, /href="(?:javascript|data):/i);
+    assert.equal((html.match(/<a /g) ?? []).length, 1);
+    assert.match(html, /href="https:\/\/example\.com"/);
+  });
+
+  it("does not render images, so reasoning cannot embed remote resources", () => {
+    const html = renderClaimReasoningHtml("![tracker](https://tracker.example/pixel.png)");
+
+    assert.equal(html.includes("<img"), false);
+  });
 });

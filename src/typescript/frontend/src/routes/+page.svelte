@@ -119,7 +119,7 @@
             <h3>Corrections appear inline</h3>
             <p>
               Verified corrections are highlighted directly in the page. Hover to see what's wrong
-              and why, with links to the full investigation.
+              and why; click for the full reasoning and sources.
             </p>
           </div>
         </div>

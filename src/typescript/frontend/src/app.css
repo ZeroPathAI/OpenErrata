@@ -38,6 +38,11 @@ body {
   min-height: 100vh;
 }
 
+/* A class rather than app.html's usual inline style, which the CSP forbids. */
+.app-root {
+  display: contents;
+}
+
 a {
   color: var(--color-accent);
   text-decoration: none;

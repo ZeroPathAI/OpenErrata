@@ -13,10 +13,12 @@
     "test:e2e:post-deploy": "pnpm exec playwright test -c playwright.post-deploy.config.ts"
   },
   "dependencies": {
+    "@openerrata/shared": "workspace:*",
     "@sveltejs/adapter-node": "^5.5.3",
     "@sveltejs/kit": "^2.52.2",
     "markdown-it": "^14.1.1",
-    "svelte": "^5.53.0"
+    "svelte": "^5.53.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@playwright/test": "^1.56.1",

@@ -1,18 +1,11 @@
 <script lang="ts">
   import type { PageData } from "./$types";
-  import type { PublicInvestigationResult } from "./+page.server";
   import { renderClaimReasoningHtml } from "$lib/claim-markdown";
+  import { PLATFORM_LABELS } from "$lib/platform-labels";
 
   const { data }: { data: PageData } = $props();
 
-  const result: PublicInvestigationResult | null = $derived(data.result);
-
-  const platformLabels: Record<string, string> = {
-    LESSWRONG: "LessWrong",
-    X: "X",
-    SUBSTACK: "Substack",
-    WIKIPEDIA: "Wikipedia",
-  };
+  const result = $derived(data.result);
 
   function formatDate(iso: string): string {
     return new Date(iso).toLocaleDateString("en-US", {
@@ -42,25 +35,17 @@
       ? `OpenErrata found a correction for this ${platformLabel} post.`
       : `OpenErrata found ${count} corrections for this ${platformLabel} post.`;
   }
-
-  function platformLabelFor(platform: PublicInvestigationResult["post"]["platform"]): string {
-    return platformLabels[platform] ?? platform;
-  }
 </script>
 
 <svelte:head>
-  {#if result}
-    <title>Corrections for {truncateUrl(result.post.url, 40)} - OpenErrata</title>
-    <meta
-      name="description"
-      content={correctionsMetaDescription(
-        result.claims.length,
-        platformLabelFor(result.post.platform),
-      )}
-    />
-  {:else}
-    <title>Investigation Not Found - OpenErrata</title>
-  {/if}
+  <title>Corrections for {truncateUrl(result.post.url, 40)} - OpenErrata</title>
+  <meta
+    name="description"
+    content={correctionsMetaDescription(
+      result.claims.length,
+      PLATFORM_LABELS[result.post.platform],
+    )}
+  />
 </svelte:head>
 
 <div class="page">
@@ -68,100 +53,86 @@
     <div class="content-inner">
       <a href="/corrections" class="back-link">All corrections</a>
 
-      {#if data.error}
-        <div class="error-state">
-          <p>Failed to load investigation. The API may be unavailable.</p>
-          <p class="error-detail">{data.error}</p>
+      <div class="investigation-header">
+        <div class="header-meta">
+          <span class="platform-badge platform-{result.post.platform.toLowerCase()}">
+            {PLATFORM_LABELS[result.post.platform]}
+          </span>
+          <span class="date">
+            {formatDate(result.investigation.checkedAt)} at {formatTime(
+              result.investigation.checkedAt,
+            )}
+          </span>
         </div>
-      {:else if !result}
-        <div class="empty-state">
-          <h1>Investigation not found</h1>
-          <p>This investigation doesn't exist or hasn't completed yet.</p>
-          <a href="/corrections" class="btn btn-secondary">Browse corrections</a>
-        </div>
-      {:else}
-        <div class="investigation-header">
-          <div class="header-meta">
-            <span class="platform-badge platform-{result.post.platform.toLowerCase()}">
-              {platformLabelFor(result.post.platform)}
-            </span>
-            <span class="date">
-              {formatDate(result.investigation.checkedAt)} at {formatTime(
-                result.investigation.checkedAt,
-              )}
-            </span>
-          </div>
-          <h1 class="post-url">
-            <a href={result.post.url} target="_blank" rel="noopener noreferrer">
-              {truncateUrl(result.post.url)}
-              <svg
-                class="external-icon"
-                viewBox="0 0 16 16"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.5"
-              >
-                <path d="M6 3h7v7M13 3L6 10" />
-              </svg>
-            </a>
-          </h1>
-        </div>
+        <h1 class="post-url">
+          <a href={result.post.url} target="_blank" rel="noopener noreferrer">
+            {truncateUrl(result.post.url)}
+            <svg
+              class="external-icon"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+            >
+              <path d="M6 3h7v7M13 3L6 10" />
+            </svg>
+          </a>
+        </h1>
+      </div>
 
-        {#if result.claims.length > 0}
-          <div class="claims">
-            {#each result.claims as claim, i (claim.id)}
-              <div class="claim-card">
-                <div class="claim-number">{i + 1}</div>
-                <div class="claim-content">
-                  <div class="claim-quote">
-                    <span class="quote-label">Claim</span>
-                    <blockquote>{claim.text}</blockquote>
-                  </div>
-
-                  <div class="claim-correction">
-                    <span class="correction-label">Correction</span>
-                    <p>{claim.summary}</p>
-                  </div>
-
-                  <details class="claim-details">
-                    <summary>Full reasoning</summary>
-                    <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-                    <div class="reasoning">{@html renderClaimReasoningHtml(claim.reasoning)}</div>
-                  </details>
-
-                  {#if claim.sources.length > 0}
-                    <details class="claim-details">
-                      <summary
-                        >{claim.sources.length} source{claim.sources.length !== 1
-                          ? "s"
-                          : ""}</summary
-                      >
-                      <ul class="sources-list">
-                        {#each claim.sources as source (source.url)}
-                          <li class="source-item">
-                            <a
-                              href={source.url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              class="source-title">{source.title}</a
-                            >
-                            <p class="source-snippet">{source.snippet}</p>
-                          </li>
-                        {/each}
-                      </ul>
-                    </details>
-                  {/if}
+      {#if result.claims.length > 0}
+        <div class="claims">
+          {#each result.claims as claim, i (claim.id)}
+            <div class="claim-card">
+              <div class="claim-number">{i + 1}</div>
+              <div class="claim-content">
+                <div class="claim-quote">
+                  <span class="quote-label">Claim</span>
+                  <blockquote>{claim.text}</blockquote>
                 </div>
-              </div>
-            {/each}
-          </div>
-        {/if}
 
-        <div class="investigation-meta">
-          <span>Model: {result.investigation.model}</span>
-          <span>Prompt: {result.investigation.promptVersion}</span>
+                <div class="claim-correction">
+                  <span class="correction-label">Correction</span>
+                  <p>{claim.summary}</p>
+                </div>
+
+                <details class="claim-details">
+                  <summary>Full reasoning</summary>
+                  <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+                  <div class="reasoning">{@html renderClaimReasoningHtml(claim.reasoning)}</div>
+                </details>
+
+                {#if claim.sources.length > 0}
+                  <details class="claim-details">
+                    <summary
+                      >{claim.sources.length} source{claim.sources.length !== 1 ? "s" : ""}</summary
+                    >
+                    <ul class="sources-list">
+                      <!-- Keyed by position: nothing guarantees a claim's source URLs are distinct. -->
+                      {#each claim.sources as source, sourceIndex (sourceIndex)}
+                        <li class="source-item">
+                          <a
+                            href={source.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            class="source-title">{source.title}</a
+                          >
+                          <p class="source-snippet">{source.snippet}</p>
+                        </li>
+                      {/each}
+                    </ul>
+                  </details>
+                {/if}
+              </div>
+            </div>
+          {/each}
         </div>
       {/if}
+
+      <div class="investigation-meta">
+        <span>Model: {result.investigation.model}</span>
+        <span>Prompt: {result.investigation.promptVersion}</span>
+      </div>
     </div>
   </main>
 
@@ -480,69 +451,6 @@
   .investigation-meta span {
     font-size: 0.75rem;
     color: var(--color-text-muted);
-  }
-
-  /* Error / empty */
-  .error-state {
-    text-align: center;
-    padding: 3rem 1rem;
-    color: var(--color-text-muted);
-    background: var(--color-surface);
-    border: 1px solid var(--color-border);
-    border-radius: 12px;
-  }
-
-  .error-detail {
-    font-size: 0.8125rem;
-    color: var(--color-error);
-    margin-top: 0.5rem;
-    font-family: monospace;
-  }
-
-  .empty-state {
-    text-align: center;
-    padding: 4rem 1rem;
-  }
-
-  .empty-state h1 {
-    font-size: 1.5rem;
-    font-weight: 700;
-    margin-bottom: 0.5rem;
-  }
-
-  .empty-state p {
-    color: var(--color-text-muted);
-    margin-bottom: 1.5rem;
-  }
-
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 8px;
-    font-weight: 600;
-    font-size: 0.875rem;
-    padding: 0.625rem 1.25rem;
-    text-decoration: none;
-    border: none;
-    cursor: pointer;
-    transition:
-      background 0.15s,
-      border-color 0.15s;
-  }
-
-  .btn:hover {
-    text-decoration: none;
-  }
-
-  .btn-secondary {
-    background: transparent;
-    color: var(--color-text);
-    border: 1px solid var(--color-border);
-  }
-
-  .btn-secondary:hover {
-    border-color: var(--color-text-muted);
   }
 
   /* Footer */
