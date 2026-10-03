@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
+import { installCheckVisibility } from "./dom.js";
 
 type AdapterExtractionResult =
   import("../../src/content/adapters/model.js").AdapterExtractionResult;
@@ -35,6 +36,7 @@ export function withWindow<T>(
   },
 ): T {
   const dom = new JSDOM(html, { url });
+  installCheckVisibility(dom.window);
 
   if (options?.globalSetup) {
     options.globalSetup(dom.window);

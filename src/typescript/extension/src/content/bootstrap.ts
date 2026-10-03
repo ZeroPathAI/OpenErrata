@@ -1,24 +1,25 @@
 export interface OpenErrataControllerLifecycle {
   boot(): void;
-  dispose(): void;
 }
 
 export interface OpenErrataBootstrapTarget<TController extends OpenErrataControllerLifecycle> {
   __openerrata_controller?: TController;
 }
 
-export function bootOpenErrataController<TController extends OpenErrataControllerLifecycle>(
+/**
+ * Boot one controller per page. Injection is idempotent: every copy of the
+ * content script injected by this extension instance shares the isolated
+ * world's `window`, so a later copy finds the live controller and leaves it
+ * in place — never a second controller (and listener) for the same page.
+ */
+export function bootOpenErrataControllerOnce<TController extends OpenErrataControllerLifecycle>(
   target: OpenErrataBootstrapTarget<TController>,
   createController: () => TController,
 ): TController {
-  if (target.__openerrata_controller) {
-    try {
-      target.__openerrata_controller.dispose();
-    } catch (error: unknown) {
-      console.debug("Failed to dispose previous OpenErrata controller before boot", error);
-    }
+  const existing = target.__openerrata_controller;
+  if (existing !== undefined) {
+    return existing;
   }
-
   const controller = createController();
   target.__openerrata_controller = controller;
   controller.boot();

@@ -1,138 +1,67 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { extensionPageStatusSchema, type PlatformContent } from "@openerrata/shared";
+import { lesswrongExternalIdSchema, type PlatformContent } from "@openerrata/shared";
 import type { PlatformAdapter } from "../../src/content/adapters/index.js";
-import { toViewPostInput } from "../../src/lib/view-post-input.js";
+import { excludeNothing } from "../../src/content/adapters/model.js";
+
+const STUB_ADAPTER: PlatformAdapter = {
+  platformKey: "LESSWRONG",
+  matches: () => true,
+  pageLocator: () => null,
+  extract: () => ({ kind: "not_ready", reason: "hydrating" }),
+  getContentRoot: () => null,
+  contentExclusionFilter: excludeNothing,
+};
 import {
-  createInitialPageSessionState,
-  createSkippedSessionState,
-  createTrackedPostSessionState,
-  isActiveTrackedSession,
-  isCurrentSessionPostStatus,
+  isStatusOfSession,
+  sessionKeyOfState,
   shouldRefreshSkippedSessionOnMutation,
-  type TrackedPostSnapshot,
+  type PageSessionState,
 } from "../../src/content/session-state.js";
+import { notInvestigatedStatus, sessionId } from "../helpers/statuses.js";
 
-function makeFakeAdapter(): PlatformAdapter {
-  return {
-    platformKey: "LESSWRONG",
-    matches: () => true,
-    extract: () => ({
-      kind: "ready",
-      content: makeTrackedContent(),
+const content: PlatformContent = {
+  platform: "LESSWRONG",
+  externalId: lesswrongExternalIdSchema.parse("post1"),
+  url: "https://www.lesswrong.com/posts/post1/example",
+  contentText: "hello world",
+  hasVideo: false,
+  imageOccurrences: [],
+  metadata: { slug: "example", htmlContent: "<p>hello world</p>", tags: [] },
+};
+
+const tracked: PageSessionState = {
+  kind: "TRACKED_POST",
+  tabSessionId: sessionId(1),
+  sessionKey: "tracked",
+  adapter: STUB_ADAPTER,
+  content,
+};
+
+test("only tracked and skipped sessions have a session key", () => {
+  assert.equal(sessionKeyOfState({ kind: "IDLE" }), null);
+  assert.equal(sessionKeyOfState(tracked), "tracked");
+  assert.equal(
+    sessionKeyOfState({
+      kind: "SKIPPED",
+      tabSessionId: sessionId(2),
+      sessionKey: "skipped",
+      reason: "has_video",
     }),
-    getContentRoot: () => null,
-  } as unknown as PlatformAdapter;
-}
-
-function makeTrackedContent(): PlatformContent {
-  return {
-    platform: "LESSWRONG",
-    externalId: "post-1",
-    url: "https://www.lesswrong.com/posts/post-1/example",
-    contentText: "hello world",
-    mediaState: "text_only",
-    imageUrls: [],
-    metadata: {
-      slug: "example-post",
-      htmlContent: "<p>hello world</p>",
-      tags: ["tag-1"],
-    },
-  };
-}
-
-function makeTrackedSnapshot(): TrackedPostSnapshot {
-  const content = makeTrackedContent();
-  return {
-    kind: "TRACKED_POST",
-    sessionKey: "session:1",
-    platform: "LESSWRONG",
-    externalId: "post-1",
-    adapter: makeFakeAdapter(),
-    content,
-    request: toViewPostInput(content),
-  };
-}
-
-test("createInitialPageSessionState returns idle state", () => {
-  assert.deepEqual(createInitialPageSessionState(), {
-    kind: "IDLE",
-    tabSessionId: 0,
-    sessionKey: null,
-  });
-});
-
-test("createSkippedSessionState projects skipped snapshot into session state", () => {
-  const state = createSkippedSessionState(7, {
-    kind: "SKIPPED",
-    sessionKey: "skip:1",
-    platform: "LESSWRONG",
-    externalId: "post-1",
-    pageUrl: "https://www.lesswrong.com/posts/post-1/example",
-    reason: "no_text",
-  });
-
-  assert.deepEqual(state, {
-    kind: "SKIPPED",
-    tabSessionId: 7,
-    sessionKey: "skip:1",
-    platform: "LESSWRONG",
-    externalId: "post-1",
-    pageUrl: "https://www.lesswrong.com/posts/post-1/example",
-    reason: "no_text",
-  });
-});
-
-test("isActiveTrackedSession matches by tab session + post identity", () => {
-  const trackedState = createTrackedPostSessionState(3, makeTrackedSnapshot(), "hello world");
-
-  assert.equal(isActiveTrackedSession(trackedState, trackedState), true);
-
-  const other = createTrackedPostSessionState(4, makeTrackedSnapshot(), "hello world");
-  assert.equal(isActiveTrackedSession(trackedState, other), false);
-});
-
-test("isCurrentSessionPostStatus only matches tracked post identity", () => {
-  const trackedState = createTrackedPostSessionState(3, makeTrackedSnapshot(), "hello world");
-
-  assert.equal(
-    isCurrentSessionPostStatus(
-      trackedState,
-      extensionPageStatusSchema.parse({
-        kind: "POST",
-        tabSessionId: 3,
-        platform: "LESSWRONG",
-        externalId: "post-1",
-        pageUrl: "https://www.lesswrong.com/posts/post-1/example",
-        investigationState: "NOT_INVESTIGATED",
-        priorInvestigationResult: null,
-      }),
-    ),
-    true,
-  );
-
-  assert.equal(
-    isCurrentSessionPostStatus(
-      trackedState,
-      extensionPageStatusSchema.parse({
-        kind: "POST",
-        tabSessionId: 99,
-        platform: "LESSWRONG",
-        externalId: "post-1",
-        pageUrl: "https://www.lesswrong.com/posts/post-1/example",
-        investigationState: "NOT_INVESTIGATED",
-        priorInvestigationResult: null,
-      }),
-    ),
-    false,
+    "skipped",
   );
 });
 
-test("shouldRefreshSkippedSessionOnMutation only refreshes mutable skipped reasons", () => {
-  assert.equal(shouldRefreshSkippedSessionOnMutation("no_text", true), true);
-  assert.equal(shouldRefreshSkippedSessionOnMutation("unsupported_content", true), true);
-  assert.equal(shouldRefreshSkippedSessionOnMutation("private_or_gated", true), true);
-  assert.equal(shouldRefreshSkippedSessionOnMutation("has_video", true), false);
-  assert.equal(shouldRefreshSkippedSessionOnMutation("word_count", true), false);
-  assert.equal(shouldRefreshSkippedSessionOnMutation("no_text", false), false);
+test("a status belongs to the tracked session it was cached for", () => {
+  assert.equal(isStatusOfSession(tracked, notInvestigatedStatus(sessionId(1))), true);
+  assert.equal(isStatusOfSession(tracked, notInvestigatedStatus(sessionId(2))), false);
+  assert.equal(isStatusOfSession({ kind: "IDLE" }, notInvestigatedStatus(sessionId(1))), false);
+});
+
+test("only page-derived skips are re-evaluated on DOM changes", () => {
+  assert.equal(shouldRefreshSkippedSessionOnMutation("private_or_gated"), true);
+  assert.equal(shouldRefreshSkippedSessionOnMutation("unsupported_content"), true);
+  assert.equal(shouldRefreshSkippedSessionOnMutation("no_text"), true);
+  assert.equal(shouldRefreshSkippedSessionOnMutation("has_video"), false);
+  assert.equal(shouldRefreshSkippedSessionOnMutation("word_count"), false);
 });

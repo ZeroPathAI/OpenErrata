@@ -27,10 +27,10 @@ test("extractApiErrorCode reads openerrataCode from nested shape data", () => {
   assert.equal(
     extractApiErrorCode({
       shape: {
-        data: { openerrataCode: "UNSUPPORTED_PROTOCOL_VERSION" },
+        data: { openerrataCode: "MALFORMED_EXTENSION_VERSION" },
       },
     }),
-    "UNSUPPORTED_PROTOCOL_VERSION",
+    "MALFORMED_EXTENSION_VERSION",
   );
 });
 

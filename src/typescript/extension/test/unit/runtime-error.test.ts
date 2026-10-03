@@ -2,66 +2,47 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   ExtensionRuntimeError,
+  hasRuntimeErrorCode,
   isExtensionContextInvalidatedError,
-  isInvalidExtensionMessageRuntimeError,
-  isMalformedExtensionVersionRuntimeError,
-  isPayloadTooLargeRuntimeError,
-  isUpgradeRequiredRuntimeError,
+  isNoReceivingEndError,
 } from "../../src/lib/runtime-error.js";
 
-test("isPayloadTooLargeRuntimeError matches ExtensionRuntimeError with PAYLOAD_TOO_LARGE code", () => {
+test("hasRuntimeErrorCode matches ExtensionRuntimeErrors by code only", () => {
   const tooLarge = new ExtensionRuntimeError("too large", "PAYLOAD_TOO_LARGE");
-  assert.equal(isPayloadTooLargeRuntimeError(tooLarge), true);
-  assert.equal(isPayloadTooLargeRuntimeError(new Error("too large")), false);
+  assert.equal(hasRuntimeErrorCode(tooLarge, "PAYLOAD_TOO_LARGE"), true);
+  assert.equal(hasRuntimeErrorCode(tooLarge, "UPGRADE_REQUIRED"), false);
+  assert.equal(hasRuntimeErrorCode(new Error("too large"), "PAYLOAD_TOO_LARGE"), false);
 });
 
-test("isInvalidExtensionMessageRuntimeError matches ExtensionRuntimeError with INVALID_EXTENSION_MESSAGE code", () => {
-  const invalidMessage = new ExtensionRuntimeError("invalid message", "INVALID_EXTENSION_MESSAGE");
-  assert.equal(isInvalidExtensionMessageRuntimeError(invalidMessage), true);
-  assert.equal(isInvalidExtensionMessageRuntimeError(new Error("invalid message")), false);
-});
-
-test("isUpgradeRequiredRuntimeError matches ExtensionRuntimeError with UPGRADE_REQUIRED code", () => {
-  const upgradeRequired = new ExtensionRuntimeError("upgrade required", "UPGRADE_REQUIRED");
-  assert.equal(isUpgradeRequiredRuntimeError(upgradeRequired), true);
-  assert.equal(isUpgradeRequiredRuntimeError(new Error("upgrade required")), false);
-});
-
-test("isMalformedExtensionVersionRuntimeError matches ExtensionRuntimeError with MALFORMED_EXTENSION_VERSION code", () => {
-  const malformed = new ExtensionRuntimeError(
-    "malformed extension version",
-    "MALFORMED_EXTENSION_VERSION",
-  );
-  assert.equal(isMalformedExtensionVersionRuntimeError(malformed), true);
-  assert.equal(
-    isMalformedExtensionVersionRuntimeError(new Error("malformed extension version")),
-    false,
-  );
-});
-
-test("isExtensionContextInvalidatedError matches known runtime-disconnect messages", () => {
+test("isExtensionContextInvalidatedError only matches an invalidated extension context", () => {
   assert.equal(
     isExtensionContextInvalidatedError(
       new Error("Uncaught (in promise) Error: Extension context invalidated."),
     ),
     true,
   );
+  // A background that is not listening, or a handler that never replied, are
+  // faults to retry or report — not a reason for the content script to stop.
   assert.equal(
     isExtensionContextInvalidatedError(
       new Error("Could not establish connection. Receiving end does not exist."),
     ),
-    true,
+    false,
   );
   assert.equal(
     isExtensionContextInvalidatedError(
       new Error("The message port closed before a response was received."),
     ),
-    true,
-  );
-  assert.equal(
-    isExtensionContextInvalidatedError(
-      new Error("Observed content does not match canonical content"),
-    ),
     false,
   );
+});
+
+test("isNoReceivingEndError recognizes a tab without a listener", () => {
+  assert.equal(
+    isNoReceivingEndError(
+      new Error("Could not establish connection. Receiving end does not exist."),
+    ),
+    true,
+  );
+  assert.equal(isNoReceivingEndError(new Error("Extension context invalidated.")), false);
 });

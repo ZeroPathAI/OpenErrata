@@ -1,23 +1,22 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { PlatformContent } from "@openerrata/shared";
+import { platformContentSchema, type PlatformContent } from "@openerrata/shared";
 import { toViewPostInput } from "../../src/lib/view-post-input.js";
 
 test("toViewPostInput omits observedContentText for LESSWRONG", () => {
-  const content: PlatformContent = {
+  const content: PlatformContent = platformContentSchema.parse({
     platform: "LESSWRONG",
-    externalId: "lw-1",
-    url: "https://www.lesswrong.com/posts/lw-1/example",
+    externalId: "lw1",
+    url: "https://www.lesswrong.com/posts/lw1/example",
     contentText: "Observed text from page",
-    mediaState: "text_only",
-    imageUrls: [],
+    hasVideo: false,
     imageOccurrences: [],
     metadata: {
       slug: "example",
       htmlContent: "<p>Canonical source</p>",
       tags: ["rationality"],
     },
-  };
+  });
 
   const result = toViewPostInput(content);
 
@@ -27,13 +26,12 @@ test("toViewPostInput omits observedContentText for LESSWRONG", () => {
 });
 
 test("toViewPostInput includes observedContentText for X", () => {
-  const content: PlatformContent = {
+  const content: PlatformContent = platformContentSchema.parse({
     platform: "X",
     externalId: "1900000000000000000",
     url: "https://x.com/example/status/1900000000000000000",
     contentText: "Thread text",
-    mediaState: "text_only",
-    imageUrls: [],
+    hasVideo: false,
     imageOccurrences: [
       {
         originalIndex: 0,
@@ -46,7 +44,7 @@ test("toViewPostInput includes observedContentText for X", () => {
       text: "Thread text",
       mediaUrls: [],
     },
-  };
+  });
 
   const result = toViewPostInput(content);
 
@@ -57,13 +55,12 @@ test("toViewPostInput includes observedContentText for X", () => {
 });
 
 test("toViewPostInput includes observedContentText for SUBSTACK", () => {
-  const content: PlatformContent = {
+  const content: PlatformContent = platformContentSchema.parse({
     platform: "SUBSTACK",
-    externalId: "example-post",
+    externalId: "12345",
     url: "https://example.substack.com/p/example-post",
     contentText: "Post body",
-    mediaState: "text_only",
-    imageUrls: [],
+    hasVideo: false,
     imageOccurrences: [],
     metadata: {
       substackPostId: "12345",
@@ -72,7 +69,7 @@ test("toViewPostInput includes observedContentText for SUBSTACK", () => {
       title: "Example Post",
       authorName: "Author Name",
     },
-  };
+  });
 
   const result = toViewPostInput(content);
 
@@ -82,13 +79,12 @@ test("toViewPostInput includes observedContentText for SUBSTACK", () => {
 });
 
 test("toViewPostInput includes observedContentText for WIKIPEDIA", () => {
-  const content: PlatformContent = {
+  const content: PlatformContent = platformContentSchema.parse({
     platform: "WIKIPEDIA",
     externalId: "en:12345",
     url: "https://en.wikipedia.org/wiki/Climate_change",
     contentText: "Climate change is warming the planet.",
-    mediaState: "text_only",
-    imageUrls: [],
+    hasVideo: false,
     imageOccurrences: [
       {
         originalIndex: 0,
@@ -103,7 +99,7 @@ test("toViewPostInput includes observedContentText for WIKIPEDIA", () => {
       revisionId: "67890",
       displayTitle: "Climate change",
     },
-  };
+  });
 
   const result = toViewPostInput(content);
 

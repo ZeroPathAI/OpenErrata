@@ -55,7 +55,7 @@ for (const fixtureKey of Object.values(E2E_WIKIPEDIA_FIXTURE_KEYS)) {
 
     // Launch a plain Chromium browser — no extension installed. We are
     // testing DOM extraction logic, not the full extension pipeline.
-    const browser = await chromium.launch({ headless: false });
+    const browser = await chromium.launch({ channel: "chromium", headless: true });
     const context = await browser.newContext();
 
     // Serve the captured fixture HTML for the Wikipedia article URL.

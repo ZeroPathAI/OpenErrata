@@ -35,7 +35,10 @@ const FIREFOX_GECKO_ID =
   process.env.FIREFOX_GECKO_ID !== undefined && process.env.FIREFOX_GECKO_ID.length > 0
     ? process.env.FIREFOX_GECKO_ID
     : "openerrata@openerrata.com";
-const FIREFOX_MIN_VERSION = "109.0";
+// Firefox grants MV3 `host_permissions` at install only from 127 on (before,
+// users had to grant site access by hand and nothing worked until they did);
+// 128 is the matching ESR. `storage.session` also needs 115+.
+const FIREFOX_MIN_VERSION = "128.0";
 
 function cloneManifest(manifest: ExtensionManifest): ExtensionManifest {
   return JSON.parse(JSON.stringify(manifest)) as ExtensionManifest;
@@ -79,10 +82,11 @@ function copyBuiltExtensionToFirefoxDir(dist: string): void {
   }
 }
 
+// The IIFE bundles (Firefox background, content script) contain no Svelte
+// components, so they build without the Svelte plugin.
 async function buildFirefoxBackgroundBundle(outputDir: string): Promise<void> {
   await build({
     configFile: false,
-    plugins: [svelte()],
     build: {
       outDir: outputDir,
       emptyOutDir: false,
@@ -111,7 +115,6 @@ async function buildFirefoxBackgroundBundle(outputDir: string): Promise<void> {
 async function buildContentScriptBundle(outputDir: string): Promise<void> {
   await build({
     configFile: false,
-    plugins: [svelte()],
     build: {
       outDir: outputDir,
       emptyOutDir: false,

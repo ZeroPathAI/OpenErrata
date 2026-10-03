@@ -14,6 +14,11 @@ export const E2E_WIKIPEDIA_FIXTURE_KEYS = {
   OPENAI_PAGE_HTML: "wikipedia-openai-page-html-1",
   ALBERT_EINSTEIN_PAGE_HTML: "wikipedia-albert-einstein-page-html-1",
   CLIMATE_CHANGE_PAGE_HTML: "wikipedia-climate-change-page-html-1",
+  // Non-English articles, for the language-independent boilerplate exclusions
+  // (navboxes, authority control, person data, banners, portal bars) and
+  // localized appendix sections.
+  DE_MARIE_CURIE_PAGE_HTML: "wikipedia-de-marie-curie-page-html-1",
+  FR_MARIE_CURIE_PAGE_HTML: "wikipedia-fr-marie-curie-page-html-1",
 } as const;
 
 type E2eWikipediaFixtureKey =
@@ -43,6 +48,14 @@ const E2E_WIKIPEDIA_FIXTURE_DEFINITIONS: Record<
   [E2E_WIKIPEDIA_FIXTURE_KEYS.CLIMATE_CHANGE_PAGE_HTML]: {
     fixtureKey: E2E_WIKIPEDIA_FIXTURE_KEYS.CLIMATE_CHANGE_PAGE_HTML,
     sourceUrl: "https://en.wikipedia.org/wiki/Climate_change",
+  },
+  [E2E_WIKIPEDIA_FIXTURE_KEYS.DE_MARIE_CURIE_PAGE_HTML]: {
+    fixtureKey: E2E_WIKIPEDIA_FIXTURE_KEYS.DE_MARIE_CURIE_PAGE_HTML,
+    sourceUrl: "https://de.wikipedia.org/wiki/Marie_Curie",
+  },
+  [E2E_WIKIPEDIA_FIXTURE_KEYS.FR_MARIE_CURIE_PAGE_HTML]: {
+    fixtureKey: E2E_WIKIPEDIA_FIXTURE_KEYS.FR_MARIE_CURIE_PAGE_HTML,
+    sourceUrl: "https://fr.wikipedia.org/wiki/Marie_Curie",
   },
 };
 

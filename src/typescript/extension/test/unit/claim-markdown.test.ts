@@ -46,3 +46,33 @@ test("renderClaimReasoningHtml drops non-http(s) markdown links", () => {
   assert.equal(template.content.querySelectorAll("a").length, 0);
   assert.match(template.content.textContent, /Bad \[js\]\(javascript:alert\(1\)\) and mailto\./);
 });
+
+test("renderClaimReasoningHtml never emits images that would load attacker-chosen URLs", () => {
+  const template = renderToTemplate(
+    "Evidence: ![tracking pixel](https://attacker.example/pixel.png?reader=1) and <img src=https://attacker.example/raw.png>.",
+  );
+
+  assert.equal(template.content.querySelectorAll("img").length, 0);
+  // Nothing loads by itself: no element references a URL except links, which need a click.
+  for (const element of Array.from(template.content.querySelectorAll("*"))) {
+    assert.equal(element.hasAttribute("src"), false);
+    assert.equal(element.hasAttribute("srcset"), false);
+  }
+});
+
+test("renderClaimReasoningHtml strips attributes and tags outside the formatting allowlist", () => {
+  const template = renderToTemplate(
+    "Some **bold** text and `code`.\n\n| a | b |\n|---|---|\n| 1 | 2 |",
+  );
+
+  assert.notEqual(template.content.querySelector("strong"), null);
+  assert.notEqual(template.content.querySelector("code"), null);
+  for (const element of Array.from(template.content.querySelectorAll("*"))) {
+    for (const attribute of Array.from(element.attributes)) {
+      assert.ok(
+        ["href", "target", "rel"].includes(attribute.name),
+        `unexpected attribute ${attribute.name} on <${element.tagName.toLowerCase()}>`,
+      );
+    }
+  }
+});

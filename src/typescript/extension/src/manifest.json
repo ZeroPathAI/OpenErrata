@@ -1,10 +1,11 @@
 {
   "manifest_version": 3,
   "name": "OpenErrata",
-  "version": "0.3.3",
+  "version": "0.4.0",
   "description": "Crowdsourced, inline LLM investigations of the things you're reading.",
-  "permissions": ["activeTab", "storage", "scripting", "webNavigation", "alarms"],
-  "host_permissions": ["https://*/*", "http://*/*"],
+  "permissions": ["storage", "scripting", "webNavigation", "alarms"],
+  "host_permissions": ["https://*/*"],
+  "optional_host_permissions": ["http://*/*"],
   "background": {
     "service_worker": "background/index.js",
     "type": "module"

@@ -5,16 +5,17 @@ import { computePostView } from "../../src/popup/post-view.js";
 
 const baseIdentity = {
   kind: "POST" as const,
-  tabSessionId: 1,
+  tabSessionId: "00000000-0000-4000-8000-000000000001",
   platform: "LESSWRONG" as const,
-  externalId: "lw-1",
-  pageUrl: "https://www.lesswrong.com/posts/lw-1/example",
+  externalId: "lw1",
+  pageUrl: "https://www.lesswrong.com/posts/lw1/example",
 };
 
 test("computePostView maps FAILED to popup failed state", () => {
   const status = extensionPostStatusSchema.parse({
     ...baseIdentity,
     investigationState: "FAILED",
+    investigationId: "investigation-1",
     provenance: "SERVER_VERIFIED",
   });
   const result = computePostView(status, true);

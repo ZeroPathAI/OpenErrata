@@ -1,15 +1,10 @@
 import { mount } from "svelte";
-import { ensurePageStylesheet, requireMountTarget } from "../lib/page-bootstrap";
+import { requireMountTarget } from "../lib/page-bootstrap";
 import App from "./App.svelte";
 
-ensurePageStylesheet({
-  pageLabel: "popup",
-  stylesheetAsset: "index.css",
-});
-const popupRoot = requireMountTarget({
-  pageLabel: "popup",
-});
+// The page stylesheet link is verified at build time (vite.config.ts).
+const root = requireMountTarget({ pageLabel: "popup" });
 
-const app = mount(App, { target: popupRoot });
+const app = mount(App, { target: root });
 
 export default app;

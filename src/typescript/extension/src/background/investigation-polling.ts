@@ -1,315 +1,194 @@
 import {
   POLL_INTERVAL_MS,
-  getInvestigationInputSchema,
   type ExtensionPageStatus,
   type ExtensionPostStatus,
-  type InvestigateNowOutput,
-  type InvestigationStatusOutput,
-  type ViewPostInput,
+  type GetInvestigationInput,
+  type GetInvestigationOutput,
+  type InvestigationId,
+  type TabSessionId,
 } from "@openerrata/shared";
-import browser from "webextension-polyfill";
-import { getInvestigation } from "./api-client.js";
-import { cachePostStatus, getActivePostStatus, getActiveStatus } from "./cache.js";
-import { apiErrorToPostStatus, createPostStatusFromInvestigation } from "./post-status.js";
-import { BackgroundInvestigationState, type InvestigationPoller } from "./investigation-state.js";
-import {
-  clearUpgradeRequiredStateBestEffort,
-  isTerminalCompatibilityError,
-  isUpgradeRequiredError,
-  markUpgradeRequiredFromError,
-} from "./upgrade-required-runtime.js";
-import { toInvestigationStatusSnapshot } from "./message-dispatch.js";
+import { ApiClientError } from "./api-client-error.js";
+import { apiErrorPostStatus, postStatusFromPoll, type PostPage } from "./post-status.js";
+import type { TabStates } from "./tab-state.js";
 
-const backgroundInvestigationState = new BackgroundInvestigationState();
-const INVESTIGATION_POLL_ALARM_PREFIX = "investigation-poll:";
-// Chrome enforces a minimum repeating alarm interval; keep this as a wake-up
-// recovery signal and retain in-memory 5s polling while the worker is alive.
-const INVESTIGATION_POLL_RECOVERY_ALARM_PERIOD_MINUTES = 0.5;
+const POLL_RECOVERY_ALARM_PREFIX = "investigation-poll:";
+// Chrome enforces a minimum repeating alarm interval; the alarm only wakes a
+// stopped service worker so polling can resume — ticks run on timers.
+const POLL_RECOVERY_ALARM_PERIOD_MINUTES = 0.5;
+/** Consecutive transient failures (network, 5xx) tolerated before giving up. */
+const MAX_CONSECUTIVE_POLL_FAILURES = 5;
 
-export function noteTabSession(tabId: number, tabSessionId: number): void {
-  backgroundInvestigationState.noteTabSession(tabId, tabSessionId);
+type InvestigatingStatus = Extract<ExtensionPostStatus, { investigationState: "INVESTIGATING" }>;
+
+interface Poller {
+  tabSessionId: TabSessionId;
+  investigationId: InvestigationId;
+  consecutiveFailures: number;
+  timer: ReturnType<typeof setTimeout> | null;
 }
 
-export function retireTabSession(tabId: number, tabSessionId: number): void {
-  backgroundInvestigationState.retireTabSession(tabId, tabSessionId);
-}
-
-export function clearTabSession(tabId: number): void {
-  backgroundInvestigationState.clearTabSession(tabId);
-}
-
-export function isStaleTabSession(tabId: number, tabSessionId: number): boolean {
-  return backgroundInvestigationState.isStaleTabSession(tabId, tabSessionId);
-}
-
-export async function cacheApiErrorStatus(input: {
-  error: unknown;
-  tabId: number;
-  tabSessionId: number;
-  platform: ViewPostInput["platform"];
-  externalId: string;
-  pageUrl: string;
-  investigationId?: string;
-  skipIfStale?: boolean;
-  noteSession?: boolean;
-  stopPolling?: boolean;
-}): Promise<void> {
-  if (input.skipIfStale === true && isStaleTabSession(input.tabId, input.tabSessionId)) {
-    return;
-  }
-  if (input.noteSession === true) {
-    noteTabSession(input.tabId, input.tabSessionId);
-  }
-  if (input.stopPolling === true) {
-    stopInvestigationPolling(input.tabId);
-  }
-
-  const statusInput: Parameters<typeof apiErrorToPostStatus>[0] = {
-    error: input.error,
-    tabSessionId: input.tabSessionId,
-    platform: input.platform,
-    externalId: input.externalId,
-    pageUrl: input.pageUrl,
+interface InvestigationPollingDeps {
+  tabStates: TabStates;
+  getInvestigation: (input: GetInvestigationInput) => Promise<GetInvestigationOutput>;
+  alarms: {
+    create: (name: string, info: { periodInMinutes: number }) => Promise<void>;
+    clear: (name: string) => Promise<boolean>;
   };
-  if (input.investigationId !== undefined) {
-    statusInput.investigationId = input.investigationId;
-  }
-
-  await cachePostStatus(input.tabId, apiErrorToPostStatus(statusInput));
 }
 
-function pollRecoveryAlarmName(tabId: number): string {
-  return `${INVESTIGATION_POLL_ALARM_PREFIX}${tabId.toString()}`;
-}
-
-export function parsePollRecoveryAlarmTabId(alarmName: string): number | null {
-  if (!alarmName.startsWith(INVESTIGATION_POLL_ALARM_PREFIX)) {
-    return null;
-  }
-  const rawTabId = alarmName.slice(INVESTIGATION_POLL_ALARM_PREFIX.length);
-  if (!/^\d+$/.test(rawTabId)) {
-    return null;
-  }
-  const tabId = Number.parseInt(rawTabId, 10);
-  if (!Number.isSafeInteger(tabId) || tabId < 0) {
-    return null;
-  }
-  return tabId;
-}
-
-function schedulePollRecoveryAlarm(tabId: number): void {
-  void browser.alarms
-    .create(pollRecoveryAlarmName(tabId), {
-      periodInMinutes: INVESTIGATION_POLL_RECOVERY_ALARM_PERIOD_MINUTES,
-    })
-    .catch((error: unknown) => {
-      console.error("Failed to schedule investigation poll recovery alarm:", error);
-    });
-}
-
-function clearPollRecoveryAlarm(tabId: number): void {
-  void browser.alarms.clear(pollRecoveryAlarmName(tabId)).catch((error: unknown) => {
-    console.error("Failed to clear investigation poll recovery alarm:", error);
-  });
-}
-
-export function stopInvestigationPolling(tabId: number): void {
-  clearPollRecoveryAlarm(tabId);
-
-  const existing = backgroundInvestigationState.getPoller(tabId);
-  if (!existing) return;
-
-  if (existing.timer !== null) {
-    clearInterval(existing.timer);
-  }
-  backgroundInvestigationState.clearPoller(tabId);
-}
-
-export function isInvestigatingCheckStatus(status: InvestigateNowOutput["status"]): boolean {
-  return status === "PENDING" || status === "PROCESSING";
-}
-
-function isInvestigatingSnapshot(
-  snapshot: Pick<InvestigationStatusOutput, "investigationState">,
-): boolean {
-  return snapshot.investigationState === "INVESTIGATING";
-}
-
-export async function startInvestigationPolling(input: {
-  tabId: number;
-  tabSessionId: number;
-  platform: ViewPostInput["platform"];
-  externalId: string;
-  investigationId: string;
-}): Promise<void> {
-  stopInvestigationPolling(input.tabId);
-
-  const poller: InvestigationPoller = {
-    tabSessionId: input.tabSessionId,
-    investigationId: input.investigationId,
-    inFlight: false,
-    timer: null,
-  };
-  backgroundInvestigationState.setPoller(input.tabId, poller);
-  schedulePollRecoveryAlarm(input.tabId);
-
-  const tick = async () => {
-    const activePoller = backgroundInvestigationState.getPoller(input.tabId);
-    if (
-      activePoller?.tabSessionId !== input.tabSessionId ||
-      activePoller.investigationId !== input.investigationId
-    ) {
-      return;
-    }
-    if (activePoller.inFlight) return;
-
-    activePoller.inFlight = true;
-    let existingStatus: ExtensionPostStatus | null = null;
-    try {
-      const existing = await getActivePostStatus(input.tabId);
-      if (
-        existing?.tabSessionId !== input.tabSessionId ||
-        existing.platform !== input.platform ||
-        existing.externalId !== input.externalId
-      ) {
-        stopInvestigationPolling(input.tabId);
-        return;
-      }
-      existingStatus = existing;
-
-      const latest = await getInvestigation(
-        getInvestigationInputSchema.parse({
-          investigationId: input.investigationId,
-        }),
-      );
-      await clearUpgradeRequiredStateBestEffort("investigation polling");
-      const latestSnapshot = toInvestigationStatusSnapshot(latest);
-      await cachePostStatus(
-        input.tabId,
-        createPostStatusFromInvestigation({
-          tabSessionId: input.tabSessionId,
-          platform: input.platform,
-          externalId: input.externalId,
-          pageUrl: existing.pageUrl,
-          investigationId: input.investigationId,
-          ...latestSnapshot,
-        }),
-        { setActive: false },
-      );
-
-      if (!isInvestigatingSnapshot(latestSnapshot)) {
-        stopInvestigationPolling(input.tabId);
-      }
-    } catch (error: unknown) {
-      if (isTerminalCompatibilityError(error)) {
-        if (isUpgradeRequiredError(error)) {
-          await markUpgradeRequiredFromError(error);
-        }
-
-        if (existingStatus !== null) {
-          await cacheApiErrorStatus({
-            error,
-            tabId: input.tabId,
-            tabSessionId: input.tabSessionId,
-            platform: input.platform,
-            externalId: input.externalId,
-            pageUrl: existingStatus.pageUrl,
-            investigationId: input.investigationId,
-            stopPolling: true,
-          });
-        } else {
-          stopInvestigationPolling(input.tabId);
-        }
-        return;
-      }
-      console.error("investigation polling failed:", error);
-    } finally {
-      const current = backgroundInvestigationState.getPoller(input.tabId);
-      if (current) {
-        current.inFlight = false;
-      }
-    }
-  };
-
-  await tick();
-  const current = backgroundInvestigationState.getPoller(input.tabId);
-  if (!current || current !== poller) {
-    return;
-  }
-  const timer = setInterval(() => {
-    void tick();
-  }, POLL_INTERVAL_MS);
-  poller.timer = timer;
-}
-
-export async function maybeResumePollingFromCachedStatus(
-  tabId: number,
-  status: ExtensionPageStatus | null,
-): Promise<void> {
-  if (status?.kind !== "POST") {
-    stopInvestigationPolling(tabId);
-    return;
-  }
-  if (status.investigationState !== "INVESTIGATING" || status.investigationId === undefined) {
-    stopInvestigationPolling(tabId);
-    return;
-  }
-
-  const activePoller = backgroundInvestigationState.getPoller(tabId);
-  if (
-    activePoller?.tabSessionId === status.tabSessionId &&
-    activePoller.investigationId === status.investigationId
-  ) {
-    return;
-  }
-
-  await startInvestigationPolling({
-    tabId,
+function pageOf(status: ExtensionPostStatus): PostPage {
+  return {
     tabSessionId: status.tabSessionId,
     platform: status.platform,
     externalId: status.externalId,
-    investigationId: status.investigationId,
-  });
+    pageUrl: status.pageUrl,
+  };
 }
 
-async function resumeInvestigationPollingForOpenTabs(): Promise<void> {
-  const tabs = await browser.tabs.query({});
-  await Promise.all(
-    tabs.map(async (tab) => {
-      if (tab.id === undefined) return;
-      try {
-        const status = await getActiveStatus(tab.id);
-        await maybeResumePollingFromCachedStatus(tab.id, status);
-      } catch (error) {
-        console.error("Failed to resume investigation polling for tab:", error);
+function isInvestigating(status: ExtensionPageStatus | null): status is InvestigatingStatus {
+  return status?.kind === "POST" && status.investigationState === "INVESTIGATING";
+}
+
+/**
+ * A failure retrying cannot fix: every coded API client error is a
+ * compatibility, configuration or contract problem, not a transient one.
+ */
+function isNonRetryablePollError(error: unknown): boolean {
+  return error instanceof ApiClientError && error.errorCode !== undefined;
+}
+
+export function pollRecoveryAlarmTabId(alarmName: string): number | null {
+  if (!alarmName.startsWith(POLL_RECOVERY_ALARM_PREFIX)) return null;
+  const rawTabId = alarmName.slice(POLL_RECOVERY_ALARM_PREFIX.length);
+  if (!/^\d+$/.test(rawTabId)) return null;
+  const tabId = Number.parseInt(rawTabId, 10);
+  return Number.isSafeInteger(tabId) ? tabId : null;
+}
+
+function pollRecoveryAlarmName(tabId: number): string {
+  return `${POLL_RECOVERY_ALARM_PREFIX}${tabId.toString()}`;
+}
+
+/**
+ * Follows INVESTIGATING statuses: polls `getInvestigation` every
+ * `POLL_INTERVAL_MS` and caches each result, until the investigation settles
+ * or the page session the status belongs to ends.
+ */
+export class InvestigationPolling {
+  readonly #deps: InvestigationPollingDeps;
+  readonly #pollers = new Map<number, Poller>();
+
+  constructor(deps: InvestigationPollingDeps) {
+    this.#deps = deps;
+  }
+
+  follow(tabId: number, status: InvestigatingStatus): void {
+    const existing = this.#pollers.get(tabId);
+    if (
+      existing?.tabSessionId === status.tabSessionId &&
+      existing.investigationId === status.investigationId
+    ) {
+      return;
+    }
+    this.stop(tabId);
+
+    const poller: Poller = {
+      tabSessionId: status.tabSessionId,
+      investigationId: status.investigationId,
+      consecutiveFailures: 0,
+      timer: null,
+    };
+    this.#pollers.set(tabId, poller);
+    void this.#deps.alarms
+      .create(pollRecoveryAlarmName(tabId), {
+        periodInMinutes: POLL_RECOVERY_ALARM_PERIOD_MINUTES,
+      })
+      .catch((error: unknown) => {
+        console.error("Failed to schedule investigation poll recovery alarm:", error);
+      });
+    this.#runTick(tabId, poller);
+  }
+
+  stop(tabId: number): void {
+    void this.#deps.alarms.clear(pollRecoveryAlarmName(tabId)).catch((error: unknown) => {
+      console.error("Failed to clear investigation poll recovery alarm:", error);
+    });
+    const poller = this.#pollers.get(tabId);
+    if (poller === undefined) return;
+    if (poller.timer !== null) {
+      clearTimeout(poller.timer);
+    }
+    this.#pollers.delete(tabId);
+  }
+
+  /** Follow (or stop following) whatever the tab's cached status now is. */
+  async resume(tabId: number): Promise<void> {
+    const status = await this.#deps.tabStates.getStatus(tabId);
+    if (isInvestigating(status)) {
+      this.follow(tabId, status);
+    } else {
+      this.stop(tabId);
+    }
+  }
+
+  #isActive(tabId: number, poller: Poller): boolean {
+    return this.#pollers.get(tabId) === poller;
+  }
+
+  #schedule(tabId: number, poller: Poller, delayMs: number): void {
+    poller.timer = setTimeout(() => {
+      poller.timer = null;
+      this.#runTick(tabId, poller);
+    }, delayMs);
+  }
+
+  #runTick(tabId: number, poller: Poller): void {
+    void this.#tick(tabId, poller).catch((error: unknown) => {
+      console.error("Investigation polling failed:", error);
+      if (this.#isActive(tabId, poller)) this.stop(tabId);
+    });
+  }
+
+  async #tick(tabId: number, poller: Poller): Promise<void> {
+    if (!this.#isActive(tabId, poller)) return;
+    const followed = await this.#deps.tabStates.getStatus(tabId);
+    if (
+      !isInvestigating(followed) ||
+      followed.tabSessionId !== poller.tabSessionId ||
+      followed.investigationId !== poller.investigationId
+    ) {
+      this.stop(tabId);
+      return;
+    }
+
+    let output: GetInvestigationOutput;
+    try {
+      output = await this.#deps.getInvestigation({ investigationId: poller.investigationId });
+    } catch (error) {
+      if (!this.#isActive(tabId, poller)) return;
+      poller.consecutiveFailures += 1;
+      if (
+        isNonRetryablePollError(error) ||
+        poller.consecutiveFailures >= MAX_CONSECUTIVE_POLL_FAILURES
+      ) {
+        console.error("Investigation polling gave up:", error);
+        this.stop(tabId);
+        await this.#deps.tabStates.putStatus(tabId, apiErrorPostStatus(pageOf(followed)));
+        return;
       }
-    }),
-  );
-}
-
-async function clearAllPollRecoveryAlarms(): Promise<void> {
-  const alarms = await browser.alarms.getAll();
-  const clearTasks = alarms.flatMap((alarm) => {
-    if (parsePollRecoveryAlarmTabId(alarm.name) === null) {
-      return [];
+      console.error("Investigation poll failed; retrying with backoff:", error);
+      this.#schedule(tabId, poller, POLL_INTERVAL_MS * 2 ** poller.consecutiveFailures);
+      return;
     }
-    return [browser.alarms.clear(alarm.name)];
-  });
-  await Promise.all(clearTasks);
-}
 
-let restoreInvestigationPollingPromise: Promise<void> | null = null;
-
-export async function restoreInvestigationPollingState(): Promise<void> {
-  restoreInvestigationPollingPromise ??= (async () => {
-    for (const tabId of backgroundInvestigationState.pollerTabIds()) {
-      stopInvestigationPolling(tabId);
+    if (!this.#isActive(tabId, poller)) return;
+    poller.consecutiveFailures = 0;
+    const next = postStatusFromPoll(pageOf(followed), poller.investigationId, output);
+    await this.#deps.tabStates.putStatus(tabId, next);
+    if (next.investigationState === "INVESTIGATING" && this.#isActive(tabId, poller)) {
+      this.#schedule(tabId, poller, POLL_INTERVAL_MS);
+    } else {
+      this.stop(tabId);
     }
-    await clearAllPollRecoveryAlarms();
-    await resumeInvestigationPollingForOpenTabs();
-  })().finally(() => {
-    restoreInvestigationPollingPromise = null;
-  });
-
-  await restoreInvestigationPollingPromise;
+  }
 }

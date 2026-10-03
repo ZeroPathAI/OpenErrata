@@ -1,166 +1,84 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { extensionPostStatusSchema, xExternalIdSchema } from "@openerrata/shared";
 import {
-  createPostStatus,
-  createPostStatusFromInvestigation,
-  apiErrorToPostStatus,
+  apiErrorPostStatus,
+  postStatusFromInvestigateNow,
+  postStatusFromPoll,
+  postStatusFromView,
+  priorResultOf,
+  type PostPage,
 } from "../../src/background/post-status.js";
-import { ApiClientError } from "../../src/background/api-client-error.js";
+import { claim, investigationId, sessionId } from "../helpers/statuses.js";
 
-test("createPostStatus builds FAILED with required provenance", () => {
-  const status = createPostStatus({
-    tabSessionId: 2,
-    platform: "LESSWRONG",
-    externalId: "lw-2",
-    pageUrl: "https://www.lesswrong.com/posts/lw-2/example",
-    investigationState: "FAILED",
-    provenance: "SERVER_VERIFIED",
-  });
+const page: PostPage = {
+  tabSessionId: sessionId(1),
+  platform: "X",
+  externalId: xExternalIdSchema.parse("123"),
+  pageUrl: "https://x.com/example/status/123",
+};
 
-  assert.equal(status.investigationState, "FAILED");
-  assert.equal(status.provenance, "SERVER_VERIFIED");
-});
+const prior = { oldClaims: [claim("Old claim")], sourceInvestigationId: investigationId("old") };
 
-test("createPostStatus builds API_ERROR without provenance", () => {
-  const status = createPostStatus({
-    tabSessionId: 2,
-    platform: "LESSWRONG",
-    externalId: "lw-2",
-    pageUrl: "https://www.lesswrong.com/posts/lw-2/example",
-    investigationState: "API_ERROR",
-  });
-
-  assert.equal(status.investigationState, "API_ERROR");
-  assert.equal("provenance" in status, false);
-});
-
-test("createPostStatusFromInvestigation maps pending status to INVESTIGATING", () => {
-  const status = createPostStatusFromInvestigation({
-    tabSessionId: 1,
-    platform: "X",
-    externalId: "123",
-    pageUrl: "https://x.com/example/status/123",
+test("a view of a post under investigation keeps the investigation id to poll", () => {
+  const status = postStatusFromView(page, {
     investigationState: "INVESTIGATING",
-    status: "PENDING",
-    provenance: "CLIENT_FALLBACK",
+    investigationId: investigationId("running"),
+    status: "PROCESSING",
+    provenance: "SERVER_VERIFIED",
     pendingClaims: [],
     confirmedClaims: [],
-    priorInvestigationResult: null,
+    priorInvestigationResult: prior,
   });
-
-  assert.equal(status.investigationState, "INVESTIGATING");
-  assert.equal(status.status, "PENDING");
-  assert.deepEqual(status.pendingClaims, []);
-  assert.deepEqual(status.confirmedClaims, []);
-  assert.equal(status.priorInvestigationResult, null);
+  assert.deepEqual(extensionPostStatusSchema.parse(status), status);
+  assert.equal(status.investigationState === "INVESTIGATING" && status.investigationId, "running");
+  assert.deepEqual(priorResultOf(status), prior);
 });
 
-test("createPostStatusFromInvestigation maps completed investigation to INVESTIGATED", () => {
-  const status = createPostStatusFromInvestigation({
-    tabSessionId: 3,
-    platform: "LESSWRONG",
-    externalId: "lw-3",
-    pageUrl: "https://www.lesswrong.com/posts/lw-3/example",
-    investigationState: "INVESTIGATED",
-    provenance: "SERVER_VERIFIED",
-    claims: [],
-  });
+test("investigateNow statuses carry over the interim claims the page showed", () => {
+  const pending = postStatusFromInvestigateNow(
+    page,
+    { investigationId: investigationId("new"), status: "PENDING", provenance: "SERVER_VERIFIED" },
+    prior,
+  );
+  assert.equal(pending.investigationState, "INVESTIGATING");
+  assert.deepEqual(priorResultOf(pending), prior);
 
-  assert.equal(status.investigationState, "INVESTIGATED");
-  assert.deepEqual(status.claims, []);
-});
-
-test("createPostStatusFromInvestigation maps failed status to FAILED", () => {
-  const status = createPostStatusFromInvestigation({
-    tabSessionId: 4,
-    platform: "SUBSTACK",
-    externalId: "444",
-    pageUrl: "https://example.substack.com/p/sample",
+  const failed = postStatusFromInvestigateNow(
+    page,
+    { investigationId: investigationId("new"), status: "FAILED", provenance: "SERVER_VERIFIED" },
+    prior,
+  );
+  assert.deepEqual(failed, {
+    kind: "POST",
+    ...page,
     investigationState: "FAILED",
+    investigationId: "new",
+    provenance: "SERVER_VERIFIED",
+  });
+});
+
+test("poll results become statuses of the polled investigation", () => {
+  const settled = postStatusFromPoll(page, investigationId("polled"), {
+    investigationState: "INVESTIGATED",
     provenance: "CLIENT_FALLBACK",
+    claims: [claim("A claim")],
+    checkedAt: "2026-10-02T00:00:00.000Z",
   });
-
-  assert.equal(status.investigationState, "FAILED");
+  assert.deepEqual(settled, {
+    kind: "POST",
+    ...page,
+    investigationState: "INVESTIGATED",
+    investigationId: "polled",
+    provenance: "CLIENT_FALLBACK",
+    claims: [claim("A claim")],
+  });
 });
 
-test("createPostStatusFromInvestigation maps undefined status to NOT_INVESTIGATED", () => {
-  const status = createPostStatusFromInvestigation({
-    tabSessionId: 5,
-    platform: "X",
-    externalId: "555",
-    pageUrl: "https://x.com/example/status/555",
-    investigationState: "NOT_INVESTIGATED",
-    priorInvestigationResult: null,
+test("an API failure is reported as API_ERROR, never as a failed investigation", () => {
+  assert.deepEqual(apiErrorPostStatus(page), {
+    kind: "POST",
+    ...page,
+    investigationState: "API_ERROR",
   });
-
-  assert.equal(status.investigationState, "NOT_INVESTIGATED");
-  assert.equal("status" in status, false);
-  assert.equal(status.priorInvestigationResult, null);
-});
-
-test("apiErrorToPostStatus maps ApiClientError to API_ERROR state", () => {
-  const error = new ApiClientError("mismatch", {});
-  const status = apiErrorToPostStatus({
-    error,
-    tabSessionId: 1,
-    platform: "LESSWRONG",
-    externalId: "lw-1",
-    pageUrl: "https://www.lesswrong.com/posts/lw-1/example",
-  });
-
-  assert.equal(status.investigationState, "API_ERROR");
-});
-
-test("apiErrorToPostStatus maps generic errors to API_ERROR state", () => {
-  const status = apiErrorToPostStatus({
-    error: new Error("network timeout"),
-    tabSessionId: 1,
-    platform: "LESSWRONG",
-    externalId: "lw-1",
-    pageUrl: "https://www.lesswrong.com/posts/lw-1/example",
-  });
-
-  assert.equal(status.investigationState, "API_ERROR");
-});
-
-test("apiErrorToPostStatus maps PAYLOAD_TOO_LARGE ApiClientError to API_ERROR state", () => {
-  const status = apiErrorToPostStatus({
-    error: new ApiClientError("too large", {
-      errorCode: "PAYLOAD_TOO_LARGE",
-    }),
-    tabSessionId: 1,
-    platform: "LESSWRONG",
-    externalId: "lw-1",
-    pageUrl: "https://www.lesswrong.com/posts/lw-1/example",
-  });
-
-  assert.equal(status.investigationState, "API_ERROR");
-});
-
-test("apiErrorToPostStatus maps MALFORMED_EXTENSION_VERSION ApiClientError to API_ERROR state", () => {
-  const status = apiErrorToPostStatus({
-    error: new ApiClientError("malformed extension version", {
-      errorCode: "MALFORMED_EXTENSION_VERSION",
-    }),
-    tabSessionId: 1,
-    platform: "LESSWRONG",
-    externalId: "lw-1",
-    pageUrl: "https://www.lesswrong.com/posts/lw-1/example",
-  });
-
-  assert.equal(status.investigationState, "API_ERROR");
-});
-
-test("apiErrorToPostStatus preserves investigationId", () => {
-  const status = apiErrorToPostStatus({
-    error: new Error("server error"),
-    tabSessionId: 1,
-    platform: "LESSWRONG",
-    externalId: "lw-1",
-    pageUrl: "https://www.lesswrong.com/posts/lw-1/example",
-    investigationId: "inv-123",
-  });
-
-  assert.equal(status.investigationState, "API_ERROR");
-  assert.equal(status.investigationId, "inv-123");
 });

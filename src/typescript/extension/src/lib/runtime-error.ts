@@ -1,7 +1,6 @@
 import type { ExtensionRuntimeErrorCode } from "@openerrata/shared";
 
-export const UPGRADE_REQUIRED_STORAGE_KEY = "runtime:upgrade-required";
-
+/** An error reported across an extension message boundary, with its protocol error code. */
 export class ExtensionRuntimeError extends Error {
   readonly errorCode: ExtensionRuntimeErrorCode | undefined;
 
@@ -12,38 +11,27 @@ export class ExtensionRuntimeError extends Error {
   }
 }
 
-export function isPayloadTooLargeRuntimeError(error: unknown): boolean {
-  return error instanceof ExtensionRuntimeError && error.errorCode === "PAYLOAD_TOO_LARGE";
+export function hasRuntimeErrorCode(error: unknown, errorCode: ExtensionRuntimeErrorCode): boolean {
+  return error instanceof ExtensionRuntimeError && error.errorCode === errorCode;
 }
-
-export function isUpgradeRequiredRuntimeError(error: unknown): boolean {
-  return error instanceof ExtensionRuntimeError && error.errorCode === "UPGRADE_REQUIRED";
-}
-
-export function isMalformedExtensionVersionRuntimeError(error: unknown): boolean {
-  return (
-    error instanceof ExtensionRuntimeError && error.errorCode === "MALFORMED_EXTENSION_VERSION"
-  );
-}
-
-export function isInvalidExtensionMessageRuntimeError(error: unknown): boolean {
-  return error instanceof ExtensionRuntimeError && error.errorCode === "INVALID_EXTENSION_MESSAGE";
-}
-
-const EXTENSION_CONTEXT_INVALIDATED_PATTERNS = [
-  "Extension context invalidated",
-  "Could not establish connection. Receiving end does not exist.",
-  "The message port closed before a response was received.",
-] as const;
 
 function errorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  return String(error);
+  return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * The calling script belongs to an extension instance that was reloaded,
+ * updated or removed: it can never reach the background again.
+ */
 export function isExtensionContextInvalidatedError(error: unknown): boolean {
-  const message = errorMessage(error);
-  return EXTENSION_CONTEXT_INVALIDATED_PATTERNS.some((pattern) => message.includes(pattern));
+  return errorMessage(error).includes("Extension context invalidated");
+}
+
+/**
+ * `tabs.sendMessage` found no listener in the tab (no content script there).
+ * This is an expected outcome of probing a tab, not a fault — every other
+ * messaging error is.
+ */
+export function isNoReceivingEndError(error: unknown): boolean {
+  return errorMessage(error).includes("Receiving end does not exist");
 }

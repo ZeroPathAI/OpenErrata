@@ -1,151 +1,79 @@
 import type {
+  ExtensionPostStatus,
   ExtensionSkippedReason,
   Platform,
   PlatformContent,
-  ViewPostInput,
+  TabSessionId,
 } from "@openerrata/shared";
+import type { PageLocator } from "../lib/page-locator.js";
 import type { PlatformAdapter } from "./adapters/index.js";
-import type { ParsedExtensionPageStatus } from "./sync.js";
+
+/**
+ * What the content script currently sees on the page. Every snapshot that
+ * describes a supported post page starts a page session (see `sessionKeyFor`).
+ */
+export type PageSnapshot =
+  /** No supported post on this page. */
+  | { kind: "NONE" }
+  /** A supported post page whose post cannot be extracted yet (still rendering). */
+  | { kind: "PENDING" }
+  | SkippedSnapshot
+  | TrackedPostSnapshot;
+
+export interface SkippedSnapshot {
+  kind: "SKIPPED";
+  platform: Platform;
+  pageUrl: string;
+  reason: ExtensionSkippedReason;
+  /**
+   * What the skip was decided from: the extracted content (video, length,
+   * empty text) or only the page itself (gated or unextractable pages).
+   */
+  basis: { kind: "CONTENT"; content: PlatformContent } | { kind: "PAGE"; locator: PageLocator };
+}
+
+export interface TrackedPostSnapshot {
+  kind: "TRACKED_POST";
+  adapter: PlatformAdapter;
+  content: PlatformContent;
+}
 
 export type PageSessionState =
-  | {
-      kind: "IDLE";
-      tabSessionId: number;
-      sessionKey: null;
-    }
+  | { kind: "IDLE" }
   | {
       kind: "SKIPPED";
-      tabSessionId: number;
+      tabSessionId: TabSessionId;
       sessionKey: string;
-      platform: Platform;
-      externalId: string;
-      pageUrl: string;
       reason: ExtensionSkippedReason;
     }
-  | {
-      kind: "TRACKED_POST";
-      tabSessionId: number;
-      sessionKey: string;
-      platform: Platform;
-      externalId: string;
-      /**
-       * Normalized text of the live content root observed for this session.
-       * `null` means the root was unavailable when the session started.
-       */
-      observedRootText: string | null;
-      adapter: PlatformAdapter;
-      request: ViewPostInput;
-    };
+  | TrackedPostSessionState;
 
-export type TrackedPostSessionState = Extract<PageSessionState, { kind: "TRACKED_POST" }>;
-
-export type PageSnapshot =
-  | {
-      kind: "NONE";
-      sessionKey: null;
-    }
-  | {
-      kind: "SKIPPED";
-      sessionKey: string;
-      platform: Platform;
-      externalId: string;
-      pageUrl: string;
-      reason: ExtensionSkippedReason;
-    }
-  | {
-      kind: "TRACKED_POST";
-      sessionKey: string;
-      platform: Platform;
-      externalId: string;
-      adapter: PlatformAdapter;
-      content: PlatformContent;
-      request: ViewPostInput;
-    };
-
-export type TrackedPostSnapshot = Extract<PageSnapshot, { kind: "TRACKED_POST" }>;
-
-export function createInitialPageSessionState(): PageSessionState {
-  return {
-    kind: "IDLE",
-    tabSessionId: 0,
-    sessionKey: null,
-  };
+export interface TrackedPostSessionState {
+  kind: "TRACKED_POST";
+  tabSessionId: TabSessionId;
+  sessionKey: string;
+  adapter: PlatformAdapter;
+  /** The content sent to the background; its text is the baseline for mutation checks. */
+  content: PlatformContent;
 }
 
-export function createIdleSessionState(tabSessionId: number): PageSessionState {
-  return {
-    kind: "IDLE",
-    tabSessionId,
-    sessionKey: null,
-  };
+export function sessionKeyOfState(state: PageSessionState): string | null {
+  return state.kind === "IDLE" ? null : state.sessionKey;
 }
 
-export function createSkippedSessionState(
-  tabSessionId: number,
-  snapshot: Extract<PageSnapshot, { kind: "SKIPPED" }>,
-): PageSessionState {
-  return {
-    kind: "SKIPPED",
-    tabSessionId,
-    sessionKey: snapshot.sessionKey,
-    platform: snapshot.platform,
-    externalId: snapshot.externalId,
-    pageUrl: snapshot.pageUrl,
-    reason: snapshot.reason,
-  };
+/** Whether `status` was cached for the page session `state`. */
+export function isStatusOfSession(
+  state: PageSessionState,
+  status: ExtensionPostStatus,
+): state is TrackedPostSessionState {
+  return state.kind === "TRACKED_POST" && status.tabSessionId === state.tabSessionId;
 }
 
-export function createTrackedPostSessionState(
-  tabSessionId: number,
-  snapshot: TrackedPostSnapshot,
-  observedRootText: string | null,
-): TrackedPostSessionState {
-  return {
-    kind: "TRACKED_POST",
-    tabSessionId,
-    sessionKey: snapshot.sessionKey,
-    platform: snapshot.platform,
-    externalId: snapshot.externalId,
-    observedRootText,
-    adapter: snapshot.adapter,
-    request: snapshot.request,
-  };
-}
-
-export function isActiveTrackedSession(
-  currentState: PageSessionState,
-  targetState: TrackedPostSessionState,
-): boolean {
-  return (
-    currentState.kind === "TRACKED_POST" &&
-    currentState.tabSessionId === targetState.tabSessionId &&
-    currentState.platform === targetState.platform &&
-    currentState.externalId === targetState.externalId
-  );
-}
-
-export function isCurrentSessionPostStatus(
-  currentState: PageSessionState,
-  status: ParsedExtensionPageStatus | null,
-): status is Extract<ParsedExtensionPageStatus, { kind: "POST" }> {
-  if (status?.kind !== "POST" || currentState.kind !== "TRACKED_POST") {
-    return false;
-  }
-
-  return (
-    status.tabSessionId === currentState.tabSessionId &&
-    status.platform === currentState.platform &&
-    status.externalId === currentState.externalId
-  );
-}
-
-export function shouldRefreshSkippedSessionOnMutation(
-  reason: ExtensionSkippedReason,
-  adapterPresent: boolean,
-): boolean {
-  if (!adapterPresent) {
-    return false;
-  }
-
+/**
+ * Skips decided from the page rather than final content can be lifted by
+ * later DOM changes (a paywall removed after login, a post finishing
+ * rendering), so they are re-evaluated on mutation.
+ */
+export function shouldRefreshSkippedSessionOnMutation(reason: ExtensionSkippedReason): boolean {
   return reason === "unsupported_content" || reason === "no_text" || reason === "private_or_gated";
 }

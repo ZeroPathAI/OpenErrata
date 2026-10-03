@@ -20,14 +20,14 @@ import {
 import { createTRPCUntypedClient, httpLink, type TRPCUntypedClient } from "@trpc/client";
 import browser from "webextension-polyfill";
 import {
+  SETTINGS_KEYS,
   apiEndpointUrl,
   apiHostPermissionFor,
-  DEFAULT_EXTENSION_SETTINGS,
   loadExtensionSettings,
   type ExtensionSettings,
+  type SettingsLoadResult,
 } from "../lib/settings.js";
 import { extractApiErrorCode, extractMinimumSupportedExtensionVersion } from "./api-error-code.js";
-export { ApiClientError } from "./api-client-error.js";
 import { ApiClientError } from "./api-client-error.js";
 import { describeError } from "../lib/describe-error.js";
 import {
@@ -37,79 +37,67 @@ import {
   shouldIncludeUserOpenAiKeyHeader,
 } from "./api-client-core.js";
 import { EXTENSION_VERSION } from "../lib/extension-version.js";
+import { clearUpgradeRequired, markUpgradeRequired } from "./upgrade-required.js";
 
-let settings: ExtensionSettings = { ...DEFAULT_EXTENSION_SETTINGS };
-let initPromise: Promise<void> | null = null;
-let storageListenerRegistered = false;
+// Untyped at the tRPC level: request and response shapes are pinned by the
+// shared `ExtensionApiProcedureContract` and validated with the shared output
+// schemas below.
+type TrpcClient = TRPCUntypedClient<never>;
+
+/** The stored settings, read once and re-read after the user changes them. */
+let settingsPromise: Promise<SettingsLoadResult> | null = null;
 const cachedClientsByKey = new Map<string, TrpcClient>();
 
-type TrpcClient = TRPCUntypedClient<never>;
-type ParsedRegisterObservedVersionOutput = ReturnType<
-  typeof registerObservedVersionOutputSchema.parse
->;
-type ParsedViewPostOutput = ReturnType<typeof viewPostOutputSchema.parse>;
-type ParsedGetInvestigationOutput = ReturnType<typeof getInvestigationOutputSchema.parse>;
-type ParsedInvestigateNowOutput = ReturnType<typeof investigateNowOutputSchema.parse>;
-
-async function loadSettingsFromStorage(): Promise<void> {
-  settings = await loadExtensionSettings();
+function currentSettings(): Promise<SettingsLoadResult> {
+  settingsPromise ??= loadExtensionSettings().catch((error: unknown) => {
+    settingsPromise = null;
+    throw error;
+  });
+  return settingsPromise;
 }
 
-function registerStorageListener(): void {
-  if (storageListenerRegistered) return;
-  storageListenerRegistered = true;
-
+/** Re-read settings after the options page saves them. */
+export function watchSettingsChanges(): void {
   browser.storage.onChanged.addListener((changes, areaName) => {
     if (areaName !== "local") return;
-    if (
-      !changes["apiBaseUrl"] &&
-      !changes["hmacSecret"] &&
-      !changes["apiKey"] &&
-      !changes["openaiApiKey"] &&
-      !changes["autoInvestigate"]
-    ) {
-      return;
-    }
+    if (!SETTINGS_KEYS.some((key) => Object.hasOwn(changes, key))) return;
 
+    settingsPromise = null;
     cachedClientsByKey.clear();
-    void loadSettingsFromStorage().catch((err: unknown) => {
-      console.error("Failed to refresh extension settings:", err);
-    });
+    if (Object.hasOwn(changes, "apiBaseUrl")) {
+      // An upgrade notice is about one API; a different API may accept us.
+      void clearUpgradeRequired().catch((error: unknown) => {
+        console.error("Failed to clear upgrade-required state after API URL change:", error);
+      });
+    }
   });
 }
 
-export async function init(): Promise<void> {
-  initPromise ??= (async () => {
-    await loadSettingsFromStorage();
-    registerStorageListener();
-  })();
-
-  try {
-    await initPromise;
-  } catch (err) {
-    initPromise = null;
-    console.error("Failed to initialize extension API settings; keeping last-known settings:", err);
-    throw err;
+/** Settings usable for API calls, or an INVALID_EXTENSION_SETTINGS error. */
+async function requireApiSettings(): Promise<ExtensionSettings> {
+  const loaded = await currentSettings();
+  if (loaded.kind === "INVALID") {
+    throw new ApiClientError(`Extension settings are invalid: ${loaded.problem}`, {
+      errorCode: "INVALID_EXTENSION_SETTINGS",
+    });
   }
+  return loaded.settings;
 }
 
-async function computeHmac(secret: string, body: string): Promise<string> {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
+/** Whether a NOT_INVESTIGATED view should start an investigation right away. */
+export async function shouldAutoInvestigate(): Promise<boolean> {
+  const loaded = await currentSettings();
+  return (
+    loaded.kind === "VALID" &&
+    loaded.settings.autoInvestigate &&
+    loaded.settings.openaiApiKey.length > 0
   );
-
-  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body));
-
-  return Array.from(new Uint8Array(sig))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
 }
 
-function getOrCreateTrpcClient(options: { includeUserOpenAiHeader: boolean }): TrpcClient {
+function getOrCreateTrpcClient(
+  settings: ExtensionSettings,
+  options: { includeUserOpenAiHeader: boolean },
+): TrpcClient {
   const key = clientKeyFor(settings, options.includeUserOpenAiHeader);
   const cachedClient = cachedClientsByKey.get(key);
   if (cachedClient) {
@@ -121,12 +109,11 @@ function getOrCreateTrpcClient(options: { includeUserOpenAiHeader: boolean }): T
       httpLink({
         url: apiEndpointUrl(settings.apiBaseUrl, "trpc"),
         fetch: async (url, requestInitInput) => {
-          const requestInit = await buildTrpcRequestInit({
+          const requestInit = buildTrpcRequestInit({
             init: requestInitInput,
             settings,
             includeUserOpenAiHeader: options.includeUserOpenAiHeader,
             extensionVersion: EXTENSION_VERSION,
-            computeHmac,
           });
           const response = await fetch(url, requestInit);
           assertTrpcResponseAccepted(response.status);
@@ -140,34 +127,57 @@ function getOrCreateTrpcClient(options: { includeUserOpenAiHeader: boolean }): T
   return client;
 }
 
+function toApiClientError(
+  error: unknown,
+  context: { apiBaseUrl: string; path: ExtensionApiProcedurePath },
+): ApiClientError {
+  const errorCode =
+    (error instanceof ApiClientError ? error.errorCode : undefined) ?? extractApiErrorCode(error);
+  const minimumSupportedExtensionVersion =
+    (error instanceof ApiClientError ? error.minimumSupportedExtensionVersion : undefined) ??
+    extractMinimumSupportedExtensionVersion(error);
+  return new ApiClientError(
+    `${describeError(error)} (apiBaseUrl=${context.apiBaseUrl}, path=${context.path})`,
+    {
+      cause: error,
+      ...(errorCode === undefined ? {} : { errorCode }),
+      ...(minimumSupportedExtensionVersion === undefined
+        ? {}
+        : { minimumSupportedExtensionVersion }),
+    },
+  );
+}
+
+/**
+ * Run one API call with the current settings. Also tracks API compatibility:
+ * an UPGRADE_REQUIRED rejection records the upgrade notice, and any accepted
+ * call clears it.
+ */
 async function withTrpcClient<Output>(
   path: ExtensionApiProcedurePath,
   operation: (client: TrpcClient) => Promise<Output>,
 ): Promise<Output> {
+  const settings = await requireApiSettings();
+  let output: Output;
   try {
-    await init();
     await assertApiHostPermissionGranted(settings.apiBaseUrl);
-    const client = getOrCreateTrpcClient({
-      includeUserOpenAiHeader: shouldIncludeUserOpenAiKeyHeader(path),
-    });
-    return await operation(client);
-  } catch (error) {
-    const errorCode =
-      (error instanceof ApiClientError ? error.errorCode : undefined) ?? extractApiErrorCode(error);
-    const minimumSupportedExtensionVersion =
-      (error instanceof ApiClientError ? error.minimumSupportedExtensionVersion : undefined) ??
-      extractMinimumSupportedExtensionVersion(error);
-    throw new ApiClientError(
-      `${describeError(error)} (apiBaseUrl=${settings.apiBaseUrl}, path=${path})`,
-      {
-        cause: error,
-        ...(errorCode === undefined ? {} : { errorCode }),
-        ...(minimumSupportedExtensionVersion === undefined
-          ? {}
-          : { minimumSupportedExtensionVersion }),
-      },
+    output = await operation(
+      getOrCreateTrpcClient(settings, {
+        includeUserOpenAiHeader: shouldIncludeUserOpenAiKeyHeader(path),
+      }),
     );
+  } catch (error) {
+    const apiError = toApiClientError(error, { apiBaseUrl: settings.apiBaseUrl, path });
+    if (apiError.errorCode === "UPGRADE_REQUIRED") {
+      await markUpgradeRequired({
+        apiBaseUrl: settings.apiBaseUrl,
+        minimumSupportedExtensionVersion: apiError.minimumSupportedExtensionVersion,
+      });
+    }
+    throw apiError;
   }
+  await clearUpgradeRequired();
+  return output;
 }
 
 async function queryApi<Path extends ExtensionApiQueryPath>(
@@ -182,26 +192,6 @@ async function mutateApi<Path extends ExtensionApiMutationPath>(
   input: ExtensionApiInput<Path>,
 ): Promise<unknown> {
   return withTrpcClient(path, (client) => client.mutation(path, input));
-}
-
-function normalizeRecordViewAndGetStatusOutput(value: ParsedViewPostOutput): ViewPostOutput {
-  return value;
-}
-
-function normalizeRegisterObservedVersionOutput(
-  value: ParsedRegisterObservedVersionOutput,
-): RegisterObservedVersionOutput {
-  return value;
-}
-
-function normalizeGetInvestigationOutput(
-  value: ParsedGetInvestigationOutput,
-): GetInvestigationOutput {
-  return value;
-}
-
-function normalizeInvestigateNowOutput(value: ParsedInvestigateNowOutput): InvestigateNowOutput {
-  return value;
 }
 
 function parseApiOutput<T>(input: {
@@ -230,61 +220,46 @@ async function assertApiHostPermissionGranted(apiBaseUrl: string): Promise<void>
   if (hasPermission) return;
 
   const origin = new URL(apiBaseUrl).origin;
-  throw new Error(
+  throw new ApiClientError(
     `Missing host permission for ${origin}. Open extension settings and save to grant access.`,
+    { errorCode: "INVALID_EXTENSION_SETTINGS" },
   );
 }
 
 export async function recordViewAndGetStatus(
   input: RecordViewAndGetStatusInput,
 ): Promise<ViewPostOutput> {
-  const output = parseApiOutput({
+  return parseApiOutput({
     operation: EXTENSION_TRPC_PATH.RECORD_VIEW_AND_GET_STATUS,
     value: await mutateApi(EXTENSION_TRPC_PATH.RECORD_VIEW_AND_GET_STATUS, input),
     safeParse: (value) => viewPostOutputSchema.safeParse(value),
   });
-  return normalizeRecordViewAndGetStatusOutput(output);
 }
 
 export async function registerObservedVersion(
   input: RegisterObservedVersionInput,
 ): Promise<RegisterObservedVersionOutput> {
-  const output = parseApiOutput({
+  return parseApiOutput({
     operation: EXTENSION_TRPC_PATH.REGISTER_OBSERVED_VERSION,
     value: await mutateApi(EXTENSION_TRPC_PATH.REGISTER_OBSERVED_VERSION, input),
     safeParse: (value) => registerObservedVersionOutputSchema.safeParse(value),
   });
-  return normalizeRegisterObservedVersionOutput(output);
 }
 
 export async function getInvestigation(
   input: GetInvestigationInput,
 ): Promise<GetInvestigationOutput> {
-  const output = parseApiOutput({
+  return parseApiOutput({
     operation: EXTENSION_TRPC_PATH.GET_INVESTIGATION,
     value: await queryApi(EXTENSION_TRPC_PATH.GET_INVESTIGATION, input),
     safeParse: (value) => getInvestigationOutputSchema.safeParse(value),
   });
-  return normalizeGetInvestigationOutput(output);
 }
 
 export async function investigateNow(input: InvestigateNowInput): Promise<InvestigateNowOutput> {
-  const output = parseApiOutput({
+  return parseApiOutput({
     operation: EXTENSION_TRPC_PATH.INVESTIGATE_NOW,
     value: await mutateApi(EXTENSION_TRPC_PATH.INVESTIGATE_NOW, input),
     safeParse: (value) => investigateNowOutputSchema.safeParse(value),
   });
-  return normalizeInvestigateNowOutput(output);
-}
-
-export function hasUserOpenAiKey(): boolean {
-  return settings.openaiApiKey.trim().length > 0;
-}
-
-export function isAutoInvestigateEnabled(): boolean {
-  return settings.autoInvestigate;
-}
-
-export function getCurrentApiBaseUrl(): string {
-  return settings.apiBaseUrl;
 }

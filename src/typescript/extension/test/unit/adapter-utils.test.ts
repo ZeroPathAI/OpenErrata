@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { JSDOM } from "jsdom";
 import {
-  extractContentWithImageOccurrencesFromRoot,
-  extractImageUrlsFromRoot,
+  detachedImageOccurrences,
+  extractContent,
   readFirstMetaDateAsIso,
   readFirstTimeDateAsIso,
   readPublishedDateFromJsonLd,
+  serializeContentHtml,
+  toTransportableHtml,
 } from "../../src/content/adapters/utils";
+import { requireElement, withDom } from "../helpers/dom";
 
 function makeMetaElement(content: string | null): Element {
   return {
@@ -56,23 +58,6 @@ function makeTimeRoot(datetime: string | null | undefined): ParentNode {
     querySelector(selector: string) {
       if (selector !== "time[datetime]" || datetime === undefined) return null;
       return makeTimeElement(datetime);
-    },
-  } as unknown as ParentNode;
-}
-
-function makeImageRoot(
-  srcValues: (string | null | undefined)[],
-  expectedSelector = "img[src]",
-): ParentNode {
-  return {
-    querySelectorAll(selector: string) {
-      assert.equal(selector, expectedSelector);
-
-      return srcValues.map((src) => ({
-        getAttribute(name: string) {
-          return name === "src" ? (src ?? null) : null;
-        },
-      })) as unknown as NodeListOf<HTMLImageElement>;
     },
   } as unknown as ParentNode;
 }
@@ -141,63 +126,91 @@ test("readFirstTimeDateAsIso scans roots in order and skips invalid timestamps",
   assert.equal(publishedAt, "2025-09-10T11:12:13.000Z");
 });
 
-test("extractImageUrlsFromRoot normalizes, deduplicates, and filters invalid sources", () => {
-  const root = makeImageRoot([
-    "/images/a.png",
-    "https://cdn.example.com/a.jpg",
-    " data:image/png;base64,abc123 ",
-    "/images/a.png",
-    "http://[::1",
-    "",
-    null,
-  ]);
+const POST_URL = "https://example.com/post/1";
+const noExclusions = { exclude: () => false, imageSelector: "img[src]", baseUrl: POST_URL };
 
-  const imageUrls = extractImageUrlsFromRoot(root, "https://example.com/posts/123");
-
-  assert.deepEqual(imageUrls, [
-    "https://example.com/images/a.png",
-    "https://cdn.example.com/a.jpg",
-  ]);
+test("extractContent keeps every image occurrence at its text offset, skipping unusable sources", () => {
+  withDom(
+    '<div id="root">AA<img src="/one.png" />BB<img src="/one.png" /><img src=" data:image/png;base64,abc " />CC</div>',
+    (document) => {
+      const extracted = extractContent(requireElement(document, "#root"), noExclusions);
+      assert.equal(extracted.contentText, "AABBCC");
+      assert.deepEqual(extracted.imageOccurrences, [
+        { originalIndex: 0, normalizedTextOffset: 2, sourceUrl: "https://example.com/one.png" },
+        { originalIndex: 1, normalizedTextOffset: 4, sourceUrl: "https://example.com/one.png" },
+      ]);
+    },
+    POST_URL,
+  );
 });
 
-test("extractContentWithImageOccurrencesFromRoot keeps duplicate occurrences but unique imageUrls", () => {
-  const dom = new JSDOM(
-    `<!doctype html><html><body><div id="root">AA<img src="/one.png" />BB<img src="/one.png" />CC</div></body></html>`,
-    { url: "https://example.com/post/1" },
+test("extractContent caption precedence is figcaption > alt > title", () => {
+  withDom(
+    '<div id="root">A<img src="/a.png" alt="alt-a" title="title-a" /><figure><img src="/b.png" alt="alt-b" title="title-b" /><figcaption>  fig-b  </figcaption></figure><img src="/c.png" title="title-c" />Z</div>',
+    (document) => {
+      const extracted = extractContent(requireElement(document, "#root"), noExclusions);
+      assert.deepEqual(
+        extracted.imageOccurrences.map((occurrence) => occurrence.captionText),
+        ["alt-a", "fig-b", "title-c"],
+      );
+    },
+    POST_URL,
   );
-  const root = dom.window.document.querySelector("#root");
-  assert.ok(root);
-
-  const extracted = extractContentWithImageOccurrencesFromRoot(root, "https://example.com/post/1");
-
-  assert.equal(extracted.contentText, "AABBCC");
-  assert.deepEqual(extracted.imageUrls, ["https://example.com/one.png"]);
-  assert.deepEqual(extracted.imageOccurrences, [
-    {
-      originalIndex: 0,
-      normalizedTextOffset: 2,
-      sourceUrl: "https://example.com/one.png",
-    },
-    {
-      originalIndex: 1,
-      normalizedTextOffset: 4,
-      sourceUrl: "https://example.com/one.png",
-    },
-  ]);
 });
 
-test("extractContentWithImageOccurrencesFromRoot caption precedence is figcaption > alt > title", () => {
-  const dom = new JSDOM(
-    `<!doctype html><html><body><div id="root">A<img src="/a.png" alt="alt-a" title="title-a" /><figure><img src="/b.png" alt="alt-b" title="title-b" /><figcaption>  fig-b  </figcaption></figure><img src="/c.png" title="title-c" />Z</div></body></html>`,
-    { url: "https://example.com/post/1" },
+test("extractContent leaves script and style text out, like the API's canonical text", () => {
+  withDom(
+    '<div id="root"><p>Kept.</p><script>window.tracking = 1;</script><style>.x{}</style><noscript>Enable JS</noscript></div>',
+    (document) => {
+      assert.equal(
+        extractContent(requireElement(document, "#root"), noExclusions).contentText,
+        "Kept.",
+      );
+    },
   );
-  const root = dom.window.document.querySelector("#root");
-  assert.ok(root);
+});
 
-  const extracted = extractContentWithImageOccurrencesFromRoot(root, "https://example.com/post/1");
-
-  assert.deepEqual(
-    extracted.imageOccurrences.map((occurrence) => occurrence.captionText),
-    ["alt-a", "fig-b", "title-c"],
+test("serializeContentHtml strips highlight marks and excluded subtrees from the snapshot only", () => {
+  withDom(
+    '<div id="root"><p>The <mark class="openerrata-annotation" data-openerrata-claim-id="c1">moon is cheese</mark>.</p><div class="callout">Linkpost</div><script>x()</script></div>',
+    (document) => {
+      const root = requireElement(document, "#root");
+      const html = serializeContentHtml(
+        root,
+        () => (element) => element.classList.contains("callout"),
+      );
+      assert.equal(html, "<p>The moon is cheese.</p>");
+      // The live page keeps its highlight.
+      assert.equal(root.querySelectorAll("mark").length, 1);
+    },
   );
+});
+
+test("detachedImageOccurrences places images outside the text root at a fixed offset", () => {
+  withDom(
+    '<article><div data-testid="tweetPhoto"><img src="https://pbs.twimg.com/media/a.jpg" alt="Photo" /></div><img src="https://pbs.twimg.com/profile_images/me.jpg" /></article>',
+    (document) => {
+      assert.deepEqual(
+        detachedImageOccurrences(requireElement(document, "article"), {
+          imageSelector: '[data-testid="tweetPhoto"] img',
+          baseUrl: "https://x.com",
+          normalizedTextOffset: 12,
+        }),
+        [
+          {
+            originalIndex: 0,
+            normalizedTextOffset: 12,
+            sourceUrl: "https://pbs.twimg.com/media/a.jpg",
+            captionText: "Photo",
+          },
+        ],
+      );
+    },
+  );
+});
+
+test("toTransportableHtml omits empty and oversized snapshots", () => {
+  assert.equal(toTransportableHtml("", 10), undefined);
+  assert.equal(toTransportableHtml("<p>ok</p>", 10), "<p>ok</p>");
+  assert.equal(toTransportableHtml("<p>too long</p>", 10), undefined);
 });

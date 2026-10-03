@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  DEFAULT_EXTENSION_SETTINGS,
+  DEFAULT_API_BASE_URL,
   apiEndpointUrl,
   apiHostPermissionFor,
   normalizeApiBaseUrl,
-  normalizeExtensionSettings,
+  parseStoredSettings,
 } from "../../src/lib/settings-core";
 
 test("normalizeApiBaseUrl accepts https URLs and local development http URLs", () => {
@@ -55,23 +55,43 @@ test("apiEndpointUrl resolves endpoint paths from API base URL", () => {
   );
 });
 
-test("normalizeExtensionSettings applies defaults and trims values", () => {
+test("parseStoredSettings trims values and defaults only what was never set", () => {
   assert.deepEqual(
-    normalizeExtensionSettings({
+    parseStoredSettings({
       apiBaseUrl: "https://localhost:5173/",
       apiKey: "  key-123  ",
       openaiApiKey: "  sk-user-key  ",
       autoInvestigate: true,
-      hmacSecret: "  hmac-secret  ",
     }),
     {
-      apiBaseUrl: "https://localhost:5173",
-      apiKey: "key-123",
-      openaiApiKey: "sk-user-key",
-      autoInvestigate: true,
-      hmacSecret: "hmac-secret",
+      kind: "VALID",
+      settings: {
+        apiBaseUrl: "https://localhost:5173",
+        apiKey: "key-123",
+        openaiApiKey: "sk-user-key",
+        autoInvestigate: true,
+      },
     },
   );
 
-  assert.deepEqual(normalizeExtensionSettings({}), DEFAULT_EXTENSION_SETTINGS);
+  assert.deepEqual(parseStoredSettings({}), {
+    kind: "VALID",
+    settings: {
+      apiBaseUrl: DEFAULT_API_BASE_URL,
+      apiKey: "",
+      openaiApiKey: "",
+      autoInvestigate: false,
+    },
+  });
+});
+
+test("an invalid stored API URL is an error, never silently replaced by the hosted API", () => {
+  const parsed = parseStoredSettings({ apiBaseUrl: "http://selfhosted.example.com" });
+  assert.equal(parsed.kind, "INVALID");
+  assert.match(parsed.kind === "INVALID" ? parsed.problem : "", /selfhosted\.example\.com/);
+});
+
+test("stored settings of the wrong type are reported, not coerced", () => {
+  assert.equal(parseStoredSettings({ autoInvestigate: "yes" }).kind, "INVALID");
+  assert.equal(parseStoredSettings({ apiKey: 42 }).kind, "INVALID");
 });

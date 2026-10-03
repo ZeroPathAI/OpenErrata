@@ -1,10 +1,11 @@
 import type { InvestigationClaim } from "@openerrata/shared";
 import type { DomAnnotation } from "./dom-mapper";
+import type { DomTextPiece } from "./dom-text-index";
 import { renderClaimReasoningHtml, toSafeSourceUrl } from "./claim-markdown";
 import {
   ANNOTATION_CLAIM_ID_ATTRIBUTE,
   ANNOTATION_CLASS,
-  ANNOTATION_SELECTOR,
+  unwrapAnnotationMarks,
 } from "./annotation-dom";
 
 const TOOLTIP_MARGIN_PX = 12;
@@ -32,80 +33,83 @@ function dismissDetailPanel(): void {
 // ── Public API ────────────────────────────────────────────────────────────
 
 /**
- * Render annotations by wrapping matched DOM ranges in highlight marks
- * and attaching tooltip / click behaviour. When `shouldExcludeElement` is
- * provided, text nodes inside excluded elements are not wrapped — keeping
- * annotation marks out of citation superscripts and other server-stripped
- * content.
+ * One highlighted text-node piece and how to undo it. Pages like X and
+ * LessWrong are React apps that keep references to their text nodes, so a
+ * highlight must leave the page's own node (`original`) in place and, when
+ * removed, merge back exactly the nodes our wrapping split off it — never
+ * `normalize()` neighbouring text nodes the page owns.
  */
-export function renderAnnotations(
-  annotations: DomAnnotation[],
-  shouldExcludeElement?: (element: Element) => boolean,
-): void {
+export interface WrappedPiece {
+  mark: HTMLElement;
+  /** The page's text node; it keeps the text before the highlight (or is the highlighted node). */
+  original: Text;
+  /** The highlighted text, inside `mark`. Equal to `original` when the highlight starts at offset 0. */
+  wrapped: Text;
+  /** Text split off after the highlight, if any. */
+  trailing: Text | null;
+}
+
+/**
+ * Wrap every matched claim piece in a highlight mark with tooltip / click
+ * behaviour. Returns the wrapped pieces in wrapping order (for `unwrapPieces`).
+ * Pieces of one text node are wrapped back to front so earlier offsets stay
+ * valid; a piece overlapping one already wrapped (two claims quoting the same
+ * text) is skipped.
+ */
+export function wrapAnnotations(annotations: readonly DomAnnotation[]): WrappedPiece[] {
+  const piecesByNode = new Map<Text, { piece: DomTextPiece; claim: InvestigationClaim }[]>();
   for (const annotation of annotations) {
-    if (!annotation.matched || !annotation.range) continue;
-
-    if (shouldExcludeElement) {
-      // Single-text-node ranges can't contain excluded elements: the range
-      // was built from filtered text that skips excluded subtrees, so both
-      // endpoints land in non-excluded text nodes. surroundContents is safe
-      // and avoids the TreeWalker path, which can't visit its root node
-      // (a Text node has no descendants for nextNode() to reach).
-      const { startContainer, endContainer } = annotation.range;
-      if (startContainer === endContainer && startContainer instanceof Text) {
-        try {
-          const mark = createMarkElement(annotation.claim);
-          annotation.range.surroundContents(mark);
-          attachInteractions(mark, annotation.claim);
-          continue;
-        } catch {
-          // Fall through to fragment path if surroundContents fails
-        }
-      }
-      // Multi-node ranges may span excluded elements — use fragment-based
-      // rendering so we can skip text nodes inside excluded subtrees.
-      highlightFragments(annotation.range, annotation.claim, shouldExcludeElement);
-      continue;
+    if (!annotation.matched) continue;
+    for (const piece of annotation.pieces) {
+      const nodePieces = piecesByNode.get(piece.node) ?? [];
+      nodePieces.push({ piece, claim: annotation.claim });
+      piecesByNode.set(piece.node, nodePieces);
     }
+  }
 
-    try {
-      // Try the simple path: surroundContents works when the range is
-      // contained entirely within a single DOM element.
-      const mark = createMarkElement(annotation.claim);
-      annotation.range.surroundContents(mark);
-      attachInteractions(mark, annotation.claim);
-    } catch {
-      // surroundContents throws when the range crosses element
-      // boundaries.  Fall back to highlighting individual text-node
-      // fragments.
-      highlightFragments(annotation.range, annotation.claim);
+  const wrapped: WrappedPiece[] = [];
+  for (const [node, nodePieces] of piecesByNode) {
+    nodePieces.sort((left, right) => right.piece.start - left.piece.start);
+    let wrappedFrom = node.length;
+    for (const { piece, claim } of nodePieces) {
+      if (piece.end > wrappedFrom) continue;
+      wrapped.push(wrapPiece(node, piece.start, piece.end, claim));
+      wrappedFrom = piece.start;
+    }
+  }
+  return wrapped;
+}
+
+/** Undo `wrapAnnotations`, restoring the page's text nodes. */
+export function unwrapPieces(pieces: readonly WrappedPiece[]): void {
+  for (const piece of [...pieces].reverse()) {
+    piece.mark.replaceWith(piece.wrapped);
+    if (piece.wrapped !== piece.original && piece.wrapped.previousSibling === piece.original) {
+      piece.original.appendData(piece.wrapped.data);
+      piece.wrapped.remove();
+    }
+    if (piece.trailing?.previousSibling === piece.original) {
+      piece.original.appendData(piece.trailing.data);
+      piece.trailing.remove();
     }
   }
 }
 
-/**
- * Remove every annotation and tooltip previously injected by OpenErrata.
- */
-export function clearAnnotations(): void {
-  // Unwrap <mark> elements, restoring their text-node children
-  document.querySelectorAll(ANNOTATION_SELECTOR).forEach((mark) => {
-    const parent = mark.parentNode;
-    if (!parent) return;
-    while (mark.firstChild) {
-      parent.insertBefore(mark.firstChild, mark);
-    }
-    parent.removeChild(mark);
-    parent.normalize(); // merge adjacent text nodes
-  });
+/** Remove highlight marks this controller does not track (e.g. left by an orphaned script). */
+export function unwrapUntrackedMarks(): void {
+  unwrapAnnotationMarks(document);
+}
 
+/** Close any open tooltip or detail panel. */
+export function dismissAnnotationOverlays(): void {
   dismissDetailPanel();
-
-  // Remove lingering tooltip and detail-panel elements
   document
     .querySelectorAll(
       ".openerrata-tooltip, .openerrata-detail-panel, .openerrata-detail-panel-backdrop",
     )
-    .forEach((el) => el.remove());
+    .forEach((el) => {
+      el.remove();
+    });
 }
 
 /**
@@ -232,6 +236,21 @@ function showDetailPanel(claim: InvestigationClaim, anchor: HTMLElement | null =
   document.body.appendChild(backdrop);
 }
 // ── Internal helpers ──────────────────────────────────────────────────────
+
+function wrapPiece(
+  node: Text,
+  start: number,
+  end: number,
+  claim: InvestigationClaim,
+): WrappedPiece {
+  const trailing = end < node.length ? node.splitText(end) : null;
+  const wrapped = start > 0 ? node.splitText(start) : node;
+  const mark = createMarkElement(claim);
+  wrapped.before(mark);
+  mark.appendChild(wrapped);
+  attachInteractions(mark, claim);
+  return { mark, original: node, wrapped, trailing };
+}
 
 function createMarkElement(claim: InvestigationClaim): HTMLElement {
   const mark = document.createElement("mark");
@@ -402,77 +421,4 @@ function positionTooltip(tip: HTMLDivElement, anchor: HTMLElement): void {
 
   tip.style.top = `${Math.round(top).toString()}px`;
   tip.style.left = `${Math.round(left).toString()}px`;
-}
-
-/**
- * Check whether a node is inside an excluded element by walking up the
- * DOM tree to `boundary`. Returns true if any ancestor (exclusive of
- * `boundary`) matches the exclusion predicate.
- */
-function isInsideExcludedElement(
-  node: Node,
-  shouldExclude: (element: Element) => boolean,
-  boundary: Node,
-): boolean {
-  let cursor: Node | null = node.parentNode;
-  while (cursor && cursor !== boundary) {
-    if (cursor instanceof Element && shouldExclude(cursor)) return true;
-    cursor = cursor.parentNode;
-  }
-  return false;
-}
-
-/**
- * Fallback for cross-element ranges: extract the text nodes covered by
- * the range and wrap each individually. When `shouldExcludeElement` is
- * provided, text nodes inside excluded elements are skipped so that
- * annotation marks don't wrap server-stripped content like citation
- * superscripts.
- */
-function highlightFragments(
-  range: Range,
-  claim: InvestigationClaim,
-  shouldExcludeElement?: (element: Element) => boolean,
-): void {
-  const textNodes: Text[] = [];
-  const ancestor = range.commonAncestorContainer;
-  const walker = document.createTreeWalker(ancestor, NodeFilter.SHOW_TEXT);
-
-  while (walker.nextNode()) {
-    const current = walker.currentNode;
-    if (!(current instanceof Text)) continue;
-    const node = current;
-    if (!range.intersectsNode(node)) continue;
-    if (shouldExcludeElement && isInsideExcludedElement(node, shouldExcludeElement, ancestor)) {
-      continue;
-    }
-    textNodes.push(node);
-  }
-
-  for (const textNode of textNodes) {
-    const nodeRange = document.createRange();
-
-    // Clamp to the portion of this text node that falls within the range
-    if (textNode === range.startContainer) {
-      nodeRange.setStart(textNode, range.startOffset);
-    } else {
-      nodeRange.setStart(textNode, 0);
-    }
-
-    if (textNode === range.endContainer) {
-      nodeRange.setEnd(textNode, range.endOffset);
-    } else {
-      nodeRange.setEnd(textNode, textNode.length);
-    }
-
-    if (nodeRange.toString().length === 0) continue;
-
-    try {
-      const mark = createMarkElement(claim);
-      nodeRange.surroundContents(mark);
-      attachInteractions(mark, claim);
-    } catch {
-      // If individual wrapping still fails, skip this fragment
-    }
-  }
 }

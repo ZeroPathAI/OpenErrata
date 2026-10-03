@@ -1,79 +1,47 @@
-import { normalizeContent } from "@openerrata/shared";
-import type { AdapterExtractionResult, PlatformAdapter } from "./model";
 import {
-  extractContentWithImageOccurrencesFromRoot,
-  readFirstMetaDateAsIso,
-  readFirstTimeDateAsIso,
-} from "./utils";
+  normalizeContent,
+  observedImageUrlsFromOccurrences,
+  xExternalIdSchema,
+} from "@openerrata/shared";
+import {
+  normalizeXHandle,
+  pageLocatorFor,
+  parseXStatusPath,
+  type PageLocator,
+} from "../../lib/page-locator";
+import { buildDomTextIndex } from "../dom-text-index";
+import { excludeNothing, type AdapterExtractionResult, type PlatformAdapter } from "./model";
+import { detachedImageOccurrences, readFirstMetaDateAsIso, readFirstTimeDateAsIso } from "./utils";
 
-const HANDLE_STATUS_PATH_REGEX = /^\/([^/]+)\/status\/(\d+)(?:\/|$)/i;
-const WEB_STATUS_PATH_REGEX = /^\/i\/web\/status\/(\d+)(?:\/|$)/i;
-const I_STATUS_PATH_REGEX = /^\/i\/status\/(\d+)(?:\/|$)/i;
+// X serves two frontends. Logged in, tweet parts carry `data-testid`
+// attributes (`tweetText`, `User-Name`, `videoPlayer`, ...). Logged out (seen
+// 2026-10) there are no test ids at all: each tweet is a plain `<article>`
+// whose text is a `div[dir="auto"]` after the author header.
+const LOGGED_IN_TWEET_TEXT_SELECTOR = '[data-testid="tweetText"]';
+const LOGGED_OUT_TWEET_TEXT_SELECTOR = 'div[dir="auto"]';
+const TWEET_CONTAINER_SELECTOR = "article";
+const TWEET_IMAGE_SELECTOR =
+  '[data-testid="tweetPhoto"] img, [data-testid="card.wrapper"] img, img[src*="twimg.com/media"]';
+const TWEET_VIDEO_SELECTOR = '[data-testid="videoPlayer"], video';
 const HANDLE_TEXT_REGEX = /^@([A-Za-z0-9_]{1,15})$/;
 const META_DATE_SELECTORS = [
   'meta[property="article:published_time"]',
   'meta[name="article:published_time"]',
   'meta[property="og:article:published_time"]',
 ] as const;
-const RESERVED_HANDLE_SEGMENTS = new Set([
-  "compose",
-  "explore",
-  "home",
-  "i",
-  "intent",
-  "login",
-  "messages",
-  "notifications",
-  "search",
-  "settings",
-  "signup",
-]);
-
-const TWEET_TEXT_SELECTOR = '[data-testid="tweetText"]';
-const TWEET_CONTAINER_SELECTOR = "article";
 const PRIVATE_OR_GATED_PATTERNS = [
   /these posts are protected/i,
   /only confirmed followers have access/i,
   /unable to view this post/i,
   /account owner limits who can view their posts/i,
-  /this account['\u2019]s posts are protected/i,
+  /this account['’]s posts are protected/i,
 ] as const;
-const X_STATUS_HOSTS = ["x.com", "twitter.com"] as const;
 
-function isSupportedXHost(hostname: string): boolean {
-  const normalized = hostname.toLowerCase();
-  return X_STATUS_HOSTS.some((host) => normalized === host || normalized.endsWith(`.${host}`));
-}
+type XLocator = Extract<PageLocator, { platform: "X" }>;
 
-function parseStatusFromPath(pathname: string): {
-  tweetId: string;
-  authorHandle: string | null;
-} | null {
-  const webMatch = WEB_STATUS_PATH_REGEX.exec(pathname);
-  if (webMatch?.[1] !== undefined && webMatch[1].length > 0) {
-    return {
-      tweetId: webMatch[1],
-      authorHandle: null,
-    };
-  }
-
-  const iStatusMatch = I_STATUS_PATH_REGEX.exec(pathname);
-  if (iStatusMatch?.[1] !== undefined && iStatusMatch[1].length > 0) {
-    return {
-      tweetId: iStatusMatch[1],
-      authorHandle: null,
-    };
-  }
-
-  const handleMatch = HANDLE_STATUS_PATH_REGEX.exec(pathname);
-  if (handleMatch?.[2] !== undefined && handleMatch[2].length > 0) {
-    return {
-      tweetId: handleMatch[2],
-      authorHandle: normalizeAuthorHandle(handleMatch[1]),
-    };
-  }
-
-  return null;
+function xLocator(url: string): XLocator | null {
+  const locator = pageLocatorFor("X", url);
+  return locator?.platform === "X" ? locator : null;
 }
 
 function parseStatusFromHref(href: string | null | undefined): {
@@ -82,8 +50,7 @@ function parseStatusFromHref(href: string | null | undefined): {
 } | null {
   if (href === null || href === undefined || href.length === 0) return null;
   try {
-    const parsed = new URL(href, window.location.origin);
-    return parseStatusFromPath(parsed.pathname);
+    return parseXStatusPath(new URL(href, window.location.origin).pathname);
   } catch {
     return null;
   }
@@ -101,6 +68,26 @@ function hasDocumentLevelTweetIdentity(document: Document, tweetId: string): boo
   return hrefCandidates.some((href) => parseStatusFromHref(href)?.tweetId === tweetId);
 }
 
+/** The handle a tweet article's first profile link (the author's avatar/name) points to. */
+function articleAuthorHandle(tweetContainer: Element): string | null {
+  const href = tweetContainer.querySelector('a[href^="/"]')?.getAttribute("href");
+  if (href === null || href === undefined) return null;
+  return normalizeXHandle(href.split(/[/?#]/).find(Boolean));
+}
+
+/**
+ * The tweet's own text element: logged-in `tweetText`, else (logged out) the
+ * first `div[dir="auto"]` belonging to this article rather than to a nested one.
+ */
+function findTweetTextElement(tweetContainer: Element): Element | null {
+  const loggedIn = tweetContainer.querySelector(LOGGED_IN_TWEET_TEXT_SELECTOR);
+  if (loggedIn !== null) return loggedIn;
+  for (const candidate of tweetContainer.querySelectorAll(LOGGED_OUT_TWEET_TEXT_SELECTOR)) {
+    if (candidate.closest(TWEET_CONTAINER_SELECTOR) === tweetContainer) return candidate;
+  }
+  return null;
+}
+
 type TweetContainerSelection =
   | {
       kind: "ready";
@@ -111,7 +98,8 @@ type TweetContainerSelection =
       reason: "hydrating" | "ambiguous_dom" | "missing_identity";
     };
 
-function pickTargetTweetContainer(document: Document, tweetId: string): TweetContainerSelection {
+function pickTargetTweetContainer(document: Document, status: XLocator): TweetContainerSelection {
+  const { tweetId, authorHandle } = status;
   const permalinkCandidates = document.querySelectorAll<HTMLAnchorElement>(
     `${TWEET_CONTAINER_SELECTOR} a[href*="/status/${tweetId}"]`,
   );
@@ -126,14 +114,21 @@ function pickTargetTweetContainer(document: Document, tweetId: string): TweetCon
     }
   }
 
-  if (permalinkContainers.size === 1) {
-    const [container] = Array.from(permalinkContainers);
-    if (!container) {
-      throw new Error("Expected one permalink-matching X tweet container");
-    }
+  // Replies and quote tweets of the target link to its permalink too; when
+  // the URL names the author, the target is the one such article they wrote.
+  const candidates =
+    permalinkContainers.size > 1 && authorHandle !== null
+      ? Array.from(permalinkContainers).filter(
+          (container) =>
+            articleAuthorHandle(container)?.toLowerCase() === authorHandle.toLowerCase(),
+        )
+      : Array.from(permalinkContainers);
+
+  const [onlyCandidate] = candidates;
+  if (candidates.length === 1 && onlyCandidate !== undefined) {
     return {
       kind: "ready",
-      container,
+      container: onlyCandidate,
     };
   }
 
@@ -151,14 +146,15 @@ function pickTargetTweetContainer(document: Document, tweetId: string): TweetCon
     const articles = Array.from(
       primaryColumn.querySelectorAll<HTMLElement>(TWEET_CONTAINER_SELECTOR),
     );
-    if (articles.length === 1 && hasDocumentLevelTweetIdentity(document, tweetId)) {
-      const [container] = articles;
-      if (!container) {
-        throw new Error("Expected one primary-column X tweet container");
-      }
+    const [onlyArticle] = articles;
+    if (
+      articles.length === 1 &&
+      onlyArticle !== undefined &&
+      hasDocumentLevelTweetIdentity(document, tweetId)
+    ) {
       return {
         kind: "ready",
-        container,
+        container: onlyArticle,
       };
     }
 
@@ -183,38 +179,11 @@ function pickTargetTweetContainer(document: Document, tweetId: string): TweetCon
   };
 }
 
-function normalizeAuthorHandle(raw: string | null | undefined): string | null {
-  if (raw === null || raw === undefined || raw.length === 0) return null;
-  const normalized = raw.trim().replace(/^@/, "");
-  if (normalized.length === 0) return null;
-  if (RESERVED_HANDLE_SEGMENTS.has(normalized.toLowerCase())) return null;
-  return normalized;
-}
-
 function extractPostedAt(document: Document, tweetContainer: Element): string | null {
   return (
     readFirstTimeDateAsIso([tweetContainer, document]) ??
     readFirstMetaDateAsIso(document, META_DATE_SELECTORS)
   );
-}
-
-function parseStatusFromUrl(url: string): { tweetId: string; authorHandle: string | null } | null {
-  try {
-    const parsed = new URL(url);
-    if (!isSupportedXHost(parsed.hostname)) return null;
-    return parseStatusFromPath(parsed.pathname);
-  } catch {
-    return null;
-  }
-}
-
-function extractAuthorHandleFromHref(
-  href: string | null | undefined,
-  tweetId: string,
-): string | null {
-  const parsed = parseStatusFromHref(href);
-  if (parsed?.tweetId !== tweetId) return null;
-  return parsed.authorHandle;
 }
 
 function inferAuthorHandle(
@@ -234,8 +203,8 @@ function inferAuthorHandle(
   ];
 
   for (const href of hrefCandidates) {
-    const handle = extractAuthorHandleFromHref(href, tweetId);
-    if (handle !== null && handle.length > 0) return handle;
+    const parsed = parseStatusFromHref(href);
+    if (parsed?.tweetId === tweetId && parsed.authorHandle !== null) return parsed.authorHandle;
   }
 
   const profileHref =
@@ -245,15 +214,15 @@ function inferAuthorHandle(
     document
       .querySelector<HTMLAnchorElement>('[data-testid="User-Name"] a[href^="/"]')
       ?.getAttribute("href");
-
   if (profileHref !== undefined && profileHref !== null && profileHref.length > 0) {
     try {
-      const parsed = new URL(profileHref, window.location.origin);
-      const segment = parsed.pathname.split("/").find(Boolean);
-      const handleFromProfile = normalizeAuthorHandle(segment);
-      if (handleFromProfile !== null && handleFromProfile.length > 0) return handleFromProfile;
+      const segment = new URL(profileHref, window.location.origin).pathname
+        .split("/")
+        .find(Boolean);
+      const handleFromProfile = normalizeXHandle(segment);
+      if (handleFromProfile !== null) return handleFromProfile;
     } catch {
-      // Ignore and continue with text fallback.
+      // Ignore and continue with the remaining fallbacks.
     }
   }
 
@@ -262,22 +231,17 @@ function inferAuthorHandle(
     ...Array.from(document.querySelectorAll('[data-testid="User-Name"] span')),
   ];
   for (const candidate of handleTextCandidates) {
-    const normalized = normalizeContent(candidate.textContent);
-    const match = HANDLE_TEXT_REGEX.exec(normalized);
-    if (match?.[1] === undefined || match[1].length === 0) continue;
-    const handleFromText = normalizeAuthorHandle(match[1]);
-    if (handleFromText !== null && handleFromText.length > 0) return handleFromText;
+    const match = HANDLE_TEXT_REGEX.exec(normalizeContent(candidate.textContent));
+    const handleFromText = normalizeXHandle(match?.[1]);
+    if (handleFromText !== null) return handleFromText;
   }
 
-  return null;
+  // Logged-out frontend: no test ids; the article opens with the author's profile link.
+  return articleAuthorHandle(tweetContainer);
 }
 
-function hasSupportedStatusPath(url: string): boolean {
-  return parseStatusFromUrl(url) !== null;
-}
-
-function hasPrivateOrGatedMessage(document: Document, tweetId: string): boolean {
-  if (pickTargetTweetContainer(document, tweetId).kind === "ready") {
+function hasPrivateOrGatedMessage(document: Document, status: XLocator): boolean {
+  if (pickTargetTweetContainer(document, status).kind === "ready") {
     return false;
   }
 
@@ -292,30 +256,32 @@ function hasPrivateOrGatedMessage(document: Document, tweetId: string): boolean 
 
 export const xAdapter: PlatformAdapter = {
   platformKey: "X",
-  contentRootSelector: TWEET_TEXT_SELECTOR,
 
   matches(url: string): boolean {
-    return hasSupportedStatusPath(url);
+    return xLocator(url) !== null;
+  },
+
+  pageLocator(url: string): PageLocator | null {
+    return xLocator(url);
   },
 
   detectPrivateOrGated(document: Document): boolean {
-    const statusFromUrl = parseStatusFromUrl(window.location.href);
-    if (!statusFromUrl) return false;
-    return hasPrivateOrGatedMessage(document, statusFromUrl.tweetId);
+    const status = xLocator(window.location.href);
+    if (!status) return false;
+    return hasPrivateOrGatedMessage(document, status);
   },
 
   extract(document: Document): AdapterExtractionResult {
     const url = window.location.href;
-    const statusFromUrl = parseStatusFromUrl(url);
-    if (!statusFromUrl) {
+    const status = xLocator(url);
+    if (!status) {
       return {
         kind: "not_ready",
         reason: "unsupported",
       };
     }
 
-    const tweetId = statusFromUrl.tweetId;
-    const tweetSelection = pickTargetTweetContainer(document, tweetId);
+    const tweetSelection = pickTargetTweetContainer(document, status);
     if (tweetSelection.kind !== "ready") {
       return {
         kind: "not_ready",
@@ -324,7 +290,7 @@ export const xAdapter: PlatformAdapter = {
     }
     const tweetContainer = tweetSelection.container;
 
-    const tweetTextEl = tweetContainer.querySelector(TWEET_TEXT_SELECTOR);
+    const tweetTextEl = findTweetTextElement(tweetContainer);
     if (!tweetTextEl) {
       return {
         kind: "not_ready",
@@ -332,34 +298,20 @@ export const xAdapter: PlatformAdapter = {
       };
     }
 
-    const contentText = normalizeContent(tweetTextEl.textContent);
-    const extractedContent = extractContentWithImageOccurrencesFromRoot(
-      tweetContainer,
-      window.location.origin,
-      '[data-testid="tweetPhoto"] img, [data-testid="card.wrapper"] img, img[src*="twimg.com/media"]',
-    );
-    // Tweet media attachments live outside tweetText on X; keep text scoped to
-    // tweetText and attach images at the end of that text stream.
-    const imageOccurrences = extractedContent.imageOccurrences.map((occurrence, originalIndex) => ({
-      ...occurrence,
-      originalIndex,
+    // Tweet media sit outside the tweet text; text stays scoped to the tweet
+    // text and images are attached at the end of it.
+    const contentText = buildDomTextIndex(tweetTextEl, { exclude: excludeNothing() }).text;
+    const imageOccurrences = detachedImageOccurrences(tweetContainer, {
+      imageSelector: TWEET_IMAGE_SELECTOR,
+      baseUrl: window.location.origin,
       normalizedTextOffset: contentText.length,
-    }));
+    });
     const authorDisplayName = normalizeContent(
       tweetContainer.querySelector('[data-testid="User-Name"]')?.textContent ?? "",
     );
 
-    // Extract images separately from video detection so image posts are investigated.
-    const imageUrls = extractedContent.imageUrls;
-
-    const hasVideo =
-      tweetContainer.querySelector(
-        '[data-testid="videoPlayer"], [data-testid="videoPlayer"] video, [data-testid="card.wrapper"] video',
-      ) !== null;
-    const mediaState = hasVideo ? "has_video" : imageUrls.length > 0 ? "has_images" : "text_only";
-
     const authorHandle =
-      statusFromUrl.authorHandle ?? inferAuthorHandle(document, tweetContainer, tweetId);
+      status.authorHandle ?? inferAuthorHandle(document, tweetContainer, status.tweetId);
     if (authorHandle === null || authorHandle.length === 0) {
       return {
         kind: "not_ready",
@@ -372,17 +324,16 @@ export const xAdapter: PlatformAdapter = {
       kind: "ready",
       content: {
         platform: "X",
-        externalId: tweetId,
+        externalId: xExternalIdSchema.parse(status.tweetId),
         url,
         contentText,
-        mediaState,
-        imageUrls,
+        hasVideo: tweetContainer.querySelector(TWEET_VIDEO_SELECTOR) !== null,
         imageOccurrences,
         metadata: {
           authorHandle,
           authorDisplayName: authorDisplayName.length > 0 ? authorDisplayName : null,
           text: contentText,
-          mediaUrls: imageUrls,
+          mediaUrls: observedImageUrlsFromOccurrences(imageOccurrences),
           ...(postedAt === null ? {} : { postedAt }),
         },
       },
@@ -390,11 +341,12 @@ export const xAdapter: PlatformAdapter = {
   },
 
   getContentRoot(document: Document): Element | null {
-    const statusFromUrl = parseStatusFromUrl(window.location.href);
-    if (!statusFromUrl) return null;
-    const tweetSelection = pickTargetTweetContainer(document, statusFromUrl.tweetId);
+    const status = xLocator(window.location.href);
+    if (!status) return null;
+    const tweetSelection = pickTargetTweetContainer(document, status);
     if (tweetSelection.kind !== "ready") return null;
-    const tweetContainer = tweetSelection.container;
-    return tweetContainer.querySelector(TWEET_TEXT_SELECTOR);
+    return findTweetTextElement(tweetSelection.container);
   },
+
+  contentExclusionFilter: excludeNothing,
 };
