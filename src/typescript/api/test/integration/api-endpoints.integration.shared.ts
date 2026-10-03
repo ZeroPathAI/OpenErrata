@@ -14,6 +14,7 @@ import {
 } from "@openerrata/shared";
 import type { RequestEventLike } from "../../src/lib/trpc/context.js";
 import { MINIMUM_SUPPORTED_EXTENSION_VERSION } from "../../src/lib/config/env.js";
+import { FIRST_CURRENT_PROTOCOL_EXTENSION_VERSION } from "../../src/lib/trpc/legacy-extension-v0/index.js";
 import {
   createDeterministicRandom,
   randomChance,
@@ -147,7 +148,8 @@ function createCaller(options: CallerOptions = {}): AppCaller {
     ipRangeKey: options.ipRangeKey ?? "integration-ip-range",
     isAuthenticated,
     userOpenAiApiKey,
-    extensionVersion: options.extensionVersion ?? MINIMUM_SUPPORTED_EXTENSION_VERSION,
+    // Callers speak the current protocol unless a test opts into another version.
+    extensionVersion: options.extensionVersion ?? FIRST_CURRENT_PROTOCOL_EXTENSION_VERSION,
     minimumSupportedExtensionVersion: MINIMUM_SUPPORTED_EXTENSION_VERSION,
   });
 

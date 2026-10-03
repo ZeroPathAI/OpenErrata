@@ -623,10 +623,15 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Select only, never --create: a fresh stack has no state, so `pulumi
+          # up` would try to rebuild resources that already exist.
+          if ! pulumi stack select "$STACK"; then
+            echo "::error::Pulumi stack '$STACK' was not found. PULUMI_ACCESS_TOKEN must belong to the Pulumi org that owns the openerrata stacks. A deploy must never create a fresh stack: it would try to rebuild live resources."
+            exit 1
+          fi
+
           # Stack config is rebuilt from scratch on every run: this step is the
           # complete configuration of the hosted stacks.
-          pulumi stack select "$STACK" --create
-
           if [ -z "${CI_IMAGE_REPOSITORY:-}" ] || [ -z "${CI_IMAGE_TAG:-}" ] || [ -z "${CI_IMAGE_DIGEST:-}" ]; then
             echo "Build image metadata is required (CI_IMAGE_REPOSITORY, CI_IMAGE_TAG, CI_IMAGE_DIGEST)."
             exit 1
@@ -817,7 +822,11 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           set -euo pipefail
-          pulumi stack select "$STACK" --create
+          # Select only, never --create (see "Configure Pulumi stack values").
+          if ! pulumi stack select "$STACK"; then
+            echo "::error::Pulumi stack '$STACK' was not found. PULUMI_ACCESS_TOKEN must belong to the Pulumi org that owns the openerrata stacks. A deploy must never create a fresh stack: it would try to rebuild live resources."
+            exit 1
+          fi
           TARGET_NAMESPACE="openerrata-${STACK}"
           API_SERVICE_NAME="${TARGET_NAMESPACE}-api"
           PULUMI_TIMEOUT_SECONDS=1200

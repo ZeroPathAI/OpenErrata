@@ -879,6 +879,25 @@ model InstanceApiKey {
 }
 ```
 
+### Extension version counts
+
+`recordViewAndGetStatus` counts each page view against the reporting extension
+version (`x-openerrata-extension-version`) and the UTC day, and nothing else: no
+viewer key, IP range, post or time of day, so a row describes traffic, never a
+viewer (see PRIVACY.md). The counts tell when an extension line the API still
+serves has gone quiet, which is the retirement condition of the legacy v0
+protocol adapter (§3.8.1).
+
+```prisma
+model ExtensionVersionDailyCount {
+  day           DateTime @db.Date  // UTC day
+  version       String             // 1–4 numeric components (CHECK)
+  pageViewCount Int                // > 0 (CHECK); upserted atomically per view
+
+  @@id([day, version])
+}
+```
+
 ### Platform metadata
 
 Platform metadata is version-scoped only. Each `PostVersion` can have one
@@ -1466,10 +1485,12 @@ postRouter.registerObservedVersion
   Output: { platform, externalId, versionHash, postVersionId, provenance: ContentProvenance }
 
 // Record a view and return the status of this version's investigation, if any.
-// Increments raw viewCount and updates uniqueViewScore. Uses postVersionId from
-// registerObservedVersion for a direct primary-key lookup (no content re-derivation);
-// rejects unknown post versions. Every variant about an existing investigation
-// carries its id, so the client can poll an investigation it did not start.
+// Increments raw viewCount, updates uniqueViewScore and counts the view against
+// the request's extension version for the UTC day (ExtensionVersionDailyCount).
+// Uses postVersionId from registerObservedVersion for a direct primary-key lookup
+// (no content re-derivation); rejects unknown post versions. Every variant about
+// an existing investigation carries its id, so the client can poll an
+// investigation it did not start.
 postRouter.recordViewAndGetStatus
   Input:  { postVersionId }
   Output:
@@ -2056,7 +2077,15 @@ The protocol is not versioned: all contexts ship in one bundle, and a content
 script orphaned by an extension update can no longer reach the new background.
 API compatibility is versioned separately over HTTP
 (`x-openerrata-extension-version`, minimum supported version → upgrade
-required).
+required). Extensions from 0.2.0 up to 0.4.0 speak the legacy v0 API protocol
+(the API of the 0.3 line: no investigation ids or FAILED state from
+`recordViewAndGetStatus`, `observedImageUrls` in inputs). The API serves them
+through a time-boxed adapter (`api/src/lib/trpc/legacy-extension-v0`) that
+converts their requests to the current procedures and the answers back, so the
+current procedures carry no legacy branches. It is retired on 2026-12-01 or
+once the extension version counts (§3.2) show no 0.3.x traffic for 14
+consecutive days, whichever is later; the minimum supported version then
+becomes 0.4.0.
 
 Future work: design a dedicated UI/UX flow for fact-checking image-only posts
 without relying on text-span highlighting.

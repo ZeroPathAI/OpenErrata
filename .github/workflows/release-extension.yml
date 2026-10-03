@@ -131,7 +131,10 @@ jobs:
     timeout-minutes: 20
     environment: extension-store-publish
     steps:
-      # Missing credentials fail the release instead of silently skipping a store.
+      # Each store publishes only when its variable on the extension-store-publish
+      # environment is "true". An enabled store with missing credentials fails
+      # the release instead of silently skipping it; with neither enabled, the
+      # release is the GitHub release's assets alone (manual store upload).
       - name: Check store credentials
         shell: bash
         env:
@@ -141,10 +144,16 @@ jobs:
           CHROME_REFRESH_TOKEN: ${{ secrets.CHROME_REFRESH_TOKEN }}
           FIREFOX_JWT_ISSUER: ${{ secrets.FIREFOX_JWT_ISSUER }}
           FIREFOX_JWT_SECRET: ${{ secrets.FIREFOX_JWT_SECRET }}
+          PUBLISH_TO_CHROME_WEB_STORE: ${{ vars.PUBLISH_TO_CHROME_WEB_STORE }}
           PUBLISH_TO_FIREFOX_AMO: ${{ vars.PUBLISH_TO_FIREFOX_AMO }}
         run: |
           set -euo pipefail
-          required=(CHROME_EXTENSION_ID CHROME_CLIENT_ID CHROME_CLIENT_SECRET CHROME_REFRESH_TOKEN)
+          required=()
+          if [ "${PUBLISH_TO_CHROME_WEB_STORE:-}" = "true" ]; then
+            required+=(CHROME_EXTENSION_ID CHROME_CLIENT_ID CHROME_CLIENT_SECRET CHROME_REFRESH_TOKEN)
+          else
+            echo "::notice::Not publishing to the Chrome Web Store (environment variable PUBLISH_TO_CHROME_WEB_STORE is not true); upload the GitHub release's Chrome zip manually."
+          fi
           if [ "${PUBLISH_TO_FIREFOX_AMO:-}" = "true" ]; then
             required+=(FIREFOX_JWT_ISSUER FIREFOX_JWT_SECRET)
           else
@@ -166,6 +175,7 @@ jobs:
           path: .
 
       - name: Publish to Chrome Web Store
+        if: vars.PUBLISH_TO_CHROME_WEB_STORE == 'true'
         env:
           CHROME_EXTENSION_ID: ${{ secrets.CHROME_EXTENSION_ID }}
           CHROME_CLIENT_ID: ${{ secrets.CHROME_CLIENT_ID }}

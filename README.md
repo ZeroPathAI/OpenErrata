@@ -190,6 +190,23 @@ After `pnpm dev:ext`, load the built extension as an unpacked extension:
 For signed Firefox releases, set `FIREFOX_GECKO_ID=<your-addon-id>` before
 building to control the generated `browser_specific_settings.gecko.id`.
 
+### Releasing the Extension
+
+Push a tag `ext-v<version>` (e.g. `ext-v0.4.0`). The Release Extension workflow
+tests and packages the extension and creates a GitHub release with the Chrome
+zip and `.crx` and the Firefox zip as assets. Store publishing is opt-in per
+store, through variables on the `extension-store-publish` environment:
+
+- `PUBLISH_TO_CHROME_WEB_STORE=true` uploads and publishes the Chrome zip; it
+  needs the secrets `CHROME_EXTENSION_ID`, `CHROME_CLIENT_ID`,
+  `CHROME_CLIENT_SECRET` and `CHROME_REFRESH_TOKEN`.
+- `PUBLISH_TO_FIREFOX_AMO=true` signs and lists the Firefox zip on AMO; it needs
+  `FIREFOX_JWT_ISSUER` and `FIREFOX_JWT_SECRET`.
+
+An enabled store with a missing secret fails the release. With neither enabled,
+the release finishes once the GitHub release exists; upload its assets to the
+stores by hand.
+
 ## Deployment
 
 The Helm chart at `src/helm/openerrata/` is the single deployment artifact for both on-prem and hosted environments. It does not bundle a database or blob storage — it takes a `DATABASE_URL` and an S3-compatible bucket as config. `values.yaml` documents every value; these are required:
@@ -235,6 +252,20 @@ Run these in order. Steps 1–2 need admin access and are idempotent; rerun them
    The deploy job fails early if the role variable or either Tailscale secret is missing, and the Pulumi step fails if a managed-database variable is.
 5. **Deploy** `staging` (a push to the `staging` branch, or a manual run of the Deploy workflow), check it, then `main`.
 6. **Retire the static credentials.** Delete the repository secrets `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` and `KUBE_CONFIG_DATA`, which no workflow reads any more, and run the cleanup commands step 1 printed.
+
+### Legacy extension traffic
+
+Extensions older than 0.4.0 are served through a time-boxed adapter
+(`api/src/lib/trpc/legacy-extension-v0`), to be retired on 2026-12-01 or once
+14 consecutive days pass with no requests from them, whichever is later. This
+query lists the days in the last 14 with legacy (0.2.x/0.3.x) page views; no
+rows means the traffic is gone:
+
+```sql
+SELECT "day", "version", "pageViewCount" FROM "ExtensionVersionDailyCount"
+WHERE "version" ~ '^0\.[23](\.|$)' AND "day" > (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date - 14
+ORDER BY "day", "version";
+```
 
 ## License
 
